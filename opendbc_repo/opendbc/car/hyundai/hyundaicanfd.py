@@ -127,7 +127,7 @@ def create_steering_messages_camera_scc(frame, packer, CP, CAN, CC, lat_active, 
     if CS.lfa_alt is not None:
       values = copy.copy(CS.lfa_alt)
       rx_counter = values.pop("COUNTER", None)
-      if emergency_steering:      
+      if emergency_steering:
         pass
       else:
         #values = {} #CS.lfa_alt
@@ -164,7 +164,7 @@ def create_steering_messages_camera_scc(frame, packer, CP, CAN, CC, lat_active, 
     values["HAS_LANE_SAFETY"] = 0
     values["LKA_ACTIVE"] = 0 # NEW_SIGNAL_1
 
-    values["DampingGain"] = 0 if lat_active else 100  
+    values["DampingGain"] = 0 if lat_active else 100
     #values["VALUE63"] = 0
 
     #values["VALUE82_SET256"] = 0
@@ -329,7 +329,7 @@ def create_lfa_icon_non_camera_scc(packer, CS, CAN, CC):
   return ret
 
 def create_acc_control_scc2(packer, CAN, enabled, accel_last, accel, stopping, gas_override, set_speed, hud_control, hyundai_jerk, CS):
-  
+
   if CS.scc_control is None:
     return None
   enabled = (enabled or CS.softHoldActive > 0) and CS.paddle_button_prev == 0
@@ -340,7 +340,7 @@ def create_acc_control_scc2(packer, CAN, enabled, accel_last, accel, stopping, g
     acc_mode = 4 if enabled else 0
     enabled = False
     accel = accel_last = 0.5
-   
+
   elif hyundai_jerk.carrot_cruise == 2:
     accel = accel_last = hyundai_jerk.carrot_cruise_accel
 
@@ -398,7 +398,7 @@ def create_acc_control_scc2(packer, CAN, enabled, accel_last, accel, stopping, g
   # AccelLimitBandUpper, Lower
   values["SysFailState"] = 0    # 1: Performance degredation, 2: system temporairy unavailble, 3: SCC Service required , 눈이 묻어 레이더오류시... 2가 됨. 이때 가속을 안함...
 
-  values["AccelLimitBandUpper"] = 0.0   # 이값이 1.26일때 가속을 안하는 증상이 보임.. 
+  values["AccelLimitBandUpper"] = 0.0   # 이값이 1.26일때 가속을 안하는 증상이 보임..
   values["AccelLimitBandLower"] = 0.0
 
   values["ZEROS_7"] = 1
@@ -567,7 +567,7 @@ def alt_cruise_buttons(packer, CP, CAN, buttons, cruise_btns_msg, cnt):
   cruise_btns_msg["COUNTER"] = (cruise_btns_msg["COUNTER"] + 1 + cnt) % 256
   bus = CAN.ECAN if CP.flags & HyundaiFlags.CANFD_HDA2 else CAN.CAM
   return packer.make_can_msg("CRUISE_BUTTONS_ALT", bus, cruise_btns_msg)
-  
+
 def hkg_can_fd_checksum(address: int, sig, d: bytearray) -> int:
   crc = 0
   for i in range(2, len(d)):
@@ -700,7 +700,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         if  HDA_LFA_SymSta == 0 and 0 < frame % 200 < 12:
           values["LFA_BTN"] = 1
 
-        if CC.enabled:          
+        if CC.enabled:
           if not CS.MainMode_ACC:
             if 10 < frame % 200 <= 16 and CS.out.vEgo > 3.:
               values["ADAPTIVE_CRUISE_MAIN_BTN"] = 1
@@ -814,8 +814,67 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["LCA_LEFT_ICON"] = 1 if CS.out.leftBlindspot else 2
         values["LCA_RIGHT_ICON"] = 1 if CS.out.rightBlindspot else 2
 
-        values["LANE_LEFT"] = 1 if desire in (1, 3) else 0
-        values["LANE_RIGHT"] = 1 if desire in (2, 4) else 0
+        # 차선 위치 갱신
+        if lat_enabled and CS.ccnc_0x1b5 is not None:
+          leftlaneraw, rightlaneraw = (
+            CS.ccnc_0x1b5["LEFT_POSITION"],
+            CS.ccnc_0x1b5["RIGHT_POSITION"],
+          )
+
+          scale_per_m = 15 / 1.7
+          leftlane = abs(int(round(15 + (leftlaneraw - 1.7) * scale_per_m)))
+          rightlane = abs(int(round(15 + (rightlaneraw - 1.7) * scale_per_m)))
+
+          if CS.ccnc_0x1b5["LEFT_QUAL"] not in (2, 3):
+            leftlane = 0
+          if CS.ccnc_0x1b5["RIGHT_QUAL"] not in (2, 3):
+            rightlane = 0
+
+          if leftlaneraw == -2.0248375:
+            leftlane = 30 - rightlane
+          if rightlaneraw == 2.0248375:
+            rightlane = 30 - leftlane
+
+          if leftlaneraw == rightlaneraw == 0:
+            leftlane = rightlane = 15
+          elif leftlaneraw == 0:
+            leftlane = 30 - rightlane
+          elif rightlaneraw == 0:
+            rightlane = 30 - leftlane
+
+          total = leftlane + rightlane
+          if total == 0:
+            leftlane = rightlane = 15
+          else:
+            leftlane = round((leftlane / total) * 30)
+            rightlane = 30 - leftlane
+
+          values["LANELINE_LEFT_POSITION"] = leftlane
+          values["LANELINE_RIGHT_POSITION"] = rightlane
+
+          # 방향 결정을 위한 맵핑 (1,3은 왼쪽, 2,4는 오른쪽)
+          is_left = desire in (1, 3)
+          is_right = desire in (2, 4)
+
+          if is_left or is_right:
+            if create_ccnc_messages.draw_center:
+              values["LANE_HIGHLIGHT"] = 1
+              values["LANE_HIGHLIGHT_DISTANCE"] = 60
+            else:
+                # 방향에 따른 키 설정 (LANE_LEFT 또는 LANE_RIGHT)
+              lane_key = "LANE_LEFT" if is_left else "LANE_RIGHT"
+              values[lane_key] = 1
+
+              # 차선 변경이 충분히 진행되었는지 판단하여 중앙 하이라이트로 전환
+              if (is_left and leftlane > rightlane + 10) or (is_right and rightlane > leftlane + 10):
+                create_ccnc_messages.draw_center = True
+          else:
+              # 차선 변경 상태가 아닐 때는 플래그 초기화
+            create_ccnc_messages.draw_center = False
+        else:
+          create_ccnc_messages.draw_center = False
+          values["LANE_LEFT"] = 1 if desire in (1, 3) else 0
+          values["LANE_RIGHT"] = 1 if desire in (2, 4) else 0
 
         ret.append(packer.make_can_msg("ADRV_0x161", CAN.ECAN, values, rx_counter = rx_counter))
 
@@ -871,6 +930,47 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           values["FAULT_LSS"] = 0
           values["FAULT_DAS"] = 0
 
+        # ============================================== 트흐님 옆두부 테스트
+        values['LF_DETECT'] = 2
+        values['LF_DETECT_LATERAL'] = 3
+        values['LF_DETECT_DISTANCE'] = 12.0
+        values['LF_DETECT'] = 2
+        values['LF_DETECT_LATERAL'] = 3
+        values['LF_DETECT_DISTANCE'] = 12.0
+        values['LF_DETECT'] = 2
+        values['LF_DETECT_LATERAL'] = 3
+        values['LF_DETECT_DISTANCE'] = 12.0
+        values['LF_DETECT'] = 2
+        values['LF_DETECT_LATERAL'] = 3
+        values['LF_DETECT_DISTANCE'] = 12.0
+        # ==============================================
+        values['RF_DETECT'] = 2
+        values['RF_DETECT_LATERAL'] = 3
+        values['RF_DETECT_DISTANCE'] = 12.0
+        values['RF_DETECT'] = 2
+        values['RF_DETECT_LATERAL'] = 3
+        values['RF_DETECT_DISTANCE'] = 12.0
+        values['RF_DETECT'] = 2
+        values['RF_DETECT_LATERAL'] = 3
+        values['RF_DETECT_DISTANCE'] = 12.0
+        values['RF_DETECT'] = 2
+        values['RF_DETECT_LATERAL'] = 3
+        values['RF_DETECT_DISTANCE'] = 12.0
+        # ==============================================
+        values['FF_DETECT'] = 2
+        values['FF_DETECT_LATERAL'] = 3
+        values['FF_DETECT_DISTANCE'] = 12.0
+        values['FF_DETECT'] = 2
+        values['FF_DETECT_LATERAL'] = 3
+        values['FF_DETECT_DISTANCE'] = 12.0
+        values['FF_DETECT'] = 2
+        values['FF_DETECT_LATERAL'] = 3
+        values['FF_DETECT_DISTANCE'] = 12.0
+        values['FF_DETECT'] = 2
+        values['FF_DETECT_LATERAL'] = 3
+        values['FF_DETECT_DISTANCE'] = 12.0
+        # ==============================================
+
         ret.append(packer.make_can_msg("CCNC_0x162", CAN.ECAN, values))
 
     # --- NEW_MSG_4B9 (corner radar keep-alive?) ---
@@ -909,3 +1009,5 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           ret.append(packer.make_can_msg("HDA_INFO_4A3", CAN.CAM, values))
 
   return ret
+
+create_ccnc_messages.draw_center = False
