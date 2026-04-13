@@ -930,43 +930,44 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           values["FAULT_LSS"] = 0
           values["FAULT_DAS"] = 0
 
+        is_hazard_blinker = CS.out.leftBlinker and CS.out.rightBlinker
         # ============================================== 트흐님 옆두부 테스트
-        values['LF_DETECT'] = 2
+        values['LF_DETECT'] = 2 if is_hazard_blinker else 3
         values['LF_DETECT_LATERAL'] = 3
         values['LF_DETECT_DISTANCE'] = 12.0
-        values['LF_DETECT'] = 2
+        values['LF_DETECT'] = 2 if is_hazard_blinker else 3
         values['LF_DETECT_LATERAL'] = 3
         values['LF_DETECT_DISTANCE'] = 12.0
-        values['LF_DETECT'] = 2
+        values['LF_DETECT'] = 2 if is_hazard_blinker else 3
         values['LF_DETECT_LATERAL'] = 3
         values['LF_DETECT_DISTANCE'] = 12.0
-        values['LF_DETECT'] = 2
+        values['LF_DETECT'] = 2 if is_hazard_blinker else 3
         values['LF_DETECT_LATERAL'] = 3
         values['LF_DETECT_DISTANCE'] = 12.0
         # ==============================================
-        values['RF_DETECT'] = 2
+        values['RF_DETECT'] = 2 if is_hazard_blinker else 3
         values['RF_DETECT_LATERAL'] = 3
         values['RF_DETECT_DISTANCE'] = 12.0
-        values['RF_DETECT'] = 2
+        values['RF_DETECT'] = 2 if is_hazard_blinker else 3
         values['RF_DETECT_LATERAL'] = 3
         values['RF_DETECT_DISTANCE'] = 12.0
-        values['RF_DETECT'] = 2
+        values['RF_DETECT'] = 2 if is_hazard_blinker else 3
         values['RF_DETECT_LATERAL'] = 3
         values['RF_DETECT_DISTANCE'] = 12.0
-        values['RF_DETECT'] = 2
+        values['RF_DETECT'] = 2 if is_hazard_blinker else 3
         values['RF_DETECT_LATERAL'] = 3
         values['RF_DETECT_DISTANCE'] = 12.0
         # ==============================================
-        values['FF_DETECT'] = 2
+        values['FF_DETECT'] = 2 if is_hazard_blinker else 3
         values['FF_DETECT_LATERAL'] = 3
         values['FF_DETECT_DISTANCE'] = 12.0
-        values['FF_DETECT'] = 2
+        values['FF_DETECT'] = 2 if is_hazard_blinker else 3
         values['FF_DETECT_LATERAL'] = 3
         values['FF_DETECT_DISTANCE'] = 12.0
-        values['FF_DETECT'] = 2
+        values['FF_DETECT'] = 2 if is_hazard_blinker else 3
         values['FF_DETECT_LATERAL'] = 3
         values['FF_DETECT_DISTANCE'] = 12.0
-        values['FF_DETECT'] = 2
+        values['FF_DETECT'] = 2 if is_hazard_blinker else 3
         values['FF_DETECT_LATERAL'] = 3
         values['FF_DETECT_DISTANCE'] = 12.0
         # ==============================================
