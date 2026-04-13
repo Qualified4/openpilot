@@ -930,22 +930,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           values["FAULT_LSS"] = 0
           values["FAULT_DAS"] = 0
 
-        is_hazard_blinker = CS.out.leftBlinker and CS.out.rightBlinker
-        # ============================================== 트흐님 옆두부 테스트
-        values['LF_DETECT'] = 2 if is_hazard_blinker else 3
-        values['LF_DETECT_LATERAL'] = 3
-        values['LF_DETECT_DISTANCE'] = 12.0
-        values['RF_DETECT'] = 2 if is_hazard_blinker else 3
-        values['RF_DETECT_LATERAL'] = 3
-        values['RF_DETECT_DISTANCE'] = 12.0
-        values['LR_DETECT'] = 2 if is_hazard_blinker else 3
-        values['LR_DETECT_LATERAL'] = 3
-        values['LR_DETECT_DISTANCE'] = 12.0
-        values['RR_DETECT'] = 2 if is_hazard_blinker else 3
-        values['RR_DETECT_LATERAL'] = 3
-        values['RR_DETECT_DISTANCE'] = 12.0
-        # ==============================================
-
         ret.append(packer.make_can_msg("CCNC_0x162", CAN.ECAN, values))
 
     # --- NEW_MSG_4B9 (corner radar keep-alive?) ---
