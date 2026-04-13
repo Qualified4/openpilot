@@ -822,37 +822,39 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           )
 
           scale_per_m = 15 / 1.7
-          leftlane = abs(int(round(15 + (leftlaneraw - 1.7) * scale_per_m)))
-          rightlane = abs(int(round(15 + (rightlaneraw - 1.7) * scale_per_m)))
+          l_target = abs(15 + (leftlaneraw - 1.7) * scale_per_m)
+          r_target = abs(15 + (rightlaneraw - 1.7) * scale_per_m)
 
           if CS.ccnc_0x1b5["LEFT_QUAL"] not in (2, 3):
-            leftlane = 0
+            l_target = 0
           if CS.ccnc_0x1b5["RIGHT_QUAL"] not in (2, 3):
-            rightlane = 0
+            r_target = 0
 
-          if leftlaneraw == -2.0248375:
-            leftlane = 30 - rightlane
-          if rightlaneraw == 2.0248375:
-            rightlane = 30 - leftlane
-
-          if leftlaneraw == rightlaneraw == 0:
-            leftlane = rightlane = 15
-          elif leftlaneraw == 0:
-            leftlane = 30 - rightlane
-          elif rightlaneraw == 0:
-            rightlane = 30 - leftlane
-
-          total = leftlane + rightlane
-          if total == 0:
-            leftlane = rightlane = 15
+          # 둘 다 0인 극단적인 경우 중앙 처리
+          if leftlaneraw == 0 and rightlaneraw == 0:
+              l_target = r_target = 15.0
           else:
-            leftlane = round((leftlane / total) * 30)
-            rightlane = 30 - leftlane
+            # 한쪽 차선이 특정 상수값이거나 0일 때 반대쪽을 기준으로 보정
+            if leftlaneraw == -2.0248375 or leftlaneraw == 0:
+                l_target = 30 - r_target
+            if rightlaneraw == 2.0248375 or rightlaneraw == 0:
+                r_target = 30 - l_target
+
+          # LPF 필터 적용
+          create_ccnc_messages.l_lane_f = create_ccnc_messages.filter_alpha * l_target + (1.0 - create_ccnc_messages.filter_alpha) * create_ccnc_messages.l_lane_f
+          create_ccnc_messages.r_lane_f = create_ccnc_messages.filter_alpha * r_target + (1.0 - create_ccnc_messages.filter_alpha) * create_ccnc_messages.r_lane_f
+
+          total = create_ccnc_messages.l_lane_f + create_ccnc_messages.r_lane_f
+          if total == 0:
+              leftlane = rightlane = 15
+          else:
+              leftlane = int(round((create_ccnc_messages.l_lane_f / total) * 30))
+              rightlane = 30 - leftlane
 
           values["LANELINE_LEFT_POSITION"] = leftlane
           values["LANELINE_RIGHT_POSITION"] = rightlane
 
-          # 방향 결정을 위한 맵핑 (1,3은 왼쪽, 2,4는 오른쪽)
+          # 차선 변경 시 변경 차로 강조
           is_left = desire in (1, 3)
           is_right = desire in (2, 4)
 
@@ -861,7 +863,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               values["LANE_HIGHLIGHT"] = 1
               values["LANE_HIGHLIGHT_DISTANCE"] = 60
             else:
-                # 방향에 따른 키 설정 (LANE_LEFT 또는 LANE_RIGHT)
+              # 방향에 따른 키 설정 (LANE_LEFT 또는 LANE_RIGHT)
               lane_key = "LANE_LEFT" if is_left else "LANE_RIGHT"
               values[lane_key] = 1
 
@@ -869,7 +871,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               if (is_left and leftlane > rightlane + 10) or (is_right and rightlane > leftlane + 10):
                 create_ccnc_messages.draw_center = True
           else:
-              # 차선 변경 상태가 아닐 때는 플래그 초기화
+            # 차선 변경 상태가 아닐 때는 플래그 초기화
             create_ccnc_messages.draw_center = False
         else:
           create_ccnc_messages.draw_center = False
@@ -970,3 +972,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   return ret
 
 create_ccnc_messages.draw_center = False
+# 차선 LPF 필터
+create_ccnc_messages.l_lane_f = 15.0
+create_ccnc_messages.r_lane_f = 15.0
+create_ccnc_messages.filter_alpha = 0.2  # 0.0 ~ 1.0 (낮을수록 부드러움)
