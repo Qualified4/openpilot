@@ -1,5 +1,7 @@
+import math
 import copy
 import numpy as np
+from collections import deque
 from opendbc.car import CanBusBase
 from opendbc.car.crc import CRC16_XMODEM
 from opendbc.car.hyundai.values import HyundaiFlags, HyundaiExtFlags
@@ -783,8 +785,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         # curvature 표시(0x161쪽 기존 로직 유지)
         curvature = round(CS.out.steeringAngleDeg / 3)
-        values["LANELINE_CURVATURE"] = (min(abs(curvature), 15) + (-1 if curvature < 0 else 0)) if lat_active else 0
-        values["LANELINE_CURVATURE_DIRECTION"] = 1 if curvature < 0 and lat_active else 0
+        values["LANELINE_CURVATURE"] = (min(abs(curvature), 15) + (-1 if curvature < 0 else 0))
+        values["LANELINE_CURVATURE_DIRECTION"] = 1 if curvature < 0 else 0
 
         lane_color = 6 if md is not None and md.meta.laneChangeAvailableLeft else 2
         if lane_line_check >= 1:
@@ -816,63 +818,83 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         # 차선 위치 갱신
         if lat_enabled and CS.ccnc_0x1b5 is not None:
-          leftlaneraw, rightlaneraw = (
-            CS.ccnc_0x1b5["LEFT_POSITION"],
-            CS.ccnc_0x1b5["RIGHT_POSITION"],
-          )
+          leftlaneraw = CS.ccnc_0x1b5["LEFT_POSITION"]
+          rightlaneraw = CS.ccnc_0x1b5["RIGHT_POSITION"]
+          l_qual = CS.ccnc_0x1b5["LEFT_QUAL"]
+          r_qual = CS.ccnc_0x1b5["RIGHT_QUAL"]
 
           scale_per_m = 15 / 1.7
           l_target = abs(15 + (leftlaneraw - 1.7) * scale_per_m)
           r_target = abs(15 + (rightlaneraw - 1.7) * scale_per_m)
 
-          if CS.ccnc_0x1b5["LEFT_QUAL"] not in (2, 3):
-            l_target = 0
-          if CS.ccnc_0x1b5["RIGHT_QUAL"] not in (2, 3):
-            r_target = 0
+          # 차선 Raw 품질 검증
+          l_valid = l_qual in (2, 3) and not math.isclose(leftlaneraw, -2.0248375) and leftlaneraw != 0
+          r_valid = r_qual in (2, 3) and not math.isclose(rightlaneraw, 2.0248375) and rightlaneraw != 0
 
-          # 둘 다 0인 극단적인 경우 중앙 처리
-          if leftlaneraw == 0 and rightlaneraw == 0:
-              l_target = r_target = 15.0
-          else:
-            # 한쪽 차선이 특정 상수값이거나 0일 때 반대쪽을 기준으로 보정
-            if leftlaneraw == -2.0248375 or leftlaneraw == 0:
-                l_target = 30 - r_target
-            if rightlaneraw == 2.0248375 or rightlaneraw == 0:
-                r_target = 30 - l_target
+          if not l_valid and not r_valid:
+            l_target = r_target = 15.0
+            # 양쪽 차선을 전부 인식하지 못하면 버퍼 비움
+            create_ccnc_messages.l_buffer.clear()
+            create_ccnc_messages.r_buffer.clear()
+          elif not l_valid:
+            l_target = 30 - r_target
+          elif not r_valid:
+            r_target = 30 - l_target
 
-          # LPF 필터 적용
-          create_ccnc_messages.l_lane_f = create_ccnc_messages.filter_alpha * l_target + (1.0 - create_ccnc_messages.filter_alpha) * create_ccnc_messages.l_lane_f
-          create_ccnc_messages.r_lane_f = create_ccnc_messages.filter_alpha * r_target + (1.0 - create_ccnc_messages.filter_alpha) * create_ccnc_messages.r_lane_f
-
-          total = create_ccnc_messages.l_lane_f + create_ccnc_messages.r_lane_f
-          if total == 0:
-              leftlane = rightlane = 15
-          else:
-              leftlane = int(round((create_ccnc_messages.l_lane_f / total) * 30))
-              rightlane = 30 - leftlane
-
-          values["LANELINE_LEFT_POSITION"] = leftlane
-          values["LANELINE_RIGHT_POSITION"] = rightlane
-
-          # 차선 변경 시 변경 차로 강조
-          is_left = desire in (1, 3)
-          is_right = desire in (2, 4)
-
-          if is_left or is_right:
+          # 차선 변경 시 차로 하이라이트 로직
+          if desire != 0:
             if create_ccnc_messages.draw_center:
               values["LANE_HIGHLIGHT"] = 1
               values["LANE_HIGHLIGHT_DISTANCE"] = 60
             else:
-              # 방향에 따른 키 설정 (LANE_LEFT 또는 LANE_RIGHT)
-              lane_key = "LANE_LEFT" if is_left else "LANE_RIGHT"
-              values[lane_key] = 1
-
-              # 차선 변경이 충분히 진행되었는지 판단하여 중앙 하이라이트로 전환
-              if (is_left and leftlane > rightlane + 10) or (is_right and rightlane > leftlane + 10):
+              # 차선 변경 시 위상 변화 계산
+              is_lane_jump = abs(l_target - create_ccnc_messages.prev_l_target) > 15
+              if is_lane_jump:
+                # 위상 변화 시 보간 제거를 위해 버퍼 및 필터 즉시 초기화
+                create_ccnc_messages.l_buffer.clear()
+                create_ccnc_messages.r_buffer.clear()
+                create_ccnc_messages.l_lane_f = l_target
+                create_ccnc_messages.r_lane_f = r_target
                 create_ccnc_messages.draw_center = True
+              else:
+                is_left = desire in (1, 3)
+                if is_left:
+                  values["LANE_LEFT"] = 1
+                else:
+                  values["LANE_RIGHT"] = 1
           else:
             # 차선 변경 상태가 아닐 때는 플래그 초기화
             create_ccnc_messages.draw_center = False
+
+          create_ccnc_messages.prev_l_target = l_target
+
+          # Median 필터 (스파이크 노이즈 제거)
+          create_ccnc_messages.l_buffer.append(l_target)
+          create_ccnc_messages.r_buffer.append(r_target)
+
+          # 버퍼가 채워졌을 때만 필터 적용
+          if len(create_ccnc_messages.l_buffer) == create_ccnc_messages.l_buffer.maxlen:
+            l_median = sorted(list(create_ccnc_messages.l_buffer))[len(create_ccnc_messages.l_buffer)//2]
+            r_median = sorted(list(create_ccnc_messages.r_buffer))[len(create_ccnc_messages.r_buffer)//2]
+          else:
+            l_median = l_target
+            r_median = r_target
+
+          # LPF 보간
+          create_ccnc_messages.l_lane_f = create_ccnc_messages.filter_alpha * l_median + (1.0 - create_ccnc_messages.filter_alpha) * create_ccnc_messages.l_lane_f
+          create_ccnc_messages.r_lane_f = create_ccnc_messages.filter_alpha * r_median + (1.0 - create_ccnc_messages.filter_alpha) * create_ccnc_messages.r_lane_f
+
+          # 최종 출력 및 정규화
+          total = create_ccnc_messages.l_lane_f + create_ccnc_messages.r_lane_f
+          if total > 10:
+            leftlane = max(0, min(30, int(round(create_ccnc_messages.l_lane_f))))
+            rightlane = max(0, min(30, int(round(create_ccnc_messages.r_lane_f))))
+          else:
+            # 차선 폭이 너무 좁게 인식 되면 중앙 좁은 차선
+            leftlane = rightlane = 10
+
+          values["LANELINE_LEFT_POSITION"] = leftlane
+          values["LANELINE_RIGHT_POSITION"] = rightlane
         else:
           create_ccnc_messages.draw_center = False
           values["LANE_LEFT"] = 1 if desire in (1, 3) else 0
@@ -972,8 +994,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
   return ret
 
+# 차선 넘어감 감지
 create_ccnc_messages.draw_center = False
+create_ccnc_messages.prev_l_target = 15.0
 # 차선 LPF 필터
 create_ccnc_messages.l_lane_f = 15.0
 create_ccnc_messages.r_lane_f = 15.0
 create_ccnc_messages.filter_alpha = 0.2  # 0.0 ~ 1.0 (낮을수록 부드러움)
+# 차선 Median 필터
+create_ccnc_messages.l_buffer = deque(maxlen=3)
+create_ccnc_messages.r_buffer = deque(maxlen=3)
