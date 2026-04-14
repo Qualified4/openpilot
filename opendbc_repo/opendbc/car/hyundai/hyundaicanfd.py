@@ -843,25 +843,25 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           # 차선 변경 시 차로 하이라이트 로직
           if desire != 0:
-            if create_ccnc_messages.draw_center:
-              values["LANE_HIGHLIGHT"] = 1
-              values["LANE_HIGHLIGHT_DISTANCE"] = 60
-            else:
-              # 차선 변경 시 위상 변화 계산
-              is_lane_jump = abs(l_target - create_ccnc_messages.prev_l_target) > 15
-              if is_lane_jump:
+            if not create_ccnc_messages.draw_center:
+              if abs(l_target - create_ccnc_messages.prev_l_target) > 15:
                 # 위상 변화 시 보간 제거를 위해 버퍼 및 필터 즉시 초기화
                 create_ccnc_messages.l_buffer.clear()
                 create_ccnc_messages.r_buffer.clear()
                 create_ccnc_messages.l_lane_f = l_target
                 create_ccnc_messages.r_lane_f = r_target
                 create_ccnc_messages.draw_center = True
-              else:
-                is_left = desire in (1, 3)
-                if is_left:
-                  values["LANE_LEFT"] = 1
-                else:
-                  values["LANE_RIGHT"] = 1
+
+            # 위상 변화 후 중앙 차로 강조
+            if create_ccnc_messages.draw_center:
+              values.update({
+                "LANE_HIGHLIGHT": 1,
+                "LANE_HIGHLIGHT_DISTANCE": 60
+              })
+            # 위상 변화 전 대상 차로 강조
+            else:
+              side = "LANE_LEFT" if desire in (1, 3) else "LANE_RIGHT"
+              values[side] = 1
           else:
             # 차선 변경 상태가 아닐 때는 플래그 초기화
             create_ccnc_messages.draw_center = False
@@ -893,12 +893,16 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             # 차선 폭이 너무 좁게 인식 되면 중앙 좁은 차선
             leftlane = rightlane = 10
 
-          values["LANELINE_LEFT_POSITION"] = leftlane
-          values["LANELINE_RIGHT_POSITION"] = rightlane
+          values.update({
+            "LANELINE_LEFT_POSITION": leftlane,
+            "LANELINE_RIGHT_POSITION": rightlane
+          })
         else:
           create_ccnc_messages.draw_center = False
-          values["LANE_LEFT"] = 1 if desire in (1, 3) else 0
-          values["LANE_RIGHT"] = 1 if desire in (2, 4) else 0
+          if desire in (1, 3):
+            values["LANE_LEFT"] = 1
+          elif desire in (2, 4):
+            values["LANE_RIGHT"] = 1
 
         ret.append(packer.make_can_msg("ADRV_0x161", CAN.ECAN, values, rx_counter = rx_counter))
 
