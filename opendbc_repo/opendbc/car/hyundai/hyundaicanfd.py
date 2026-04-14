@@ -909,10 +909,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
       if CS.ccnc_0x162 is not None:
         values = copy.copy(CS.ccnc_0x162)
 
-        if hud_control.leadDistance > 0:
-          values["FF_DISTANCE"] = hud_control.leadDistance
-          ff_type = 3 if hud_control.leadRadar == 1 else 13
-          values["FF_DETECT"] = ff_type if hud_control.leadRelSpeed > -0.1 else ff_type + 1
+        # 2024 쏘나타는 차량 인식 두부만 출력 가능해서 순정 값 사용
+        # if hud_control.leadDistance > 0:
+        #   values["FF_DISTANCE"] = hud_control.leadDistance
+        #   ff_type = 3 if hud_control.leadRadar == 1 else 13
+        #   values["FF_DETECT"] = ff_type if hud_control.leadRelSpeed > -0.1 else ff_type + 1
 
         _make_ccnc_values(
           values, CS, lat_active, frame, hud_control,
