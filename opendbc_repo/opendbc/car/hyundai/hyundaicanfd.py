@@ -2,7 +2,7 @@ import math
 import copy
 import numpy as np
 from collections import deque
-from opendbc.car import CanBusBase
+from opendbc.car import CanBusBase, structs
 from opendbc.car.crc import CRC16_XMODEM
 from opendbc.car.hyundai.values import HyundaiFlags, HyundaiExtFlags
 from openpilot.common.params import Params
@@ -684,6 +684,30 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   lane_line_check = create_ccnc_messages._lane_line_check
   desire, lane_changing = _get_desire_and_lane_changing(md)
 
+  # --- AI 모델의 좌/우 전방 차량 감지 ---
+  lf_dist = 999.
+  rf_dist = 999.
+  lf_lat = 0.
+  rf_lat = 0.
+  lf_v = 0.
+  rf_v = 0.
+  if md is not None:
+    for lead in md.leadsV3:
+      # leadsV3의 x, y, v는 배열(리스트)이므로 첫 번째 값([0])을 사용합니다.
+      if len(lead.x) > 0 and lead.prob > 0.4 and 0 < lead.x[0] < 70.0:
+        # 좌측 전방 차량 (y > 0.5m 로 바로 앞차 제외)
+        if 0.5 < lead.y[0] < 5.0:
+          if lead.x[0] < lf_dist:
+            lf_dist = lead.x[0]
+            lf_lat = lead.y[0]
+            lf_v = lead.v[0]
+        # 우측 전방 차량
+        elif -5.0 < lead.y[0] < -0.5:
+          if lead.x[0] < rf_dist:
+            rf_dist = lead.x[0]
+            rf_lat = lead.y[0]
+            rf_v = lead.v[0]
+
   if CP.flags & HyundaiFlags.CAMERA_SCC.value:
     HDA_CntrlModSta = 0
     HDA_LFA_SymSta = 0
@@ -903,6 +927,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           elif desire in (2, 4):
             values["LANE_RIGHT"] = 1
 
+        # 후진 기어 상태 확인
+        if CS.out.gearShifter == structs.CarState.GearShifter.reverse:
+          values["LANE_HIGHLIGHT"] = 5
+
         ret.append(packer.make_can_msg("ADRV_0x161", CAN.ECAN, values, rx_counter = rx_counter))
 
       if CS.adrv_0x200 is not None:
@@ -914,6 +942,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
       if CS.adrv_0x1ea is not None:
         values = copy.copy(CS.adrv_0x1ea)
         rx_counter = values.pop("COUNTER", None)
+
         # blinker hold
         values['LEFT_BLINK_HOLD'] = 1 if lane_changing == 3 else 0
         values['RIGHT_BLINK_HOLD'] = 1 if lane_changing == 4 else 0
@@ -934,11 +963,20 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
       if CS.ccnc_0x162 is not None:
         values = copy.copy(CS.ccnc_0x162)
 
+        # --- 모델 기반 감지 결과 주입 ---
+        if lf_dist < 25.0:
+          values['LF_DETECT_DISTANCE'] = lf_dist
+          values['LF_DETECT_LATERAL'] = lf_lat
+          values['LF_DETECT'] = 2 if (lf_v - CS.out.vEgo) < -0.1 else 1
+        if rf_dist < 25.0:
+          values['RF_DETECT_DISTANCE'] = rf_dist
+          values['RF_DETECT_LATERAL'] = rf_lat
+          values['RF_DETECT'] = 2 if (rf_v - CS.out.vEgo) < -0.1 else 1
+
         # 2024 쏘나타는 차량 인식 두부만 출력 가능해서 순정 값 사용
-        # if hud_control.leadDistance > 0:
-        #   values["FF_DISTANCE"] = hud_control.leadDistance
-        #   ff_type = 3 if hud_control.leadRadar == 1 else 13
-        #   values["FF_DETECT"] = ff_type if hud_control.leadRelSpeed > -0.1 else ff_type + 1
+        if hud_control.leadDistance > 0 and hud_control.leadRadar == 0:
+          values["FF_DISTANCE"] = hud_control.leadDistance
+          values["FF_DETECT"] = 1 if hud_control.leadRelSpeed > -0.1 else 2
 
         _make_ccnc_values(
           values, CS, lat_active, frame, hud_control,
