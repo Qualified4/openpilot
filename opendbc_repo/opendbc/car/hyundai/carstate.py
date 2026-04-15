@@ -108,6 +108,7 @@ class CarState(CarStateBase):
     self.manual_speed_limit_assist = None
     self.accelerator = None
     self.blinkers = None
+    self.drive_mode = None
     self.doors_seatbelts = None
     self.cruise_buttons_alt2 = None
 
@@ -250,6 +251,7 @@ class CarState(CarStateBase):
           if self.gear_msg_canfd == "ACCELERATOR":
             add_and_cache(self.cp, "ACCELERATOR", "accelerator", ignore_counter = True)
           add_and_cache(self.cp, "BLINKERS", "blinkers")
+          add_and_cache(self.cp, "DRIVE_MODE", "drive_mode")
           add_and_cache(self.cp, "DOORS_SEATBELTS", "doors_seatbelts")
         elif self.controls_ready_count == 126:
           add_and_cache(self.cp, "CRUISE_BUTTONS_ALT2", "cruise_buttons_alt2", ignore_counter = True)
