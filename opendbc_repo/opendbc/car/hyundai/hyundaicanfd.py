@@ -754,7 +754,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["TARGET"] = 1 if main_enabled else 0
         values["TARGET_DISTANCE"] = int(hud_control.leadDistance)
 
-        values["BACKGROUND"] = 6 if CS.paddle_button_prev > 0 else 1 if cruise_enabled else 3 if lat_active else 7
+        values["BACKGROUND"] = 1 if cruise_enabled else 3 if lat_active else 7
         values["CENTERLINE"] = 1 if HDA_CntrlModSta > 0 else 0
         values["CAR_CIRCLE"] = 2 if hdp_active else 1 if cruise_enabled else 0
 
@@ -812,9 +812,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         values["LCA_LEFT_ARROW"] = 2 if CS.out.leftBlinker else 0
         values["LCA_RIGHT_ARROW"] = 2 if CS.out.rightBlinker else 0
-
-        values["LCA_LEFT_ICON"] = 1 if CS.out.leftBlindspot else 2
-        values["LCA_RIGHT_ICON"] = 1 if CS.out.rightBlindspot else 2
 
         # 차선 위치 갱신
         if lat_enabled and CS.ccnc_0x1b5 is not None:
@@ -895,7 +892,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           values.update({
             "LANELINE_LEFT_POSITION": leftlane,
-            "LANELINE_RIGHT_POSITION": rightlane
+            "LANELINE_RIGHT_POSITION": rightlane,
+            "LCA_LEFT_ICON": 1 if CS.out.leftBlindspot else 4 if CS.out.rightBlinker else 2,
+            "LCA_RIGHT_ICON": 1 if CS.out.rightBlindspot else 4 if CS.out.leftBlinker else 2
           })
         else:
           create_ccnc_messages.draw_center = False
