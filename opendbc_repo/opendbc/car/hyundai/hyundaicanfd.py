@@ -915,6 +915,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           })
         else:
           create_ccnc_messages.draw_center = False
+          create_ccnc_messages.prev_l_target = 15.0
+          create_ccnc_messages.l_lane_f = 15.0
+          create_ccnc_messages.r_lane_f = 15.0
           if desire in (1, 3):
             values["LANE_LEFT"] = 1
           elif desire in (2, 4):
