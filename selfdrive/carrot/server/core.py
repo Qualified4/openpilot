@@ -325,7 +325,7 @@ async def on_cleanup(app: web.Application):
       await realtime_raw_hub.stop_all()
     except Exception:
       traceback.print_exc()
-    
+
   t = app.get("hb_task")
   if t:
     t.cancel()
@@ -926,7 +926,7 @@ def _filter_branch_list(branches: list[str]) -> list[str]:
     # local branch: c3-xxx / c4-xxx
     # remote branch: origin/c3-xxx, ajouatom/c3-xxx, etc.
     branch_name = name.split("/", 1)[-1] if "/" in name else name
-    if branch_name.startswith(prefix) or "carrot":
+    if branch_name.startswith(prefix) or branch_name.startswith("carrot"):
       filtered.append(name)
 
   return sorted(set(filtered))
@@ -1414,7 +1414,7 @@ async def api_tools(request: web.Request) -> web.Response:
         return web.json_response({"ok": rc == 0, "rc": rc, "out": out})
       except Exception as e:
         return web.json_response({"ok": False, "error": str(e)}, status=500)
-  
+
 
     if action == "git_branch_list":
       rc0, out0 = run(["git", "fetch", "--all", "--prune"], cwd=REPO_DIR)
@@ -1453,7 +1453,7 @@ async def api_tools(request: web.Request) -> web.Response:
         "device_type": HARDWARE.get_device_type(),
         "branch_prefix": _get_branch_prefix(),
       })
-    
+
 
     if action == "delete_all_videos":
       # 경로는 환경 맞춰 조정
@@ -1522,7 +1522,7 @@ async def api_tools(request: web.Request) -> web.Response:
         "out": "tmux log captured",
         "file": "/download/tmux.log"
       })
-    
+
     if action == "server_tmux_log":
       params = Params()
       params.put_nonblocking("CarrotException", "tmux_send")
@@ -1599,7 +1599,7 @@ async def api_tools(request: web.Request) -> web.Response:
         "out": "all required packages are already installed.",
         "results": results,
         "need_reboot": False,
-      })    
+      })
     if action == "backup_settings":
       if not HAS_PARAMS or ParamKeyType is None:
         return web.json_response({"ok": False, "error": "Params/ParamKeyType not available"}, status=500)
