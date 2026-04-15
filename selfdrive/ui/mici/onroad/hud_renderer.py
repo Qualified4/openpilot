@@ -259,11 +259,15 @@ class HudRenderer(Widget):
     # pos (TOP-left)
     margin_x = 18
     margin_y = 18
-    pos_x = int(rect.x + margin_x + wheel_txt.width / 2)
+    # 시간, 디버그는 왼쪽 끝 좌표
+    info_pos_x = int(rect.x + margin_x)
+    # 핸들 아이콘 오른쪽 끝으로 보내기
+    wheel_pos_x = int(rect.x + rect.width - margin_x - wheel_txt.width / 2)
+
     pos_y = int(rect.y + margin_y + wheel_txt.height / 2 + self._wheel_y_filter.x)
 
-    self._draw_steering_wheel_icon(wheel_txt, pos_x, pos_y)
-    self._draw_wheel_side_info(wheel_txt, pos_x, pos_y)
+    self._draw_steering_wheel_icon(wheel_txt, wheel_pos_x, pos_y)
+    self._draw_wheel_side_info(wheel_txt, info_pos_x, pos_y)
 
 
   def _draw_steering_wheel_icon(self, wheel_txt, pos_x: int, pos_y: int) -> None:
@@ -328,7 +332,7 @@ class HudRenderer(Widget):
     small_dt_font = max(18, int(time_font * 0.62))   # date+time 2줄용
     side_font = max(18, int(time_font * 0.33))
 
-    time_x = pos_x + wheel_txt.width / 2 + 15
+    time_x = pos_x # + wheel_txt.width / 2 + 15
 
     # --------------------------------------------------------------------------
     # Date / Time
