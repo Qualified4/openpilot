@@ -817,7 +817,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         if CS.out.gearShifter == structs.CarState.GearShifter.drive:
           if CS.out.brakeHoldActive:
             values["LANE_HIGHLIGHT"] = 3
-          elif CS.scc_control is not None and CS.scc_control["DriveMode"] == 1:
+          elif CS.scc_control is not None and (CS.scc_control["DriveMode"] == 2 or CS.scc_control["DriveMode"] == 3):
             values.update({
               "LANE_HIGHLIGHT": 5,
               "LANE_HIGHLIGHT_DISTANCE": 60

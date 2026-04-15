@@ -491,6 +491,8 @@ class CarState(CarStateBase):
       ret.gasPressed = bool(cp.vl[self.accelerator_msg_canfd]["ACCELERATOR_PEDAL_PRESSED"]) if not self.use_accelerator else False if self.accelerator is None else bool(self.accelerator["ACCELERATOR_PEDAL_PRESSED"])
 
     ret.brakePressed = cp.vl["TCS"]["DriverBraking"] == 1
+    ret.parkingBrake = cp.vl["TCS"]["PBRAKE_ACT"] == 1
+    ret.brakeHoldActive = cp.vl["ESP_STATUS"]["AUTO_HOLD"] == 1
     #print(cp.vl["TCS"], cp.vl_all["TCS"]["DriverBraking"][-10:])
 
     if self.doors_seatbelts is not None:
@@ -583,7 +585,6 @@ class CarState(CarStateBase):
         ret.pcmCruiseGap = int(np.clip(cp_cruise_info.vl["SCC_CONTROL"]["DISTANCE_SETTING"], 1, 4))
       ret.cruiseState.standstill = cp_cruise_info.vl["SCC_CONTROL"]["InfoDisplay"] >= 4
       ret.cruiseState.speed = cp_cruise_info.vl["SCC_CONTROL"]["VSetDis"] * speed_factor
-      ret.brakeHoldActive = cp.vl["ESP_STATUS"]["AUTO_HOLD"] == 1 and cp_cruise_info.vl["SCC_CONTROL"]["ACCMode"] not in (1, 2)
 
     speed_limit_cam = False
     corner = False
