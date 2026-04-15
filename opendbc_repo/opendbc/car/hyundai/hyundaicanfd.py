@@ -684,33 +684,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   lane_line_check = create_ccnc_messages._lane_line_check
   desire, lane_changing = _get_desire_and_lane_changing(md)
 
-  # --- AI 모델의 좌/우 전방 차량 감지 ---
-  lf_dist = 999.
-  rf_dist = 999.
-  lf_lat = 0.
-  rf_lat = 0.
-  lf_v = 0.
-  rf_v = 0.
-  if md is not None:
-    for lead in md.leadsV3:
-      try:
-        # leadsV3의 x, y, v는 배열(리스트)이므로 첫 번째 값([0])을 사용합니다.
-        if len(lead.x) > 0 and lead.prob > 0.4 and 0 < lead.x[0] < 70.0:
-          # 좌측 전방 차량 (y > 0.5m 로 바로 앞차 제외)
-          if 0.5 < lead.y[0] < 5.0:
-            if lead.x[0] < lf_dist:
-              lf_dist = lead.x[0]
-              lf_lat = lead.y[0]
-              lf_v = lead.v[0]
-          # 우측 전방 차량
-          elif -5.0 < lead.y[0] < -0.5:
-            if lead.x[0] < rf_dist:
-              rf_dist = lead.x[0]
-              rf_lat = lead.y[0]
-              rf_v = lead.v[0]
-      except (IndexError, TypeError, AttributeError):
-        continue  # 모델 데이터가 비어있거나 오류가 발생하면 무시하고 다음 객체 검사
-
   if CP.flags & HyundaiFlags.CAMERA_SCC.value:
     HDA_CntrlModSta = 0
     HDA_LFA_SymSta = 0
@@ -840,6 +813,23 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["LCA_LEFT_ARROW"] = 2 if CS.out.leftBlinker else 0
         values["LCA_RIGHT_ARROW"] = 2 if CS.out.rightBlinker else 0
 
+        # 기어 상태에 따른 차로 색 변경
+        if CS.out.gearShifter == structs.CarState.GearShifter.drive:
+          if CS.out.brakeHoldActive:
+            values["LANE_HIGHLIGHT"] = 3
+        elif CS.out.gearShifter == structs.CarState.GearShifter.sport or (CS.scc_control is not None and CS.scc_control["DriveMode"] == 1):
+          values.update({
+            "LANE_HIGHLIGHT": 5,
+            "LANE_HIGHLIGHT_DISTANCE": 60
+          })
+        elif CS.out.gearShifter == structs.CarState.GearShifter.reverse:
+          values["LANE_HIGHLIGHT"] = 5
+        elif CS.out.gearShifter == structs.CarState.GearShifter.neutral:
+          values["LANE_HIGHLIGHT"] = 4
+        elif CS.out.gearShifter == structs.CarState.GearShifter.park:
+          if CS.out.parkingBrake:
+            values["LANE_HIGHLIGHT"] = 2
+
         # 차선 위치 갱신
         if lat_enabled and CS.ccnc_0x1b5 is not None:
           leftlaneraw = CS.ccnc_0x1b5["LEFT_POSITION"]
@@ -930,10 +920,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           elif desire in (2, 4):
             values["LANE_RIGHT"] = 1
 
-        # 후진 기어 상태 확인
-        if CS.out.gearShifter == structs.CarState.GearShifter.reverse:
-          values["LANE_HIGHLIGHT"] = 5
-
         ret.append(packer.make_can_msg("ADRV_0x161", CAN.ECAN, values, rx_counter = rx_counter))
 
       if CS.adrv_0x200 is not None:
@@ -966,19 +952,47 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
       if CS.ccnc_0x162 is not None:
         values = copy.copy(CS.ccnc_0x162)
 
+        # --- AI 모델의 좌/우 전방 차량 감지 ---
+        lf_dist = 999.
+        rf_dist = 999.
+        lf_lat = 0.
+        rf_lat = 0.
+        lf_v = 0.
+        rf_v = 0.
+        if md is not None:
+          for lead in md.leadsV3:
+            try:
+              # leadsV3의 x, y, v는 배열(리스트)이므로 첫 번째 값([0])을 사용합니다.
+              if len(lead.x) > 0 and lead.prob > 0.4 and 0 < lead.x[0] < 100.0:
+                # 좌측 전방 차량 (y > 0.5m 로 바로 앞차 제외)
+                if 1.1 < lead.y[0] < 5.0:
+                  if lead.x[0] < lf_dist:
+                    lf_dist = lead.x[0]
+                    lf_lat = lead.y[0]
+                    lf_v = lead.v[0]
+                # 우측 전방 차량
+                elif -5.0 < lead.y[0] < -1.1:
+                  if lead.x[0] < rf_dist:
+                    rf_dist = lead.x[0]
+                    rf_lat = lead.y[0]
+                    rf_v = lead.v[0]
+            except (IndexError, TypeError, AttributeError):
+              continue  # 모델 데이터가 비어있거나 오류가 발생하면 무시하고 다음 객체 검사
+
         # --- 모델 기반 감지 결과 주입 ---
-        if lf_dist < 25.0:
+        if lf_dist < 100.0:
           values.update({
             "LF_DETECT_DISTANCE": lf_dist,
-            "LF_DETECT_LATERAL": lf_lat,
+            "LF_DETECT_LATERAL": lf_lat, # LATERAL은 추후 3으로 고정할지 고민
             "LF_DETECT": 2 if (lf_v - CS.out.vEgo) < -0.1 else 1
           })
-        if rf_dist < 25.0:
+        if rf_dist < 100.0:
           values.update({
             "RF_DETECT_DISTANCE": rf_dist,
-            "RF_DETECT_LATERAL": rf_lat,
+            "RF_DETECT_LATERAL": rf_lat, # LATERAL은 추후 3으로 고정할지 고민
             "RF_DETECT": 2 if (rf_v - CS.out.vEgo) < -0.1 else 1
           })
+        # --- 후측방은 BSD 경고 시 고정 두부 출력. 후측방 레이더 정보를 볼 수 없음.. ---
         if CS.out.leftBlindspot:
           values.update({
             "LR_DETECT_DISTANCE": 12,
