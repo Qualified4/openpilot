@@ -693,20 +693,23 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   rf_v = 0.
   if md is not None:
     for lead in md.leadsV3:
-      # leadsV3의 x, y, v는 배열(리스트)이므로 첫 번째 값([0])을 사용합니다.
-      if len(lead.x) > 0 and lead.prob > 0.4 and 0 < lead.x[0] < 70.0:
-        # 좌측 전방 차량 (y > 0.5m 로 바로 앞차 제외)
-        if 0.5 < lead.y[0] < 5.0:
-          if lead.x[0] < lf_dist:
-            lf_dist = lead.x[0]
-            lf_lat = lead.y[0]
-            lf_v = lead.v[0]
-        # 우측 전방 차량
-        elif -5.0 < lead.y[0] < -0.5:
-          if lead.x[0] < rf_dist:
-            rf_dist = lead.x[0]
-            rf_lat = lead.y[0]
-            rf_v = lead.v[0]
+      try:
+        # leadsV3의 x, y, v는 배열(리스트)이므로 첫 번째 값([0])을 사용합니다.
+        if len(lead.x) > 0 and lead.prob > 0.4 and 0 < lead.x[0] < 70.0:
+          # 좌측 전방 차량 (y > 0.5m 로 바로 앞차 제외)
+          if 0.5 < lead.y[0] < 5.0:
+            if lead.x[0] < lf_dist:
+              lf_dist = lead.x[0]
+              lf_lat = lead.y[0]
+              lf_v = lead.v[0]
+          # 우측 전방 차량
+          elif -5.0 < lead.y[0] < -0.5:
+            if lead.x[0] < rf_dist:
+              rf_dist = lead.x[0]
+              rf_lat = lead.y[0]
+              rf_v = lead.v[0]
+      except (IndexError, TypeError, AttributeError):
+        continue  # 모델 데이터가 비어있거나 오류가 발생하면 무시하고 다음 객체 검사
 
   if CP.flags & HyundaiFlags.CAMERA_SCC.value:
     HDA_CntrlModSta = 0
@@ -965,18 +968,36 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         # --- 모델 기반 감지 결과 주입 ---
         if lf_dist < 25.0:
-          values['LF_DETECT_DISTANCE'] = lf_dist
-          values['LF_DETECT_LATERAL'] = lf_lat
-          values['LF_DETECT'] = 2 if (lf_v - CS.out.vEgo) < -0.1 else 1
+          values.update({
+            "LF_DETECT_DISTANCE": lf_dist,
+            "LF_DETECT_LATERAL": lf_lat,
+            "LF_DETECT": 2 if (lf_v - CS.out.vEgo) < -0.1 else 1
+          })
         if rf_dist < 25.0:
-          values['RF_DETECT_DISTANCE'] = rf_dist
-          values['RF_DETECT_LATERAL'] = rf_lat
-          values['RF_DETECT'] = 2 if (rf_v - CS.out.vEgo) < -0.1 else 1
+          values.update({
+            "RF_DETECT_DISTANCE": rf_dist,
+            "RF_DETECT_LATERAL": rf_lat,
+            "RF_DETECT": 2 if (rf_v - CS.out.vEgo) < -0.1 else 1
+          })
+        if CS.out.leftBlindspot:
+          values.update({
+            "LR_DETECT_DISTANCE": 12,
+            "LR_DETECT_LATERAL": 3,
+            "LR_DETECT": 2
+          })
+        if CS.out.rightBlindspot:
+          values.update({
+            "RR_DETECT_DISTANCE": 12,
+            "RR_DETECT_LATERAL": 3,
+            "RR_DETECT": 2
+          })
 
         # 2024 쏘나타는 차량 인식 두부만 출력 가능해서 순정 값 사용
         if hud_control.leadDistance > 0 and hud_control.leadRadar == 0:
-          values["FF_DISTANCE"] = hud_control.leadDistance
-          values["FF_DETECT"] = 1 if hud_control.leadRelSpeed > -0.1 else 2
+          values.update({
+            "FF_DISTANCE": hud_control.leadDistance,
+            "FF_DETECT": 1 if hud_control.leadRelSpeed > -0.1 else 2
+          })
 
         _make_ccnc_values(
           values, CS, lat_active, frame, hud_control,
