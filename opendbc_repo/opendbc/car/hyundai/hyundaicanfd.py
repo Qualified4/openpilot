@@ -817,17 +817,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         if CS.out.gearShifter == structs.CarState.GearShifter.drive:
           if CS.out.brakeHoldActive:
             values["LANE_HIGHLIGHT"] = 3
-        elif CS.out.gearShifter == structs.CarState.GearShifter.sport or (CS.scc_control is not None and CS.scc_control["DriveMode"] == 1):
-          values.update({
-            "LANE_HIGHLIGHT": 5,
-            "LANE_HIGHLIGHT_DISTANCE": 60
-          })
+          elif CS.scc_control is not None and CS.scc_control["DriveMode"] == 1:
+            values.update({
+              "LANE_HIGHLIGHT": 5,
+              "LANE_HIGHLIGHT_DISTANCE": 60
+            })
         elif CS.out.gearShifter == structs.CarState.GearShifter.reverse:
           values["LANE_HIGHLIGHT"] = 5
         elif CS.out.gearShifter == structs.CarState.GearShifter.neutral:
           values["LANE_HIGHLIGHT"] = 4
         elif CS.out.gearShifter == structs.CarState.GearShifter.park:
-          if CS.out.parkingBrake:
+          if not CS.out.parkingBrake:
             values["LANE_HIGHLIGHT"] = 2
 
         # 차선 위치 갱신
