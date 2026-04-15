@@ -697,13 +697,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         # leadsV3의 x, y, v는 배열(리스트)이므로 첫 번째 값([0])을 사용합니다.
         if len(lead.x) > 0 and lead.prob > 0.4 and 0 < lead.x[0] < 70.0:
           # 좌측 전방 차량 (y > 0.5m 로 바로 앞차 제외)
-          if 0.5 < lead.y[0] < 5.0:
+          if 1.3 < lead.y[0] < 5.0:
             if lead.x[0] < lf_dist:
               lf_dist = lead.x[0]
               lf_lat = lead.y[0]
               lf_v = lead.v[0]
           # 우측 전방 차량
-          elif -5.0 < lead.y[0] < -0.5:
+          elif -5.0 < lead.y[0] < -1.3:
             if lead.x[0] < rf_dist:
               rf_dist = lead.x[0]
               rf_lat = lead.y[0]
