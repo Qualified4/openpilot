@@ -265,9 +265,6 @@ class CarState(CarStateBase):
     cp_cam = can_parsers[Bus.cam]
     cp_alt = can_parsers[Bus.alt] if Bus.alt in can_parsers else None
 
-    if self.cp_cam.sm is not None:
-      self.radar_state = self.cp_cam.sm['radarState']
-
     if self.CP.flags & HyundaiFlags.CANFD:
       return self.update_canfd(can_parsers)
 
