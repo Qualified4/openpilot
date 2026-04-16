@@ -956,56 +956,56 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values = copy.copy(CS.ccnc_0x162)
 
         # --- AI 모델의 좌/우 전방 차량 감지 ---
-        lf_dist = 999.
-        rf_dist = 999.
-        lf_lat = 0.
-        rf_lat = 0.
-        lf_v = 0.
-        rf_v = 0.
-        if md is not None:
-          for lead in md.leadsV3:
-            try:
-              # leadsV3의 x, y, v는 배열(리스트)이므로 첫 번째 값([0])을 사용합니다.
-              if len(lead.x) > 0 and lead.prob > 0.4 and 0 < lead.x[0] < 100.0:
-                # 좌측 전방 차량 (y > 0.5m 로 바로 앞차 제외)
-                if 1.1 < lead.y[0] < 5.0:
-                  if lead.x[0] < lf_dist:
-                    lf_dist = lead.x[0]
-                    lf_lat = lead.y[0]
-                    lf_v = lead.v[0]
-                # 우측 전방 차량
-                elif -5.0 < lead.y[0] < -1.1:
-                  if lead.x[0] < rf_dist:
-                    rf_dist = lead.x[0]
-                    rf_lat = lead.y[0]
-                    rf_v = lead.v[0]
-            except (IndexError, TypeError, AttributeError):
-              continue  # 모델 데이터가 비어있거나 오류가 발생하면 무시하고 다음 객체 검사
+        # lf_dist = 999.
+        # rf_dist = 999.
+        # lf_lat = 0.
+        # rf_lat = 0.
+        # lf_v = 0.
+        # rf_v = 0.
+        # if md is not None:
+        #   for lead in md.leadsV3:
+        #     try:
+        #       # leadsV3의 x, y, v는 배열(리스트)이므로 첫 번째 값([0])을 사용합니다.
+        #       if len(lead.x) > 0 and lead.prob > 0.4 and 0 < lead.x[0] < 100.0:
+        #         # 좌측 전방 차량 (y > 0.5m 로 바로 앞차 제외)
+        #         if 1.1 < lead.y[0] < 5.0:
+        #           if lead.x[0] < lf_dist:
+        #             lf_dist = lead.x[0]
+        #             lf_lat = lead.y[0]
+        #             lf_v = lead.v[0]
+        #         # 우측 전방 차량
+        #         elif -5.0 < lead.y[0] < -1.1:
+        #           if lead.x[0] < rf_dist:
+        #             rf_dist = lead.x[0]
+        #             rf_lat = lead.y[0]
+        #             rf_v = lead.v[0]
+        #     except (IndexError, TypeError, AttributeError):
+        #       continue  # 모델 데이터가 비어있거나 오류가 발생하면 무시하고 다음 객체 검사
 
         # --- 모델 기반 감지 결과 주입 ---
-        if lf_dist < 100.0:
-          values.update({
-            "LF_DETECT_DISTANCE": lf_dist,
-            "LF_DETECT_LATERAL": lf_lat, # LATERAL은 추후 3으로 고정할지 고민
-            "LF_DETECT": 2 if (lf_v - CS.out.vEgo) < -0.1 else 1
-          })
-        if rf_dist < 100.0:
-          values.update({
-            "RF_DETECT_DISTANCE": rf_dist,
-            "RF_DETECT_LATERAL": rf_lat, # LATERAL은 추후 3으로 고정할지 고민
-            "RF_DETECT": 2 if (rf_v - CS.out.vEgo) < -0.1 else 1
-          })
+        # if lf_dist < 100.0:
+        #   values.update({
+        #     "LF_DETECT_DISTANCE": lf_dist,
+        #     "LF_DETECT_LATERAL": lf_lat, # LATERAL은 추후 3으로 고정할지 고민
+        #     "LF_DETECT": 2 if (lf_v - CS.out.vEgo) < -0.1 else 1
+        #   })
+        # if rf_dist < 100.0:
+        #   values.update({
+        #     "RF_DETECT_DISTANCE": rf_dist,
+        #     "RF_DETECT_LATERAL": rf_lat, # LATERAL은 추후 3으로 고정할지 고민
+        #     "RF_DETECT": 2 if (rf_v - CS.out.vEgo) < -0.1 else 1
+        #   })
         # --- 후측방은 BSD 경고 시 고정 두부 출력. 후측방 레이더 정보를 볼 수 없음.. ---
         if CS.out.leftBlindspot:
           values.update({
-            "LR_DETECT_DISTANCE": 12,
-            "LR_DETECT_LATERAL": 3,
+            "LR_DETECT_DISTANCE": 5,
+            "LR_DETECT_LATERAL": 1,
             "LR_DETECT": 2
           })
         if CS.out.rightBlindspot:
           values.update({
-            "RR_DETECT_DISTANCE": 12,
-            "RR_DETECT_LATERAL": 3,
+            "RR_DETECT_DISTANCE": 5,
+            "RR_DETECT_LATERAL": 1,
             "RR_DETECT": 2
           })
 
