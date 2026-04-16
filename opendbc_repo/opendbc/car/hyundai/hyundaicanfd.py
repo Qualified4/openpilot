@@ -957,24 +957,24 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values = copy.copy(CS.ccnc_0x162)
 
         # --- radarState를 이용한 좌/우 전방 차량 감지 ---
-        if False and CS.radar_state is not None:
-          if len(CS.radar_state.leadsLeft) > 0:
-            lead_left = CS.radar_state.leadsLeft[0]
-            if lead_left.status and 0 < lead_left.dRel < 100.0:
-              values.update({
-                "LF_DETECT_DISTANCE": lead_left.dRel,
-                "LF_DETECT_LATERAL": 3, # 1~3, 3이 가장 먼쪽
-                "LF_DETECT": 2 if lead_left.vRel < -0.1 else 1
-              })
+        # if False and CS.radar_state is not None:
+        #   if len(CS.radar_state.leadsLeft) > 0:
+        #     lead_left = CS.radar_state.leadsLeft[0]
+        #     if lead_left.status and 0 < lead_left.dRel < 100.0:
+        #       values.update({
+        #         "LF_DETECT_DISTANCE": lead_left.dRel,
+        #         "LF_DETECT_LATERAL": 3, # 1~3, 3이 가장 먼쪽
+        #         "LF_DETECT": 2 if lead_left.vRel < -0.1 else 1
+        #       })
 
-          if len(CS.radar_state.leadsRight) > 0:
-            lead_right = CS.radar_state.leadsRight[0]
-            if lead_right.status and 0 < lead_right.dRel < 100.0:
-              values.update({
-                "RF_DETECT_DISTANCE": lead_right.dRel,
-                "RF_DETECT_LATERAL": 3, # 1~3, 3이 가장 먼쪽
-                "RF_DETECT": 2 if lead_right.vRel < -0.1 else 1
-              })
+        #   if len(CS.radar_state.leadsRight) > 0:
+        #     lead_right = CS.radar_state.leadsRight[0]
+        #     if lead_right.status and 0 < lead_right.dRel < 100.0:
+        #       values.update({
+        #         "RF_DETECT_DISTANCE": lead_right.dRel,
+        #         "RF_DETECT_LATERAL": 3, # 1~3, 3이 가장 먼쪽
+        #         "RF_DETECT": 2 if lead_right.vRel < -0.1 else 1
+        #       })
 
         # --- 모델 기반 감지 결과 주입 ---
         # --- 후측방은 BSD 경고 시 고정 두부 출력. 후측방 레이더 정보를 볼 수 없음.. ---
