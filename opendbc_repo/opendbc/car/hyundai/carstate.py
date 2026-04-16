@@ -108,9 +108,9 @@ class CarState(CarStateBase):
     self.manual_speed_limit_assist = None
     self.accelerator = None
     self.blinkers = None
+    self.drive_mode = None
     self.doors_seatbelts = None
     self.cruise_buttons_alt2 = None
-    self.radar_state = None
 
     # On some cars, CLU15->CF_Clu_VehicleSpeed can oscillate faster than the dash updates. Sample at 5 Hz
     self.cluster_speed = 0
@@ -251,6 +251,7 @@ class CarState(CarStateBase):
           if self.gear_msg_canfd == "ACCELERATOR":
             add_and_cache(self.cp, "ACCELERATOR", "accelerator", ignore_counter = True)
           add_and_cache(self.cp, "BLINKERS", "blinkers")
+          add_and_cache(self.cp, "DRIVE_MODE", "drive_mode")
           add_and_cache(self.cp, "DOORS_SEATBELTS", "doors_seatbelts")
         elif self.controls_ready_count == 126:
           add_and_cache(self.cp, "CRUISE_BUTTONS_ALT2", "cruise_buttons_alt2", ignore_counter = True)
@@ -493,7 +494,6 @@ class CarState(CarStateBase):
 
     ret.brakePressed = cp.vl["TCS"]["DriverBraking"] == 1
     #print(cp.vl["TCS"], cp.vl_all["TCS"]["DriverBraking"][-10:])
-    ret.parkingBrake = cp.vl["TCS"]["ESC_PrkBrkActvSta"] == 1
 
     if self.doors_seatbelts is not None:
       ret.doorOpen = self.doors_seatbelts["DRIVER_DOOR"] == 1
@@ -586,7 +586,6 @@ class CarState(CarStateBase):
       ret.cruiseState.standstill = cp_cruise_info.vl["SCC_CONTROL"]["InfoDisplay"] >= 4
       ret.cruiseState.speed = cp_cruise_info.vl["SCC_CONTROL"]["VSetDis"] * speed_factor
       ret.brakeHoldActive = cp.vl["ESP_STATUS"]["AUTO_HOLD"] == 1 and cp_cruise_info.vl["SCC_CONTROL"]["ACCMode"] not in (1, 2)
-      ret.driveMode = cp_cruise_info.vl["SCC_CONTROL"]["DriveMode"]
 
     speed_limit_cam = False
     corner = False
