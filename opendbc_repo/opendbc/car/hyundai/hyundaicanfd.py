@@ -957,7 +957,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values = copy.copy(CS.ccnc_0x162)
 
         # --- radarState를 이용한 좌/우 전방 차량 감지 ---
-        if CS.radar_state is not None:
+        if False and CS.radar_state is not None:
           if len(CS.radar_state.leadsLeft) > 0:
             lead_left = CS.radar_state.leadsLeft[0]
             if lead_left.status and 0 < lead_left.dRel < 100.0:
