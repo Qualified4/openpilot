@@ -495,8 +495,7 @@ class CarState(CarStateBase):
       ret.gasPressed = bool(cp.vl[self.accelerator_msg_canfd]["ACCELERATOR_PEDAL_PRESSED"]) if not self.use_accelerator else False if self.accelerator is None else bool(self.accelerator["ACCELERATOR_PEDAL_PRESSED"])
 
     ret.brakePressed = cp.vl["TCS"]["DriverBraking"] == 1
-    #print(cp.vl["TCS"], cp.vl_all["TCS"]["DriverBraking"][-10:])
-    ret.parkingBrake = cp.vl["TCS"]["ESC_PrkBrkActvSta"] == 1
+    #print(cp.vl["TCS"], cp.vl_all["TCS"]["DriverBraking"][-10:]
 
 
     if self.doors_seatbelts is not None:
