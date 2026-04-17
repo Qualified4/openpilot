@@ -1024,20 +1024,20 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             "LR_DETECT_LATERAL": 3,
             "LR_DETECT": 2
           })
-        elif create_ccnc_messages.lr_distance.value() > 0:
+        elif create_ccnc_messages.lr_distance.value() < 30:
           values.update({
-            "LR_DETECT_DISTANCE": create_ccnc_messages.lr_distance.apply(0),
+            "LR_DETECT_DISTANCE": create_ccnc_messages.lr_distance.apply(30),
             "LR_DETECT_LATERAL": 3,
             "LR_DETECT": 2
           })
 
         if CS.out.rightBlindspot:
           values.update({
-            "RR_DETECT_DISTANCE": create_ccnc_messages.rr_distance.apply(8),
+            "RR_DETECT_DISTANCE": create_ccnc_messages.rr_distance.apply(30),
             "RR_DETECT_LATERAL": 3,
             "RR_DETECT": 2
           })
-        elif create_ccnc_messages.rr_distance.value() > 0:
+        elif create_ccnc_messages.rr_distance.value() < 30:
           create_ccnc_messages.rr_distance.apply(0)
 
         # 2024 쏘나타는 차량 인식 두부만 출력 가능
@@ -1120,5 +1120,5 @@ create_ccnc_messages.r_lane_f = NoiseFilter(5, 0.2, 15)
 create_ccnc_messages.ff_distance = NoiseFilter(5, 0.2, 0)
 create_ccnc_messages.lf_distance = NoiseFilter(5, 0.2, 0)
 create_ccnc_messages.rf_distance = NoiseFilter(5, 0.2, 0)
-create_ccnc_messages.lr_distance = NoiseFilter(5, 0.2, 0)
-create_ccnc_messages.rr_distance = NoiseFilter(5, 0.2, 0)
+create_ccnc_messages.lr_distance = NoiseFilter(5, 0.2, 30)
+create_ccnc_messages.rr_distance = NoiseFilter(5, 0.2, 30)
