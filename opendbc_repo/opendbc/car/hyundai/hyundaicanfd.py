@@ -996,7 +996,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 v_lead = getattr(l, "vLeadK", 0.0)
 
                 # 레이더와 비전이 일치하며, 정차 중이거나 같은 방향으로 주행 중인 차량만 통과 (노이즈 고려 > -0.5)
-                if radar and model_prob > 0.02 and v_lead > -0.5:
+                if radar and model_prob > 0.001 and v_lead > -0.5:
                   values.update({
                     "LF_DETECT_DISTANCE": create_ccnc_messages.lf_distance.apply(l.dRel),
                     "LF_DETECT_LATERAL": 3, # 1~3, 3이 가장 먼쪽
@@ -1012,7 +1012,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 v_lead = getattr(l, "vLeadK", 0.0)
 
                 # 레이더와 비전이 일치하며, 정차 중이거나 같은 방향으로 주행 중인 차량만 통과 (노이즈 고려 > -0.5)
-                if radar and model_prob > 0.02 and v_lead > -0.5:
+                if radar and model_prob > 0.001 and v_lead > -0.5:
                   values.update({
                     "LF_DETECT_DISTANCE": create_ccnc_messages.lf_distance.apply(l.dRel),
                     "RF_DETECT_LATERAL": 3, # 1~3, 3이 가장 먼쪽
