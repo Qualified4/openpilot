@@ -858,11 +858,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LANE_HIGHLIGHT"] = 2
 
         try:
-          drive_mode = CS.scc_control["DriveMode"] if CS.scc_control is not None else 0
+          # Carrot의 드라이브 모드 파라미터를 가져옵니다 (1: Eco, 2: Safe, 3: Normal, 4: High Speed)
+          drive_mode = Params().get_int("MyDrivingMode")
         except Exception:
-          drive_mode = 0
+          drive_mode = 3  # 기본값 (Normal)
 
-        if drive_mode != 0:
+        # High Speed(4) 모드일 때 차선 색상 빨강
+        if drive_mode == 4:
           values.update({
             "LANE_HIGHLIGHT": 5,
             "LANE_HIGHLIGHT_DISTANCE": 60
