@@ -1112,11 +1112,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 create_ccnc_messages.draw_center = False
 create_ccnc_messages.prev_l_target = 15.0
 # 차선 노이즈 필터
-create_ccnc_messages.l_lane_f = NoiseFilter(3, 0.2, 15)
-create_ccnc_messages.r_lane_f = NoiseFilter(3, 0.2, 15)
+create_ccnc_messages.l_lane_f = NoiseFilter(5, 0.2, 15)
+create_ccnc_messages.r_lane_f = NoiseFilter(5, 0.2, 15)
 # 차량 거리 필터
-create_ccnc_messages.ff_distance = NoiseFilter(3, 0.2, 0)
-create_ccnc_messages.lf_distance = NoiseFilter(3, 0.2, 0)
-create_ccnc_messages.rf_distance = NoiseFilter(3, 0.2, 0)
-create_ccnc_messages.lr_distance = NoiseFilter(3, 0.2, 0)
-create_ccnc_messages.rr_distance = NoiseFilter(3, 0.2, 0)
+create_ccnc_messages.ff_distance = NoiseFilter(5, 0.2, 0)
+create_ccnc_messages.lf_distance = NoiseFilter(5, 0.2, 0)
+create_ccnc_messages.rf_distance = NoiseFilter(5, 0.2, 0)
+create_ccnc_messages.lr_distance = NoiseFilter(5, 0.2, 0)
+create_ccnc_messages.rr_distance = NoiseFilter(5, 0.2, 0)
