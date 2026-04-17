@@ -183,6 +183,7 @@ class HudRenderer(Widget):
     self._torque_bar = TorqueBar()
 
     self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/carrot_wheel.png', 50, 50)
+    self._txt_wheel_cap: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_cap.png', 50, 50)
     self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_critical.png', 50, 50)
     # self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/wheel.png', 50, 50)
     # self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/wheel_critical.png', 50, 50)
@@ -293,6 +294,7 @@ class HudRenderer(Widget):
       wheel_color = rl.Color(160, 160, 160, int(self._wheel_alpha_filter.x))
 
     rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, wheel_color)
+    rl.draw_texture_pro(self._txt_wheel_cap, src_rect, dest_rect, origin, rotation, rl.WHITE)
 
     if self._show_wheel_critical:
       EXCLAMATION_POINT_SPACING = 10

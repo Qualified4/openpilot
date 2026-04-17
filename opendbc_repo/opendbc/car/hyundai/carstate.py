@@ -480,7 +480,7 @@ class CarState(CarStateBase):
     cp_alt = can_parsers[Bus.alt] if Bus.alt in can_parsers else None
 
     ret = structs.CarState()
-    
+
     self.is_metric = cp.vl["CRUISE_BUTTONS_ALT"]["DISTANCE_UNIT"] != 1
     speed_factor = CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS
 
@@ -586,7 +586,6 @@ class CarState(CarStateBase):
       ret.cruiseState.standstill = cp_cruise_info.vl["SCC_CONTROL"]["InfoDisplay"] >= 4
       ret.cruiseState.speed = cp_cruise_info.vl["SCC_CONTROL"]["VSetDis"] * speed_factor
       ret.brakeHoldActive = cp.vl["ESP_STATUS"]["AUTO_HOLD"] == 1 and cp_cruise_info.vl["SCC_CONTROL"]["ACCMode"] not in (1, 2)
-      ret.driveMode = cp_cruise_info.vl["SCC_CONTROL"]["DriveMode"]
 
     speed_limit_cam = False
     corner = False
