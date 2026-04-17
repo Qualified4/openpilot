@@ -857,11 +857,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if not CS.out.parkingBrake:
             values["LANE_HIGHLIGHT"] = 2
 
-        if CS.out.driveMode != 0:
-          values.update({
-            "LANE_HIGHLIGHT": 5,
-            "LANE_HIGHLIGHT_DISTANCE": 60
-          })
+        # if CS.out.driveMode != 0:
+         # values.update({
+         #   "LANE_HIGHLIGHT": 5,
+        #    "LANE_HIGHLIGHT_DISTANCE": 60
+     #     })
 
         # 차선 위치 갱신: 횡컨 때만 적용
         # if lat_enabled and CS.ccnc_0x1b5 is not None:
