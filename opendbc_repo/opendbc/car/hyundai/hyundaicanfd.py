@@ -927,7 +927,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           # 노이즈 제거 필터 적용
           leftlane = create_ccnc_messages.l_lane_f.apply(l_target)
-          rightlane = create_ccnc_messages.l_lane_f.apply(r_target)
+          rightlane = create_ccnc_messages.r_lane_f.apply(r_target)
 
           # 최종 출력 및 정규화
           total = leftlane + rightlane
