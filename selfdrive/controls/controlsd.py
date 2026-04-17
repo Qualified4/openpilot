@@ -90,7 +90,7 @@ class Controls:
     CS = self.sm['carState']
 
     # CarState에 radarState 연결
-    CS.radar_state = self.sm['radarState']
+    # CS.radar_state = self.sm['radarState']
 
     # Update VehicleModel
     lp = self.sm['liveParameters']
