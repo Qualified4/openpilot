@@ -214,8 +214,9 @@ class TorqueBar(Widget):
     mid_r = torque_line_radius + torque_line_height / 2
 
     cx = rect.x + rect.width / 2 + 8  # offset 8px to right of camera feed
-    cy = rect.y + rect.height + torque_line_radius - torque_line_offset
-
+    # cy = rect.y + rect.height + torque_line_radius - torque_line_offset
+    cy = rect.y + torque_line_radius + (torque_line_offset * 2)
+    
     # draw bg torque indicator line
     bg_pts = arc_bar_pts(cx, cy, mid_r, torque_line_height, torque_start_angle, torque_end_angle)
     draw_polygon(rect, bg_pts, color=torque_line_bg_color)
