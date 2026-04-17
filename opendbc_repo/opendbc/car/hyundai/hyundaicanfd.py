@@ -15,7 +15,7 @@ TurnDirection = log.Desire
 
 class NoiseFilter:
     def __init__(self, median_buffer_size: int, lowpass_alpha: float, lowpass_default: float):
-        self.lowpass_alpha = lowpass_alpha
+        self.lowpass_alpha = lowpass_alpha # 낮을 수록 부드러움 0 < alpha <= 1
         self.lowpass_default = lowpass_default
 
         # 차선 LPF 상태
@@ -847,8 +847,25 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         # 기어 상태에 따른 차로 색 변경
         if CS.out.gearShifter == structs.CarState.GearShifter.drive:
+          # 속도에 비례해 하이라이트 길이 동적으로 조절
+          v_kph = CS.out.vEgo * 3.6
+          values["LANE_HIGHLIGHT_DISTANCE"] = 10 + int(min(100, v_kph))
+
+          try:
+            # Carrot의 드라이브 모드 파라미터를 가져옵니다 (1: Eco, 2: Safe, 3: Normal, 4: High Speed)
+            drive_mode = Params().get_int("MyDrivingMode")
+          except Exception:
+            drive_mode = 3  # 기본값 (Normal)
+
           if CS.out.brakeHoldActive:
+            # 크루즈 중 오토 홀드 시 파란색
             values["LANE_HIGHLIGHT"] = 3
+          elif CS.out.aEgo < -4:
+            # 급제동 시 노란색
+            values["LANE_HIGHLIGHT"] = 4
+          elif drive_mode == 4 or CS.out.aEgo > 2.7:
+            # 고속 주행 또는 급가속 시 빨간색
+            values["LANE_HIGHLIGHT"] = 5
         elif CS.out.gearShifter == structs.CarState.GearShifter.reverse:
           values["LANE_HIGHLIGHT"] = 5
         elif CS.out.gearShifter == structs.CarState.GearShifter.neutral:
@@ -856,20 +873,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         elif CS.out.gearShifter == structs.CarState.GearShifter.park:
           if not CS.out.parkingBrake:
             values["LANE_HIGHLIGHT"] = 2
-
-        try:
-          # Carrot의 드라이브 모드 파라미터를 가져옵니다 (1: Eco, 2: Safe, 3: Normal, 4: High Speed)
-          drive_mode = Params().get_int("MyDrivingMode")
-        except Exception:
-          drive_mode = 3  # 기본값 (Normal)
-
-        # High Speed(4) 모드일 때 차선 색상 빨강
-        if drive_mode == 4:
-          values.update({
-            "LANE_HIGHLIGHT": 5,
-            "LANE_HIGHLIGHT_DISTANCE": 60
-          })
-
         # 차선 위치 갱신: 횡컨 때만 적용
         # if lat_enabled and CS.ccnc_0x1b5 is not None:
         # 차선 위치 갱신: 항시 적용
@@ -1117,8 +1120,8 @@ create_ccnc_messages.prev_l_target = 15.0
 create_ccnc_messages.l_lane_f = NoiseFilter(5, 0.2, 15)
 create_ccnc_messages.r_lane_f = NoiseFilter(5, 0.2, 15)
 # 차량 거리 필터
-create_ccnc_messages.ff_distance = NoiseFilter(5, 0.2, 0)
-create_ccnc_messages.lf_distance = NoiseFilter(5, 0.2, 0)
-create_ccnc_messages.rf_distance = NoiseFilter(5, 0.2, 0)
-create_ccnc_messages.lr_distance = NoiseFilter(5, 0.2, 30)
-create_ccnc_messages.rr_distance = NoiseFilter(5, 0.2, 30)
+create_ccnc_messages.ff_distance = NoiseFilter(5, 0.1, 0)
+create_ccnc_messages.lf_distance = NoiseFilter(5, 0.1, 0)
+create_ccnc_messages.rf_distance = NoiseFilter(5, 0.1, 0)
+create_ccnc_messages.lr_distance = NoiseFilter(5, 0.1, 30)
+create_ccnc_messages.rr_distance = NoiseFilter(5, 0.1, 30)
