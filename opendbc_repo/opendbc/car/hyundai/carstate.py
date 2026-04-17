@@ -480,8 +480,7 @@ class CarState(CarStateBase):
     cp_alt = can_parsers[Bus.alt] if Bus.alt in can_parsers else None
 
     ret = structs.CarState()
-    if self.cp_cam.sm is not None:
-      self.radar_state = self.cp_cam.sm['radarState']
+    
     self.is_metric = cp.vl["CRUISE_BUTTONS_ALT"]["DISTANCE_UNIT"] != 1
     speed_factor = CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS
 
