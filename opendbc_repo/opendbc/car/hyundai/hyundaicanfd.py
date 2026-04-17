@@ -980,13 +980,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         # --- 후측방은 BSD 경고 시 고정 두부 출력. 후측방 레이더 정보를 볼 수 없음.. ---
         if CS.out.leftBlindspot:
           values.update({
-            "LR_DETECT_DISTANCE": 5,
+            "LR_DETECT_DISTANCE": 8,
             "LR_DETECT_LATERAL": 3,
             "LR_DETECT": 2
           })
         if CS.out.rightBlindspot:
           values.update({
-            "RR_DETECT_DISTANCE": 5,
+            "RR_DETECT_DISTANCE": 8,
             "RR_DETECT_LATERAL": 3,
             "RR_DETECT": 2
           })
