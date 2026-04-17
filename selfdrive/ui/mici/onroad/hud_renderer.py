@@ -291,7 +291,7 @@ class HudRenderer(Widget):
     if ui_state.lat_active:
       wheel_color = rl.Color(0, 255, 0, int(self._wheel_alpha_filter.x))
     else:
-      wheel_color = rl.Color(160, 160, 160, int(self._wheel_alpha_filter.x))
+      wheel_color = rl.Color(230, 230, 230, int(self._wheel_alpha_filter.x))
 
     rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, wheel_color)
     rl.draw_texture_pro(self._txt_wheel_cap, src_rect, dest_rect, origin, rotation, rl.WHITE)
