@@ -185,7 +185,6 @@ class HudRenderer(Widget):
 
     self._turn_intent = TurnIntent()
     self._torque_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
-    self._engaged_blend_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
 
     # 휠 당근 휠로 변경
     self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/carrot_wheel.png', 50, 50) # 당근 휠
@@ -248,8 +247,6 @@ class HudRenderer(Widget):
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
 
-    self._engaged_blend_filter.update(1.0 if ui_state.status == UIStatus.ENGAGED else 0.0)
-
     # 토크 상태 계산 (휠 아이콘 크기 조절용)
     if controls_state.lateralControlState.which() == 'angleState':
       live_parameters = sm['liveParameters']
@@ -306,7 +303,7 @@ class HudRenderer(Widget):
     rotation = -ui_state.sm['carState'].steeringAngleDeg
 
     torque_val = abs(self._torque_filter.x)
-    scale = float(np.interp(torque_val, [0.6, 1.0], [1.0, 1.5]))
+    scale = float(np.interp(torque_val, [0.5, 1.0], [1.0, 1.5]))
 
     scaled_width = wheel_txt.width * scale
     scaled_height = wheel_txt.height * scale
