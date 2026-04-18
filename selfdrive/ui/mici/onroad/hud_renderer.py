@@ -182,10 +182,12 @@ class HudRenderer(Widget):
     self._turn_intent = TurnIntent()
     self._torque_bar = TorqueBar()
 
-    self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/carrot_wheel.png', 50, 50)
-    self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_critical.png', 50, 50)
-    self._txt_wheel_lane: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_lane.png', 100, 50)
-    self._txt_wheel_cap: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_cap.png', 50, 50)
+    # 휠 당근 휠로 변경
+    self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/carrot_wheel.png', 50, 50) # 당근 휠
+    self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_critical.png', 50, 50) # 당근 휠 위험
+    self._txt_wheel_lane: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_lane.png', 100, 50) # 당근 레인모드
+    self._txt_wheel_cap: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_cap.png', 50, 50) # 당근 휠 중앙 당근맨
+
     self._txt_exclamation_point: rl.Texture = gui_app.texture('icons_mici/exclamation_point.png', 44, 44)
 
     # Bottom-left speed panel background
