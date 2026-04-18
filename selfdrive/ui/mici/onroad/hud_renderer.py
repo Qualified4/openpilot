@@ -264,7 +264,7 @@ class HudRenderer(Widget):
     # 시간, 디버그는 왼쪽 끝 좌표
     info_pos_x = int(rect.x + margin_x)
     # 핸들 아이콘 오른쪽 끝으로 보내기
-    wheel_pos_x = int(rect.x + rect.width - margin_x - wheel_txt.width / 2)
+    wheel_pos_x = int(rect.x + rect.width - margin_x - wheel_txt.width / 2 - 2)
 
     pos_y = int(rect.y + margin_y + wheel_txt.height / 2 + self._wheel_y_filter.x)
 
@@ -301,7 +301,7 @@ class HudRenderer(Widget):
       exclamation_pos_y = pos_y - self._txt_exclamation_point.height / 2
       rl.draw_texture_ex(self._txt_exclamation_point, rl.Vector2(exclamation_pos_x, exclamation_pos_y), 0.0, 1.0, rl.WHITE)
     elif True or self._debug_speed_panel or bool(ui_state.sm['controlsState'].activeLaneLine):
-      LANE_TOP_OFFSET = 5
+      LANE_TOP_OFFSET = 3
       lane_pos_x = pos_x - self._txt_wheel_lane.width / 2
       lane_pos_y = pos_y - self._txt_wheel_lane.height / 2 - LANE_TOP_OFFSET
       rl.draw_texture_ex(self._txt_wheel_lane, rl.Vector2(lane_pos_x, lane_pos_y), 0.0, 1.0, wheel_color)
