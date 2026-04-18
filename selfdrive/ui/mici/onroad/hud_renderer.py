@@ -1,10 +1,11 @@
 import json
 import time
+import numpy as np
 import pyray as rl
 from dataclasses import dataclass
 from typing import Optional
 from openpilot.common.constants import CV
-from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
+from openpilot.selfdrive.ui.mici.onroad import blend_colors
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
@@ -15,6 +16,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from cereal import log
 from openpilot.common.params import Params
 from datetime import datetime
+from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
 
 EventName = log.OnroadEvent.EventName
 
@@ -24,6 +26,8 @@ KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
 
 SET_SPEED_PERSISTENCE = 2.5  # seconds
+
+DEFAULT_MAX_LAT_ACCEL = 3.0  # m/s^2
 
 @dataclass(frozen=True)
 class SetSpeedOverrideState:
@@ -180,7 +184,8 @@ class HudRenderer(Widget):
     self._font_display: rl.Font = gui_app.font(FontWeight.DISPLAY)
 
     self._turn_intent = TurnIntent()
-    self._torque_bar = TorqueBar()
+    self._torque_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
+    self._engaged_blend_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
 
     # 휠 당근 휠로 변경
     self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/carrot_wheel.png', 50, 50) # 당근 휠
@@ -243,10 +248,30 @@ class HudRenderer(Widget):
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
 
+    self._engaged_blend_filter.update(1.0 if ui_state.status == UIStatus.ENGAGED else 0.0)
+
+    # 토크 상태 계산 (휠 아이콘 크기 조절용)
+    if controls_state.lateralControlState.which() == 'angleState':
+      live_parameters = sm['liveParameters']
+      car_control = sm['carControl']
+
+      actual_lateral_accel = controls_state.curvature * car_state.vEgo ** 2
+      desired_lateral_accel = controls_state.desiredCurvature * car_state.vEgo ** 2
+      accel_diff = (desired_lateral_accel - actual_lateral_accel)
+
+      roll_compensation = live_parameters.roll * ACCELERATION_DUE_TO_GRAVITY * np.interp(car_state.vEgo, [5, 15], [0.0, 1.0])
+      lateral_acceleration = actual_lateral_accel - roll_compensation
+      max_lateral_acceleration = ui_state.CP.maxLateralAccel if ui_state.CP else DEFAULT_MAX_LAT_ACCEL
+
+      if car_control.latActive:
+        self._torque_filter.update(float(np.clip((lateral_acceleration + accel_diff) / max_lateral_acceleration, -1.0, 1.0)))
+      else:
+        self._torque_filter.update(0.0)
+    else:
+      self._torque_filter.update(float(-sm['carOutput'].actuatorsOutput.torque))
+
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
-
-    self._torque_bar.render(rect)
 
     # bottom-left panel (speed_bg)
     self._draw_set_speed(rect)
@@ -265,32 +290,44 @@ class HudRenderer(Widget):
     margin_y = 18
     # 시간, 디버그는 왼쪽 끝 좌표
     info_pos_x = int(rect.x + margin_x)
-    # 핸들 아이콘 오른쪽 끝으로 보내기
+    # 핸들 아이콘 오른쪽 끝으로 보내기. 마지막 -2는 레인모드 아이콘 공간때문에 살짝 더 뺌. 전체 마진을 빼기는 싫어서 마진 영역까지 그리도록
     wheel_pos_x = int(rect.x + rect.width - margin_x - wheel_txt.width / 2 - 2)
+    # 온도, SR, LD 정보 상단 출력 좌표
+    extra_info_pos_x = int(rect.x + rect.width - margin_x - wheel_txt.width * 2)
 
     pos_y = int(rect.y + margin_y + wheel_txt.height / 2 + self._wheel_y_filter.x)
 
     self._draw_steering_wheel_icon(wheel_txt, wheel_pos_x, pos_y)
     self._draw_wheel_side_info(wheel_txt, info_pos_x, pos_y)
+    self._draw_infos(extra_info_pos_x)
 
 
   def _draw_steering_wheel_icon(self, wheel_txt, pos_x: int, pos_y: int) -> None:
     rotation = -ui_state.sm['carState'].steeringAngleDeg
 
-    turn_intent_margin = 25
+    torque_val = abs(self._torque_filter.x)
+    scale = float(np.interp(torque_val, [0.6, 1.0], [1.0, 1.5]))
+
+    scaled_width = wheel_txt.width * scale
+    scaled_height = wheel_txt.height * scale
+
+    turn_intent_margin = 25 * scale
     self._turn_intent.render(rl.Rectangle(
-      pos_x - wheel_txt.width / 2 - turn_intent_margin,
-      pos_y - wheel_txt.height / 2 - turn_intent_margin,
-      wheel_txt.width + turn_intent_margin * 2,
-      wheel_txt.height + turn_intent_margin * 2,
+      pos_x - scaled_width / 2 - turn_intent_margin,
+      pos_y - scaled_height / 2 - turn_intent_margin,
+      scaled_width + turn_intent_margin * 2,
+      scaled_height + turn_intent_margin * 2,
     ))
 
     src_rect = rl.Rectangle(0, 0, wheel_txt.width, wheel_txt.height)
-    dest_rect = rl.Rectangle(pos_x, pos_y, wheel_txt.width, wheel_txt.height)
-    origin = (wheel_txt.width / 2, wheel_txt.height / 2)
+    dest_rect = rl.Rectangle(pos_x, pos_y, scaled_width, scaled_height)
+    origin = (scaled_width / 2, scaled_height / 2)
 
     if ui_state.lat_active:
-      wheel_color = rl.Color(0, 255, 0, int(self._wheel_alpha_filter.x))
+      green_color = rl.Color(0, 255, 0, int(self._wheel_alpha_filter.x))
+      orange_color = rl.Color(255, 115, 0, int(self._wheel_alpha_filter.x))
+      blend_factor = float(np.clip((torque_val - 0.75) * 4.0, 0.0, 1.0))
+      wheel_color = blend_colors(green_color, orange_color, blend_factor)
     else:
       wheel_color = rl.Color(230, 230, 230, int(self._wheel_alpha_filter.x))
 
@@ -299,16 +336,16 @@ class HudRenderer(Widget):
     rl.draw_texture_pro(self._txt_wheel_cap, src_rect, dest_rect, origin, rotation, rl.WHITE)
 
     if self._show_wheel_critical:
-      EXCLAMATION_POINT_SPACING = 10
-      exclamation_pos_x = pos_x - self._txt_exclamation_point.width / 2 + wheel_txt.width / 2 + EXCLAMATION_POINT_SPACING
-      exclamation_pos_y = pos_y - self._txt_exclamation_point.height / 2
-      rl.draw_texture_ex(self._txt_exclamation_point, rl.Vector2(exclamation_pos_x, exclamation_pos_y), 0.0, 1.0, rl.WHITE)
+      EXCLAMATION_POINT_SPACING = 10 * scale
+      exclamation_pos_x = pos_x - (self._txt_exclamation_point.width * scale) / 2 + scaled_width / 2 + EXCLAMATION_POINT_SPACING
+      exclamation_pos_y = pos_y - (self._txt_exclamation_point.height * scale) / 2
+      rl.draw_texture_ex(self._txt_exclamation_point, rl.Vector2(exclamation_pos_x, exclamation_pos_y), 0.0, scale, rl.WHITE)
     # 속도패널 디버깅 모드거나 레인모드일 때 차선 이미지 추가
     elif self._debug_speed_panel or bool(ui_state.sm['controlsState'].activeLaneLine):
-      LANE_TOP_OFFSET = 3
-      lane_pos_x = pos_x - self._txt_wheel_lane.width / 2
-      lane_pos_y = pos_y - self._txt_wheel_lane.height / 2 - LANE_TOP_OFFSET
-      rl.draw_texture_ex(self._txt_wheel_lane, rl.Vector2(lane_pos_x, lane_pos_y), 0.0, 1.0, wheel_color)
+      LANE_TOP_OFFSET = 3 * scale
+      lane_pos_x = pos_x - (self._txt_wheel_lane.width * scale) / 2
+      lane_pos_y = pos_y - (self._txt_wheel_lane.height * scale) / 2 - LANE_TOP_OFFSET
+      rl.draw_texture_ex(self._txt_wheel_lane, rl.Vector2(lane_pos_x, lane_pos_y), 0.0, scale, wheel_color)
 
 
   def _get_cpu_temp_text(self) -> str:
@@ -455,6 +492,26 @@ class HudRenderer(Widget):
     if road_name:
       draw_text_ui_style(road_name, info_x, road_y, side_font, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
 
+  def _draw_infos(self, pos_x: int):
+    FONT_SIZE = 12
+
+    cpu_text = self._get_cpu_temp_text()
+
+    try:
+      steer_ratio = float(ui_state.sm['liveParameters'].steerRatio)
+      sr_text = f"{steer_ratio:.1f}"
+    except Exception:
+      sr_text = "--.-"
+
+    try:
+      live_delay = float(ui_state.sm["liveDelay"].lateralDelay)
+      ld_text = f"{live_delay:.2f}"
+    except Exception:
+      ld_text = "-.--"
+
+    info_text = f"{cpu_text}|{sr_text}|{ld_text}"
+
+    draw_text_ui_style(info_text, pos_x, 0, FONT_SIZE, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, align="right_top", y_offset=0.0)
 
   def _get_gear_text(self) -> str:
     sm = ui_state.sm
@@ -817,4 +874,3 @@ class HudRenderer(Widget):
     draw_text_ui_style(remain, text_x, text_y, remain_font, rl.Color(255, 255, 255, 235), font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
 
     return True
-
