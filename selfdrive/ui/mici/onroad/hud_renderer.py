@@ -300,7 +300,7 @@ class HudRenderer(Widget):
       exclamation_pos_x = pos_x - self._txt_exclamation_point.width / 2 + wheel_txt.width / 2 + EXCLAMATION_POINT_SPACING
       exclamation_pos_y = pos_y - self._txt_exclamation_point.height / 2
       rl.draw_texture_ex(self._txt_exclamation_point, rl.Vector2(exclamation_pos_x, exclamation_pos_y), 0.0, 1.0, rl.WHITE)
-    elif True or self._debug_speed_panel or bool(ui_state.sm['controlsState'].activeLaneLine):
+    elif self._debug_speed_panel or bool(ui_state.sm['controlsState'].activeLaneLine):
       LANE_TOP_OFFSET = 3
       lane_pos_x = pos_x - self._txt_wheel_lane.width / 2
       lane_pos_y = pos_y - self._txt_wheel_lane.height / 2 - LANE_TOP_OFFSET
