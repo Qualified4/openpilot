@@ -185,7 +185,6 @@ class HudRenderer(Widget):
     self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/carrot_wheel.png', 50, 50)
     self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_critical.png', 50, 50)
     self._txt_wheel_lane: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_lane.png', 100, 50)
-    self._txt_wheel_lane_critical: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_lane_critical.png', 100, 50)
     self._txt_wheel_cap: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_cap.png', 50, 50)
     self._txt_exclamation_point: rl.Texture = gui_app.texture('icons_mici/exclamation_point.png', 44, 44)
 
@@ -276,8 +275,6 @@ class HudRenderer(Widget):
   def _draw_steering_wheel_icon(self, wheel_txt, pos_x: int, pos_y: int) -> None:
     rotation = -ui_state.sm['carState'].steeringAngleDeg
 
-    active_lane_line = self._debug_speed_panel or bool(ui_state.sm['controlsState'].activeLaneLine)
-
     turn_intent_margin = 25
     self._turn_intent.render(rl.Rectangle(
       pos_x - wheel_txt.width / 2 - turn_intent_margin,
@@ -295,12 +292,6 @@ class HudRenderer(Widget):
     else:
       wheel_color = rl.Color(230, 230, 230, int(self._wheel_alpha_filter.x))
 
-    if active_lane_line:
-      LANE_TOP_OFFSET = 5
-      txt_lane_mode = self._txt_wheel_lane_critical if self._show_wheel_critical else self._txt_wheel_lane
-      lane_pos_x = pos_x - txt_lane_mode.width / 2
-      lane_pos_y = pos_y - txt_lane_mode.height / 2 - LANE_TOP_OFFSET
-      rl.draw_texture_ex(txt_lane_mode, rl.Vector2(lane_pos_x, lane_pos_y), 0.0, 1.0, wheel_color)
     rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, wheel_color)
     rl.draw_texture_pro(self._txt_wheel_cap, src_rect, dest_rect, origin, rotation, rl.WHITE)
 
@@ -309,6 +300,11 @@ class HudRenderer(Widget):
       exclamation_pos_x = pos_x - self._txt_exclamation_point.width / 2 + wheel_txt.width / 2 + EXCLAMATION_POINT_SPACING
       exclamation_pos_y = pos_y - self._txt_exclamation_point.height / 2
       rl.draw_texture_ex(self._txt_exclamation_point, rl.Vector2(exclamation_pos_x, exclamation_pos_y), 0.0, 1.0, rl.WHITE)
+    elif self._debug_speed_panel or bool(ui_state.sm['controlsState'].activeLaneLine):
+      LANE_TOP_OFFSET = 5
+      lane_pos_x = pos_x - self._txt_wheel_lane.width / 2
+      lane_pos_y = pos_y - self._txt_wheel_lane.height / 2 - LANE_TOP_OFFSET
+      rl.draw_texture_ex(self._txt_wheel_lane, rl.Vector2(lane_pos_x, lane_pos_y), 0.0, 1.0, wheel_color)
 
 
   def _get_cpu_temp_text(self) -> str:
