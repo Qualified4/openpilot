@@ -298,7 +298,7 @@ class HudRenderer(Widget):
     if active_lane_line:
       LANE_TOP_OFFSET = 5
       txt_lane_mode = self._txt_wheel_lane_critical if self._show_wheel_critical else self._txt_wheel_lane
-      lane_pos_x = pos_x - txt_lane_mode.width / 2 - wheel_txt.width / 2
+      lane_pos_x = pos_x - txt_lane_mode.width / 2
       lane_pos_y = pos_y - txt_lane_mode.height / 2 - LANE_TOP_OFFSET
       rl.draw_texture_ex(txt_lane_mode, rl.Vector2(lane_pos_x, lane_pos_y), 0.0, 1.0, wheel_color)
     rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, wheel_color)
