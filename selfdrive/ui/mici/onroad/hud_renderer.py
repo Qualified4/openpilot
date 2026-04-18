@@ -183,10 +183,10 @@ class HudRenderer(Widget):
     self._torque_bar = TorqueBar()
 
     self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/carrot_wheel.png', 50, 50)
-    self._txt_wheel_cap: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_cap.png', 50, 50)
     self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_critical.png', 50, 50)
-    # self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/wheel.png', 50, 50)
-    # self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/wheel_critical.png', 50, 50)
+    self._txt_wheel_lane: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_lane.png', 100, 50)
+    self._txt_wheel_lane_critical: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_lane_critical.png', 100, 50)
+    self._txt_wheel_cap: rl.Texture = gui_app.texture('icons_mici/carrot_wheel_cap.png', 50, 50)
     self._txt_exclamation_point: rl.Texture = gui_app.texture('icons_mici/exclamation_point.png', 44, 44)
 
     # Bottom-left speed panel background
@@ -276,6 +276,8 @@ class HudRenderer(Widget):
   def _draw_steering_wheel_icon(self, wheel_txt, pos_x: int, pos_y: int) -> None:
     rotation = -ui_state.sm['carState'].steeringAngleDeg
 
+    active_lane_line = self._debug_speed_panel or bool(ui_state.sm['controlsState'].activeLaneLine)
+
     turn_intent_margin = 25
     self._turn_intent.render(rl.Rectangle(
       pos_x - wheel_txt.width / 2 - turn_intent_margin,
@@ -293,6 +295,14 @@ class HudRenderer(Widget):
     else:
       wheel_color = rl.Color(230, 230, 230, int(self._wheel_alpha_filter.x))
 
+    _txt_wheel_lane
+
+    if active_lane_line:
+      LANE_TOP_OFFSET = 5
+      txt_lane_mode = self._txt_wheel_lane_critical if self._show_wheel_critical else self._txt_wheel_lane
+      lane_pos_x = pos_x - txt_lane_mode.width / 2 - wheel_txt.width / 2
+      lane_pos_y = pos_y - txt_lane_mode.height / 2 - LANE_TOP_OFFSET
+      rl.draw_texture_ex(txt_lane_mode, rl.Vector2(exclamation_pos_x, exclamation_pos_y), 0.0, 1.0, wheel_color)
     rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, wheel_color)
     rl.draw_texture_pro(self._txt_wheel_cap, src_rect, dest_rect, origin, rotation, rl.WHITE)
 
@@ -653,6 +663,8 @@ class HudRenderer(Widget):
       rl.WHITE,
     )
 
+    # 기존 레인모드 출력 코드
+    """
     if self._debug_speed_panel:
       active_lane_line = True
     else:
@@ -674,6 +686,7 @@ class HudRenderer(Widget):
 
     draw_text_ui_style(line1, lane_x - s1.x, lane_y1, lane_font, lane_color, font=self._font_display, border_width=1.0, shadow_offset=8.0, align="left_top", y_offset=0.0)
     draw_text_ui_style(line2, lane_x - s2.x, lane_y2, lane_font, lane_color, font=self._font_display, border_width=1.0, shadow_offset=8.0, align="left_top", y_offset=0.0)
+    """
 
   def _get_driving_mode_text_and_color(self) -> tuple[str, rl.Color]:
     carState = ui_state.sm["carState"]
