@@ -295,8 +295,6 @@ class HudRenderer(Widget):
     else:
       wheel_color = rl.Color(230, 230, 230, int(self._wheel_alpha_filter.x))
 
-    _txt_wheel_lane
-
     if active_lane_line:
       LANE_TOP_OFFSET = 5
       txt_lane_mode = self._txt_wheel_lane_critical if self._show_wheel_critical else self._txt_wheel_lane
