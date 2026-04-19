@@ -490,7 +490,7 @@ class HudRenderer(Widget):
       draw_text_ui_style(road_name, info_x, road_y, side_font, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
 
   def _draw_infos(self, pos_x: int):
-    FONT_SIZE = 16
+    FONT_SIZE = 18
 
     cpu_text = self._get_cpu_temp_text()
 
