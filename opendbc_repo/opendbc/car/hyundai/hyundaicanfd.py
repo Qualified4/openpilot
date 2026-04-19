@@ -846,31 +846,32 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["LCA_RIGHT_ARROW"] = 2 if CS.out.rightBlinker else 0
 
         # 기어 상태에 따른 차로 색 변경
-        if CS.out.gearShifter == structs.CarState.GearShifter.drive:
-          try:
-            # Carrot의 드라이브 모드 파라미터를 가져옵니다 (1: Eco, 2: Safe, 3: Normal, 4: High Speed)
-            drive_mode = Params().get_int("MyDrivingMode")
-          except Exception:
-            drive_mode = 3  # 기본값 (Normal)
+        if not create_ccnc_messages.draw_center:
+          if CS.out.gearShifter == structs.CarState.GearShifter.drive:
+            try:
+              # Carrot의 드라이브 모드 파라미터를 가져옵니다 (1: Eco, 2: Safe, 3: Normal, 4: High Speed)
+              drive_mode = Params().get_int("MyDrivingMode")
+            except Exception:
+              drive_mode = 3  # 기본값 (Normal)
 
-          # 속도에 비례해 하이라이트 길이 동적으로 조절
-          values["LANE_HIGHLIGHT_DISTANCE"] = int(3 + (min(CS.out.vEgo * 3.6, 80) * (57 / 80)))
-          if CS.out.aEgo < -4:
-            # 급제동 시 노란색
-            values["LANE_HIGHLIGHT"] = 4
-          elif drive_mode == 4 or CS.out.aEgo > 2.7:
-            # 고속 주행 또는 급가속 시 빨간색
+            # 속도에 비례해 하이라이트 길이 동적으로 조절
+            values["LANE_HIGHLIGHT_DISTANCE"] = int(3 + (min(CS.out.vEgo * 3.6, 80) * (57 / 80)))
+            if CS.out.aEgo < -4:
+              # 급제동 시 노란색
+              values["LANE_HIGHLIGHT"] = 4
+            elif drive_mode == 4 or CS.out.aEgo > 2.7:
+              # 고속 주행 또는 급가속 시 빨간색
+              values["LANE_HIGHLIGHT"] = 5
+            elif drive_mode in (1, 2) or CS.out.brakeHoldActive:
+              # 연비 주행 또는 크루즈 중 오토 홀드 시 파란색 (brakeHoldActive 오토홀드 값 아닌듯함 작동 안함)
+              values["LANE_HIGHLIGHT"] = 3
+          elif CS.out.gearShifter == structs.CarState.GearShifter.reverse:
             values["LANE_HIGHLIGHT"] = 5
-          elif drive_mode in (1, 2) or CS.out.brakeHoldActive:
-            # 연비 주행 또는 크루즈 중 오토 홀드 시 파란색 (brakeHoldActive 오토홀드 값 아닌듯함 작동 안함)
-            values["LANE_HIGHLIGHT"] = 3
-        elif CS.out.gearShifter == structs.CarState.GearShifter.reverse:
-          values["LANE_HIGHLIGHT"] = 5
-        elif CS.out.gearShifter == structs.CarState.GearShifter.neutral:
-          values["LANE_HIGHLIGHT"] = 4
-        elif CS.out.gearShifter == structs.CarState.GearShifter.park:
-          if not CS.out.parkingBrake:
-            values["LANE_HIGHLIGHT"] = 2
+          elif CS.out.gearShifter == structs.CarState.GearShifter.neutral:
+            values["LANE_HIGHLIGHT"] = 4
+          elif CS.out.gearShifter == structs.CarState.GearShifter.park:
+            if not CS.out.parkingBrake:
+              values["LANE_HIGHLIGHT"] = 2
 
         # 차선 위치 갱신: 횡컨 때만 적용
         if lat_enabled and CS.ccnc_0x1b5 is not None:
@@ -990,10 +991,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 v_lead = float(getattr(lead, "vLeadK", 0.0))
                 y_rel = float(getattr(lead, "yRel", 0.0))
 
-                if radar and v_lead >= 3.0:
+                if radar and v_lead >= 5.0 and abs(y_rel) < 5:
                   values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lead.dRel)
                   values["LF_DETECT_LATERAL"] = 3
-                  values["LF_DETECT"] = 1 if lead.vRel > -0.1 else 2
+                  values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(1 if lead.vRel > -0.5 else 2)
                   break  # 유효한 가장 가까운 차량을 찾았으므로 탐색 종료
 
             if CS.radar_state.leadsRight:
@@ -1004,16 +1005,16 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 v_lead = float(getattr(lead, "vLeadK", 0.0))
                 y_rel = float(getattr(lead, "yRel", 0.0))
 
-                if radar and v_lead >= 3.0:
+                if radar and v_lead >= 5.0 and abs(y_rel) < 5:
                   values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(lead.dRel)
                   values["RF_DETECT_LATERAL"] = 3
-                  values["RF_DETECT"] = 1 if lead.vRel > -0.1 else 2
+                  values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(1 if lead.vRel > -0.5 else 2)
                   break  # 유효한 가장 가까운 차량을 찾았으므로 탐색 종료
 
           # --- 후측방은 BSD 경고 시 고정 두부 출력. 후측방 레이더 정보를 볼 수 없음.. ---
           if CS.out.leftBlindspot:
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(8)
-            values["LR_DETECT_LATERAL"] = 2
+            values["LR_DETECT_LATERAL"] = 3
             values["LR_DETECT"] = 2
           elif create_ccnc_messages.lr_distance.value() < 14:
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(15)
@@ -1022,7 +1023,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           if CS.out.rightBlindspot:
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(8)
-            values["RR_DETECT_LATERAL"] = 2
+            values["RR_DETECT_LATERAL"] = 3
             values["RR_DETECT"] = 2
           elif create_ccnc_messages.rr_distance.value() < 14:
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(15)
@@ -1111,5 +1112,7 @@ create_ccnc_messages.r_lane_f = NoiseFilter(3, 0.2, 15)
 create_ccnc_messages.ff_distance = NoiseFilter(5, 0.1, 0)
 create_ccnc_messages.lf_distance = NoiseFilter(5, 0.1, 0)
 create_ccnc_messages.rf_distance = NoiseFilter(5, 0.1, 0)
+create_ccnc_messages.lf_detect = NoiseFilter(5, 0.2, 1)
+create_ccnc_messages.rf_detect = NoiseFilter(5, 0.2, 1)
 create_ccnc_messages.lr_distance = NoiseFilter(5, 0.05, 15)
 create_ccnc_messages.rr_distance = NoiseFilter(5, 0.05, 15)

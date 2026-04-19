@@ -290,7 +290,7 @@ class HudRenderer(Widget):
     # 핸들 아이콘 오른쪽 끝으로 보내기. 마지막 -2는 레인모드 아이콘 공간때문에 살짝 더 뺌. 전체 마진을 빼기는 싫어서 마진 영역까지 그리도록
     wheel_pos_x = int(rect.x + rect.width - margin_x - wheel_txt.width / 2 - 2)
     # 온도, SR, LD 정보 상단 출력 좌표
-    extra_info_pos_x = int(rect.x + rect.width - margin_x - wheel_txt.width * 2)
+    extra_info_pos_x = int(rect.x + rect.width - margin_x - wheel_txt.width * 1.5)
 
     pos_y = int(rect.y + margin_y + wheel_txt.height / 2 + self._wheel_y_filter.x)
 
@@ -490,7 +490,7 @@ class HudRenderer(Widget):
       draw_text_ui_style(road_name, info_x, road_y, side_font, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
 
   def _draw_infos(self, pos_x: int):
-    FONT_SIZE = 12
+    FONT_SIZE = 16
 
     cpu_text = self._get_cpu_temp_text()
 
