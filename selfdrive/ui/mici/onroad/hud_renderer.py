@@ -408,9 +408,9 @@ class HudRenderer(Widget):
         date_x = time_x + (block_w - date_size.x) / 2
         draw_time_x = time_x + (block_w - time_size.x) / 2
 
-        draw_text_ui_style(date_text, date_x, date_y, dt_font, rl.Color(255, 255, 255, 220), font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+        draw_text_ui_style(date_text, date_x, date_y, dt_font, rl.Color(255, 255, 255, 220), font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
 
-        draw_text_ui_style(time_text, draw_time_x, time_y, dt_font, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+        draw_text_ui_style(time_text, draw_time_x, time_y, dt_font, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
 
         time_block_right = time_x + block_w
 
@@ -420,7 +420,7 @@ class HudRenderer(Widget):
         time_size = measure_text_cached(self._font_semi_bold, time_text, text_font)
         time_y = pos_y - time_size.y / 2
 
-        draw_text_ui_style(time_text, time_x, time_y, text_font, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+        draw_text_ui_style(time_text, time_x, time_y, text_font, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
 
         time_block_right = time_x + time_size.x
 
@@ -430,7 +430,7 @@ class HudRenderer(Widget):
         date_size = measure_text_cached(self._font_medium, date_text, text_font)
         date_y = pos_y - date_size.y / 2
 
-        draw_text_ui_style(date_text, time_x, date_y, text_font, rl.Color(255, 255, 255, 220), font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+        draw_text_ui_style(date_text, time_x, date_y, text_font, rl.Color(255, 255, 255, 220), font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
 
         time_block_right = time_x + date_size.x
 
@@ -482,12 +482,12 @@ class HudRenderer(Widget):
     sr_y = cpu_y + cpu_size.y + line_gap
     road_y = sr_y + sr_size.y + line_gap
 
-    draw_text_ui_style(cpu_text, info_x, cpu_y, side_font, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+    draw_text_ui_style(cpu_text, info_x, cpu_y, side_font, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
 
-    draw_text_ui_style(sr_text, info_x, sr_y, side_font, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+    draw_text_ui_style(sr_text, info_x, sr_y, side_font, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
 
     if road_name:
-      draw_text_ui_style(road_name, info_x, road_y, side_font, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+      draw_text_ui_style(road_name, info_x, road_y, side_font, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
 
   def _draw_infos(self, pos_x: int):
     FONT_SIZE = 18
@@ -508,7 +508,7 @@ class HudRenderer(Widget):
 
     info_text = f"{cpu_text}|{sr_text}|{ld_text}"
 
-    draw_text_ui_style(info_text, pos_x, 0, FONT_SIZE, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, align="right_top", y_offset=0.0)
+    draw_text_ui_style(info_text, pos_x, 0, FONT_SIZE, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, shadow_offset = 0, align="right_top", y_offset=0.0)
 
   def _get_gear_text(self) -> str:
     sm = ui_state.sm
@@ -620,7 +620,7 @@ class HudRenderer(Widget):
       mode_x = panel_x + 5
       mode_y = int(panel_y + panel_h * 0.05 - mode_size.y * 0.5 - 15)
 
-      draw_text_ui_style(mode_text, mode_x, mode_y, mode_font, mode_color, font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+      draw_text_ui_style(mode_text, mode_x, mode_y, mode_font, mode_color, font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
 
     # ----- set speed (center, smaller) -----
     show_set = self._engaged and self.is_cruise_set
@@ -642,7 +642,7 @@ class HudRenderer(Widget):
       set_size = measure_text_cached(self._font_display, set_text, set_font)
       set_x = int(panel_x + panel_w * 0.76 - set_size.x * 0.5)
       set_y = int(panel_y + panel_h * 0.33 - set_size.y * 0.5)
-      draw_text_ui_style(set_text, set_x, set_y, set_font, set_color, font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+      draw_text_ui_style(set_text, set_x, set_y, set_font, set_color, font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
       if ov.active:
         set_speed = ov.speed_kph
         if not ui_state.is_metric:
@@ -666,12 +666,12 @@ class HudRenderer(Widget):
         set_size = measure_text_cached(self._font_display, set_text, set_font)
         set_x = int(panel_x + panel_w * 0.90 - set_size.x * 0.5 + 50)
         set_y = int(panel_y + panel_h * 0.25 - set_size.y * 0.5)
-        draw_text_ui_style(set_text, set_x, set_y, set_font, set_color, font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+        draw_text_ui_style(set_text, set_x, set_y, set_font, set_color, font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
         set_font = 30
         set_size = measure_text_cached(self._font_display, set_label_text, set_font)
         set_x = int(panel_x + panel_w * 0.90 - set_size.x * 0.5 + 50)
         set_y = int(panel_y + panel_h * 0.10 - set_size.y * 0.5 - 20)
-        draw_text_ui_style(set_label_text, set_x, set_y, set_font, set_color, font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+        draw_text_ui_style(set_label_text, set_x, set_y, set_font, set_color, font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
 
     # ----- cruise gap (small circle + number, bottom-mid-right) -----
     gap = self._get_cruise_gap()
@@ -682,7 +682,7 @@ class HudRenderer(Widget):
     gap_text = str(gap)
     gap_font = 28
     gap_size = measure_text_cached(self._font_semi_bold, gap_text, gap_font)
-    draw_text_ui_style(gap_text, gap_center_x, gap_center_y, gap_font, rl.WHITE, font=self._font_display, border_width=1.0, align="center", y_offset=0.0)
+    draw_text_ui_style(gap_text, gap_center_x, gap_center_y, gap_font, rl.WHITE, font=self._font_display, border_width=1.0, shadow_offset = 0, align="center", y_offset=0.0)
 
     # active carrot
     sm = ui_state.sm
@@ -690,7 +690,7 @@ class HudRenderer(Widget):
     if active_carrot >= 2:
       x = int(panel_x + panel_w * 0.60)
       y = int(panel_y + panel_h * 0.82)
-      draw_text_ui_style("NAV", x, y, 26, rl.GREEN, font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+      draw_text_ui_style("NAV", x, y, 26, rl.GREEN, font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
 
 
     # ----- gear (right side box with letter) -----
@@ -736,8 +736,8 @@ class HudRenderer(Widget):
     s1 = measure_text_cached(self._font_semi_bold, line1, lane_font)
     s2 = measure_text_cached(self._font_semi_bold, line2, lane_font)
 
-    draw_text_ui_style(line1, lane_x - s1.x, lane_y1, lane_font, lane_color, font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
-    draw_text_ui_style(line2, lane_x - s2.x, lane_y2, lane_font, lane_color, font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+    draw_text_ui_style(line1, lane_x - s1.x, lane_y1, lane_font, lane_color, font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
+    draw_text_ui_style(line2, lane_x - s2.x, lane_y2, lane_font, lane_color, font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
     """
 
   def _get_driving_mode_text_and_color(self) -> tuple[str, rl.Color]:
@@ -844,7 +844,7 @@ class HudRenderer(Widget):
 
     font_size = int(size * 2.0)
     text_size = measure_text_cached(self._font_display, txt, font_size)
-    draw_text_ui_style(txt, cx, cy, font_size, color, font=self._font_display, border_width=1.0, align="center", y_offset=0.0)
+    draw_text_ui_style(txt, cx, cy, font_size, color, font=self._font_display, border_width=1.0, shadow_offset = 0, align="center", y_offset=0.0)
 
   def _draw_traffic_light_info(self, pos_x: int, pos_y: int) -> bool:
     info = self._get_traffic_light_info()
@@ -868,6 +868,6 @@ class HudRenderer(Widget):
     text_x = lamp_cx + lamp_size + gap
     text_y = int(pos_y - remain_size.y / 2)
 
-    draw_text_ui_style(remain, text_x, text_y, remain_font, rl.Color(255, 255, 255, 235), font=self._font_display, border_width=1.0, align="left_top", y_offset=0.0)
+    draw_text_ui_style(remain, text_x, text_y, remain_font, rl.Color(255, 255, 255, 235), font=self._font_display, border_width=1.0, shadow_offset = 0, align="left_top", y_offset=0.0)
 
     return True

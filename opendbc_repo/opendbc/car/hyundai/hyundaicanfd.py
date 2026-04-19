@@ -28,7 +28,7 @@ class NoiseFilter:
         self.median_buffer.clear()
 
     def reset(self, new_value: float = None):
-        self.lowpass_filtered_value = new_value if new_value else self.lowpass_default
+        self.lowpass_filtered_value = new_value if new_value is not None else self.lowpass_default
         self.clear_buffer()
 
     def apply(self, target: float) -> float:
@@ -36,7 +36,7 @@ class NoiseFilter:
         self.median_buffer.append(target)
 
         # Median 중앙 값 선택
-        median_value = sorted(self.median_buffer)[len(self.median_buffer) // 2] if len(self.median_buffer) == self.median_buffer.maxlen else target
+        median_value = (sorted(self.median_buffer)[len(self.median_buffer) // 2]) if len(self.median_buffer) == self.median_buffer.maxlen else target
 
         # LPF 보간
         self.lowpass_filtered_value = (self.lowpass_alpha * median_value) + ((1.0 - self.lowpass_alpha) * self.lowpass_filtered_value)
@@ -45,6 +45,17 @@ class NoiseFilter:
 
     def value(self):
       return self.lowpass_filtered_value
+
+def ease_in_interp(x, x_range, y_range, power=2):
+    # x를 0~1 사이 비율로 변환
+    t = (x - x_range[0]) / (x_range[1] - x_range[0])
+    t = max(0, min(1, t)) # 범위 제한
+
+    # Ease-in 적용
+    eased_t = t ** power
+
+    # 결과값 매핑
+    return y_range[0] + (y_range[1] - y_range[0]) * eased_t
 
 def hyundai_crc8(data: bytes) -> int:
   poly = 0x2F
@@ -846,32 +857,31 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["LCA_RIGHT_ARROW"] = 2 if CS.out.rightBlinker else 0
 
         # 기어 상태에 따른 차로 색 변경
-        if not create_ccnc_messages.draw_center:
-          if CS.out.gearShifter == structs.CarState.GearShifter.drive:
-            try:
-              # Carrot의 드라이브 모드 파라미터를 가져옵니다 (1: Eco, 2: Safe, 3: Normal, 4: High Speed)
-              drive_mode = Params().get_int("MyDrivingMode")
-            except Exception:
-              drive_mode = 3  # 기본값 (Normal)
+        if CS.out.gearShifter == structs.CarState.GearShifter.drive:
+          try:
+            # Carrot의 드라이브 모드 파라미터를 가져옵니다 (1: Eco, 2: Safe, 3: Normal, 4: High Speed)
+            drive_mode = Params().get_int("MyDrivingMode")
+          except Exception:
+            drive_mode = 3  # 기본값 (Normal)
 
-            # 속도에 비례해 하이라이트 길이 동적으로 조절
-            values["LANE_HIGHLIGHT_DISTANCE"] = int(3 + (min(CS.out.vEgo * 3.6, 80) * (57 / 80)))
-            if CS.out.aEgo < -4:
-              # 급제동 시 노란색
-              values["LANE_HIGHLIGHT"] = 4
-            elif drive_mode == 4 or CS.out.aEgo > 2.7:
-              # 고속 주행 또는 급가속 시 빨간색
-              values["LANE_HIGHLIGHT"] = 5
-            elif drive_mode in (1, 2) or CS.out.brakeHoldActive:
-              # 연비 주행 또는 크루즈 중 오토 홀드 시 파란색 (brakeHoldActive 오토홀드 값 아닌듯함 작동 안함)
-              values["LANE_HIGHLIGHT"] = 3
-          elif CS.out.gearShifter == structs.CarState.GearShifter.reverse:
-            values["LANE_HIGHLIGHT"] = 5
-          elif CS.out.gearShifter == structs.CarState.GearShifter.neutral:
+          # 속도에 비례해 하이라이트 길이 동적으로 조절
+          values["LANE_HIGHLIGHT_DISTANCE"] = int(ease_in_interp(CS.out.vEgo * 3.6, [0, 80], [3, 60], power=1.5))
+          if CS.out.aEgo < -3:
+            # 급제동 시 노란색
             values["LANE_HIGHLIGHT"] = 4
-          elif CS.out.gearShifter == structs.CarState.GearShifter.park:
-            if not CS.out.parkingBrake:
-              values["LANE_HIGHLIGHT"] = 2
+          elif drive_mode == 4 or CS.out.aEgo > 2.7:
+            # 고속 주행 또는 급가속 시 빨간색
+            values["LANE_HIGHLIGHT"] = 5
+          elif drive_mode in (1, 2) or CS.out.brakeHoldActive:
+            # 연비 주행 또는 크루즈 중 오토 홀드 시 파란색 (brakeHoldActive 오토홀드 값 아닌듯함 작동 안함)
+            values["LANE_HIGHLIGHT"] = 3
+        elif CS.out.gearShifter == structs.CarState.GearShifter.reverse:
+          values["LANE_HIGHLIGHT"] = 5
+        elif CS.out.gearShifter == structs.CarState.GearShifter.neutral:
+          values["LANE_HIGHLIGHT"] = 4
+        elif CS.out.gearShifter == structs.CarState.GearShifter.park:
+          if not CS.out.parkingBrake:
+            values["LANE_HIGHLIGHT"] = 2
 
         # 차선 위치 갱신: 횡컨 때만 적용
         if lat_enabled and CS.ccnc_0x1b5 is not None:
@@ -902,11 +912,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if desire != 0:
             if not create_ccnc_messages.draw_center:
               if abs(l_target - create_ccnc_messages.prev_l_target) > 15:
-                pass
                 # 위상 변화 시 보간 제거를 위해 버퍼 및 필터 즉시 초기화
-                # create_ccnc_messages.l_lane_f.reset(l_target)
-                # create_ccnc_messages.r_lane_f.reset(r_target)
-                # create_ccnc_messages.draw_center = True
+                create_ccnc_messages.l_lane_f.reset(l_target)
+                create_ccnc_messages.r_lane_f.reset(r_target)
+                create_ccnc_messages.draw_center = True
 
             # 위상 변화 후 중앙 차로 강조
             if create_ccnc_messages.draw_center:
@@ -986,13 +995,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if CS.radar_state:
             if CS.radar_state.leadsLeft:
               # 거리(dRel) 기준으로 가장 가까운 타겟부터 정렬
-              sorted_left = sorted([l for l in CS.radar_state.leadsLeft if l.status and 0 < l.dRel < 100.0], key=lambda x: x.dRel)
+              sorted_left = sorted([l for l in CS.radar_state.leadsLeft if l.status and 0 < l.dRel < 130.0], key=lambda x: x.dRel)
               for lead in sorted_left:
                 radar = bool(getattr(lead, "radar", False))
                 v_lead = float(getattr(lead, "vLeadK", 0.0))
                 y_rel = float(getattr(lead, "yRel", 0.0))
 
-                if radar and v_lead >= 5.0 and abs(y_rel) < 5:
+                if radar and v_lead >= 5.0 and 1 < abs(y_rel) < 5:
                   values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lead.dRel)
                   values["LF_DETECT_LATERAL"] = 3
                   values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(1 if lead.vRel > -0.5 else 2)
@@ -1000,13 +1009,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             if CS.radar_state.leadsRight:
               # 거리(dRel) 기준으로 가장 가까운 타겟부터 정렬
-              sorted_right = sorted([l for l in CS.radar_state.leadsRight if l.status and 0 < l.dRel < 100.0], key=lambda x: x.dRel)
+              sorted_right = sorted([l for l in CS.radar_state.leadsRight if l.status and 0 < l.dRel < 130.0], key=lambda x: x.dRel)
               for lead in sorted_right:
                 radar = bool(getattr(lead, "radar", False))
                 v_lead = float(getattr(lead, "vLeadK", 0.0))
                 y_rel = float(getattr(lead, "yRel", 0.0))
 
-                if radar and v_lead >= 5.0 and abs(y_rel) < 5:
+                if radar and v_lead >= 5.0 and 1 < abs(y_rel) < 5:
                   values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(lead.dRel)
                   values["RF_DETECT_LATERAL"] = 3
                   values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(1 if lead.vRel > -0.5 else 2)
