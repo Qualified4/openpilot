@@ -919,7 +919,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             # 위상 변화 후 중앙 차로 강조
             if create_ccnc_messages.draw_center:
-              values["LANE_HIGHLIGHT"] = 1,
+              values["LANE_HIGHLIGHT"] = 1
               values["LANE_HIGHLIGHT_DISTANCE"] = 60
             # 위상 변화 전 대상 차로 강조
             else:
