@@ -27,7 +27,7 @@ class NoiseFilter:
     def clear_buffer(self):
         self.median_buffer.clear()
 
-    def reset(self, new_value = None):
+    def reset(self, new_value: float = None):
         self.lowpass_filtered_value = new_value if new_value else self.lowpass_default
         self.clear_buffer()
 
