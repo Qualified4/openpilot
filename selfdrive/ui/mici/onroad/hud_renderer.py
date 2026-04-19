@@ -303,8 +303,8 @@ class HudRenderer(Widget):
     rotation = -ui_state.sm['carState'].steeringAngleDeg
 
     torque_val = abs(self._torque_filter.x)
+    # 토크가 0.5 넘어가면 휠 아이콘을 서서히 1.5배까지 키우기
     scale = float(np.interp(torque_val, [0.5, 1.0], [1.0, 1.5]))
-
     scaled_width = wheel_txt.width * scale
     scaled_height = wheel_txt.height * scale
 
@@ -333,16 +333,16 @@ class HudRenderer(Widget):
     rl.draw_texture_pro(self._txt_wheel_cap, src_rect, dest_rect, origin, rotation, rl.WHITE)
 
     if self._show_wheel_critical:
-      EXCLAMATION_POINT_SPACING = 10 * scale
-      exclamation_pos_x = pos_x - (self._txt_exclamation_point.width * scale) / 2 + scaled_width / 2 + EXCLAMATION_POINT_SPACING
-      exclamation_pos_y = pos_y - (self._txt_exclamation_point.height * scale) / 2
-      rl.draw_texture_ex(self._txt_exclamation_point, rl.Vector2(exclamation_pos_x, exclamation_pos_y), 0.0, scale, rl.WHITE)
+      EXCLAMATION_POINT_SPACING = 10
+      exclamation_pos_x = pos_x - self._txt_exclamation_point.width / 2 + wheel_txt.width / 2 + EXCLAMATION_POINT_SPACING
+      exclamation_pos_y = pos_y - self._txt_exclamation_point.height / 2
+      rl.draw_texture_ex(self._txt_exclamation_point, rl.Vector2(exclamation_pos_x, exclamation_pos_y), 0.0, 1.0, rl.WHITE)
     # 속도패널 디버깅 모드거나 레인모드일 때 차선 이미지 추가
     elif self._debug_speed_panel or bool(ui_state.sm['controlsState'].activeLaneLine):
-      LANE_TOP_OFFSET = 3 * scale
-      lane_pos_x = pos_x - (self._txt_wheel_lane.width * scale) / 2
-      lane_pos_y = pos_y - (self._txt_wheel_lane.height * scale) / 2 - LANE_TOP_OFFSET
-      rl.draw_texture_ex(self._txt_wheel_lane, rl.Vector2(lane_pos_x, lane_pos_y), 0.0, scale, wheel_color)
+      LANE_TOP_OFFSET = 3
+      lane_pos_x = pos_x - (self._txt_wheel_lane.width) / 2
+      lane_pos_y = pos_y - (self._txt_wheel_lane.height) / 2 - LANE_TOP_OFFSET
+      rl.draw_texture_ex(self._txt_wheel_lane, rl.Vector2(lane_pos_x, lane_pos_y), 0.0, 1.0, wheel_color)
 
 
   def _get_cpu_temp_text(self) -> str:
