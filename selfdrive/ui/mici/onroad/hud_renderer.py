@@ -508,7 +508,7 @@ class HudRenderer(Widget):
 
     info_text = f"{cpu_text} | {sr_text} | {ld_text}"
 
-    draw_text_ui_style(info_text, pos_x, 0, FONT_SIZE, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=1.0, shadow_offset = 0, align="right_top", y_offset=0.0)
+    draw_text_ui_style(info_text, pos_x, 0, FONT_SIZE, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=2.0, shadow_offset = 0, align="right_top", y_offset=0.0)
 
   def _get_gear_text(self) -> str:
     sm = ui_state.sm
