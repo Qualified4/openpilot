@@ -1026,7 +1026,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(8)
             values["LR_DETECT_LATERAL"] = 3
             values["LR_DETECT"] = 2
-          elif create_ccnc_messages.lr_distance.value() < 14:
+          elif create_ccnc_messages.lr_distance.value() < 13:
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(15)
             values["LR_DETECT_LATERAL"] = 3
             values["LR_DETECT"] = 1
@@ -1035,7 +1035,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(8)
             values["RR_DETECT_LATERAL"] = 3
             values["RR_DETECT"] = 2
-          elif create_ccnc_messages.rr_distance.value() < 14:
+          elif create_ccnc_messages.rr_distance.value() < 13:
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(15)
             values["RR_DETECT_LATERAL"] = 3
             values["RR_DETECT"] = 1
@@ -1043,17 +1043,18 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           values = copy.copy(CS.ccnc_0x162)
 
         # 2024 쏘나타는 차량 인식 두부만 출력 가능
-        if hud_control.leadDistance > 0 and hud_control.leadRadar == 0:
-          ff_distance = hud_control.leadDistance
-          ff_detect = 1 if hud_control.leadRelSpeed > -0.1 else 2
-        else:
-          ff_distance = values["FF_DISTANCE"]
-          ff_detect = values["FF_DETECT"]
+        values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(hud_control.leadDistance if hud_control.leadDistance > 0 else values["FF_DISTANCE"])
+        values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply((1 if hud_control.leadRelSpeed > -0.1 else 2) if values["FF_DETECT"] == 0 else values["FF_DETECT"])
 
-        values.update({
-          "FF_DISTANCE": create_ccnc_messages.ff_distance.apply(ff_distance),
-          "FF_DETECT": ff_detect
-        })
+        # if hud_control.leadDistance > 0 and hud_control.leadRadar == 0:
+        #   ff_distance = hud_control.leadDistance
+        #   ff_detect = create_ccnc_messages.ff_detect.apply(1 if hud_control.leadRelSpeed > -0.1 else 2)
+        # else:
+        #   ff_distance = values["FF_DISTANCE"]
+        #   ff_detect = values["FF_DETECT"]
+
+        # values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_distance)
+        # values["FF_DETECT"] = ff_detect
 
         _make_ccnc_values(
           values, CS, lat_active, frame, hud_control,
@@ -1122,7 +1123,8 @@ create_ccnc_messages.r_lane_f = NoiseFilter(3, 0.2, 15)
 create_ccnc_messages.ff_distance = NoiseFilter(5, 0.1, 0)
 create_ccnc_messages.lf_distance = NoiseFilter(5, 0.1, 0)
 create_ccnc_messages.rf_distance = NoiseFilter(5, 0.1, 0)
-create_ccnc_messages.lf_detect = NoiseFilter(5, 0.2, 1)
-create_ccnc_messages.rf_detect = NoiseFilter(5, 0.2, 1)
+create_ccnc_messages.ff_detect = NoiseFilter(5, 1, 1)
+create_ccnc_messages.lf_detect = NoiseFilter(5, 1, 1)
+create_ccnc_messages.rf_detect = NoiseFilter(5, 1, 1)
 create_ccnc_messages.lr_distance = NoiseFilter(5, 0.05, 15)
 create_ccnc_messages.rr_distance = NoiseFilter(5, 0.05, 15)
