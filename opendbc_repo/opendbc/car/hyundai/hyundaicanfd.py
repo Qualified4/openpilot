@@ -902,10 +902,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if desire != 0:
             if not create_ccnc_messages.draw_center:
               if abs(l_target - create_ccnc_messages.prev_l_target) > 15:
+                pass
                 # 위상 변화 시 보간 제거를 위해 버퍼 및 필터 즉시 초기화
-                create_ccnc_messages.l_lane_f.reset(l_target)
-                create_ccnc_messages.r_lane_f.reset(r_target)
-                create_ccnc_messages.draw_center = True
+                # create_ccnc_messages.l_lane_f.reset(l_target)
+                # create_ccnc_messages.r_lane_f.reset(r_target)
+                # create_ccnc_messages.draw_center = True
 
             # 위상 변화 후 중앙 차로 강조
             if create_ccnc_messages.draw_center:
