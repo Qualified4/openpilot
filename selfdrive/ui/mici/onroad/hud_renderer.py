@@ -354,11 +354,11 @@ class HudRenderer(Widget):
         valid_temps = [float(t) for t in cpu_temps]
         if len(valid_temps) > 0:
           cpu_temp = sum(valid_temps) / float(len(valid_temps))
-          return f"CPU: {cpu_temp:.0f}"
+          return f"{cpu_temp:.0f}"
     except Exception:
       pass
 
-    return "CPU: --"
+    return "--"
 
 
   def _draw_wheel_side_info(self, wheel_txt, pos_x: int, pos_y: int) -> None:
