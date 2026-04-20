@@ -1066,7 +1066,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(8)
             values["LR_DETECT_LATERAL"] = 3
             values["LR_DETECT"] = 2
-          elif create_ccnc_messages.lr_distance.value() < 15:
+          elif create_ccnc_messages.lr_distance.value < 15:
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(20)
             values["LR_DETECT_LATERAL"] = 3
             values["LR_DETECT"] = 1
@@ -1075,7 +1075,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(8)
             values["RR_DETECT_LATERAL"] = 3
             values["RR_DETECT"] = 2
-          elif create_ccnc_messages.rr_distance.value() < 15:
+          elif create_ccnc_messages.rr_distance.value < 15:
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(20)
             values["RR_DETECT_LATERAL"] = 3
             values["RR_DETECT"] = 1
@@ -1156,12 +1156,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 create_ccnc_messages.draw_center = False
 create_ccnc_messages.prev_l_target = 15.0
 # 차선 노이즈 필터
-create_ccnc_messages.l_lane_f = NoiseFilter(3, 15, 0.4)
-create_ccnc_messages.r_lane_f = NoiseFilter(3, 15, 0.4)
+create_ccnc_messages.l_lane_f = NoiseFilter(3, 15, 0.2)
+create_ccnc_messages.r_lane_f = NoiseFilter(3, 15, 0.2)
 # 차량 거리 필터
-create_ccnc_messages.ff_distance = NoiseFilter(5, 0, [0.4, 0.9], [1.0, 4.0])
-create_ccnc_messages.lf_distance = NoiseFilter(5, 0, [0.4, 0.9], [1.0, 4.0])
-create_ccnc_messages.rf_distance = NoiseFilter(5, 0, [0.4, 0.9], [1.0, 4.0])
+create_ccnc_messages.ff_distance = NoiseFilter(5, 0, [0.15, 0.9], [1.0, 4.0])
+create_ccnc_messages.lf_distance = NoiseFilter(5, 0, [0.15, 0.9], [1.0, 4.0])
+create_ccnc_messages.rf_distance = NoiseFilter(5, 0, [0.15, 0.9], [1.0, 4.0])
 create_ccnc_messages.ff_detect = NoiseFilter(5, 1, 1)
 create_ccnc_messages.lf_detect = NoiseFilter(5, 1, 1)
 create_ccnc_messages.rf_detect = NoiseFilter(5, 1, 1)
