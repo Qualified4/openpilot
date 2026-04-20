@@ -1066,8 +1066,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(8)
             values["LR_DETECT_LATERAL"] = 3
             values["LR_DETECT"] = 2
-          elif create_ccnc_messages.lr_distance.value() < 13:
-            values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(15)
+          elif create_ccnc_messages.lr_distance.value() < 15:
+            values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(20)
             values["LR_DETECT_LATERAL"] = 3
             values["LR_DETECT"] = 1
 
@@ -1075,8 +1075,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(8)
             values["RR_DETECT_LATERAL"] = 3
             values["RR_DETECT"] = 2
-          elif create_ccnc_messages.rr_distance.value() < 13:
-            values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(15)
+          elif create_ccnc_messages.rr_distance.value() < 15:
+            values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(20)
             values["RR_DETECT_LATERAL"] = 3
             values["RR_DETECT"] = 1
         except:
@@ -1098,12 +1098,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         _make_ccnc_values(
           values, CS, lat_active, frame, hud_control,
-          lane_line=True,
+          lane_line=False,
           corner_radar=True,
-          desire=desire,
+          desire=0,
           # 필요하면 162도 깜빡임 적용(원래 코드처럼 LR/RR만)
-          blink_pairs=[('LR_DETECT', 'LR_DETECT_DISTANCE'),
-                       ('RR_DETECT', 'RR_DETECT_DISTANCE')],
+          blink_pairs=None,
           blink_t=1.0
         )
 
