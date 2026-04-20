@@ -1071,7 +1071,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LR_DETECT_LATERAL"] = 3
             values["LR_DETECT"] = 1
 
-          if CS.out.rightBlindspot:
+          if CS.out.rightBlindspot and values["RR_DETECT_DISTANCE"] == 0:
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(8)
             values["RR_DETECT_LATERAL"] = 3
             values["RR_DETECT"] = 2
