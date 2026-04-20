@@ -14,48 +14,91 @@ LaneChangeDirection = log.LaneChangeDirection
 TurnDirection = log.Desire
 
 class NoiseFilter:
-    def __init__(self, median_buffer_size: int, lowpass_alpha: float, lowpass_default: float):
-        self.lowpass_alpha = lowpass_alpha # 낮을 수록 부드러움 0 < alpha <= 1
-        self.lowpass_default = lowpass_default
+  """
+  고정/스텝/가변 알파를 지원하는 Median + LPF 통합 필터.
+  - alpha_range: 필수 입력 (None 허용 안 함).
+  - error_range: 선택 입력 (None일 경우 고정 알파 모드).
+  """
+  def __init__(self, median_buffer_size, lowpass_default, alpha_range, error_range=None):
+    self._default_value = lowpass_default
+    self._filtered_value = lowpass_default
+    self._median_index = median_buffer_size // 2
+    self._buffer = deque([lowpass_default] * median_buffer_size, maxlen=median_buffer_size)
 
-        # 차선 LPF 상태
-        self.lowpass_filtered_value = lowpass_default
+    def normalize_range(r, default_val):
+      # 리스트/튜플에서 첫 번째와 마지막 값 추출 (1개일 때도 r[0]==r[-1]로 안전)
+      if isinstance(r, (int, float)): return [float(r), float(r)]
+      if isinstance(r, (list, tuple)) and len(r) >= 1:
+        return [float(r[0]), float(r[-1])]
+      return [default_val, default_val]
 
-        # 차선 Median 필터 버퍼
-        self.median_buffer = deque(maxlen=median_buffer_size)
+    # 1. 알파 설정 (필수 입력값 정문화)
+    norm_alpha = normalize_range(alpha_range, 1.0)
+    self._a_min, self._a_max = [np.clip(v, 0.001, 1.0) for v in norm_alpha]
 
-    def clear_buffer(self):
-        self.median_buffer.clear()
+    # 2. 에러 범위 및 전략 할당
+    if error_range is not None:
+      self._err_min, self._err_max = normalize_range(error_range, 0.0)
 
-    def reset(self, new_value: float = None):
-        self.lowpass_filtered_value = new_value if new_value is not None else self.lowpass_default
-        self.clear_buffer()
+      # 전략 선택: 경계값이 같으면 Step(리셋), 다르면 Adaptive(보간)
+      if self._err_min == self._err_max:
+        self.apply = self._apply_step
+      else:
+        self.apply = self._apply_adaptive
+    else:
+      # error_range가 None이면 리셋 로직 없이 고정 알파 필터로 동작
+      self._alpha = self._a_min
+      self.apply = self._apply_fixed
 
-    def apply(self, target: float) -> float:
-        # Median 필터 추가 (스파이크 노이즈 제거)
-        self.median_buffer.append(target)
+    self.reset()
 
-        # Median 중앙 값 선택
-        median_value = (sorted(self.median_buffer)[len(self.median_buffer) // 2]) if len(self.median_buffer) == self.median_buffer.maxlen else target
+  def reset(self, new_value=None):
+    val = new_value if new_value is not None else self._default_value
+    self._filtered_value = val
+    self._buffer.extend([val] * self._buffer.maxlen)
 
-        # LPF 보간
-        self.lowpass_filtered_value = (self.lowpass_alpha * median_value) + ((1.0 - self.lowpass_alpha) * self.lowpass_filtered_value)
+  def _apply_fixed(self, target):
+    self._buffer.append(target)
+    med = sorted(self._buffer)[self._median_index]
+    self._filtered_value = (self._alpha * med) + ((1.0 - self._alpha) * self._filtered_value)
+    return self._filtered_value
 
-        return self.lowpass_filtered_value
+  def _apply_step(self, target):
+    self._buffer.append(target)
+    med = sorted(self._buffer)[self._median_index]
+    err = abs(med - self._filtered_value)
+    if err > self._err_max:
+      self.reset(target)
+    else:
+      self._filtered_value = (self._a_min * med) + ((1.0 - self._a_min) * self._filtered_value)
+    return self._filtered_value
 
-    def value(self):
-      return self.lowpass_filtered_value
+  def _apply_adaptive(self, target):
+    self._buffer.append(target)
+    med = sorted(self._buffer)[self._median_index]
+    err = abs(med - self._filtered_value)
+    if err > self._err_max:
+      self.reset(target)
+      return self._filtered_value
+    # 오차 정도에 따라 알파값 보간
+    alpha = float(np.interp(err, [self._err_min, self._err_max], [self._a_min, self._a_max]))
+    self._filtered_value = (alpha * med) + ((1.0 - alpha) * self._filtered_value)
+    return self._filtered_value
+
+  @property
+  def value(self):
+    return self._filtered_value
 
 def ease_in_interp(x, x_range, y_range, power=2):
-    # x를 0~1 사이 비율로 변환
-    t = (x - x_range[0]) / (x_range[1] - x_range[0])
-    t = max(0, min(1, t)) # 범위 제한
+  # x를 0~1 사이 비율로 변환
+  t = (x - x_range[0]) / (x_range[1] - x_range[0])
+  t = max(0, min(1, t)) # 범위 제한
 
-    # Ease-in 적용
-    eased_t = t ** power
+  # Ease-in 적용
+  eased_t = t ** power
 
-    # 결과값 매핑
-    return y_range[0] + (y_range[1] - y_range[0]) * eased_t
+  # 결과값 매핑
+  return y_range[0] + (y_range[1] - y_range[0]) * eased_t
 
 def hyundai_crc8(data: bytes) -> int:
   poly = 0x2F
@@ -866,14 +909,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           # 속도에 비례해 하이라이트 길이 동적으로 조절
           values["LANE_HIGHLIGHT_DISTANCE"] = int(ease_in_interp(CS.out.vEgo * 3.6, [0, 80], [3, 60], power=1.5))
-          if CS.out.aEgo < -3:
+          if CS.out.aEgo < -2.7:
             # 급제동 시 노란색
             values["LANE_HIGHLIGHT"] = 4
           elif drive_mode == 4 or CS.out.aEgo > 2.7:
             # 고속 주행 또는 급가속 시 빨간색
             values["LANE_HIGHLIGHT"] = 5
-          elif drive_mode in (1, 2) or CS.out.brakeHoldActive:
-            # 연비 주행 또는 크루즈 중 오토 홀드 시 파란색 (brakeHoldActive 오토홀드 값 아닌듯함 작동 안함)
+          elif drive_mode in (1, 2):
+            # 연비 또는 안전 주행 시 파란색
             values["LANE_HIGHLIGHT"] = 3
         elif CS.out.gearShifter == structs.CarState.GearShifter.reverse:
           values["LANE_HIGHLIGHT"] = 5
@@ -900,9 +943,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           if not l_valid and not r_valid:
             l_target = r_target = 15.0
-            # 양쪽 차선을 전부 인식하지 못하면 버퍼 비움
-            create_ccnc_messages.l_lane_f.clear_buffer()
-            create_ccnc_messages.r_lane_f.clear_buffer()
           elif not l_valid:
             l_target = 30 - r_target
           elif not r_valid:
@@ -1117,14 +1157,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 create_ccnc_messages.draw_center = False
 create_ccnc_messages.prev_l_target = 15.0
 # 차선 노이즈 필터
-create_ccnc_messages.l_lane_f = NoiseFilter(3, 0.2, 15)
-create_ccnc_messages.r_lane_f = NoiseFilter(3, 0.2, 15)
+create_ccnc_messages.l_lane_f = NoiseFilter(3, 15, 0.4)
+create_ccnc_messages.r_lane_f = NoiseFilter(3, 15, 0.4)
 # 차량 거리 필터
-create_ccnc_messages.ff_distance = NoiseFilter(5, 0.15, 0)
-create_ccnc_messages.lf_distance = NoiseFilter(5, 0.15, 0)
-create_ccnc_messages.rf_distance = NoiseFilter(5, 0.15, 0)
-create_ccnc_messages.ff_detect = NoiseFilter(5, 0.4, 1)
-create_ccnc_messages.lf_detect = NoiseFilter(5, 0.4, 1)
-create_ccnc_messages.rf_detect = NoiseFilter(5, 0.4, 1)
-create_ccnc_messages.lr_distance = NoiseFilter(5, 0.05, 15)
-create_ccnc_messages.rr_distance = NoiseFilter(5, 0.05, 15)
+create_ccnc_messages.ff_distance = NoiseFilter(5, 0, [0.4, 0.9], [1.0, 4.0])
+create_ccnc_messages.lf_distance = NoiseFilter(5, 0, [0.4, 0.9], [1.0, 4.0])
+create_ccnc_messages.rf_distance = NoiseFilter(5, 0, [0.4, 0.9], [1.0, 4.0])
+create_ccnc_messages.ff_detect = NoiseFilter(5, 1, 1)
+create_ccnc_messages.lf_detect = NoiseFilter(5, 1, 1)
+create_ccnc_messages.rf_detect = NoiseFilter(5, 1, 1)
+create_ccnc_messages.lr_distance = NoiseFilter(5, 15, 0.1)
+create_ccnc_messages.rr_distance = NoiseFilter(5, 15, 0.1)
