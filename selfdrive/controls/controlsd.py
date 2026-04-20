@@ -89,6 +89,9 @@ class Controls:
   def state_control(self):
     CS = self.sm['carState']
 
+    # CarState에 radarState 연결
+    # CS.radar_state = self.sm['radarState']
+
     # Update VehicleModel
     lp = self.sm['liveParameters']
     x = max(lp.stiffnessFactor, 0.1)
