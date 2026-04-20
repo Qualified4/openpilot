@@ -1098,9 +1098,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         _make_ccnc_values(
           values, CS, lat_active, frame, hud_control,
-          lane_line=False,
+          lane_line=True,
           corner_radar=True,
-          desire=0,
+          desire=desire,
           # 필요하면 162도 깜빡임 적용(원래 코드처럼 LR/RR만)
           blink_pairs=[('LR_DETECT', 'LR_DETECT_DISTANCE'),
                        ('RR_DETECT', 'RR_DETECT_DISTANCE')],
