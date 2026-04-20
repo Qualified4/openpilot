@@ -5,6 +5,7 @@ import pyray as rl
 from dataclasses import dataclass
 from typing import Optional
 from openpilot.common.constants import CV
+# from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar # 아이콘에 토크 적용: 토크바 미사용
 from openpilot.selfdrive.ui.mici.onroad import blend_colors
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -26,7 +27,6 @@ KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
 
 SET_SPEED_PERSISTENCE = 2.5  # seconds
-
 DEFAULT_MAX_LAT_ACCEL = 3.0  # m/s^2
 
 @dataclass(frozen=True)
@@ -184,7 +184,8 @@ class HudRenderer(Widget):
     self._font_display: rl.Font = gui_app.font(FontWeight.DISPLAY)
 
     self._turn_intent = TurnIntent()
-    self._torque_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
+    # self._torque_bar = TorqueBar() # 아이콘에 토크 적용: 토크바 미사용
+    self._torque_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps) # 아이콘에 토크 적용: LowPassFilter
 
     # 휠 당근 휠로 변경
     self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/carrot_wheel.png', 50, 50) # 당근 휠
@@ -247,7 +248,7 @@ class HudRenderer(Widget):
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
 
-    # 토크 상태 계산 (휠 아이콘 크기 조절용)
+    # 토크 상태 계산 (휠 아이콘 크기 조절용) from TorqueBar()
     if controls_state.lateralControlState.which() == 'angleState':
       live_parameters = sm['liveParameters']
       car_control = sm['carControl']
@@ -269,6 +270,8 @@ class HudRenderer(Widget):
 
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
+
+    # self._torque_bar.render(rect) # 아이콘에 토크 적용: 토크바 미사용
 
     # bottom-left panel (speed_bg)
     self._draw_set_speed(rect)
@@ -321,6 +324,7 @@ class HudRenderer(Widget):
     origin = (scaled_width / 2, scaled_height / 2)
 
     if ui_state.lat_active:
+      # 토크 정도에 따라 녹색 -> 주황색 블렌딩
       green_color = rl.Color(0, 255, 0, int(self._wheel_alpha_filter.x))
       orange_color = rl.Color(255, 115, 0, int(self._wheel_alpha_filter.x))
       blend_factor = float(np.clip((torque_val - 0.75) * 4.0, 0.0, 1.0))
