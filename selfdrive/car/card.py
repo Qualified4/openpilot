@@ -65,7 +65,7 @@ class Car:
 
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
-    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'carrotMan', 'longitudinalPlan', 'radarState', 'modelV2', 'drivingModelData'])
+    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'carrotMan', 'longitudinalPlan', 'radarState', 'modelV2', 'drivingModelData', 'lateralPlan'])
     self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'liveTracks'])
 
     self.can_rcv_cum_timeout_counter = 0
@@ -264,7 +264,8 @@ class Car:
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
       MD = self.sm['modelV2'] if self.sm.valid['modelV2'] else None
       radar_state = self.sm['radarState'] if self.sm.valid['radarState'] else None
-      self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, MD, radar_state)
+      lateral_plan = self.sm['lateralPlan'] if self.sm.valid['lateralPlan'] else None
+      self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, MD, radar_state, lateral_plan)
       self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
 
       self.CC_prev = CC
@@ -302,7 +303,7 @@ class Car:
     finally:
       e.set()
       t.join()
-    
+
 def main():
   #config_realtime_process(4, Priority.CTRL_HIGH)
   config_realtime_process(6, Priority.CTRL_HIGH)
