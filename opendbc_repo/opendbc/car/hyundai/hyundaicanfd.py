@@ -842,7 +842,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["TARGET_DISTANCE"] = int(hud_control.leadDistance)
 
         values["BACKGROUND"] = 1 if cruise_enabled else 3 if lat_active else 7
-        values["CENTERLINE"] = 2 if CS.out.leftBlinker and CS.out.rightBlinker else 1 if HDA_CntrlModSta > 0 else 0
+        values["CENTERLINE"] = 1 if HDA_CntrlModSta > 0 else 0
         values["CAR_CIRCLE"] = 2 if hdp_active else 1 if cruise_enabled else 0
 
         values["NAV_ICON"] = 2 if nav_active else 0
@@ -1038,7 +1038,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         try:
           if CS.radar_state:
             if CS.radar_state.leadsLeft:
-              lane_width = CS.lateral_plan.LP.lane_width_left if CS.lateral_plan else 0
+              # lane_width = CS.lateral_plan.LP.lane_width_left if CS.lateral_plan else 0
               # 거리(dRel) 기준으로 가장 가까운 타겟부터 정렬
               sorted_left = sorted([l for l in CS.radar_state.leadsLeft if l.status and 0 < l.dRel < 130.0], key=lambda x: x.dRel)
               for lead in sorted_left:
@@ -1054,7 +1054,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   break  # 유효한 가장 가까운 차량을 찾았으므로 탐색 종료
 
             if CS.radar_state.leadsRight:
-              lane_width = CS.lateral_plan.LP.lane_width_right if CS.lateral_plan else 0
+              # lane_width = CS.lateral_plan.LP.lane_width_right if CS.lateral_plan else 0
               # 거리(dRel) 기준으로 가장 가까운 타겟부터 정렬
               sorted_right = sorted([l for l in CS.radar_state.leadsRight if l.status and 0 < l.dRel < 130.0], key=lambda x: x.dRel)
               for lead in sorted_right:
@@ -1101,7 +1101,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply((1 if hud_control.leadRelSpeed > -0.1 else 2) if values["FF_DETECT"] == 0 else values["FF_DETECT"])
         # FF_LATERAL 테스트
         try:
-          values["FF_LATERAL"] = values["FF_LATERAL"] + int(np.interp(lane_moved, [-15, 15], [-30, 30]))
+          values["FF_LATERAL"] = values["FF_LATERAL"] + np.interp(lane_moved, [-15, 15], [-3.0, 3.0])
         except:
           pass
 
