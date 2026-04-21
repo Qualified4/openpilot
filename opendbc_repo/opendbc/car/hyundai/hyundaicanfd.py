@@ -1049,7 +1049,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 if radar and (v_lead >= 10.0 or (lane_width > 2 and v_lead > -0.5)) and 1 < abs(y_rel) < 4:
                   values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lead.dRel)
                   # LATERAL 테스트
-                  values["LF_DETECT_LATERAL"] = np.interp(create_ccnc_messages.l_lane_f.value, [0, 30], [0, 4.5])
+                  values["LF_DETECT_LATERAL"] = np.interp(create_ccnc_messages.l_lane_f.value, [0, 30], [0, 6.0])
                   values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(1 if lead.vRel > -0.5 else 2)
                   break  # 유효한 가장 가까운 차량을 찾았으므로 탐색 종료
 
@@ -1065,7 +1065,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 if radar and (v_lead >= 10.0 or (lane_width > 2 and v_lead > -0.5)) and 1 < abs(y_rel) < 4:
                   values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(lead.dRel)
                   # LATERAL 테스트
-                  values["RF_DETECT_LATERAL"] = np.interp(create_ccnc_messages.r_lane_f.value, [0, 30], [0, 4.5])
+                  values["RF_DETECT_LATERAL"] = np.interp(create_ccnc_messages.r_lane_f.value, [0, 30], [0, 6.0])
                   values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(1 if lead.vRel > -0.5 else 2)
                   break  # 유효한 가장 가까운 차량을 찾았으므로 탐색 종료
 
