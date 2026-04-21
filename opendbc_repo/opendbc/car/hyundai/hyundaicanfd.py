@@ -1043,7 +1043,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
                 if radar and v_lead >= 5.0 and 1 < abs(y_rel) < 5:
                   values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lead.dRel)
-                  values["LF_DETECT_LATERAL"] = 3
+                  # LATERAL 테스트
+                  values["LF_DETECT_LATERAL"] = y_rel * 10
                   values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(1 if lead.vRel > -0.5 else 2)
                   break  # 유효한 가장 가까운 차량을 찾았으므로 탐색 종료
 
@@ -1057,7 +1058,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
                 if radar and v_lead >= 5.0 and 1 < abs(y_rel) < 5:
                   values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(lead.dRel)
-                  values["RF_DETECT_LATERAL"] = 3
+                  # LATERAL 테스트
+                  values["RF_DETECT_LATERAL"] = y_rel * 10
                   values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(1 if lead.vRel > -0.5 else 2)
                   break  # 유효한 가장 가까운 차량을 찾았으므로 탐색 종료
 
@@ -1085,6 +1087,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         # 2024 쏘나타는 차량 인식 두부만 출력 가능
         values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(hud_control.leadDistance if hud_control.leadDistance > 0 else values["FF_DISTANCE"])
         values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply((1 if hud_control.leadRelSpeed > -0.1 else 2) if values["FF_DETECT"] == 0 else values["FF_DETECT"])
+        # FF_LATERAL 테스트
+        try:
+          values["FF_LATERAL"] = frame // 5 % 100
+        except:
+          pass
 
         # if hud_control.leadDistance > 0 and hud_control.leadRadar == 0:
         #   ff_distance = hud_control.leadDistance
