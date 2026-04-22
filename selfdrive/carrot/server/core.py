@@ -930,13 +930,15 @@ def _filter_branch_list(branches: list[str]) -> list[str]:
     if not name:
       continue
 
-    # local branch: c3-xxx / c4-xxx
-    # remote branch: origin/c3-xxx, ajouatom/c3-xxx, etc.
-    branch_name = name.split("/", 1)[-1] if "/" in name else name
-    if branch_name.startswith(prefix) or branch_name.startswith("carrot"):
+    branch_name = name.split("/")[-1]
+    if (branch_name.startswith(prefix)
+        or branch_name.startswith("c3")
+        or branch_name.startswith("c4")
+        or branch_name.startswith("carrot")):
       filtered.append(name)
 
   return sorted(set(filtered))
+
 
 async def _run_tool_job(job: Dict[str, Any]) -> None:
   action = job["action"]
@@ -1038,7 +1040,7 @@ async def _run_tool_job(job: Dict[str, Any]) -> None:
       if not url:
         _tool_job_finish(job, ok=False, result={"ok": False, "error": "missing url"}, error="missing url")
         return
-      
+
       _tool_job_progress(job, message=f"set-url origin {url}", current=1, total=2)
       rc_set = await _tool_stream_exec(job, ["git", "remote", "set-url", "origin", url], cwd=repo_dir, timeout=30)
       if rc_set != 0:
