@@ -1038,7 +1038,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         try:
           if CS.radar_state:
             if CS.radar_state.leadsLeft:
-              # lane_width = CS.lateral_plan.LP.lane_width_left if CS.lateral_plan else 0
+              lane_width = md.meta.laneWidthLeft
               # 거리(dRel) 기준으로 가장 가까운 타겟부터 정렬
               sorted_left = sorted([l for l in CS.radar_state.leadsLeft if l.status and 0 < l.dRel < 130.0], key=lambda x: x.dRel)
               for lead in sorted_left:
@@ -1054,7 +1054,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   break  # 유효한 가장 가까운 차량을 찾았으므로 탐색 종료
 
             if CS.radar_state.leadsRight:
-              # lane_width = CS.lateral_plan.LP.lane_width_right if CS.lateral_plan else 0
+              lane_width = md.meta.laneWidthRight
               # 거리(dRel) 기준으로 가장 가까운 타겟부터 정렬
               sorted_right = sorted([l for l in CS.radar_state.leadsRight if l.status and 0 < l.dRel < 130.0], key=lambda x: x.dRel)
               for lead in sorted_right:
