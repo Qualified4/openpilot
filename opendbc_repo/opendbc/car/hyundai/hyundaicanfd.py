@@ -1045,7 +1045,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방 차량
           values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(values["FF_DISTANCE"] if values["FF_DISTANCE"] > 0 else hud_control.leadDistance)
           # values["FF_LATERAL"] = np.interp(lane_moved, [-15, 15], [-1.5, 1.5])
-          values["FF_LATERAL"] = apply_deadband(create_ccnc_messages.ff_lateral.apply(hud_control.leadDPath), 0, 0.15)
+          values["FF_LATERAL"] = -apply_deadband(create_ccnc_messages.ff_lateral.apply(hud_control.leadDPath), 0, 0.3)
           values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply(values["FF_DETECT"] if values["FF_DETECT"] > 0 else (1 if hud_control.leadRelSpeed > -0.1 else 2))
 
           fixed_left_car_lateral = np.interp(create_ccnc_messages.l_lane_f.value, [0, 30], [1.5, 4.5])
@@ -1069,7 +1069,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lead.dRel)
               # values["LF_DETECT_LATERAL"] = fixed_left_car_lateral
-              values["LF_DETECT_LATERAL"] = apply_deadband(create_ccnc_messages.lf_lateral.apply(lead.dPath), -3.0, 0.15)
+              values["LF_DETECT_LATERAL"] = apply_deadband(create_ccnc_messages.lf_lateral.apply(lead.dPath), -3.0, 0.3)
               values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(1 if lead.vRel > -0.1 else 2)
             else:
               values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(0)
@@ -1091,7 +1091,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(lead.dRel)
               # values["RF_DETECT_LATERAL"] = fixed_right_car_lateral
-              values["RF_DETECT_LATERAL"] = apply_deadband(create_ccnc_messages.rf_lateral.apply(lead.dPath), 3.0, 0.15)
+              values["RF_DETECT_LATERAL"] = abs(apply_deadband(create_ccnc_messages.rf_lateral.apply(lead.dPath), 3.0, 0.3))
               values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(1 if lead.vRel > -0.1 else 2)
             else:
               values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(0)
