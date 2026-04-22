@@ -1101,7 +1101,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply((1 if hud_control.leadRelSpeed > -0.1 else 2) if values["FF_DETECT"] == 0 else values["FF_DETECT"])
         # FF_LATERAL 테스트
         try:
-          values["FF_LATERAL"] = values["FF_LATERAL"] + np.interp(lane_moved, [-15, 15], [-3.0, 3.0])
+          values["FF_LATERAL"] = values["FF_LATERAL"] + np.interp(lane_moved, [-15, 15], [-2.0, 2.0])
         except:
           pass
 
