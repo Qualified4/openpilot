@@ -100,6 +100,10 @@ def ease_in_interp(x, x_range, y_range, power=2):
   # 결과값 매핑
   return y_range[0] + (y_range[1] - y_range[0]) * eased_t
 
+def apply_deadband(value, center, deadband_radius):
+  # 입력값이 deadband_radius 이내라면 center 반환하고, 범위를 벗어나면 입력값을 그대로 통과
+  return center if abs(value - center) <= deadband_radius else value
+
 def hyundai_crc8(data: bytes) -> int:
   poly = 0x2F
   crc = 0xFF
@@ -810,6 +814,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
     if frame % 5 == 0:
       lat_active = CC.latActive
 
+      v_ego = CS.out.vEgo
+
       if CS.adrv_0x161 is not None:
         main_enabled = CS.out.cruiseState.available
         cruise_enabled = CC.enabled
@@ -909,7 +915,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             drive_mode = 3  # 기본값 (Normal)
 
           # 속도에 비례해 하이라이트 길이 동적으로 조절
-          values["LANE_HIGHLIGHT_DISTANCE"] = int(ease_in_interp(CS.out.vEgo * 3.6, [0, 80], [3, 60], power=1.5))
+          values["LANE_HIGHLIGHT_DISTANCE"] = int(ease_in_interp(v_ego * CV.MS_TO_KPH, [0, 80], [3, 60], power=1.5))
           if CS.out.aEgo < -2.7:
             # 급제동 시 노란색
             values["LANE_HIGHLIGHT"] = 4
@@ -990,7 +996,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           values["LCA_LEFT_ICON"] = 1 if CS.out.leftBlindspot else 4 if CS.out.rightBlinker else 2
           values["LCA_RIGHT_ICON"] = 1 if CS.out.rightBlindspot else 4 if CS.out.leftBlinker else 2
 
-          lane_moved = (rightlane - leftlane) / 2
+          lane_moved = (rightlane - leftlane) / 2.0
         else:
           lane_moved = 0
           create_ccnc_messages.draw_center = False
@@ -1036,74 +1042,96 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         # --- radarState를 이용한 좌/우 전방 차량 감지 ---
         try:
+          # 전방 차량
+          values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(values["FF_DISTANCE"] if values["FF_DISTANCE"] > 0 else hud_control.leadDistance)
+          # values["FF_LATERAL"] = np.interp(lane_moved, [-15, 15], [-1.5, 1.5])
+          values["FF_LATERAL"] = apply_deadband(create_ccnc_messages.ff_lateral.apply(hud_control.leadDPath), 0, 0.15)
+          values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply(values["FF_DETECT"] if values["FF_DETECT"] > 0 else (1 if hud_control.leadRelSpeed > -0.1 else 2))
+
+          fixed_left_car_lateral = np.interp(create_ccnc_messages.l_lane_f.value, [0, 30], [1.5, 4.5])
+          fixed_right_car_lateral = np.interp(create_ccnc_messages.r_lane_f.value, [0, 30], [1.5, 4.5])
+
           if CS.radar_state:
-            if CS.radar_state.leadsLeft:
-              lane_width = md.meta.laneWidthLeft
-              # 거리(dRel) 기준으로 가장 가까운 타겟부터 정렬
-              sorted_left = sorted([l for l in CS.radar_state.leadsLeft if l.status and 0 < l.dRel < 130.0], key=lambda x: x.dRel)
-              for lead in sorted_left:
-                radar = bool(getattr(lead, "radar", False))
-                v_lead = float(getattr(lead, "vLeadK", 0.0))
-                y_rel = float(getattr(lead, "yRel", 0.0))
+            # 전방 좌측 차량
+            left_lane_width = md.meta.laneWidthLeft
 
-                if radar and (v_lead >= 10.0 or (lane_width > 2 and v_lead > -0.5)) and 1 < abs(y_rel) < 4:
-                  values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lead.dRel)
-                  # LATERAL 테스트
-                  values["LF_DETECT_LATERAL"] = np.interp(create_ccnc_messages.l_lane_f.value, [0, 30], [0, 6.0])
-                  values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(1 if lead.vRel > -0.5 else 2)
-                  break  # 유효한 가장 가까운 차량을 찾았으므로 탐색 종료
+            # 대상 차량 필터링
+            filtered_left = [
+              l for l in (CS.radar_state.leadsLeft or [])
+              if (l.status and l.radar and 0 < l.dRel < 130.0 and
+                1 < abs(l.dPath) < 4.5 and
+                (l.vLeadK >= 3.0 or (v_ego < 3 and left_lane_width > 2.2 and l.vLeadK > -0.1)))
+            ]
 
-            if CS.radar_state.leadsRight:
-              lane_width = md.meta.laneWidthRight
-              # 거리(dRel) 기준으로 가장 가까운 타겟부터 정렬
-              sorted_right = sorted([l for l in CS.radar_state.leadsRight if l.status and 0 < l.dRel < 130.0], key=lambda x: x.dRel)
-              for lead in sorted_right:
-                radar = bool(getattr(lead, "radar", False))
-                v_lead = float(getattr(lead, "vLeadK", 0.0))
-                y_rel = float(getattr(lead, "yRel", 0.0))
+            if filtered_left:
+              # 거리순 가장 가까운 것 하나 찾기
+              lead = min(filtered_left, key=lambda x: x.dRel)
 
-                if radar and (v_lead >= 10.0 or (lane_width > 2 and v_lead > -0.5)) and 1 < abs(y_rel) < 4:
-                  values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(lead.dRel)
-                  # LATERAL 테스트
-                  values["RF_DETECT_LATERAL"] = np.interp(create_ccnc_messages.r_lane_f.value, [0, 30], [0, 6.0])
-                  values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(1 if lead.vRel > -0.5 else 2)
-                  break  # 유효한 가장 가까운 차량을 찾았으므로 탐색 종료
+              values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lead.dRel)
+              # values["LF_DETECT_LATERAL"] = fixed_left_car_lateral
+              values["LF_DETECT_LATERAL"] = apply_deadband(create_ccnc_messages.lf_lateral.apply(lead.dPath), -3.0, 0.15)
+              values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(1 if lead.vRel > -0.1 else 2)
+            else:
+              values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(0)
+
+            # 전방 우측 차량
+            right_lane_width = md.meta.laneWidthRight
+
+            # 대상 차량 필터링
+            filtered_right = [
+              l for l in (CS.radar_state.leadsRight or [])
+              if (l.status and l.radar and 0 < l.dRel < 130.0 and
+                1 < abs(l.dPath) < 4.5 and
+                (l.vLeadK >= 3.0 or (v_ego < 3 and right_lane_width > 2.2 and l.vLeadK > -0.1)))
+            ]
+
+            if filtered_right:
+              # 거리순 가장 가까운 것 하나 찾기
+              lead = min(filtered_right, key=lambda x: x.dRel)
+
+              values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(lead.dRel)
+              # values["RF_DETECT_LATERAL"] = fixed_right_car_lateral
+              values["RF_DETECT_LATERAL"] = apply_deadband(create_ccnc_messages.rf_lateral.apply(lead.dPath), 3.0, 0.15)
+              values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(1 if lead.vRel > -0.1 else 2)
+            else:
+              values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(0)
 
           # --- 후측방은 BSD 경고 시 고정 위치에 두부 출력. HDA1은 후측방 레이더 정보가 안채워져서 옴 ---
           if CS.out.leftBlindspot:
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(8)
-            values["LR_DETECT_LATERAL"] = 3
+            values["LR_DETECT_LATERAL"] = fixed_left_car_lateral
             values["LR_DETECT"] = 2
-          elif create_ccnc_messages.lr_distance.value < 20:
-            values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(25)
-            values["LR_DETECT_LATERAL"] = 3
+          elif create_ccnc_messages.lr_distance.value < 25:
+            values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(26)
+            values["LR_DETECT_LATERAL"] = fixed_left_car_lateral
             values["LR_DETECT"] = 1
 
           if CS.out.rightBlindspot:
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(8)
-            values["RR_DETECT_LATERAL"] = 3
+            values["RR_DETECT_LATERAL"] = fixed_right_car_lateral
             values["RR_DETECT"] = 2
-          elif create_ccnc_messages.rr_distance.value < 20:
-            values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(25)
-            values["RR_DETECT_LATERAL"] = 3
+          elif create_ccnc_messages.rr_distance.value < 25:
+            values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(26)
+            values["RR_DETECT_LATERAL"] = fixed_right_car_lateral
             values["RR_DETECT"] = 1
         except:
           values = copy.copy(CS.ccnc_0x162)
+          values["FF_DISTANCE"] = 24
+          values["FF_DETECT"] = 2
           values["LF_DETECT_DISTANCE"] = 12
-          values["LF_DETECT_LATERAL"] = 6
+          values["LF_DETECT_LATERAL"] = 1.5
           values["LF_DETECT"] = 1
           values["RF_DETECT_DISTANCE"] = 12
-          values["RF_DETECT_LATERAL"] = 6
+          values["RF_DETECT_LATERAL"] = 1.5
           values["RF_DETECT"] = 1
+          values["LR_DETECT_DISTANCE"] = 1
+          values["LR_DETECT_LATERAL"] = 3
+          values["LR_DETECT"] = 2
+          values["RR_DETECT_DISTANCE"] = 1
+          values["RR_DETECT_LATERAL"] = 3
+          values["RR_DETECT"] = 2
 
         # 2024 쏘나타는 차량 인식 두부만 출력 가능
-        values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(hud_control.leadDistance if hud_control.leadDistance > 0 else values["FF_DISTANCE"])
-        values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply((1 if hud_control.leadRelSpeed > -0.1 else 2) if values["FF_DETECT"] == 0 else values["FF_DETECT"])
-        # FF_LATERAL 테스트
-        try:
-          values["FF_LATERAL"] = values["FF_LATERAL"] + np.interp(lane_moved, [-15, 15], [-2.0, 2.0])
-        except:
-          pass
 
         # if hud_control.leadDistance > 0 and hud_control.leadRadar == 0:
         #   ff_distance = hud_control.leadDistance
@@ -1115,15 +1143,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         # values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_distance)
         # values["FF_DETECT"] = ff_detect
 
-        _make_ccnc_values(
-          values, CS, lat_active, frame, hud_control,
-          lane_line=False,
-          corner_radar=True,
-          desire=0,
-          # 필요하면 162도 깜빡임 적용(원래 코드처럼 LR/RR만)
-          blink_pairs=None,
-          blink_t=1.0
-        )
+        # _make_ccnc_values(
+        #   values, CS, lat_active, frame, hud_control,
+        #   lane_line=False,
+        #   corner_radar=True,
+        #   desire=0,
+        #   blink_pairs=None,
+        #   blink_t=1.0
+        # )
 
         if (left_lane_warning and not CS.out.leftBlinker) or (right_lane_warning and not CS.out.rightBlinker):
           values["VIBRATE"] = 1
@@ -1174,12 +1201,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 # 차선 넘어감 감지 (차선 넘어갈 때는 차선 2개가 같이 움직여서 왼쪽 하나만 확인해도 됨)
 create_ccnc_messages.draw_center = False
 create_ccnc_messages.prev_l_target = 15.0
-create_ccnc_messages.lane_changing = 0
-create_ccnc_messages.lane_moved = 0
 # 차선 노이즈 필터
 create_ccnc_messages.l_lane_f = NoiseFilter(3, 15, 0.2)
 create_ccnc_messages.r_lane_f = NoiseFilter(3, 15, 0.2)
 # 차량 거리 필터
+create_ccnc_messages.ff_lateral = NoiseFilter(3,   0, [0.15, 0.9], [0, 1.5])
+create_ccnc_messages.lf_lateral = NoiseFilter(3, 1.5, [0.15, 0.9], [0, 1.5])
+create_ccnc_messages.rf_lateral = NoiseFilter(3, 1.5, [0.15, 0.9], [0, 1.5])
 create_ccnc_messages.ff_distance = NoiseFilter(5, 0, [0.15, 0.9], [1.0, 4.0])
 create_ccnc_messages.lf_distance = NoiseFilter(5, 0, [0.15, 0.9], [1.0, 4.0])
 create_ccnc_messages.rf_distance = NoiseFilter(5, 0, [0.15, 0.9], [1.0, 4.0])
