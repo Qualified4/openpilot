@@ -22,10 +22,30 @@ The developer does **not take any responsibility** for real-world installation o
 * **CAN FD vehicles with HDA2 (ADAS module equipped)** Use an aftermarket harness, connected to the ADAS module.
 * Please note that not all vehicles are supported.
 
-**Installation**
-* carrot, carrot-wip: C4, C3X(original device)
-* c3, c3-wip: C3, C3X (include clone device)
-* url: i.carrotpilot.app/branch_name (ex: i.carrotpilot.app/carrot)
+---
+
+## Installation
+
+### Branch types
+- **Standard branch** (`carrot`, `c3`)  
+  Main branch for normal use
+
+- **WIP branch** (`carrot-wip`, `c3-wip`)  
+  Work-in-progress branch with newer features and possible bugs
+
+- **Prebuilt branch** (`carrot-pre`, `c3-pre`)  
+  Prebuilt branch for simpler and faster installation
+
+### Supported devices
+- **carrot / carrot-wip / carrot-pre**  
+  For **C4** and **C3X (original devices)**
+
+- **c3 / c3-wip / c3-pre**  
+  For **C3** and **C3X (including clone devices)**
+
+### Installation URL
+- Format: `i.carrotpilot.app/branch_name`
+- Example: `i.carrotpilot.app/carrot`
 
 <div align="center" style="text-align: center;">
 
