@@ -697,7 +697,7 @@ class ModelRenderer(Widget):
 
       if item.is_star:
         tw = rl.measure_text(item.text, font_size)
-        draw_text_ui_style(item.text, item.x, item.y, font_size, item.color, font=self._font_display, border_width=1.0, shadow_offset=8.0, align="center", y_offset=0.0)
+        draw_text_ui_style(item.text, item.x, item.y, font_size, item.color, font=self._font_display, border_width=1.0, shadow_offset=0.0, align="center", y_offset=0.0)
         continue
 
       # 박스
@@ -721,7 +721,7 @@ class ModelRenderer(Widget):
       #  rl.WHITE,
       #)
 
-      draw_text_ui_style(item.text, tx, ty, font_size, rl.WHITE, font=self._font_display, border_width=1.0, shadow_offset=8.0, align="left_top", y_offset=0.0)
+      draw_text_ui_style(item.text, tx, ty, font_size, rl.WHITE, font=self._font_display, border_width=1.0, shadow_offset=0.0, align="left_top", y_offset=0.0)
 
 
 

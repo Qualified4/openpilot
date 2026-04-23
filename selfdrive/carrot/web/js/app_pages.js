@@ -28,9 +28,6 @@ const settingGroupValueCache = new Map();
 const settingGroupValuePromises = new Map();
 
 let ORIGIN_USERNAME = "origin";
-let BRANCH_REMOTE_NAMES = ["origin"];
-let BRANCH_REMOTE_OWNERS = Object.create(null);
-let BRANCH_GROUP_OPEN = Object.create(null);
 
 function hasFreshPageData(lastLoadedAt, ttlMs = PAGE_DATA_TTL_MS) {
   return Number.isFinite(lastLoadedAt) && lastLoadedAt > 0 && (Date.now() - lastLoadedAt) < ttlMs;
@@ -2358,7 +2355,7 @@ function showError(action, error) {
   const msg = (typeof error === "object" && error.message) ? error.message : String(error);
   toolsMetaSet(title);
   toolsProgressSet(null, { active: false });
-  toolsLogNotice(msg, { label: action, meta: false });
+  appAlert(msg, { title, copyText: `[${action}] ${msg}` });
 }
 
 let branchPickerCloseTimer = null;
@@ -2699,9 +2696,9 @@ function initToolsPage() {
     try {
       const res = await postJson("/api/tools", { action: "git_remote_add", name: remoteName, url: urlInput.trim() });
       if (!res.ok) throw new Error(res.error || "Failed to add remote");
-      toolsLogNotice(LANG === "ko" ? `리모트 '${remoteName}' 추가 완료` : `Remote '${remoteName}' added`, { label: "git_remote_add" });
+      alert(LANG === "ko" ? `리모트 '${remoteName}' 추가 완료` : `Remote '${remoteName}' added`);
     } catch (e) {
-      showError("git_remote_add", e);
+      alert("Error: " + e.message);
     }
   });
 
@@ -2716,7 +2713,7 @@ function initToolsPage() {
       const commits = res.commits || [];
       const currentCommit = res.current_commit || "";
       if (!commits.length) {
-        toolsLogNotice("No commits found", { label: "git_log" });
+        alert("No commits found");
         return;
       }
 
@@ -2747,7 +2744,7 @@ function initToolsPage() {
       const resetRes = await postJson("/api/tools", { action: "git_reset", mode: "hard", target: selected });
       if (!resetRes.ok) throw new Error(resetRes.error || "Reset failed");
       
-      toolsLogNotice(LANG === "ko" ? "이동 완료" : "Checkout complete", { label: "git_log" });
+      alert(LANG === "ko" ? "이동 완료" : "Checkout complete");
       await refreshToolsMetaInfo();
     } catch (e) {
       showError("git_log", e);
@@ -2767,7 +2764,7 @@ function initToolsPage() {
       const fetchResult = await runTool("git_reset_repo_fetch");
       const branches = fetchResult.branches || [];
       if (!branches.length) {
-        toolsLogNotice(LANG === "ko" ? "브랜치를 찾을 수 없습니다" : "No branches found", { label: "git_reset_repo" });
+        alert(LANG === "ko" ? "브랜치를 찾을 수 없습니다" : "No branches found");
         return;
       }
 
@@ -2783,7 +2780,7 @@ function initToolsPage() {
 
       // Phase 3: checkout selected branch
       await runTool("git_reset_repo_checkout", { branch: selected });
-      toolsLogNotice(LANG === "ko" ? `'${selected}' 브랜치로 초기화 완료` : `Reset to '${selected}' complete`, { label: "git_reset_repo" });
+      alert(LANG === "ko" ? `'${selected}' 브랜치로 초기화 완료` : `Reset to '${selected}' complete`);
       await refreshToolsMetaInfo();
 
       if (await appConfirm(UI_STRINGS[LANG].confirm_reboot || "Reboot now?", {
@@ -2994,7 +2991,7 @@ function initToolsPage() {
         if (j.ok) SETTINGS = j;
       }
       if (!SETTINGS || !SETTINGS.items_by_group) {
-        toolsLogNotice("Settings not loaded", { label: "copy settings" });
+        alert("Settings not loaded");
         return;
       }
       const allNames = getAllSettingNames(SETTINGS);
@@ -3002,9 +2999,9 @@ function initToolsPage() {
       const lines = allNames.map(n => `${n}=${values[n] ?? ""}`);
       const text = lines.join("\n");
       copyToClipboard(text);
-      toolsLogNotice(LANG === "ko" ? `${allNames.length}개 파라미터 복사됨` : `${allNames.length} params copied`, { label: "copy settings" });
+      alert(LANG === "ko" ? `${allNames.length}개 파라미터 복사됨` : `${allNames.length} params copied`);
     } catch (e) {
-      showError("copy settings", e);
+      alert("Copy failed: " + e.message);
     }
   });
 
@@ -3016,7 +3013,7 @@ function initToolsPage() {
         if (j.ok) SETTINGS = j;
       }
       if (!SETTINGS || !SETTINGS.items_by_group) {
-        toolsLogNotice("Settings not loaded", { label: "view settings" });
+        alert("Settings not loaded");
         return;
       }
       const allNames = getAllSettingNames(SETTINGS);
@@ -3028,7 +3025,7 @@ function initToolsPage() {
         copyText: text,
       });
     } catch (e) {
-      showError("view settings", e);
+      alert("View failed: " + e.message);
     }
   });
 
@@ -3089,13 +3086,13 @@ async function loadBranchesAndShow() {
   appBranchPickerList.innerHTML = "";
   BRANCHES = [];
   CURRENT_BRANCH_NAME = "";
-  resetBranchRemoteContext();
+  ORIGIN_USERNAME = "origin";
 
   try {
     const v = await bulkGet(["GitRemote"]);
     if (v && v.GitRemote) {
-      const owner = parseGitHubOwner(v.GitRemote);
-      if (owner) ORIGIN_USERNAME = owner;
+      const match = String(v.GitRemote).match(/github\.com\/([^\/]+)/);
+      if (match) ORIGIN_USERNAME = match[1];
     }
   } catch(e) {}
 
@@ -3150,39 +3147,14 @@ function renderBranchList() {
     count.textContent = branchCountLabel(group.items.length);
     head.appendChild(count);
 
-    head.onclick = () => {
-      BRANCH_GROUP_OPEN[group.key] = !open;
-      renderBranchList();
-    };
-    section.appendChild(head);
-
-    if (open) {
-      const items = document.createElement("div");
-      items.className = "app-branch-picker__groupItems";
-
-      for (const item of group.items) {
-        const b = document.createElement("button");
-        b.className = "btn groupBtn app-branch-picker__item";
-        if (item.current) {
-          b.classList.add("is-current");
-        }
-        b.title = item.ref;
-
-        const label = document.createElement("span");
-        label.className = "app-branch-picker__label";
-        label.textContent = item.label;
-        b.appendChild(label);
-
-        if (item.current) {
-          const badge = document.createElement("span");
-          badge.className = "app-branch-picker__badge";
-          badge.textContent = getUIText("branch_current", "Current");
-          b.appendChild(badge);
-        }
-
-        b.onclick = () => onSelectBranch(item.ref);
-        items.appendChild(b);
-      }
+    const label = document.createElement("span");
+    label.className = "app-branch-picker__label";
+    let displayLabel = br;
+    if (br.startsWith("origin/")) {
+      displayLabel = br.replace("origin/", `${ORIGIN_USERNAME}/`);
+    }
+    label.textContent = displayLabel;
+    b.appendChild(label);
 
       section.appendChild(items);
     }
