@@ -1131,6 +1131,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           values["RR_DETECT_LATERAL"] = 3
           values["RR_DETECT"] = 2
 
+        # 혹시 모르니 테스트코드.. 비깜 시 FF 값 덮어쓰기
+        if CS.out.leftBlinker and CS.out.rightBlinker:
+          values["FF_DISTANCE"] = 24
+          values["FF_DETECT"] = 2
+          values["FF_LATERAL"] = 0
         # 2024 쏘나타는 차량 인식 두부만 출력 가능
 
         # if hud_control.leadDistance > 0 and hud_control.leadRadar == 0:
