@@ -967,7 +967,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if lat_enabled:
             # md.position.y[-1]: 약 100m 앞의 예상 y 위치
             # md.position.y[0]: 현재 차량의 y 위치
-            y_diff = md.position.y[-1] - md.position.y[0]
+            y_diff = md.position.y[10] - md.position.y[0]
 
             # 1. 방향 결정 (0: 왼쪽, 1: 오른쪽)
             # y_diff가 양수(+)이면 오른쪽으로 굽은 길 -> 0
@@ -977,7 +977,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             # 2. 곡률 강도 계산 (0~31 범위)
             # y_diff의 절대값에 감도 계수를 곱함
             curvature_raw = abs(y_diff) * 1.0
-            curvature_val = min(15, int(round(curvature_raw)))
+            curvature_val = min(15, int(round(curvature_raw))) + (-1 if y_diff > 0 else 0)
 
             values["LANELINE_CURVATURE"] = curvature_val
             values["LANELINE_CURVATURE_DIRECTION"] = direction
@@ -1149,8 +1149,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               except:
                 # 모델 데이터 예외 시 기본값 설정 (차폭 3.0m 기준)
-                left_lane_y, right_lane_y = 1.5, -1.5
-                left_outer_lane_y, right_outer_lane_y = 4.5, -4.5
+                left_lane_y, right_lane_y = -1.5, 1.5
+                left_outer_lane_y, right_outer_lane_y = -4.5, 4.5
 
               # 전방 차량
               if right_lane_y < l.dPath < left_lane_y:
@@ -1282,8 +1282,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   return ret
 
 # 차선 노이즈 필터
-create_ccnc_messages.l_lane_f = NoiseFilter(3, 15, alpha_range=0.5, error_range=25)
-create_ccnc_messages.r_lane_f = NoiseFilter(3, 15, alpha_range=0.5, error_range=25)
+create_ccnc_messages.l_lane_f = NoiseFilter(3, 15, alpha_range=0.5, error_range=10)
+create_ccnc_messages.r_lane_f = NoiseFilter(3, 15, alpha_range=0.5, error_range=10)
 # 차량 거리 필터
 create_ccnc_messages.ff_distance = NoiseFilter(5, 0, alpha_range=[0.2, 0.9], error_range=[1.0, 4.0])
 create_ccnc_messages.lf_distance = NoiseFilter(5, 0, alpha_range=[0.2, 0.9], error_range=[1.0, 4.0])
