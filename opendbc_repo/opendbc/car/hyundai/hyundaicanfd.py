@@ -970,9 +970,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             y_diff = md.position.y[-1] - md.position.y[0]
 
             # 1. 방향 결정 (0: 왼쪽, 1: 오른쪽)
-            # y_diff가 양수(+)이면 왼쪽으로 굽은 길 -> 0
-            # y_diff가 음수(-)이면 오른쪽으로 굽은 길 -> 1
-            direction = 1 if y_diff < 0 else 0
+            # y_diff가 양수(+)이면 오른쪽으로 굽은 길 -> 0
+            # y_diff가 음수(-)이면 왼쪽으로 굽은 길 -> 1
+            direction = 0 if y_diff < 0 else 1
 
             # 2. 곡률 강도 계산 (0~31 범위)
             # y_diff의 절대값에 감도 계수를 곱함
