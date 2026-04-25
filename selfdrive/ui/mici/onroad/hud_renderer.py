@@ -300,6 +300,7 @@ class HudRenderer(Widget):
     self._draw_steering_wheel_icon(wheel_txt, wheel_pos_x, pos_y)
     self._draw_wheel_side_info(wheel_txt, info_pos_x, pos_y)
     self._draw_infos(extra_info_pos_x)
+    self._draw_torque_infos(int(rect.x + rect.width - 5), int(rect.y + rect.height))
 
   def _draw_steering_wheel_icon(self, wheel_txt, pos_x: int, pos_y: int) -> None:
     rotation = -ui_state.sm['carState'].steeringAngleDeg
@@ -512,6 +513,28 @@ class HudRenderer(Widget):
     info_text = f"{cpu_text} | {sr_text} | {ld_text}"
 
     draw_text_ui_style(info_text, pos_x, 0, FONT_SIZE, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=2.0, shadow_offset = 0, align="right_top", y_offset=0.0)
+
+  def _draw_torque_infos(self, pos_x: int, pos_y: int):
+    FONT_SIZE = 18
+
+    cpu_text = self._get_cpu_temp_text()
+
+    try:
+      accel_factor = float(ui_state.sm['liveTorqueParameters'].latAccelFactorFiltered)
+      af_text = f"{accel_factor:.2f}"
+    except Exception:
+      af_text = "-.--"
+
+    try:
+      friction = float(ui_state.sm["liveTorqueParameters"].frictionCoefficientFiltered)
+      fr_text = f"{friction:.2f}"
+    except Exception:
+      fr_text = "-.--"
+
+    fr_text_size = measure_text_cached(self._font_display, fr_text, FONT_SIZE)
+
+    draw_text_ui_style(af_text, pos_x, pos_y - fr_text_size.y - 3, FONT_SIZE, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=2.0, shadow_offset = 0, align="right_bottom", y_offset=0.0)
+    draw_text_ui_style(fr_text, pos_x, pos_y, FONT_SIZE, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=2.0, shadow_offset = 0, align="right_bottom", y_offset=0.0)
 
   def _get_gear_text(self) -> str:
     sm = ui_state.sm
