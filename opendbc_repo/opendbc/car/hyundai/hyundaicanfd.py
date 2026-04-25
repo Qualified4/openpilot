@@ -1035,7 +1035,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             r_target = 30 - l_target
 
           # 차선 변경 시 차로 하이라이트 로직
-          if lane_changing in (3, 4):
+          if desire in (3, 4):
             if not create_ccnc_messages.draw_center:
               if abs(l_target - create_ccnc_messages.prev_l_target) > 15:
                 # 위상 변화 시 보간 제거를 위해 버퍼 및 필터 즉시 초기화
@@ -1048,9 +1048,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               values["LANE_HIGHLIGHT"] = 1
               values["LANE_HIGHLIGHT_DISTANCE"] = 60
             # 위상 변화 전 대상 차로 강조
-            elif lane_changing == 3:
+            elif desire == 3:
               values["LANE_LEFT"] = 1
-            elif lane_changing == 4:
+            elif desire == 4:
               values["LANE_RIGHT"] = 1
           else:
             # 차선 변경 상태가 아닐 때는 플래그 초기화
@@ -1269,9 +1269,9 @@ create_ccnc_messages.r_lane_f = NoiseFilter(3, 15, alpha_range=0.2)
 create_ccnc_messages.ff_distance = NoiseFilter(5, 0, alpha_range=[0.15, 0.9], error_range=[1.0, 4.0])
 create_ccnc_messages.lf_distance = NoiseFilter(5, 0, alpha_range=[0.15, 0.9], error_range=[1.0, 4.0])
 create_ccnc_messages.rf_distance = NoiseFilter(5, 0, alpha_range=[0.15, 0.9], error_range=[1.0, 4.0])
-create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=[0.05, 0.2], error_range=[0, 1.5])
-create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=[0.05, 0.2], error_range=[0, 1.5])
-create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=[0.05, 0.2], error_range=[0, 1.5])
+create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=[0.15, 0.2], error_range=[0, 1.5])
+create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=[0.15, 0.2], error_range=[0, 1.5])
+create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=[0.15, 0.2], error_range=[0, 1.5])
 create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(-0.1, -0.3), states=(1, 2))
 create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(-0.1, -0.3), states=(1, 2))
 create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(-0.1, -0.3), states=(1, 2))
