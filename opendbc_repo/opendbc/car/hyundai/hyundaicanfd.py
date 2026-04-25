@@ -964,23 +964,29 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         # curvature 표시 (주행 경로의 시작과 끝 y 좌표 차이 이용)
         try:
-          # md.position.y[-1]: 약 100m 앞의 예상 y 위치
-          # md.position.y[0]: 현재 차량의 y 위치
-          y_diff = md.position.y[-1] - md.position.y[0]
+          if lat_enabled:
+            # md.position.y[-1]: 약 100m 앞의 예상 y 위치
+            # md.position.y[0]: 현재 차량의 y 위치
+            y_diff = md.position.y[-1] - md.position.y[0]
 
-          # 1. 방향 결정 (0: 왼쪽, 1: 오른쪽)
-          # y_diff가 양수(+)이면 왼쪽으로 굽은 길 -> 0
-          # y_diff가 음수(-)이면 오른쪽으로 굽은 길 -> 1
-          direction = 1 if y_diff < 0 else 0
+            # 1. 방향 결정 (0: 왼쪽, 1: 오른쪽)
+            # y_diff가 양수(+)이면 왼쪽으로 굽은 길 -> 0
+            # y_diff가 음수(-)이면 오른쪽으로 굽은 길 -> 1
+            direction = 1 if y_diff < 0 else 0
 
-          # 2. 곡률 강도 계산 (0~31 범위)
-          # y_diff의 절대값에 감도 계수를 곱함
-          curvature_raw = abs(y_diff) * 1.0
-          curvature_val = min(15, int(round(curvature_raw)))
+            # 2. 곡률 강도 계산 (0~31 범위)
+            # y_diff의 절대값에 감도 계수를 곱함
+            curvature_raw = abs(y_diff) * 1.0
+            curvature_val = min(15, int(round(curvature_raw)))
 
-          values["LANELINE_CURVATURE"] = curvature_val
-          values["LANELINE_CURVATURE_DIRECTION"] = direction
-
+            values["LANELINE_CURVATURE"] = curvature_val
+            values["LANELINE_CURVATURE_DIRECTION"] = direction
+          else:
+            # 모델 데이터 예외 발생 시 핸들 각도 기반 백업
+            steering_curvature = CS.out.steeringAngleDeg / 3
+            values["LANELINE_CURVATURE"] = min(15, abs(int(round(steering_curvature))))
+            # 핸들 각도가 양수(+)면 왼쪽 조향 -> 0, 음수(-)면 오른쪽 조향 -> 1
+            values["LANELINE_CURVATURE_DIRECTION"] = 1 if steering_curvature < 0 else 0
         except:
           # 모델 데이터 예외 발생 시 핸들 각도 기반 백업
           steering_curvature = CS.out.steeringAngleDeg / 3
@@ -1067,8 +1073,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             leftlane = max(0, min(30, int(round(l_target))))
             rightlane = max(0, min(30, int(round(r_target))))
 
-            values["LANELINE_LEFT_POSITION"] = leftlane
-            values["LANELINE_RIGHT_POSITION"] = rightlane
+            # 필터 적용 (모델 추출 값이어도 바들거림..)
+            values["LANELINE_LEFT_POSITION"] = create_ccnc_messages.l_lane_f.apply(leftlane)
+            values["LANELINE_RIGHT_POSITION"] = create_ccnc_messages.r_lane_f.apply(rightlane)
             values["LCA_LEFT_ICON"] = 1 if CS.out.leftBlindspot else 4 if CS.out.rightBlinker else 2
             values["LCA_RIGHT_ICON"] = 1 if CS.out.rightBlindspot else 4 if CS.out.leftBlinker else 2
         except:
@@ -1275,18 +1282,18 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   return ret
 
 # 차선 노이즈 필터
-create_ccnc_messages.l_lane_f = NoiseFilter(3, 15, alpha_range=0.2, error_range=25)
-create_ccnc_messages.r_lane_f = NoiseFilter(3, 15, alpha_range=0.2, error_range=25)
+create_ccnc_messages.l_lane_f = NoiseFilter(3, 15, alpha_range=0.5, error_range=25)
+create_ccnc_messages.r_lane_f = NoiseFilter(3, 15, alpha_range=0.5, error_range=25)
 # 차량 거리 필터
-create_ccnc_messages.ff_distance = NoiseFilter(5, 0, alpha_range=[0.15, 0.9], error_range=[1.0, 4.0])
-create_ccnc_messages.lf_distance = NoiseFilter(5, 0, alpha_range=[0.15, 0.9], error_range=[1.0, 4.0])
-create_ccnc_messages.rf_distance = NoiseFilter(5, 0, alpha_range=[0.15, 0.9], error_range=[1.0, 4.0])
-create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=[0.15, 0.2], error_range=[0, 1.5])
-create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=[0.15, 0.2], error_range=[0, 1.5])
-create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=[0.15, 0.2], error_range=[0, 1.5])
-create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(-0.1, -0.3), states=(1, 2))
-create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(-0.1, -0.3), states=(1, 2))
-create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(-0.1, -0.3), states=(1, 2))
+create_ccnc_messages.ff_distance = NoiseFilter(5, 0, alpha_range=[0.2, 0.9], error_range=[1.0, 4.0])
+create_ccnc_messages.lf_distance = NoiseFilter(5, 0, alpha_range=[0.2, 0.9], error_range=[1.0, 4.0])
+create_ccnc_messages.rf_distance = NoiseFilter(5, 0, alpha_range=[0.2, 0.9], error_range=[1.0, 4.0])
+create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=[0.2, 0.3], error_range=[0, 1.5])
+create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=[0.2, 0.3], error_range=[0, 1.5])
+create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=[0.2, 0.3], error_range=[0, 1.5])
+create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(-0.1, -0.5), states=(1, 2))
+create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(-0.1, -0.5), states=(1, 2))
+create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(-0.1, -0.5), states=(1, 2))
 
 create_ccnc_messages.lr_distance = NoiseFilter(5, 15, alpha_range=0.05)
 create_ccnc_messages.rr_distance = NoiseFilter(5, 15, alpha_range=0.05)
