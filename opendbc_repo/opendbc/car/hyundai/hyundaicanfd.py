@@ -125,18 +125,22 @@ class NoiseFilter:
 
   def reset(self, new_value=None):
     """값을 초기화하고 버퍼를 완전히 비웁니다."""
-    val = new_value if new_value is not None else self._default_value
-    self._filtered_value = val
+    self._filtered_value = new_value if new_value is not None else self._default_value
     self._buffer.clear()
 
   def _get_median(self):
     buf_len = len(self._buffer)
     if buf_len == 0:
         return self._filtered_value # 버퍼가 비어있으면 현재 필터값 반환
-
     # 꽉 차지 않은 상태(초기 진입 시)에도 현재 데이터 개수 기준으로 중간값 산출
-    sorted_buf = sorted(self._buffer)
-    return sorted_buf[buf_len // 2]
+    return sorted(self._buffer)[buf_len // 2]
+
+  def _check_hard_reset(self, target):
+    step_err = abs(target - self._filtered_value)
+    if step_err > self._err_max:
+      self.reset(target)  # 버퍼 비우고 target으로 즉시 리셋
+      return True
+    return False
 
   def _apply_fixed(self, target):
     self._buffer.append(target)
@@ -145,25 +149,28 @@ class NoiseFilter:
     return self._filtered_value
 
   def _apply_step(self, target):
+    if self._check_hard_reset(target):
+      return self._filtered_value
+
     self._buffer.append(target)
     med = self._get_median()
-    err = abs(med - self._filtered_value)
-    if err > self._err_max:
-      self.reset(target)
-    else:
-      self._filtered_value = (self._a_min * med) + ((1.0 - self._a_min) * self._filtered_value)
+
+    self._filtered_value = (self._a_min * med) + ((1.0 - self._a_min) * self._filtered_value)
     return self._filtered_value
 
   def _apply_adaptive(self, target):
+    if self._check_hard_reset(target):
+      return self._filtered_value
+
     self._buffer.append(target)
     med = self._get_median()
-    err = abs(med - self._filtered_value)
-    if err > self._err_max:
-      self.reset(target)
-      return self._filtered_value
+
+    track_err = abs(med - self._filtered_value)
+
     # 오차 정도에 따라 알파값 보간
-    alpha = float(np.interp(err, [self._err_min, self._err_max], [self._a_min, self._a_max]))
+    alpha = float(np.interp(track_err, [self._err_min, self._err_max], [self._a_min, self._a_max]))
     self._filtered_value = (alpha * med) + ((1.0 - alpha) * self._filtered_value)
+
     return self._filtered_value
 
   @property
@@ -955,10 +962,31 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         if values["ALERTS_5"] in [11] and CS.softHoldActive == 0:
           values["ALERTS_5"] = 0
 
-        # curvature 표시(0x161쪽 기존 로직 유지)
-        curvature = round(CS.out.steeringAngleDeg / 3)
-        values["LANELINE_CURVATURE"] = (min(abs(curvature), 15) + (-1 if curvature < 0 else 0))
-        values["LANELINE_CURVATURE_DIRECTION"] = 1 if curvature < 0 else 0
+        # curvature 표시 (주행 경로의 시작과 끝 y 좌표 차이 이용)
+        try:
+          # md.position.y[-1]: 약 100m 앞의 예상 y 위치
+          # md.position.y[0]: 현재 차량의 y 위치
+          y_diff = md.position.y[-1] - md.position.y[0]
+
+          # 1. 방향 결정 (0: 왼쪽, 1: 오른쪽)
+          # y_diff가 양수(+)이면 왼쪽으로 굽은 길 -> 0
+          # y_diff가 음수(-)이면 오른쪽으로 굽은 길 -> 1
+          direction = 1 if y_diff < 0 else 0
+
+          # 2. 곡률 강도 계산 (0~31 범위)
+          # y_diff의 절대값에 감도 계수를 곱함
+          curvature_raw = abs(y_diff) * 1.0
+          curvature_val = min(15, int(round(curvature_raw)))
+
+          values["LANELINE_CURVATURE"] = curvature_val
+          values["LANELINE_CURVATURE_DIRECTION"] = direction
+
+        except:
+          # 모델 데이터 예외 발생 시 핸들 각도 기반 백업
+          steering_curvature = CS.out.steeringAngleDeg / 3
+          values["LANELINE_CURVATURE"] = min(15, abs(int(round(steering_curvature))))
+          # 핸들 각도가 양수(+)면 왼쪽 조향 -> 0, 음수(-)면 오른쪽 조향 -> 1
+          values["LANELINE_CURVATURE_DIRECTION"] = 1 if steering_curvature < 0 else 0
 
         lane_color = 6 if md is not None and md.meta.laneChangeAvailableLeft else 2
         if lane_line_check >= 1:
@@ -1012,81 +1040,40 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if not CS.out.parkingBrake:
             values["LANE_HIGHLIGHT"] = 2
 
-        # 차선 위치 갱신: 횡컨 때만 적용
-        if lat_enabled and CS.ccnc_0x1b5 is not None:
-          leftlaneraw = CS.ccnc_0x1b5["LEFT_POSITION"]
-          rightlaneraw = CS.ccnc_0x1b5["RIGHT_POSITION"]
-          l_qual = CS.ccnc_0x1b5["LEFT_QUAL"]
-          r_qual = CS.ccnc_0x1b5["RIGHT_QUAL"]
-
-          scale_per_m = 15 / 1.7
-          l_target = abs(15 + (leftlaneraw - 1.7) * scale_per_m)
-          r_target = abs(15 + (rightlaneraw - 1.7) * scale_per_m)
-
-          # 차선 Raw 품질 검증
-          l_valid = l_qual in (2, 3) and not math.isclose(leftlaneraw, -2.0248375) and leftlaneraw != 0
-          r_valid = r_qual in (2, 3) and not math.isclose(rightlaneraw, 2.0248375) and rightlaneraw != 0
-
-          if not l_valid and not r_valid:
-            l_target = r_target = 15.0
-          elif not l_valid:
-            l_target = 30 - r_target
-          elif not r_valid:
-            r_target = 30 - l_target
-
-          # 차선 변경 시 차로 하이라이트 로직
-          if desire in (3, 4):
-            if not create_ccnc_messages.draw_center:
-              if abs(l_target - create_ccnc_messages.prev_l_target) > 15:
-                # 위상 변화 시 보간 제거를 위해 버퍼 및 필터 즉시 초기화
-                create_ccnc_messages.l_lane_f.reset(l_target)
-                create_ccnc_messages.r_lane_f.reset(r_target)
-                create_ccnc_messages.draw_center = True
-
-            # 위상 변화 후 중앙 차로 강조
-            if create_ccnc_messages.draw_center:
-              values["LANE_HIGHLIGHT"] = 1
-              values["LANE_HIGHLIGHT_DISTANCE"] = 60
-            # 위상 변화 전 대상 차로 강조
-            elif desire == 3:
-              values["LANE_LEFT"] = 1
-            elif desire == 4:
-              values["LANE_RIGHT"] = 1
-          else:
-            # 차선 변경 상태가 아닐 때는 플래그 초기화
-            create_ccnc_messages.draw_center = False
-
-          create_ccnc_messages.prev_l_target = l_target
-
-          # 노이즈 제거 필터 적용
-          leftlane = create_ccnc_messages.l_lane_f.apply(l_target)
-          rightlane = create_ccnc_messages.r_lane_f.apply(r_target)
-
-          # 최종 출력 및 정규화
-          total = leftlane + rightlane
-          if total > 20:
-            leftlane = max(0, min(30, int(round(leftlane))))
-            rightlane = max(0, min(30, int(round(rightlane))))
-          # 차선 폭이 너무 좁게 인식 되면 최소 2미터 보장
-          elif rightlane > leftlane:
-            leftlane = 20 - rightlane
-          else:
-            rightlane = 20 - leftlane
-
-          values["LANELINE_LEFT_POSITION"] = leftlane
-          values["LANELINE_RIGHT_POSITION"] = rightlane
-          values["LCA_LEFT_ICON"] = 1 if CS.out.leftBlindspot else 4 if CS.out.rightBlinker else 2
-          values["LCA_RIGHT_ICON"] = 1 if CS.out.rightBlindspot else 4 if CS.out.leftBlinker else 2
-
-        else:
-          create_ccnc_messages.draw_center = False
-          create_ccnc_messages.prev_l_target = 15.0
-          create_ccnc_messages.l_lane_f.reset()
-          create_ccnc_messages.r_lane_f.reset()
-          if desire == 3:
+        # 차선 변경 시 차로 하이라이트 로직
+        if desire in (3, 4):
+          # 차선 변경 후 중앙 차로 강조
+          if md.meta.laneChangeState == LaneChangeState.laneChangeFinishing:
+            values["LANE_HIGHLIGHT"] = 1
+            values["LANE_HIGHLIGHT_DISTANCE"] = 60
+          # 차선 변경 전 대상 차로 강조
+          elif desire == 3:
             values["LANE_LEFT"] = 1
           elif desire == 4:
             values["LANE_RIGHT"] = 1
+
+        # 차선 위치 갱신: 횡컨 때만 적용
+        try:
+          if lat_enabled and md is not None and len(md.laneLines) == 4 and len(md.laneLines[1].y) > 0:
+            # 차량 중심으로부터의 차선 거리(m)
+            left_lane_y = abs(md.laneLines[1].y[0])
+            right_lane_y = abs(md.laneLines[2].y[0])
+
+            # 0~3.0m 범위를 0~30 값으로 매핑
+            l_target = np.interp(left_lane_y, [0, 3.0], [0, 30])
+            r_target = np.interp(right_lane_y, [0, 3.0], [0, 30])
+
+            # 정수로 변환
+            leftlane = max(0, min(30, int(round(l_target))))
+            rightlane = max(0, min(30, int(round(r_target))))
+
+            values["LANELINE_LEFT_POSITION"] = leftlane
+            values["LANELINE_RIGHT_POSITION"] = rightlane
+            values["LCA_LEFT_ICON"] = 1 if CS.out.leftBlindspot else 4 if CS.out.rightBlinker else 2
+            values["LCA_RIGHT_ICON"] = 1 if CS.out.rightBlindspot else 4 if CS.out.leftBlinker else 2
+        except:
+          values["LANELINE_LEFT_POSITION"] = 30
+          values["LANELINE_RIGHT_POSITION"] = 30
 
         ret.append(packer.make_can_msg("ADRV_0x161", CAN.ECAN, values, rx_counter = rx_counter))
 
@@ -1126,10 +1113,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           lf_lead = None
           rf_lead = None
 
-          left_lane_offset = np.interp(create_ccnc_messages.l_lane_f.value, [0, 30], [1.5, 4.5])
-          right_lane_offset = np.interp(create_ccnc_messages.r_lane_f.value, [0, 30], [1.5, 4.5])
-          center_lane_offset = (right_lane_offset - left_lane_offset) / 2.0
-
           # 레이더 정보 갱신
           if CS.radar_state:
             v_ego = CS.out.vEgo
@@ -1142,14 +1125,38 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             ]
 
             # 리드를 필터링하고 버킷으로 분류
-            left_lane_width = md.meta.laneWidthLeft
-            right_lane_width = md.meta.laneWidthRight
+            valid_leads = [l for l in all_leads if l.status and l.radar and 0 < l.dRel < 100.0]
 
-            valid_leads = [l for l in all_leads if l.status and l.radar and 0 < l.dRel < 80.0]
+            ff_leads, lf_leads, rf_leads = [], [], []
 
-            ff_leads = [l for l in valid_leads if -1.5 < l.dPath < 1.5 and hud_control.leadVisible]
-            lf_leads = [l for l in valid_leads if 1.5 <= l.dPath <= 4.5 and left_lane_width > 2.2 and l.vLeadK > 3]
-            rf_leads = [l for l in valid_leads if -4.5 <= l.dPath < -1.5 and right_lane_width > 2.2 and l.vLeadK > 3]
+            for l in valid_leads:
+              try:
+                # 1. 각 리드 차량의 거리(dRel) 지점에서 차선별 y 좌표 계산
+                # 현재 주행 차선 경계 (Ego Lane)
+                left_lane_y  = np.interp(l.dRel, md.laneLines[1].x, md.laneLines[1].y)
+                right_lane_y = np.interp(l.dRel, md.laneLines[2].x, md.laneLines[2].y)
+
+                # 인접 차선의 바깥쪽 경계 (Outer boundaries)
+                left_outer_lane_y  = np.interp(l.dRel, md.laneLines[0].x, md.laneLines[0].y)
+                right_outer_lane_y = np.interp(l.dRel, md.laneLines[3].x, md.laneLines[3].y)
+
+              except:
+                # 모델 데이터 예외 시 기본값 설정 (차폭 3.0m 기준)
+                left_lane_y, right_lane_y = 1.5, -1.5
+                left_outer_lane_y, right_outer_lane_y = 4.5, -4.5
+
+              # 전방 차량
+              if right_lane_y < l.dPath < left_lane_y:
+                if hud_control.leadVisible:
+                  ff_leads.append(l)
+              # 좌측 전방 차량 (1.5m ~ 4.5m 수준)
+              elif left_lane_y <= l.dPath <= left_outer_lane_y:
+                if l.vLeadK > -0.1:
+                  lf_leads.append(l)
+              # 우측 전방 차량 (-4.5m ~ -1.5m 수준)
+              elif right_outer_lane_y <= l.dPath <= right_lane_y:
+                if l.vLeadK > -0.1:
+                  rf_leads.append(l)
 
             # 각 버킷에서 가장 가까운 리드 찾기
             if ff_leads:
@@ -1159,41 +1166,49 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             if rf_leads:
               rf_lead = min(rf_leads, key=lambda x: x.dRel + abs(x.dPath))
 
+          # 타겟 미인식 시 0.5초 정도 실제 사라졌는지 기다림
+          # 차선 경계에서 같은 타겟 식별 시 조정
           ff_lead, lf_lead, rf_lead = create_ccnc_messages.stabilizer.apply(ff_lead, lf_lead, rf_lead)
+
+          try:
+            path_offset = md.position.y[0]
+          except:
+            path_offset = 0
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel)
-            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_deadband(-ff_lead.dPath, 0, 0.4) + center_lane_offset)
+            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_deadband(-ff_lead.dPath, 0, 0.4) - path_offset)
             values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel)
-            values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_deadband(lf_lead.dPath, 3.0, 0.4) - center_lane_offset)
+            values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_deadband(lf_lead.dPath, 3.0, 0.4) + path_offset)
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel)
-            values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_deadband(-rf_lead.dPath, 3.0, 0.4) + center_lane_offset)
+            values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_deadband(-rf_lead.dPath, 3.0, 0.4) - path_offset)
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
 
           # --- 후측방은 BSD 경고 시 고정 위치에 두부 출력. HDA1은 후측방 레이더 정보가 안채워져서 옴 ---
+          BSD_LATERAL_FIXED = 3.0
           if CS.out.leftBlindspot:
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(8)
-            values["LR_DETECT_LATERAL"] = left_lane_offset
+            values["LR_DETECT_LATERAL"] = BSD_LATERAL_FIXED + path_offset
             values["LR_DETECT"] = 2
           elif create_ccnc_messages.lr_distance.value < 15:
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(16)
-            values["LR_DETECT_LATERAL"] = left_lane_offset
+            values["LR_DETECT_LATERAL"] = BSD_LATERAL_FIXED + path_offset
             values["LR_DETECT"] = 1
 
           if CS.out.rightBlindspot:
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(8)
-            values["RR_DETECT_LATERAL"] = right_lane_offset
+            values["RR_DETECT_LATERAL"] = BSD_LATERAL_FIXED - path_offset
             values["RR_DETECT"] = 2
           elif create_ccnc_messages.rr_distance.value < 15:
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(16)
-            values["RR_DETECT_LATERAL"] = right_lane_offset
+            values["RR_DETECT_LATERAL"] = BSD_LATERAL_FIXED - path_offset
             values["RR_DETECT"] = 1
 
         except:
@@ -1259,12 +1274,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
   return ret
 
-# 차선 넘어감 감지 (차선 넘어갈 때는 차선 2개가 같이 움직여서 왼쪽 하나만 확인해도 됨)
-create_ccnc_messages.draw_center = False
-create_ccnc_messages.prev_l_target = 15.0
 # 차선 노이즈 필터
-create_ccnc_messages.l_lane_f = NoiseFilter(3, 15, alpha_range=0.2)
-create_ccnc_messages.r_lane_f = NoiseFilter(3, 15, alpha_range=0.2)
+create_ccnc_messages.l_lane_f = NoiseFilter(3, 15, alpha_range=0.2, error_range=25)
+create_ccnc_messages.r_lane_f = NoiseFilter(3, 15, alpha_range=0.2, error_range=25)
 # 차량 거리 필터
 create_ccnc_messages.ff_distance = NoiseFilter(5, 0, alpha_range=[0.15, 0.9], error_range=[1.0, 4.0])
 create_ccnc_messages.lf_distance = NoiseFilter(5, 0, alpha_range=[0.15, 0.9], error_range=[1.0, 4.0])
