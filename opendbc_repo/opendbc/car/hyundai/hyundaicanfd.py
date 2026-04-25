@@ -96,7 +96,6 @@ class NoiseFilter:
   def __init__(self, median_buffer_size, lowpass_default, alpha_range, error_range=None):
     self._default_value = lowpass_default
     self._filtered_value = lowpass_default
-    self._median_index = median_buffer_size // 2
     self._buffer = deque([lowpass_default] * median_buffer_size, maxlen=median_buffer_size)
 
     def normalize_range(r, default_val):
@@ -124,22 +123,30 @@ class NoiseFilter:
       self._alpha = self._a_min
       self.apply = self._apply_fixed
 
-    self.reset()
-
   def reset(self, new_value=None):
+    """값을 초기화하고 버퍼를 완전히 비웁니다."""
     val = new_value if new_value is not None else self._default_value
     self._filtered_value = val
-    self._buffer.extend([val] * self._buffer.maxlen)
+    self._buffer.clear()
+
+  def _get_median(self):
+    buf_len = len(self._buffer)
+    if buf_len == 0:
+        return self._filtered_value # 버퍼가 비어있으면 현재 필터값 반환
+
+    # 꽉 차지 않은 상태(초기 진입 시)에도 현재 데이터 개수 기준으로 중간값 산출
+    sorted_buf = sorted(self._buffer)
+    return sorted_buf[buf_len // 2]
 
   def _apply_fixed(self, target):
     self._buffer.append(target)
-    med = sorted(self._buffer)[self._median_index]
+    med = self._get_median()
     self._filtered_value = (self._alpha * med) + ((1.0 - self._alpha) * self._filtered_value)
     return self._filtered_value
 
   def _apply_step(self, target):
     self._buffer.append(target)
-    med = sorted(self._buffer)[self._median_index]
+    med = self._get_median()
     err = abs(med - self._filtered_value)
     if err > self._err_max:
       self.reset(target)
@@ -149,7 +156,7 @@ class NoiseFilter:
 
   def _apply_adaptive(self, target):
     self._buffer.append(target)
-    med = sorted(self._buffer)[self._median_index]
+    med = self._get_median()
     err = abs(med - self._filtered_value)
     if err > self._err_max:
       self.reset(target)
@@ -1121,7 +1128,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           left_lane_offset = np.interp(create_ccnc_messages.l_lane_f.value, [0, 30], [1.5, 4.5])
           right_lane_offset = np.interp(create_ccnc_messages.r_lane_f.value, [0, 30], [1.5, 4.5])
-          center_lane_offset = (right_lane_offset - left_lane_offset) / 2
+          center_lane_offset = (right_lane_offset - left_lane_offset) / 2.0
 
           # 레이더 정보 갱신
           if CS.radar_state:
@@ -1157,17 +1164,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel)
-            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_deadband(-ff_lead.dPath, 0, 0.5) + center_lane_offset)
+            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_deadband(-ff_lead.dPath, 0, 0.4) + center_lane_offset)
             values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel)
-            values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_deadband(lf_lead.dPath, 3.0, 0.5) - center_lane_offset)
+            values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_deadband(lf_lead.dPath, 3.0, 0.4) - center_lane_offset)
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel)
-            values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_deadband(-rf_lead.dPath, 3.0, 0.5) + center_lane_offset)
+            values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_deadband(-rf_lead.dPath, 3.0, 0.4) + center_lane_offset)
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
 
           # --- 후측방은 BSD 경고 시 고정 위치에 두부 출력. HDA1은 후측방 레이더 정보가 안채워져서 옴 ---
@@ -1176,7 +1183,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LR_DETECT_LATERAL"] = left_lane_offset
             values["LR_DETECT"] = 2
           elif create_ccnc_messages.lr_distance.value < 15:
-            values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(15)
+            values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(16)
             values["LR_DETECT_LATERAL"] = left_lane_offset
             values["LR_DETECT"] = 1
 
@@ -1185,7 +1192,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["RR_DETECT_LATERAL"] = right_lane_offset
             values["RR_DETECT"] = 2
           elif create_ccnc_messages.rr_distance.value < 15:
-            values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(15)
+            values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(16)
             values["RR_DETECT_LATERAL"] = right_lane_offset
             values["RR_DETECT"] = 1
 
