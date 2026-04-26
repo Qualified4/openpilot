@@ -968,8 +968,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             trust_threshold = 0.5 # 오차 0.5m 이내
             target_idx = 0 # 기본값은 시작 지점
 
-            for i in range(len(md.positionStds.y) - 1, -1, -1):
-              if md.positionStds.y[i] < trust_threshold:
+            for i in range(len(md.position.yStd) - 1, -1, -1):
+              if md.position.yStd[i] < trust_threshold:
                 target_idx = i
                 break
 
