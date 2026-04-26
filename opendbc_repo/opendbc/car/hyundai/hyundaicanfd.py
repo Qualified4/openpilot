@@ -965,7 +965,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         # curvature 표시 (주행 경로의 시작과 끝 y 좌표 차이 이용)
         try:
           if lat_enabled:
-            trust_threshold = 0.5 # 오차 0.5m 이내
+            trust_threshold = 0.8 # 오차 0.5m 이내
             target_idx = 0 # 기본값은 시작 지점
 
             for i in range(len(md.position.yStd) - 1, -1, -1):
@@ -974,10 +974,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 break
 
             # 만약 모든 구간이 불안정하다면 최소한의 근거리(예: 인덱스 5, 약 10~15m)를 사용
-            if target_idx != 0:
+            if target_idx > 2:
               # md.position.y[-1]: 모델이 인식한 차로 끝 y 위치
               # md.position.y[0]: 현재 차량의 y 위치
-              curvature = create_ccnc_messages.lane_curv.apply(round((md.position.y[0] - md.position.y[target_idx]) / 3))
+              curvature = round(create_ccnc_messages.lane_curv.apply(md.position.y[0] - md.position.y[target_idx]))
           else:
             # 횡컨 아니면 핸들 각도 기반 조향
             curvature = round(CS.out.steeringAngleDeg / 3)
@@ -1053,10 +1053,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               rightlaneraw = abs(md.laneLines[2].y[0])
 
               # 확률(Prob) 기반 래칭: 차선을 밟아 확률이 낮아져도 위치가 업데이트되도록 조건 완화
-              if l_prob > 0.4 or desire == 3:
+              if l_prob > 0.3 or desire in (3, 4):
                 create_ccnc_messages.l_lane_fm.apply(leftlaneraw)
 
-              if r_prob > 0.4 or desire == 4:
+              if r_prob > 0.3 or desire in (3, 4):
                 create_ccnc_messages.r_lane_fm.apply(rightlaneraw)
             except:
               values["LKA_ICON"] = 1
