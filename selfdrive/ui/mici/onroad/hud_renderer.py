@@ -570,10 +570,11 @@ class HudRenderer(Widget):
     except Exception:
       fr_text = "-.--"
 
+    af_text_size = measure_text_cached(self._font_display, af_text, FONT_SIZE)
     fr_text_size = measure_text_cached(self._font_display, fr_text, FONT_SIZE)
 
-    draw_text_ui_style(af_text, pos_x, pos_y - fr_text_size.y - 3, FONT_SIZE, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=2.0, shadow_offset = 0, align="right_bottom", y_offset=0.0)
-    draw_text_ui_style(fr_text, pos_x, pos_y, FONT_SIZE, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=2.0, shadow_offset = 0, align="right_bottom", y_offset=0.0)
+    draw_text_ui_style(af_text, pos_x - af_text_size.x, pos_y - af_text_size.y - fr_text_size.y - 3, FONT_SIZE, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=2.0, shadow_offset = 0, align="right_bottom", y_offset=0.0)
+    draw_text_ui_style(fr_text, pos_x - fr_text_size.x, pos_y - fr_text_size.y, FONT_SIZE, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=2.0, shadow_offset = 0, align="right_bottom", y_offset=0.0)
 
   def _get_gear_text(self) -> str:
     sm = ui_state.sm
