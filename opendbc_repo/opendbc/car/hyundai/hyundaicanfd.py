@@ -986,6 +986,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           curvature = round(CS.out.steeringAngleDeg / 3)
           values["LANELINE_CURVATURE"] = (min(abs(curvature), 15) + (-1 if curvature < 0 else 0))
           values["LANELINE_CURVATURE_DIRECTION"] = 1 if curvature < 0 else 0
+          values["LFA_ICON"] = 5
 
         lane_color = 6 if md is not None and md.meta.laneChangeAvailableLeft else 2
         if lane_line_check >= 1:
