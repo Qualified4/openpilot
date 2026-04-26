@@ -1082,12 +1082,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   # 위상 변화 시 차선 강조 변경
                   if create_ccnc_messages.l_lane_f.is_reset or create_ccnc_messages.r_lane_f.is_reset:
                     create_ccnc_messages.draw_center = True
-                    # if desire == 3:
-                    #   create_ccnc_messages.l_lane_f.reset(3)
-                    #   create_ccnc_messages.r_lane_f.reset(0)
-                    # elif desire == 4:
-                    #   create_ccnc_messages.l_lane_f.reset(0)
-                    #   create_ccnc_messages.r_lane_f.reset(3)
+                    if desire == 3:
+                      # create_ccnc_messages.l_lane_f.reset(3)
+                      create_ccnc_messages.r_lane_f.reset(0)
+                    elif desire == 4:
+                      create_ccnc_messages.l_lane_f.reset(0)
+                      # create_ccnc_messages.r_lane_f.reset(3)
 
                 # 위상 변화 후 중앙 차로 강조
                 if create_ccnc_messages.draw_center:
@@ -1223,7 +1223,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 차선 경계에서 같은 타겟 식별 시 조정
           ff_lead, lf_lead, rf_lead = create_ccnc_messages.stabilizer.apply(ff_lead, lf_lead, rf_lead)
 
-          ego_y = md.position.y[0]
+          ego_y = create_ccnc_messages.v_ego.apply(md.position.y[0])
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
@@ -1336,16 +1336,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 # 곡률 노이즈 필터
 create_ccnc_messages.lane_curv = NoiseFilter(3, 0, alpha_range=0.2)
 
-# 차선 넘어감 감지 (차선 넘어갈 때는 차선 2개가 같이 움직여서 왼쪽 하나만 확인해도 됨)
+# 차선 넘어감 감지
 create_ccnc_messages.draw_center = False
 
 # 차선 노이즈 필터
 create_ccnc_messages.lane_scale_per_m = 15 / 1.7
 create_ccnc_messages.last_known_lane_width = 3.0
-create_ccnc_messages.l_lane_f = NoiseFilter(5, 1.5, alpha_range=0.15, error_range=1)
-create_ccnc_messages.r_lane_f = NoiseFilter(5, 1.5, alpha_range=0.15, error_range=1)
+create_ccnc_messages.l_lane_f = NoiseFilter(5, 1.5, alpha_range=0.15, error_range=0.7)
+create_ccnc_messages.r_lane_f = NoiseFilter(5, 1.5, alpha_range=0.15, error_range=0.7)
 
 # 차량 거리 필터
+create_ccnc_messages.v_ego = NoiseFilter(3, 0, alpha_range=0.2, error_range=0.4)
 create_ccnc_messages.ff_distance = NoiseFilter(5, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
 create_ccnc_messages.lf_distance = NoiseFilter(5, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
 create_ccnc_messages.rf_distance = NoiseFilter(5, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
