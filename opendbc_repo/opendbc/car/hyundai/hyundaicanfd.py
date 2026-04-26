@@ -978,7 +978,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             if target_idx > 2:
               ratio = target_idx / 20
-              dist_factor = 0.8 - (ratio * 0.2)
+              dist_factor = 0.9 - (ratio * 0.2)
               y_diff = md.position.y[0] - md.position.y[target_idx]
               curvature = round(create_ccnc_messages.lane_curv.apply(y_diff * dist_factor))
             else:
@@ -1098,6 +1098,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 # 위상 변화 시 차선 강조 변경
                 if abs(create_ccnc_messages.l_lane_f.value - create_ccnc_messages.prev_l_target) > 1: # 스케일에 맞춰 10으로 조정
                   create_ccnc_messages.draw_center = True
+                  create_ccnc_messages.l_lane_f.reset(create_ccnc_messages.l_lane_f.value)
+                  create_ccnc_messages.r_lane_f.reset(create_ccnc_messages.r_lane_f.value)
 
               # 위상 변화 후 중앙 차로 강조
               if create_ccnc_messages.draw_center:
@@ -1222,7 +1224,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel)
-            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_deadband(-ff_lead.dPath, 0, 0.4) + center_lane_offset)
+            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_deadband(-ff_lead.dPath, 0, 0.3) + center_lane_offset)
             values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
           else:
             create_ccnc_messages.ff_distance.reset()
@@ -1230,7 +1232,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel)
-            values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_deadband(lf_lead.dPath, 3.0, 0.4) - center_lane_offset)
+            values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_deadband(lf_lead.dPath, create_ccnc_messages.l_lane_f.value * 1.8, 0.3) - center_lane_offset)
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           else:
             create_ccnc_messages.lf_distance.reset()
@@ -1238,7 +1240,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel)
-            values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_deadband(-rf_lead.dPath, 3.0, 0.4) + center_lane_offset)
+            values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_deadband(-rf_lead.dPath, create_ccnc_messages.r_lane_f.value * 1.8, 0.3) + center_lane_offset)
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
           else:
             create_ccnc_messages.rf_distance.reset()
@@ -1337,8 +1339,8 @@ create_ccnc_messages.prev_l_target = 1.5
 # 차선 노이즈 필터
 create_ccnc_messages.lane_scale_per_m = 15 / 1.7
 create_ccnc_messages.last_known_lane_width = 3.0
-create_ccnc_messages.l_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2, error_range=1)
-create_ccnc_messages.r_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2, error_range=1)
+create_ccnc_messages.l_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2, error_range=0.5)
+create_ccnc_messages.r_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2, error_range=0.5)
 
 # 차량 거리 필터
 create_ccnc_messages.ff_distance = NoiseFilter(5, 0, alpha_range=[0.2, 0.9], error_range=[1.0, 4.0])
@@ -1347,9 +1349,9 @@ create_ccnc_messages.rf_distance = NoiseFilter(5, 0, alpha_range=[0.2, 0.9], err
 create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=[0.2, 0.3], error_range=[0, 1.0])
 create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=[0.2, 0.3], error_range=[0, 1.0])
 create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=[0.2, 0.3], error_range=[0, 1.0])
-create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(-0.1, -0.5), states=(1, 2))
-create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(-0.1, -0.5), states=(1, 2))
-create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(-0.1, -0.5), states=(1, 2))
+create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(-0.1, -0.8), states=(1, 2))
+create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(-0.1, -0.8), states=(1, 2))
+create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(-0.1, -0.8), states=(1, 2))
 
 create_ccnc_messages.lr_distance = NoiseFilter(5, 15, alpha_range=0.05)
 create_ccnc_messages.rr_distance = NoiseFilter(5, 15, alpha_range=0.05)
