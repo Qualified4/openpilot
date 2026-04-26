@@ -1085,8 +1085,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     if desire == 3:
                       # create_ccnc_messages.l_lane_f.reset(3)
                       create_ccnc_messages.r_lane_f.reset(0)
+                      current_r_target = create_ccnc_messages.r_lane_f.value
                     elif desire == 4:
                       create_ccnc_messages.l_lane_f.reset(0)
+                      current_l_target = create_ccnc_messages.l_lane_f.value
                       # create_ccnc_messages.r_lane_f.reset(3)
 
                 # 위상 변화 후 중앙 차로 강조
