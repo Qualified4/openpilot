@@ -300,7 +300,7 @@ class HudRenderer(Widget):
     self._draw_steering_wheel_icon(wheel_txt, wheel_pos_x, pos_y)
     self._draw_wheel_side_info(wheel_txt, info_pos_x, pos_y)
     self._draw_infos(extra_info_pos_x)
-    self._draw_torque_infos(int(rect.x + rect.width - 5), int(rect.y + rect.height))
+    self._draw_torque_infos(int(rect.x + rect.width - 10), int(rect.y + rect.height))
 
   def _draw_steering_wheel_icon(self, wheel_txt, pos_x: int, pos_y: int) -> None:
     rotation = -ui_state.sm['carState'].steeringAngleDeg
@@ -423,7 +423,7 @@ class HudRenderer(Widget):
           rl.Color(255, 255, 255, 235),
           font=self._font_display,
           border_width=1.0,
-          shadow_offset=3.0,
+          shadow_offset=0,
           align="left_top",
           y_offset=0.0,
         )
@@ -433,7 +433,7 @@ class HudRenderer(Widget):
           rl.Color(255, 255, 255, 220),
           font=self._font_display,
           border_width=1.0,
-          shadow_offset=3.0,
+          shadow_offset=0,
           align="left_top",
           y_offset=0.0,
         )
@@ -451,7 +451,7 @@ class HudRenderer(Widget):
           rl.Color(255, 255, 255, 235),
           font=self._font_display,
           border_width=1.0,
-          shadow_offset=3.0,
+          shadow_offset=0,
           align="left_top",
           y_offset=0.0,
         )
@@ -469,7 +469,7 @@ class HudRenderer(Widget):
           rl.Color(255, 255, 255, 220),
           font=self._font_display,
           border_width=1.0,
-          shadow_offset=3.0,
+          shadow_offset=0,
           align="left_top",
           y_offset=0.0,
         )
