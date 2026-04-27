@@ -129,6 +129,16 @@ class NoiseFilter:
     self._filtered_value = new_value if new_value is not None else self._default_value
     self._buffer.clear()
 
+  def fill(self, value):
+    """
+    현재 필터의 버퍼를 특정 값으로 가득 채우고 필터 출력값도 동기화합니다.
+    reset과 달리 내부 설정값(default_value 등)은 유지하며 데이터 흐름만 강제 수정합니다.
+    """
+    self._filtered_value = value
+    self._buffer.extend([self._filtered_value] * self._buffer.maxlen)
+
+    return self._filtered_value
+
   def _get_median(self):
     buf_len = len(self._buffer)
     if buf_len == 0:
@@ -1033,7 +1043,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 break
 
             if target_idx > 2:
-              y_diff = md.position.y[0] - md.position.y[target_idx]
+              y_diff = (md.position.y[0] - md.position.y[target_idx]) * 1.3
               curvature = round(create_ccnc_messages.lane_curv.apply(y_diff))
             else:
               curvature = 0
@@ -1083,13 +1093,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   if create_ccnc_messages.l_lane_f.is_reset or create_ccnc_messages.r_lane_f.is_reset:
                     create_ccnc_messages.draw_center = True
                     if desire == 3:
-                      # create_ccnc_messages.l_lane_f.reset(3)
-                      create_ccnc_messages.r_lane_f.reset(0)
-                      current_r_target = create_ccnc_messages.r_lane_f.value
+                      current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width)
+                      current_r_target = create_ccnc_messages.r_lane_f.fill(0)
                     elif desire == 4:
-                      create_ccnc_messages.l_lane_f.reset(0)
-                      current_l_target = create_ccnc_messages.l_lane_f.value
-                      # create_ccnc_messages.r_lane_f.reset(3)
+                      current_l_target = create_ccnc_messages.l_lane_f.fill(0)
+                      current_r_target = create_ccnc_messages.r_lane_f.fill(create_ccnc_messages.last_known_lane_width)
 
                 # 위상 변화 후 중앙 차로 강조
                 if create_ccnc_messages.draw_center:
