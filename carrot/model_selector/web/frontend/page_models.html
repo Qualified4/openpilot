@@ -1,0 +1,290 @@
+<div id="pageModels" class="page" style="display:none;">
+  <style>
+    body[data-page="models"] { overflow: hidden; }
+    body[data-page="models"] .wrap {
+      padding: var(--sp-lg);
+      padding-bottom: calc(var(--nav-bar-height) + env(safe-area-inset-bottom, 0px) + var(--sp-md));
+      min-height: 0;
+      height: calc(var(--app-vv-height, 100dvh));
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    #pageModels {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    #pageModels .ms-hero {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-bottom: var(--sp-md);
+      flex-shrink: 0;
+    }
+    #pageModels .ms-hero__title {
+      font-size: var(--fs-headline);
+      font-weight: 700;
+      color: var(--md-on-surface);
+      letter-spacing: -0.01em;
+    }
+    #pageModels .ms-hero__subtitle {
+      color: var(--md-outline-var);
+      font-size: var(--fs-body-sm);
+    }
+
+    #pageModels .ms-status-card {
+      background: var(--md-surface-cont);
+      border: 1px solid var(--md-stroke-soft);
+      border-radius: var(--r-lg);
+      padding: var(--sp-md) var(--sp-lg);
+      margin-bottom: var(--sp-md);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: var(--sp-md);
+      align-items: center;
+      flex-shrink: 0;
+    }
+    #pageModels .ms-status-card__info {
+      min-width: 0;
+    }
+    #pageModels .ms-status-card__label {
+      font-size: var(--fs-label-sm);
+      color: var(--md-outline-var);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    #pageModels .ms-status-card__current {
+      font-size: var(--fs-title-md);
+      font-weight: 700;
+      color: var(--md-primary);
+      word-break: break-word;
+    }
+    #pageModels .ms-status-card__meta {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--sp-xs) var(--sp-sm);
+      color: var(--md-outline-var);
+      font-size: var(--fs-body-sm);
+    }
+    #pageModels .ms-status-card__actions {
+      display: flex;
+      flex-direction: row;
+      gap: var(--sp-sm);
+    }
+    #pageModels .ms-status-card__actions .btn {
+      white-space: nowrap;
+    }
+
+    #pageModels .ms-chip {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: var(--r-pill);
+      background: var(--md-surface-cont-h);
+      color: var(--md-on-surface-var);
+      font-size: var(--fs-label-sm);
+      font-weight: 600;
+      border: 1px solid var(--md-stroke-soft);
+      white-space: nowrap;
+    }
+    #pageModels .ms-chip--pending {
+      background: var(--md-primary-cont);
+      color: var(--md-on-primary-cont);
+      border-color: transparent;
+    }
+    #pageModels .ms-chip--current {
+      background: var(--md-primary);
+      color: var(--md-on-primary);
+      border-color: transparent;
+    }
+    #pageModels .ms-chip--arch {
+      background: transparent;
+      color: var(--md-outline);
+    }
+
+    #pageModels .ms-progress {
+      background: var(--md-surface-cont);
+      border: 1px solid var(--md-stroke-soft);
+      border-radius: var(--r-md);
+      padding: var(--sp-md) var(--sp-lg);
+      margin-bottom: var(--sp-md);
+      flex-shrink: 0;
+    }
+    #pageModels .ms-progress__label {
+      font-size: var(--fs-body-sm);
+      color: var(--md-on-surface-var);
+      margin-bottom: 6px;
+    }
+    #pageModels .ms-progress__bar {
+      height: 6px;
+      background: var(--md-surface-cont-hh);
+      border-radius: var(--r-pill);
+      overflow: hidden;
+    }
+    #pageModels .ms-progress__fill {
+      height: 100%;
+      width: 0%;
+      background: var(--md-primary);
+      border-radius: var(--r-pill);
+      transition: width 0.2s ease;
+    }
+
+    #pageModels .ms-section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 0 0 var(--sp-sm);
+      flex-shrink: 0;
+    }
+    #pageModels .ms-section-head__title {
+      font-size: var(--fs-title-md);
+      font-weight: 700;
+      color: var(--md-on-surface);
+    }
+
+    #pageModels .ms-list {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sp-sm);
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding-right: 4px;
+      scrollbar-gutter: stable;
+    }
+    #pageModels .ms-list::-webkit-scrollbar {
+      width: 6px;
+    }
+    #pageModels .ms-list::-webkit-scrollbar-thumb {
+      background: var(--md-surface-cont-hh);
+      border-radius: var(--r-pill);
+    }
+
+    #pageModels .ms-row {
+      background: var(--md-surface-cont);
+      border: 1px solid var(--md-stroke-soft);
+      border-radius: var(--r-md);
+      padding: var(--sp-md) var(--sp-lg);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: var(--sp-sm) var(--sp-md);
+      align-items: center;
+      transition: border-color 0.15s ease, background 0.15s ease;
+      cursor: pointer;
+      user-select: none;
+    }
+    #pageModels .ms-row:hover {
+      border-color: var(--md-outline-var);
+    }
+    #pageModels .ms-row.is-selected {
+      border-color: var(--md-primary);
+      background: color-mix(in srgb, var(--md-primary) 8%, var(--md-surface-cont));
+    }
+    #pageModels .ms-row.is-current {
+      border-left: 4px solid var(--md-primary);
+    }
+    #pageModels .ms-row.is-pending {
+      border-left: 4px solid var(--md-primary-cont);
+    }
+
+    #pageModels .ms-row__main {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    #pageModels .ms-row__name {
+      font-size: var(--fs-title-sm);
+      font-weight: 700;
+      color: var(--md-on-surface);
+      word-break: break-word;
+      display: flex;
+      align-items: center;
+      gap: var(--sp-sm);
+      flex-wrap: wrap;
+    }
+    #pageModels .ms-row__meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sp-xs) var(--sp-sm);
+      color: var(--md-outline-var);
+      font-size: var(--fs-label-sm);
+    }
+    #pageModels .ms-row__actions {
+      display: flex;
+      gap: var(--sp-sm);
+    }
+
+    #pageModels .ms-empty,
+    #pageModels .ms-loading {
+      background: var(--md-surface-cont);
+      border: 1px dashed var(--md-stroke-soft);
+      border-radius: var(--r-md);
+      padding: var(--sp-xl);
+      text-align: center;
+      color: var(--md-outline-var);
+      font-size: var(--fs-body-sm);
+    }
+
+    #pageModels .ms-error {
+      background: var(--md-error-cont);
+      color: var(--md-on-error-cont);
+      border-radius: var(--r-md);
+      padding: var(--sp-md) var(--sp-lg);
+      margin-top: var(--sp-md);
+      font-size: var(--fs-body-sm);
+      display: none;
+    }
+
+    @media (max-width: 480px) {
+      #pageModels .ms-status-card {
+        grid-template-columns: 1fr;
+      }
+      #pageModels .ms-status-card__actions {
+        flex-direction: row;
+        flex-wrap: wrap;
+      }
+    }
+  </style>
+
+  <div class="ms-hero">
+    <div class="ms-hero__title">모델 셀렉터</div>
+    <div class="ms-hero__subtitle" id="msSubtitle">주행 모델을 다운로드하고 적용합니다.</div>
+  </div>
+
+  <div class="ms-status-card">
+    <div class="ms-status-card__info">
+      <div class="ms-status-card__label">현재 모델</div>
+      <div class="ms-status-card__current" id="msCurrent">—</div>
+      <div class="ms-status-card__meta">
+        <span id="msDescription">—</span>
+        <span class="ms-chip ms-chip--pending" id="msPendingChip" style="display:none;">설치중: <span id="msPending"></span></span>
+        <span class="ms-chip" id="msDiskChip">남은 공간: <span id="msDisk">—</span> MB</span>
+      </div>
+    </div>
+    <div class="ms-status-card__actions">
+      <button id="msResetBtn" class="btn btn--danger">기본 모델 복원</button>
+    </div>
+  </div>
+
+  <div id="msProgressWrap" class="ms-progress" style="display:none;">
+    <div class="ms-progress__label" id="msProgressMsg">&nbsp;</div>
+    <div class="ms-progress__bar">
+      <div class="ms-progress__fill" id="msProgressFill"></div>
+    </div>
+  </div>
+
+  <div class="ms-section-head">
+    <div class="ms-section-head__title">사용 가능한 모델</div>
+    <button id="msRefreshBtn" class="smallBtn">새로고침</button>
+  </div>
+
+  <div id="msModelsBody" class="ms-list">
+    <div class="ms-loading">불러오는 중…</div>
+  </div>
+
+  <div id="msError" class="ms-error"></div>
+</div>
