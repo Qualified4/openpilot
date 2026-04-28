@@ -1058,10 +1058,90 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["LANELINE_CURVATURE"] = min(abs(curvature), 15) + (-1 if curvature < 0 else 0)
         values["LANELINE_CURVATURE_DIRECTION"] = 1 if curvature < 0 else 0
 
-        # 차선 위치 갱신: 횡컨 때만 적용
         try:
-          if lat_enabled and md is not None and len(md.laneLines) == 4 and len(md.laneLines[1].y) > 0:
+          # # 차선 위치 갱신: 횡컨 때만 적용
+          # if lat_enabled and md is not None and len(md.laneLines) == 4 and len(md.laneLines[1].y) > 0:
+          #   try:
+          #     l_prob = md.laneLineProbs[1]
+          #     r_prob = md.laneLineProbs[2]
+
+          #     # 차량 중심으로부터의 차선 거리(m)
+          #     leftlaneraw = abs(md.laneLines[1].y[0])
+          #     rightlaneraw = abs(md.laneLines[2].y[0])
+
+          #     l_valid = l_prob > 0.1 or desire in (3, 4)
+          #     r_valid = r_prob > 0.1 or desire in (3, 4)
+
+          #     if not l_valid and not r_valid:
+          #       leftlaneraw = rightlaneraw = create_ccnc_messages.last_known_lane_width / 2
+          #     elif not l_valid:
+          #       leftlaneraw = create_ccnc_messages.last_known_lane_width - rightlaneraw
+          #     elif not r_valid:
+          #       rightlaneraw = create_ccnc_messages.last_known_lane_width - leftlaneraw
+          #     else:
+          #       new_width = leftlaneraw + rightlaneraw
+          #       if 2 < new_width < 4.5:
+          #         create_ccnc_messages.last_known_lane_width = new_width # 마지막 차선 폭을 기억해둠
+
+          #     current_l_target = create_ccnc_messages.l_lane_f.apply(leftlaneraw)
+          #     current_r_target = create_ccnc_messages.r_lane_f.apply(rightlaneraw)
+
+          #     # 4. 차선 변경 시 위상 변화 및 하이라이트 로직 (기존 로직 유지)
+          #     if desire in (3, 4):
+          #       if not create_ccnc_messages.draw_center:
+          #         # 위상 변화 시 차선 강조 변경
+          #         if create_ccnc_messages.l_lane_f.is_reset or create_ccnc_messages.r_lane_f.is_reset:
+          #           create_ccnc_messages.draw_center = True
+          #           if desire == 3:
+          #             current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width)
+          #             current_r_target = create_ccnc_messages.r_lane_f.fill(0)
+          #           elif desire == 4:
+          #             current_l_target = create_ccnc_messages.l_lane_f.fill(0)
+          #             current_r_target = create_ccnc_messages.r_lane_f.fill(create_ccnc_messages.last_known_lane_width)
+
+          #       # 위상 변화 후 중앙 차로 강조
+          #       if create_ccnc_messages.draw_center:
+          #         values["LANE_HIGHLIGHT"] = 1
+          #         values["LANE_HIGHLIGHT_DISTANCE"] = 60
+          #       # 위상 변화 전 대상 차로 강조
+          #       elif desire == 3:
+          #         values["LANE_LEFT"] = 1
+          #       elif desire == 4:
+          #         values["LANE_RIGHT"] = 1
+          #     else:
+          #       create_ccnc_messages.draw_center = False
+
+          #     # 필터 적용 및 정규화
+          #     norm_l_lane = 15 + (current_l_target - 1.7) * create_ccnc_messages.lane_scale_per_m
+          #     norm_r_lane = 15 + (current_r_target - 1.7) * create_ccnc_messages.lane_scale_per_m
+
+          #     # 최종 출력
+          #     total = norm_l_lane + norm_r_lane
+          #     # 차선 폭이 너무 좁게 인식 되면 2m로 변경
+          #     if total < 10:
+          #       if norm_l_lane < norm_r_lane:
+          #         norm_r_lane = 20 - norm_l_lane
+          #       else:
+          #         norm_l_lane = 20 - norm_r_lane
+
+          #     values["LANELINE_LEFT_POSITION"] = max(0, min(30, int(round(norm_l_lane))))
+          #     values["LANELINE_RIGHT_POSITION"] = max(0, min(30, int(round(norm_r_lane))))
+          #   except:
+          #     values["LKA_ICON"] = 1
+
+          #   # 차선 변경 아이콘
+          #   values["LCA_LEFT_ICON"] = 1 if CS.out.leftBlindspot else 4 if CS.out.rightBlinker or not md.meta.laneChangeAvailableLeft else 2
+          #   values["LCA_RIGHT_ICON"] = 1 if CS.out.rightBlindspot else 4 if CS.out.leftBlinker or not md.meta.laneChangeAvailableRight else 2
+          # else:
+          #   create_ccnc_messages.draw_center = False
+
+          #   create_ccnc_messages.l_lane_f.reset()
+          #   create_ccnc_messages.r_lane_f.reset()
+          
+          # 차선 위치 갱신: 항시 적용
+          if md is not None and len(md.laneLines) == 4 and len(md.laneLines[1].y) > 0:
             try:
+              is_lane_changing = desire in (3, 4)
               l_prob = md.laneLineProbs[1]
               r_prob = md.laneLineProbs[2]
 
@@ -1069,8 +1149,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               leftlaneraw = abs(md.laneLines[1].y[0])
               rightlaneraw = abs(md.laneLines[2].y[0])
 
-              l_valid = l_prob > 0.1 or desire in (3, 4)
-              r_valid = r_prob > 0.1 or desire in (3, 4)
+              l_valid = l_prob > 0.1 or is_lane_changing
+              r_valid = r_prob > 0.1 or is_lane_changing
 
               if not l_valid and not r_valid:
                 leftlaneraw = rightlaneraw = create_ccnc_messages.last_known_lane_width / 2
@@ -1086,24 +1166,25 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               current_l_target = create_ccnc_messages.l_lane_f.apply(leftlaneraw)
               current_r_target = create_ccnc_messages.r_lane_f.apply(rightlaneraw)
 
-              # 4. 차선 변경 시 위상 변화 및 하이라이트 로직 (기존 로직 유지)
-              if desire in (3, 4):
-                if not create_ccnc_messages.draw_center:
-                  # 위상 변화 시 차선 강조 변경
-                  if create_ccnc_messages.l_lane_f.is_reset or create_ccnc_messages.r_lane_f.is_reset:
-                    create_ccnc_messages.draw_center = True
-                    if desire == 3:
-                      current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width)
-                      current_r_target = create_ccnc_messages.r_lane_f.fill(0)
-                    elif desire == 4:
-                      current_l_target = create_ccnc_messages.l_lane_f.fill(0)
-                      current_r_target = create_ccnc_messages.r_lane_f.fill(create_ccnc_messages.last_known_lane_width)
-
-                # 위상 변화 후 중앙 차로 강조
+              if create_ccnc_messages.l_lane_f.is_reset or create_ccnc_messages.r_lane_f.is_reset:
+                # 왼쪽 차선이 오른쪽보다 멀리 있다면 -> 왼쪽으로 차선을 넘었을 확률이 높음 (혹은 왼쪽 차로 진입)
+                if current_r_target < current_l_target: 
+                  current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width)
+                  current_r_target = create_ccnc_messages.r_lane_f.fill(0)
+                # 반대로 오른쪽 차선이 왼쪽보다 멀리 있다면 -> 오른쪽으로 차로 변경 완료 시점
+                else:
+                  current_l_target = create_ccnc_messages.l_lane_f.fill(0)
+                  current_r_target = create_ccnc_messages.r_lane_f.fill(create_ccnc_messages.last_known_lane_width)
+                
+                # 차선 변경 시점(desire 존재 시)에만 중앙 강조 플래그 활성화
+                if is_lane_changing:
+                  create_ccnc_messages.draw_center = True
+              
+              # 차로 변경 중에는 차로 강조
+              if is_lane_changing:
                 if create_ccnc_messages.draw_center:
                   values["LANE_HIGHLIGHT"] = 1
                   values["LANE_HIGHLIGHT_DISTANCE"] = 60
-                # 위상 변화 전 대상 차로 강조
                 elif desire == 3:
                   values["LANE_LEFT"] = 1
                 elif desire == 4:
@@ -1133,8 +1214,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LCA_LEFT_ICON"] = 1 if CS.out.leftBlindspot else 4 if CS.out.rightBlinker or not md.meta.laneChangeAvailableLeft else 2
             values["LCA_RIGHT_ICON"] = 1 if CS.out.rightBlindspot else 4 if CS.out.leftBlinker or not md.meta.laneChangeAvailableRight else 2
           else:
-            create_ccnc_messages.draw_center = False
-
             create_ccnc_messages.l_lane_f.reset()
             create_ccnc_messages.r_lane_f.reset()
         except:
