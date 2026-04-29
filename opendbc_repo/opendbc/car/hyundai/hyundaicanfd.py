@@ -1250,12 +1250,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 차선 경계에서 같은 타겟 식별 시 조정
           ff_lead, lf_lead, rf_lead = create_ccnc_messages.stabilizer.apply(ff_lead, lf_lead, rf_lead)
 
-          ego_y = create_ccnc_messages.ego_y.apply(md.position.y[0])
+          center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel)
-            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_linear_soft_deadband(-ff_lead.dPath, 0, 0.7) - ego_y)
+            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_linear_soft_deadband(-ff_lead.dPath, 0, 0.7) + center_lane_offset)
             values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
           else:
             create_ccnc_messages.ff_distance.reset()
@@ -1263,7 +1263,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel)
-            values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_linear_soft_deadband(lf_lead.dPath, create_ccnc_messages.l_lane_f.value * 1.8, 0.7) + ego_y)
+            values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_linear_soft_deadband(lf_lead.dPath, create_ccnc_messages.l_lane_f.value * 1.8, 0.7) - center_lane_offset)
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           else:
             create_ccnc_messages.lf_distance.reset()
@@ -1271,7 +1271,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel)
-            values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_linear_soft_deadband(-rf_lead.dPath, create_ccnc_messages.r_lane_f.value * 1.8, 0.7) - ego_y)
+            values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_linear_soft_deadband(-rf_lead.dPath, create_ccnc_messages.r_lane_f.value * 1.8, 0.7) + center_lane_offset)
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
           else:
             create_ccnc_messages.rf_distance.reset()
@@ -1281,20 +1281,20 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           BSD_LATERAL_FIXED = 3.0
           if CS.out.leftBlindspot:
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(8)
-            values["LR_DETECT_LATERAL"] = BSD_LATERAL_FIXED + ego_y
+            values["LR_DETECT_LATERAL"] = BSD_LATERAL_FIXED - center_lane_offset
             values["LR_DETECT"] = 2
           elif create_ccnc_messages.lr_distance.value < 15:
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(16)
-            values["LR_DETECT_LATERAL"] = BSD_LATERAL_FIXED + ego_y
+            values["LR_DETECT_LATERAL"] = BSD_LATERAL_FIXED - center_lane_offset
             values["LR_DETECT"] = 1
 
           if CS.out.rightBlindspot:
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(8)
-            values["RR_DETECT_LATERAL"] = BSD_LATERAL_FIXED - ego_y
+            values["RR_DETECT_LATERAL"] = BSD_LATERAL_FIXED + center_lane_offset
             values["RR_DETECT"] = 2
           elif create_ccnc_messages.rr_distance.value < 15:
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(16)
-            values["RR_DETECT_LATERAL"] = BSD_LATERAL_FIXED - ego_y
+            values["RR_DETECT_LATERAL"] = BSD_LATERAL_FIXED + center_lane_offset
             values["RR_DETECT"] = 1
 
         except:
@@ -1373,7 +1373,6 @@ create_ccnc_messages.l_lane_f = NoiseFilter(5, 1.5, alpha_range=0.15, error_rang
 create_ccnc_messages.r_lane_f = NoiseFilter(5, 1.5, alpha_range=0.15, error_range=0.7)
 
 # 차량 거리 필터
-create_ccnc_messages.ego_y = NoiseFilter(3, 0, alpha_range=0.2, error_range=0.4)
 create_ccnc_messages.ff_distance = NoiseFilter(5, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
 create_ccnc_messages.lf_distance = NoiseFilter(5, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
 create_ccnc_messages.rf_distance = NoiseFilter(5, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
