@@ -202,21 +202,21 @@ def ease_in_interp(x, x_range, y_range, power=2):
   # 결과값 매핑
   return y_range[0] + (y_range[1] - y_range[0]) * eased_t
 
-def apply_linear_soft_deadband(value, center, radius):
-    # 중심으로부터의 거리 계산
-    diff = abs(value - center)
+def apply_linear_soft_deadband(value, center, radius, degree=2):
+  # 중심으로부터의 거리 계산
+  diff = abs(value - center)
+  # 데드밴드 범위를 벗어나면 원본 값 그대로 반환
+  if diff >= radius:
+      return value
 
-    # 데드밴드 범위를 벗어나면 원본 값 그대로 반환
-    if diff >= radius:
-        return value
+  # 0~1 사이의 비율 t
+  t = diff / radius
 
-    # 선형 가중치(Weight) 계산 (0.0 ~ 1.0)
-    # 중앙(0)에 가까울수록 0에 수렴, 경계(radius)에 가까울수록 1에 수렴
-    weight = diff / radius
+  # 지수(degree)가 높을수록 중앙에 더 강하게 집중됨
+  # degree=2 (Quadratic), degree=3 (Cubic)
+  weight = t ** degree
 
-    # 선형 보간(Linear Interpolation) 적용
-    # (1-w)*center + w*value
-    return (1.0 - weight) * center + (weight * value)
+  return (1.0 - weight) * center + (weight * value)
 
 def hyundai_crc8(data: bytes) -> int:
   poly = 0x2F
@@ -1218,9 +1218,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             # 리드를 필터링하고 버킷으로 분류
             valid_leads = [l for l in all_leads if l.status and l.radar and 0 < l.dRel < 100.0]
 
-            # 최소 1.5m 폭을 보장하고, 차량 폭을 고려한 마진(0.2m) 추가
-            l_bound = max(1.5, create_ccnc_messages.l_lane_f.value + 0.2)
-            r_bound = min(-1.5, -create_ccnc_messages.r_lane_f.value - 0.2)
             lead_visible = hud_control.leadVisible
 
             v_threshold = min(3.0, 0.5 + (v_ego * 0.1))
@@ -1233,17 +1230,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               dist_score = l.dRel + abs(dpath)
 
               # 1. 전방 차량 (Fast Path: 가장 빈번하거나 중요한 조건)
-              if r_bound <= dpath <= l_bound:
+              if -1.5 <= dpath <= 1.5:
                 if lead_visible and dist_score < ff_min_dist:
                   ff_min_dist, ff_lead = dist_score, l
 
               # 2. 왼쪽 차선 차량
-              elif l_bound < dpath < l_bound + left_lane_width:
+              elif 1.5 < dpath < 4.3:
                 if left_lane_width > 2.2 and (l.vLeadK > v_threshold or (is_low_speed and l.dRel < 15.0)) and dist_score < lf_min_dist:
                   lf_min_dist, lf_lead = dist_score, l
 
               # 3. 오른쪽 차선 차량
-              elif r_bound - right_lane_width < dpath < r_bound:
+              elif -4.3 < dpath < -1.5:
                 if right_lane_width > 2.2 and (l.vLeadK > v_threshold or (is_low_speed and l.dRel < 15.0)) and dist_score < rf_min_dist:
                   rf_min_dist, rf_lead = dist_score, l
 
@@ -1256,7 +1253,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel)
-            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_linear_soft_deadband(-ff_lead.dPath, 0, 0.7)) + center_lane_offset
+            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_linear_soft_deadband(-ff_lead.dPath, 0, 1)) + center_lane_offset
             if values["FF_DETECT"] == 0:
               values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
           else:
@@ -1265,7 +1262,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel)
-            values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_linear_soft_deadband(lf_lead.dPath, create_ccnc_messages.l_lane_f.value + left_lane_width / 2, 0.7)) - center_lane_offset
+            values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_linear_soft_deadband(lf_lead.dPath, 3, 1)) - center_lane_offset
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           else:
             create_ccnc_messages.lf_distance.reset()
@@ -1273,7 +1270,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel)
-            values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_linear_soft_deadband(-rf_lead.dPath, create_ccnc_messages.r_lane_f.value + right_lane_width / 2, 0.7)) + center_lane_offset
+            values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_linear_soft_deadband(-rf_lead.dPath, 3, 1)) + center_lane_offset
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
           else:
             create_ccnc_messages.rf_distance.reset()
