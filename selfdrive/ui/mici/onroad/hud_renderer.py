@@ -198,9 +198,6 @@ class HudRenderer(Widget):
     # Bottom-left speed panel background
     self._txt_speed_bg: rl.Texture = gui_app.texture('images/speed_bg.png', 307, 115)
 
-    self._wheel_alpha_filter = FirstOrderFilter(0, 0.05, 1 / gui_app.target_fps)
-    self._wheel_y_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
-
     self._set_speed_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
 
     self._set_speed_override = SetSpeedOverride()
@@ -281,10 +278,6 @@ class HudRenderer(Widget):
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
 
-    # Always visible (no hide). We keep filters but drive them to stable values.
-    self._wheel_alpha_filter.update(255 * 0.95)
-    self._wheel_y_filter.update(0)
-
     # pos (TOP-left)
     margin_x = 18
     margin_y = 18
@@ -292,15 +285,16 @@ class HudRenderer(Widget):
     info_pos_x = int(rect.x + margin_x)
     # 핸들 아이콘 오른쪽 끝으로 보내기. 마지막 -2는 레인모드 아이콘 공간때문에 살짝 더 뺌. 전체 마진을 빼기는 싫어서 마진 영역까지 그리도록
     wheel_pos_x = int(rect.x + rect.width - margin_x - wheel_txt.width / 2 - 2)
+    # 핸들 아이콘 아래 끝으로 보내기.
+    wheel_pos_y = int(rect.y + rect.height - margin_y - wheel_txt.height / 2)
     # 온도, SR, LD 정보 상단 출력 좌표
-    extra_info_pos_x = int(rect.x + rect.width - margin_x - wheel_txt.width * 1.5)
+    extra_info_pos_x = int(rect.x + rect.width - margin_x)
 
-    pos_y = int(rect.y + margin_y + wheel_txt.height / 2 + self._wheel_y_filter.x)
+    pos_y = int(rect.y + margin_y + wheel_txt.height / 2)
 
-    self._draw_steering_wheel_icon(wheel_txt, wheel_pos_x, pos_y)
+    self._draw_steering_wheel_icon(wheel_txt, wheel_pos_x, wheel_pos_y)
     self._draw_wheel_side_info(wheel_txt, info_pos_x, pos_y)
     self._draw_infos(extra_info_pos_x)
-    self._draw_torque_infos(int(rect.x + rect.width - 10), int(rect.y + rect.height))
 
   def _draw_steering_wheel_icon(self, wheel_txt, pos_x: int, pos_y: int) -> None:
     rotation = -ui_state.sm['carState'].steeringAngleDeg
@@ -325,12 +319,12 @@ class HudRenderer(Widget):
 
     if ui_state.lat_active:
       # 토크 정도에 따라 녹색 -> 주황색 블렌딩
-      green_color = rl.Color(0, 255, 0, int(self._wheel_alpha_filter.x))
-      orange_color = rl.Color(255, 115, 0, int(self._wheel_alpha_filter.x))
+      green_color = rl.Color(0, 255, 0, 242)
+      orange_color = rl.Color(255, 115, 0, 242)
       blend_factor = float(np.clip((torque_val - 0.75) * 4.0, 0.0, 1.0))
       wheel_color = blend_colors(green_color, orange_color, blend_factor)
     else:
-      wheel_color = rl.Color(230, 230, 230, int(self._wheel_alpha_filter.x))
+      wheel_color = rl.Color(230, 230, 230, 242)
 
     rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, wheel_color)
     # 당근맨은 틴팅 없이 덧대서 그리기
@@ -549,15 +543,6 @@ class HudRenderer(Widget):
     except Exception:
       ld_text = "-.--"
 
-    info_text = f"{cpu_text} | {sr_text} | {ld_text}"
-
-    draw_text_ui_style(info_text, pos_x, 0, FONT_SIZE, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=2.0, shadow_offset = 0, align="right_top", y_offset=0.0)
-
-  def _draw_torque_infos(self, pos_x: int, pos_y: int):
-    FONT_SIZE = 18
-
-    cpu_text = self._get_cpu_temp_text()
-
     try:
       accel_factor = float(ui_state.sm['liveTorqueParameters'].latAccelFactorFiltered)
       af_text = f"{accel_factor:.2f}"
@@ -570,11 +555,9 @@ class HudRenderer(Widget):
     except Exception:
       fr_text = "-.--"
 
-    af_text_size = measure_text_cached(self._font_display, af_text, FONT_SIZE)
-    fr_text_size = measure_text_cached(self._font_display, fr_text, FONT_SIZE)
+    info_text = f"{cpu_text} | {sr_text} | {ld_text} | {af_text} | {fr_text}"
 
-    draw_text_ui_style(af_text, pos_x - af_text_size.x, pos_y - af_text_size.y - fr_text_size.y - 3, FONT_SIZE, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=2.0, shadow_offset = 0, align="right_bottom", y_offset=0.0)
-    draw_text_ui_style(fr_text, pos_x - fr_text_size.x, pos_y - fr_text_size.y, FONT_SIZE, rl.Color(255, 255, 255, 230), font=self._font_display, border_width=2.0, shadow_offset = 0, align="right_bottom", y_offset=0.0)
+    draw_text_ui_style(info_text, pos_x, 0, FONT_SIZE, rl.Color(230, 230, 230, 255), font=self._font_display, border_width=2.0, shadow_offset = 0, align="right_top", y_offset=0.0)
 
   def _get_gear_text(self) -> str:
     sm = ui_state.sm
