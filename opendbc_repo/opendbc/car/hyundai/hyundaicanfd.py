@@ -65,27 +65,27 @@ class LeadStabilizer:
     return results  # [ff_obj, lf_obj, rf_obj] 형태의 리스트 반환
 
 class ThresholdTracker:
-    def __init__(self, bounds, states, initial_state=0):
-        """
-        :param bounds: (상한선, 하한선) 튜플
-        :param states: (상한 이탈 시 상태, 하한 이탈 시 상태) 튜플
-        :param initial_state: 객체 생성 시점의 초기 상태
-        """
-        self._upper_bound, self._lower_bound = bounds
-        self._state_high, self._state_low = states
-        self._current_state = initial_state
+  def __init__(self, bounds, states):
+    """
+    :param bounds: (상한선, 하한선) 튜플
+    :param states: (상한 이탈 시 상태, 하한 이탈 시 상태) 튜플
+    :param initial_state: 객체 생성 시점의 초기 상태
+    """
+    self._upper_bound, self._lower_bound = bounds
+    self._state_high, self._state_low = states
+    self._current_state = self._state_high
 
-    def apply(self, value):
-        """
-        입력값에 따라 상태를 업데이트하고 반환
-        """
-        if value > self._upper_bound:
-            self._current_state = self._state_high
-        elif value < self._lower_bound:
-            self._current_state = self._state_low
+  def apply(self, value):
+    """
+    입력값에 따라 상태를 업데이트하고 반환
+    """
+    if value > self._upper_bound:
+        self._current_state = self._state_high
+    elif value < self._lower_bound:
+        self._current_state = self._state_low
 
-        # 두 기준값 사이(박스권)에 있을 때는 기존 상태를 유지
-        return self._current_state
+    # 두 기준값 사이(박스권)에 있을 때는 기존 상태를 유지
+    return self._current_state
 
 class NoiseFilter:
   """
@@ -1149,8 +1149,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               values["LKA_ICON"] = 1
 
             # 차선 변경 아이콘
-            values["LCA_LEFT_ICON"] = 1 if CS.out.leftBlindspot else 4 if CS.out.rightBlinker or not md.meta.laneChangeAvailableLeft else 2
-            values["LCA_RIGHT_ICON"] = 1 if CS.out.rightBlindspot else 4 if CS.out.leftBlinker or not md.meta.laneChangeAvailableRight else 2
+            if lat_enabled:
+              values["LCA_LEFT_ICON"] = 1 if CS.out.leftBlindspot else 4 if CS.out.rightBlinker or not md.meta.laneChangeAvailableLeft else 2
+              values["LCA_RIGHT_ICON"] = 1 if CS.out.rightBlindspot else 4 if CS.out.leftBlinker or not md.meta.laneChangeAvailableRight else 2
           else:
             create_ccnc_messages.l_lane_f.reset()
             create_ccnc_messages.r_lane_f.reset()
@@ -1368,8 +1369,8 @@ create_ccnc_messages.draw_center = False
 # 차선 노이즈 필터
 create_ccnc_messages.lane_scale_per_m = 15 / 1.7
 create_ccnc_messages.last_known_lane_width = 3.0
-create_ccnc_messages.l_lane_f = NoiseFilter(5, 1.5, alpha_range=0.15, error_range=0.7)
-create_ccnc_messages.r_lane_f = NoiseFilter(5, 1.5, alpha_range=0.15, error_range=0.7)
+create_ccnc_messages.l_lane_f = NoiseFilter(5, 1.5, alpha_range=0.2, error_range=0.7)
+create_ccnc_messages.r_lane_f = NoiseFilter(5, 1.5, alpha_range=0.2, error_range=0.7)
 
 # 차량 거리 필터
 create_ccnc_messages.ff_distance = NoiseFilter(5, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
