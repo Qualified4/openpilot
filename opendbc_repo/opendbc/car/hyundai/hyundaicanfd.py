@@ -1048,7 +1048,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             # 속도가 빨라지면 너무 먼 거리의 곡선은 반영 안함
             max_idx = len(md.position.yStd) - 1
-            start_search = int(np.interp(CS.out.vEgo * CV.MS_TO_KPH, [0, 80], [max_idx, 22]))
+            start_search = int(np.interp(CS.out.vEgo * CV.MS_TO_KPH, [60, 100], [max_idx, 22]))
 
             for i in range(start_search, -1, -1):
               if md.position.yStd[i] < trust_threshold:
@@ -1056,7 +1056,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 break
 
             if target_idx > 2:
-              y_diff = (md.position.y[0] - md.position.y[target_idx]) * 1.2
+              y_diff = (md.position.y[0] - md.position.y[target_idx])
               curvature = round(create_ccnc_messages.lane_curv.apply(y_diff))
             else:
               curvature = 0
