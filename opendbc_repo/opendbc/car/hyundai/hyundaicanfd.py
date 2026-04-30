@@ -1253,8 +1253,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if ff_lead:
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel)
             values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_linear_soft_deadband(-ff_lead.dPath, 0, 1)) + center_lane_offset
-            if values["FF_DETECT"] == 0:
-              values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
+            values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
           else:
             create_ccnc_messages.ff_distance.reset()
             create_ccnc_messages.ff_lateral.reset()
