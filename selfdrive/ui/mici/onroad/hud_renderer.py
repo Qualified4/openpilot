@@ -389,11 +389,11 @@ class HudRenderer(Widget):
       # Python weekday(): 월=0 ... 일=6 이라서 C tm_wday 스타일로 변환
       weekday = weekdays_ko[(now.weekday() + 1) % 7]
 
-      time_text = now.strftime("%H:%M")
       date_text = now.strftime(f"%m-%d({weekday})")
 
       if show_date_time == 1:
         # 시간 + 날짜: 시간은 조금 크게, 날짜는 조금 작게
+        time_text = now.strftime("%H:%M")
         time_font = int(wheel_txt.height * 1.05)
         date_font = max(18, int(time_font * 0.58))
 
@@ -436,9 +436,10 @@ class HudRenderer(Widget):
 
       elif show_date_time == 2:
         # 시간만: 크게
-        text_font = int(wheel_txt.height * 1.1)
+        time_text = now.strftime("%H:%M:%S")
+        text_font = int(wheel_txt.height * 0.72)
         time_size = measure_text_cached(self._font_display, time_text, text_font)
-        time_y = pos_y - time_size.y / 2
+        time_y = 18 # pos_y - time_size.y / 2
 
         draw_text_ui_style(
           time_text, time_x, time_y, text_font,
