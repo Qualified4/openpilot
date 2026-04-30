@@ -202,7 +202,7 @@ def ease_in_interp(x, x_range, y_range, power=2):
   # 결과값 매핑
   return y_range[0] + (y_range[1] - y_range[0]) * eased_t
 
-def apply_linear_soft_deadband(value, center, radius, degree=2):
+def apply_linear_soft_deadband(value, center, radius, degree=3):
   # 중심으로부터의 거리 계산
   diff = abs(value - center)
   # 데드밴드 범위를 벗어나면 원본 값 그대로 반환
@@ -1075,9 +1075,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 차선 위치 갱신: 항시 적용
           if md is not None and len(md.laneLines) == 4 and len(md.laneLines[1].y) > 0:
             try:
-              is_lane_changing = desire in (3, 4)
-              is_left_blinker_only_left = CS.out.leftBlinker and not CS.out.rightBlinker
-              is_right_blinker_only_left = CS.out.rightBlinker and not CS.out.leftBlinker
+              is_auto_lane_changing = desire in (3, 4)
               l_prob = md.laneLineProbs[1]
               r_prob = md.laneLineProbs[2]
 
@@ -1085,8 +1083,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               leftlaneraw = abs(md.laneLines[1].y[0])
               rightlaneraw = abs(md.laneLines[2].y[0])
 
-              l_valid = l_prob > 0.1 or is_lane_changing
-              r_valid = r_prob > 0.1 or is_lane_changing
+              l_valid = l_prob > 0.1 or is_auto_lane_changing
+              r_valid = r_prob > 0.1 or is_auto_lane_changing
 
               if not l_valid and not r_valid:
                 leftlaneraw = rightlaneraw = create_ccnc_messages.last_known_lane_width / 2
@@ -1099,26 +1097,29 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 if 2 < new_width < 4.5:
                   create_ccnc_messages.last_known_lane_width = new_width # 마지막 차선 폭을 기억해둠
 
+              # 위상 변화 전 오른쪽 차선이 더 멀면 왼쪽으로 이동 중
+              ongoing_left = create_ccnc_messages.l_lane_f < create_ccnc_messages.r_lane_f
+
               current_l_target = create_ccnc_messages.l_lane_f.apply(leftlaneraw)
               current_r_target = create_ccnc_messages.r_lane_f.apply(rightlaneraw)
 
               # 차선 변경 시 위상 변화
-              if is_lane_changing or is_left_blinker_only_left or is_right_blinker_only_left:
+              if is_auto_lane_changing or CS.out.leftBlinker or CS.out.rightBlinker:
                 if not create_ccnc_messages.draw_center:
                   # 위상 변화 시 차선 강조 변경
                   if create_ccnc_messages.l_lane_f.is_reset or create_ccnc_messages.r_lane_f.is_reset:
                     create_ccnc_messages.draw_center = True
-                    # 왼쪽 차선이 오른쪽보다 멀리 있다면 -> 왼쪽으로 차선을 넘었을 확률이 높음 (혹은 왼쪽 차로 진입)
-                    if current_r_target < current_l_target:
+                    # 왼쪽으로 가고 있었으면 차선 왼쪽으로 이동
+                    if ongoing_left:
                       current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width)
                       current_r_target = create_ccnc_messages.r_lane_f.fill(0)
-                    # 반대로 오른쪽 차선이 왼쪽보다 멀리 있다면 -> 오른쪽으로 차로 변경 완료 시점
+                    # 오른쪽으로 가고 있었으면 차선 오른쪽으로 이동
                     else:
                       current_l_target = create_ccnc_messages.l_lane_f.fill(0)
                       current_r_target = create_ccnc_messages.r_lane_f.fill(create_ccnc_messages.last_known_lane_width)
 
                 # 자동 차로 변경 중에는 차로 강조
-                if is_lane_changing:
+                if is_auto_lane_changing:
                   if create_ccnc_messages.draw_center:
                     values["LANE_HIGHLIGHT"] = 1
                     values["LANE_HIGHLIGHT_DISTANCE"] = 60
@@ -1207,8 +1208,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           # 레이더 정보 갱신
           if CS.radar_state:
-            v_ego = CS.out.vEgo
-
             # 좌, 중앙, 우 레이더 트랙의 모든 리드 결합
             all_leads = [
               *CS.radar_state.leadsLeft,
@@ -1220,9 +1219,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             valid_leads = [l for l in all_leads if l.status and l.radar and 0 < l.dRel < 100.0]
 
             lead_visible = hud_control.leadVisible
-
-            v_threshold = min(3.0, 0.5 + (v_ego * 0.1))
-            is_low_speed = v_ego < 1.5
+            left_lane_threshold = create_ccnc_messages.l_lane_f.value + left_lane_width * 3 / 4
+            right_lane_threshold = -(create_ccnc_messages.r_lane_f.value + right_lane_width * 3 / 4)
 
             ff_min_dist = lf_min_dist = rf_min_dist = float('inf')
 
@@ -1237,12 +1235,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 2. 왼쪽 차선 차량
               elif 1.5 < dpath < 4.3:
-                if left_lane_width > 2.2 and (l.vLeadK > v_threshold or (is_low_speed and l.dRel < 15.0)) and dist_score < lf_min_dist:
+                if left_lane_width > 2.2 and (l.vLeadK > 3 or (l.vLeadK > -0.3 and l.dRel < 40.0 and dpath < left_lane_threshold)) and dist_score < lf_min_dist:
                   lf_min_dist, lf_lead = dist_score, l
 
               # 3. 오른쪽 차선 차량
               elif -4.3 < dpath < -1.5:
-                if right_lane_width > 2.2 and (l.vLeadK > v_threshold or (is_low_speed and l.dRel < 15.0)) and dist_score < rf_min_dist:
+                if right_lane_width > 2.2 and (l.vLeadK > 3 or (l.vLeadK > -0.3 and l.dRel < 40.0 and dpath > right_lane_threshold)) and dist_score < rf_min_dist:
                   rf_min_dist, rf_lead = dist_score, l
 
           # 타겟 미인식 시 0.5초 정도 실제 사라졌는지 기다림
@@ -1373,17 +1371,17 @@ create_ccnc_messages.l_lane_f = NoiseFilter(5, 1.5, alpha_range=0.2, error_range
 create_ccnc_messages.r_lane_f = NoiseFilter(5, 1.5, alpha_range=0.2, error_range=0.7)
 
 # 차량 거리 필터
-create_ccnc_messages.ff_distance = NoiseFilter(5, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
-create_ccnc_messages.lf_distance = NoiseFilter(5, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
-create_ccnc_messages.rf_distance = NoiseFilter(5, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
-create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=0.15, error_range=0.6)
-create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=0.15, error_range=0.6)
-create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=0.15, error_range=0.6)
-create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(-0.1, -1.5), states=(1, 2))
-create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(-0.1, -1.5), states=(1, 2))
-create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(-0.1, -1.5), states=(1, 2))
+create_ccnc_messages.ff_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
+create_ccnc_messages.lf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
+create_ccnc_messages.rf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
+create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=0.2, error_range=0.6)
+create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=0.2, error_range=0.6)
+create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=0.2, error_range=0.6)
+create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(-0.1, -1.0), states=(1, 2))
+create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(-0.1, -1.0), states=(1, 2))
+create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(-0.1, -1.0), states=(1, 2))
 
 create_ccnc_messages.lr_distance = NoiseFilter(5, 15, alpha_range=0.05)
 create_ccnc_messages.rr_distance = NoiseFilter(5, 15, alpha_range=0.05)
 
-create_ccnc_messages.stabilizer = LeadStabilizer(0.5)
+create_ccnc_messages.stabilizer = LeadStabilizer(0.3)
