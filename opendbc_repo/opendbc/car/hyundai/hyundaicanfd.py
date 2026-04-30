@@ -1098,7 +1098,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   create_ccnc_messages.last_known_lane_width = new_width # 마지막 차선 폭을 기억해둠
 
               # 위상 변화 전 오른쪽 차선이 더 멀면 왼쪽으로 이동 중
-              ongoing_left = create_ccnc_messages.l_lane_f < create_ccnc_messages.r_lane_f
+              ongoing_left = create_ccnc_messages.l_lane_f.value < create_ccnc_messages.r_lane_f.value
 
               current_l_target = create_ccnc_messages.l_lane_f.apply(leftlaneraw)
               current_r_target = create_ccnc_messages.r_lane_f.apply(rightlaneraw)
