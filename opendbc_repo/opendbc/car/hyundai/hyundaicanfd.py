@@ -1083,8 +1083,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               leftlaneraw = abs(md.laneLines[1].y[0])
               rightlaneraw = abs(md.laneLines[2].y[0])
 
-              l_valid = l_prob > 0.1 or is_auto_lane_changing
-              r_valid = r_prob > 0.1 or is_auto_lane_changing
+              l_valid = l_prob > 0.1 or is_auto_lane_changing or CS.out.leftBlinker or CS.out.rightBlinker
+              r_valid = r_prob > 0.1 or is_auto_lane_changing or CS.out.leftBlinker or CS.out.rightBlinker
 
               if not l_valid and not r_valid:
                 leftlaneraw = rightlaneraw = create_ccnc_messages.last_known_lane_width / 2
@@ -1096,10 +1096,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 new_width = leftlaneraw + rightlaneraw
                 if 2 < new_width < 4.5:
                   create_ccnc_messages.last_known_lane_width = new_width # 마지막 차선 폭을 기억해둠
-
-              # 위상 변화 전 오른쪽 차선이 더 멀면 왼쪽으로 이동 중
-              ongoing_left = create_ccnc_messages.l_lane_f.value < create_ccnc_messages.r_lane_f.value
-
+              
               current_l_target = create_ccnc_messages.l_lane_f.apply(leftlaneraw)
               current_r_target = create_ccnc_messages.r_lane_f.apply(rightlaneraw)
 
@@ -1110,7 +1107,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   if create_ccnc_messages.l_lane_f.is_reset or create_ccnc_messages.r_lane_f.is_reset:
                     create_ccnc_messages.draw_center = True
                     # 왼쪽으로 가고 있었으면 차선 왼쪽으로 이동
-                    if ongoing_left:
+                    if CS.out.leftBlinker:
                       current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width)
                       current_r_target = create_ccnc_messages.r_lane_f.fill(0)
                     # 오른쪽으로 가고 있었으면 차선 오른쪽으로 이동
