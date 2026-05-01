@@ -14,6 +14,34 @@ LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 TurnDirection = log.Desire
 
+class LaneHighlightStateMachine:
+  def __init__(self):
+    self.state = 0  # 현재 하이라이트 상태
+
+  def update(self, accel, drive_mode, v_ego):
+    # 상태별 전이 로직
+    if self.state == 4:
+      # [탈출 조건] 급제동 하이라이트(4) 유지 중 탈출 조건
+      # 가속도가 안정화 되었거나, 차가 멈췄을 때 탈출
+      if (accel > 0.5) or (v_ego < 0.1):
+        self.state = 0 # 일단 초기화 후 아래에서 재판단
+      else:
+        return self.state # 상태 유지
+    elif self.state == 5 and drive_mode != 4 and accel > 1.5:
+      return self.state # 상태 유지
+
+    # 진입 로직 (우선순위 순서)
+    if accel < -2.7:
+      self.state = 4  # 급제동 (최우선)
+    elif drive_mode == 4 or accel > 2.5:
+      self.state = 5  # 급가속/고속
+    elif drive_mode < 3:
+      self.state = 3  # 연비/안전
+    else:
+      self.state = 0  # 기본 상태 (회색 혹은 꺼짐)
+
+    return self.state
+
 class LeadStabilizer:
   def __init__(self, hold_time=0.5):
     # 각 채널의 상태 저장
@@ -1023,15 +1051,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           # 속도에 비례해 하이라이트 길이 동적으로 조절
           values["LANE_HIGHLIGHT_DISTANCE"] = int(ease_in_interp(CS.out.vEgo * CV.MS_TO_KPH, [0, 80], [3, 60], power=1.5))
-          if CS.out.aEgo < -2.7:
-            # 급제동 시 노란색
-            values["LANE_HIGHLIGHT"] = 4
-          elif drive_mode == 4 or CS.out.aEgo > 2.7:
-            # 고속 주행 또는 급가속 시 빨간색
-            values["LANE_HIGHLIGHT"] = 5
-          elif drive_mode in (1, 2):
-            # 연비 또는 안전 주행 시 파란색
-            values["LANE_HIGHLIGHT"] = 3
+          values["LANE_HIGHLIGHT"] = create_ccnc_messages.drive_lane_color.update(CS.out.aEgo, drive_mode, CS.out.vEgo)
         elif CS.out.gearShifter == structs.CarState.GearShifter.reverse:
           values["LANE_HIGHLIGHT"] = 5
         elif CS.out.gearShifter == structs.CarState.GearShifter.neutral:
@@ -1043,19 +1063,22 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         # 차선 곡률 표시 (주행 경로의 시작과 끝 y 좌표 차이 이용)
         try:
           if lat_enabled:
-            trust_threshold = 0.8 # 오차 0.8m 이내
+            trust_threshold = 0.6 # 오차 0.8m 이내
             target_idx = 0 # 기본값은 시작 지점
 
             # 속도가 빨라지면 너무 먼 거리의 곡선은 반영 안함
             max_idx = len(md.position.yStd) - 1
-            start_search = int(np.interp(CS.out.vEgo * CV.MS_TO_KPH, [60, 100], [max_idx, 22]))
+            start_search = int(np.interp(CS.out.vEgo * CV.MS_TO_KPH, [60, 100], [max_idx, 20]))
 
             for i in range(start_search, -1, -1):
               if md.position.yStd[i] < trust_threshold:
                 target_idx = i
                 break
 
-            if target_idx > 2:
+            if target_idx > 10:
+              y_diff = (md.position.y[7] - md.position.y[target_idx])
+              curvature = round(create_ccnc_messages.lane_curv.apply(y_diff))
+            elif target_idx > 2:
               y_diff = (md.position.y[0] - md.position.y[target_idx])
               curvature = round(create_ccnc_messages.lane_curv.apply(y_diff))
             else:
@@ -1096,24 +1119,26 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 new_width = leftlaneraw + rightlaneraw
                 if 2 < new_width < 4.5:
                   create_ccnc_messages.last_known_lane_width = new_width # 마지막 차선 폭을 기억해둠
-              
+
               current_l_target = create_ccnc_messages.l_lane_f.apply(leftlaneraw)
               current_r_target = create_ccnc_messages.r_lane_f.apply(rightlaneraw)
 
               # 차선 변경 시 위상 변화
               if is_auto_lane_changing or CS.out.leftBlinker or CS.out.rightBlinker:
-                if not create_ccnc_messages.draw_center:
+                if not create_ccnc_messages.draw_center and (create_ccnc_messages.l_lane_f.is_reset or create_ccnc_messages.r_lane_f.is_reset):
                   # 위상 변화 시 차선 강조 변경
-                  if create_ccnc_messages.l_lane_f.is_reset or create_ccnc_messages.r_lane_f.is_reset:
-                    create_ccnc_messages.draw_center = True
-                    # 왼쪽으로 가고 있었으면 차선 왼쪽으로 이동
-                    if CS.out.leftBlinker:
-                      current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width)
-                      current_r_target = create_ccnc_messages.r_lane_f.fill(0)
-                    # 오른쪽으로 가고 있었으면 차선 오른쪽으로 이동
-                    else:
-                      current_l_target = create_ccnc_messages.l_lane_f.fill(0)
-                      current_r_target = create_ccnc_messages.r_lane_f.fill(create_ccnc_messages.last_known_lane_width)
+                  create_ccnc_messages.draw_center = True
+
+                if create_ccnc_messages.draw_center and create_ccnc_messages.draw_center_count < 3:
+                  create_ccnc_messages.draw_center_count += 1
+                  # 왼쪽으로 가고 있었으면 차선 왼쪽으로 이동
+                  if CS.out.leftBlinker:
+                    current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width)
+                    current_r_target = create_ccnc_messages.r_lane_f.fill(0)
+                  # 오른쪽으로 가고 있었으면 차선 오른쪽으로 이동
+                  else:
+                    current_l_target = create_ccnc_messages.l_lane_f.fill(0)
+                    current_r_target = create_ccnc_messages.r_lane_f.fill(create_ccnc_messages.last_known_lane_width)
 
                 # 자동 차로 변경 중에는 차로 강조
                 if is_auto_lane_changing:
@@ -1127,6 +1152,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     values["LANE_RIGHT"] = 1
               else:
                 create_ccnc_messages.draw_center = False
+                create_ccnc_messages.draw_center_count = 0
 
               # 필터 적용 및 정규화
               norm_l_lane = 15 + (current_l_target - 1.7) * create_ccnc_messages.lane_scale_per_m
@@ -1355,16 +1381,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   return ret
 
 # 곡률 노이즈 필터
-create_ccnc_messages.lane_curv = NoiseFilter(3, 0, alpha_range=0.3)
+create_ccnc_messages.lane_curv = NoiseFilter(3, 0, alpha_range=0.4)
 
 # 차선 넘어감 감지
 create_ccnc_messages.draw_center = False
+create_ccnc_messages.draw_center_count = 0
 
 # 차선 노이즈 필터
 create_ccnc_messages.lane_scale_per_m = 15 / 1.7
 create_ccnc_messages.last_known_lane_width = 3.0
-create_ccnc_messages.l_lane_f = NoiseFilter(5, 1.5, alpha_range=0.2, error_range=0.7)
-create_ccnc_messages.r_lane_f = NoiseFilter(5, 1.5, alpha_range=0.2, error_range=0.7)
+create_ccnc_messages.l_lane_f = NoiseFilter(5, 1.5, alpha_range=0.3, error_range=0.7)
+create_ccnc_messages.r_lane_f = NoiseFilter(5, 1.5, alpha_range=0.3, error_range=0.7)
 
 # 차량 거리 필터
 create_ccnc_messages.ff_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
@@ -1381,3 +1408,5 @@ create_ccnc_messages.lr_distance = NoiseFilter(5, 15, alpha_range=0.05)
 create_ccnc_messages.rr_distance = NoiseFilter(5, 15, alpha_range=0.05)
 
 create_ccnc_messages.stabilizer = LeadStabilizer(0.3)
+
+create_ccnc_messages.drive_lane_color = LaneHighlightStateMachine()
