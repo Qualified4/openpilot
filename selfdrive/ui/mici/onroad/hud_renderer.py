@@ -439,7 +439,7 @@ class HudRenderer(Widget):
         time_text = now.strftime("%H:%M:%S")
         text_font = int(wheel_txt.height * 0.72)
         time_size = measure_text_cached(self._font_display, time_text, text_font)
-        time_y = 18 # pos_y - time_size.y / 2
+        time_y = 9 # pos_y - time_size.y / 2
 
         draw_text_ui_style(
           time_text, time_x, time_y, text_font,

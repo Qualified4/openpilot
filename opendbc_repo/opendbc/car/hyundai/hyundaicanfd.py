@@ -1359,7 +1359,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   return ret
 
 # 곡률 노이즈 필터
-create_ccnc_messages.lane_curv = NoiseFilter(3, 0, alpha_range=0.2)
+create_ccnc_messages.lane_curv = NoiseFilter(3, 0, alpha_range=0.3)
 
 # 차선 넘어감 감지
 create_ccnc_messages.draw_center = False
