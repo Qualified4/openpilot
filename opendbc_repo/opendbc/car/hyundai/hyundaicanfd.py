@@ -21,7 +21,7 @@ class LaneHighlightStateMachine:
   def update(self, accel, drive_mode, v_ego):
     # 상태별 전이 로직
     if self.state == 4:
-      if accel < 0 or v_ego > 0.1:
+      if accel < 0 and v_ego > 0.1:
         return self.state # 상태 유지
     elif self.state == 5:
       if drive_mode != 4 and accel > 1.5:
