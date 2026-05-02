@@ -21,14 +21,11 @@ class LaneHighlightStateMachine:
   def update(self, accel, drive_mode, v_ego):
     # 상태별 전이 로직
     if self.state == 4:
-      # [탈출 조건] 급제동 하이라이트(4) 유지 중 탈출 조건
-      # 가속도가 안정화 되었거나, 차가 멈췄을 때 탈출
-      if (accel > 0.5) or (v_ego < 0.1):
-        self.state = 0 # 일단 초기화 후 아래에서 재판단
-      else:
+      if accel < 0 or v_ego > 0.1:
         return self.state # 상태 유지
-    elif self.state == 5 and drive_mode != 4 and accel > 1.5:
-      return self.state # 상태 유지
+    elif self.state == 5:
+      if drive_mode != 4 and accel > 1.5:
+        return self.state # 상태 유지
 
     # 진입 로직 (우선순위 순서)
     if accel < -2.7:
@@ -43,54 +40,47 @@ class LaneHighlightStateMachine:
     return self.state
 
 class LeadStabilizer:
-  def __init__(self, hold_time=0.5):
-    # 각 채널의 상태 저장
+  def __init__(self, hold_time=0.3, dist_threshold=1.0, vel_threshold=0.5, lat_threshold=0.3):
     self._states = {ch: {"id": None, "obj": None, "time": 0} for ch in ["FF", "LF", "RF"]}
     self._hold_time = hold_time
+    self._dist_threshold = dist_threshold
+    self._vel_threshold = vel_threshold
+    self._lat_threshold = lat_threshold
 
   def apply(self, ff, lf, rf):
-    """
-    입력받은 세 채널의 리드를 안정화하여 다시 세 개의 리드로 반환합니다.
-    ff_l, lf_l, rf_l = stabilizer.apply(ff, lf, rf) 형태로 사용합니다.
-    """
     now = time.monotonic()
     raw_leads = {"FF": ff, "LF": lf, "RF": rf}
 
-    # 1. 현재 감지된 모든 ID와 채널 매핑
-    current_id_map = {
-      l.radarTrackId: ch
-      for ch, l in raw_leads.items()
-      if l is not None and l.status
-    }
-
-    results = []
+    current_active = {ch: obj for ch, obj in raw_leads.items() if obj is not None and obj.status}
 
     for ch in ["FF", "LF", "RF"]:
+      state = self._states[ch]
       current_obj = raw_leads[ch]
 
-      # [A] 현재 채널에 실제 객체가 감지된 경우
       if current_obj is not None and current_obj.status:
-        self._states[ch] = {
-          "id": current_obj.radarTrackId,
-          "obj": current_obj,
-          "time": now
-        }
+        self._states[ch] = {"id": current_obj.radarTrackId, "obj": current_obj, "time": now}
 
-      # [B] 실제 감지는 없지만 잔상 유지를 검토하는 경우
-      else:
-        state = self._states[ch]
-        if state["obj"] is not None:
-          # 잔상 파괴 조건 체크
-          is_active_elsewhere = state["id"] in current_id_map and current_id_map[state["id"]] != ch
-          is_expired = (now - state["time"]) >= self._hold_time
+      elif state["obj"] is not None:
+        is_definitely_moved = False
 
-          if is_active_elsewhere or is_expired:
-            self._states[ch] = {"id": None, "obj": None, "time": 0}
+        for other_ch, new_obj in current_active.items():
+          if other_ch == ch: continue
 
-      # 리스트에 순서대로 담기 (FF, LF, RF 순)
-      results.append(self._states[ch]["obj"])
+          # 임계값으로 물리적 연속성 검증
+          dist_match = abs(new_obj.dRel - state["obj"].dRel) < self._dist_threshold
+          vel_match = abs(new_obj.vRel - state["obj"].vRel) < self._vel_threshold
+          lat_match = abs(new_obj.yRel - state["obj"].yRel) < self._lat_threshold
 
-    return results  # [ff_obj, lf_obj, rf_obj] 형태의 리스트 반환
+          if new_obj.radarTrackId == state["id"] or (dist_match and vel_match and lat_match):
+            is_definitely_moved = True
+            break
+
+        is_expired = (now - state["time"]) >= self._hold_time
+
+        if is_definitely_moved or is_expired:
+          self._states[ch] = {"id": None, "obj": None, "time": 0}
+
+    return [self._states[ch]["obj"] for ch in ["FF", "LF", "RF"]]
 
 class ThresholdTracker:
   def __init__(self, bounds, states):
@@ -1075,8 +1065,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 target_idx = i
                 break
 
-            if target_idx > 10:
-              y_diff = (md.position.y[7] - md.position.y[target_idx])
+            if target_idx > 13:
+              y_diff = (md.position.y[10] - md.position.y[target_idx])
               curvature = round(create_ccnc_messages.lane_curv.apply(y_diff))
             elif target_idx > 2:
               y_diff = (md.position.y[0] - md.position.y[target_idx])
@@ -1099,6 +1089,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if md is not None and len(md.laneLines) == 4 and len(md.laneLines[1].y) > 0:
             try:
               is_auto_lane_changing = desire in (3, 4)
+              is_blinking = CS.out.leftBlinker or CS.out.rightBlinker
               l_prob = md.laneLineProbs[1]
               r_prob = md.laneLineProbs[2]
 
@@ -1106,8 +1097,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               leftlaneraw = abs(md.laneLines[1].y[0])
               rightlaneraw = abs(md.laneLines[2].y[0])
 
-              l_valid = l_prob > 0.1 or is_auto_lane_changing or CS.out.leftBlinker or CS.out.rightBlinker
-              r_valid = r_prob > 0.1 or is_auto_lane_changing or CS.out.leftBlinker or CS.out.rightBlinker
+              l_valid = l_prob > 0.1 or is_auto_lane_changing or is_blinking
+              r_valid = r_prob > 0.1 or is_auto_lane_changing or is_blinking
 
               if not l_valid and not r_valid:
                 leftlaneraw = rightlaneraw = create_ccnc_messages.last_known_lane_width / 2
@@ -1124,7 +1115,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               current_r_target = create_ccnc_messages.r_lane_f.apply(rightlaneraw)
 
               # 차선 변경 시 위상 변화
-              if is_auto_lane_changing or CS.out.leftBlinker or CS.out.rightBlinker:
+              if is_auto_lane_changing or is_blinking:
                 if not create_ccnc_messages.draw_center and (create_ccnc_messages.l_lane_f.is_reset or create_ccnc_messages.r_lane_f.is_reset):
                   # 위상 변화 시 차선 강조 변경
                   create_ccnc_messages.draw_center = True
@@ -1132,7 +1123,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 if create_ccnc_messages.draw_center and create_ccnc_messages.draw_center_count < 3:
                   create_ccnc_messages.draw_center_count += 1
                   # 왼쪽으로 가고 있었으면 차선 왼쪽으로 이동
-                  if CS.out.leftBlinker:
+                  if desire == 3 or CS.out.leftBlinker:
                     current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width)
                     current_r_target = create_ccnc_messages.r_lane_f.fill(0)
                   # 오른쪽으로 가고 있었으면 차선 오른쪽으로 이동
@@ -1242,8 +1233,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             valid_leads = [l for l in all_leads if l.status and l.radar and 0 < l.dRel < 100.0]
 
             lead_visible = hud_control.leadVisible
-            left_lane_threshold = create_ccnc_messages.l_lane_f.value + left_lane_width * 3 / 4
-            right_lane_threshold = -(create_ccnc_messages.r_lane_f.value + right_lane_width * 3 / 4)
+            left_lane_threshold = create_ccnc_messages.l_lane_f.value + left_lane_width * 1 / 2
+            right_lane_threshold = -(create_ccnc_messages.r_lane_f.value + right_lane_width * 1 / 2)
 
             ff_min_dist = lf_min_dist = rf_min_dist = float('inf')
 
@@ -1407,6 +1398,6 @@ create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(-0.1, -1.0), states=(1
 create_ccnc_messages.lr_distance = NoiseFilter(5, 15, alpha_range=0.05)
 create_ccnc_messages.rr_distance = NoiseFilter(5, 15, alpha_range=0.05)
 
-create_ccnc_messages.stabilizer = LeadStabilizer(0.3)
+create_ccnc_messages.stabilizer = LeadStabilizer()
 
 create_ccnc_messages.drive_lane_color = LaneHighlightStateMachine()
