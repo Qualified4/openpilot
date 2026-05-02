@@ -1249,17 +1249,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 2. 왼쪽 차선 차량
               elif 1.5 < dpath < 4.3:
-                if left_lane_width > 2.2 and (l.vLeadK > 3 or (l.vLeadK > -0.3 and l.dRel < 40.0 and dpath < left_lane_threshold)) and dist_score < lf_min_dist:
+                if left_lane_width > 2.2 and l.vLeadK > 3 and dist_score < lf_min_dist:
                   lf_min_dist, lf_lead = dist_score, l
 
               # 3. 오른쪽 차선 차량
               elif -4.3 < dpath < -1.5:
-                if right_lane_width > 2.2 and (l.vLeadK > 3 or (l.vLeadK > -0.3 and l.dRel < 40.0 and dpath > right_lane_threshold)) and dist_score < rf_min_dist:
+                if right_lane_width > 2.2 and l.vLeadK > 3 and dist_score < rf_min_dist:
                   rf_min_dist, rf_lead = dist_score, l
 
           # 타겟 미인식 시 0.5초 정도 실제 사라졌는지 기다림
           # 차선 경계에서 같은 타겟 식별 시 조정
-          ff_lead, lf_lead, rf_lead = create_ccnc_messages.stabilizer.apply(ff_lead, lf_lead, rf_lead)
+          # ff_lead, lf_lead, rf_lead = create_ccnc_messages.stabilizer.apply(ff_lead, lf_lead, rf_lead)
 
           center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
 
