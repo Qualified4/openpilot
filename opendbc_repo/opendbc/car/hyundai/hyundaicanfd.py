@@ -1013,10 +1013,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         set_speed_in_units = hud_control.setSpeed * (CV.MS_TO_KPH if CS.is_metric else CV.MS_TO_MPH)
         values["vSetDis"] = int(set_speed_in_units + 0.5)
         try:
-          if CS.vCruiseCluster > values["vSetDis"]:
+          if CS.out.vCruiseCluster > values["vSetDis"]:
             values["SETSPEED"] = 2
             values["SETSPEED_HUD"] = 2
-            values["SLA_ICON"] = 2 if (frame % 40) < 20 else 0
+            values["SLA_ICON"] = 2 if (frame % 400) < 200 else 0
         except:
           values["SLA_ICON"] = 1 if (frame % 40) < 20 else 4
 
