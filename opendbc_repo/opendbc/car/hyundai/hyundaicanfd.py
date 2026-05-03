@@ -1012,6 +1012,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         set_speed_in_units = hud_control.setSpeed * (CV.MS_TO_KPH if CS.is_metric else CV.MS_TO_MPH)
         values["vSetDis"] = int(set_speed_in_units + 0.5)
+        try:
+          if CS.vCruiseCluster > values["vSetDis"]:
+            values["SETSPEED"] = 2
+            values["SETSPEED_HUD"] = 2
+            values["SLA_ICON"] = 2 if (frame % 40) < 20 else 0
+        except:
+          values["SLA_ICON"] = 1 if (frame % 40) < 20 else 4
 
         values["DISTANCE"] = 4 if hdp_active else hud_control.leadDistanceBars
         values["DISTANCE_LEAD"] = 2 if cruise_enabled and hud_control.leadVisible else 1 if main_enabled and hud_control.leadVisible else 0
@@ -1022,10 +1029,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["TARGET_DISTANCE"] = int(hud_control.leadDistance)
 
         values["BACKGROUND"] = 1 if cruise_enabled else 3 if lat_active else 7
-        values["CENTERLINE"] = 1 if HDA_CntrlModSta > 0 else 0
-        values["CAR_CIRCLE"] = 2 if hdp_active else 1 if cruise_enabled else 0
+        if (left_lane_warning and not CS.out.leftBlinker) or (right_lane_warning and not CS.out.rightBlinker):
+          values["BACKGROUND"] = 6
+        values["CENTERLINE"] = 1 if HDA_CntrlModSta > 0 or lat_enabled else 0
+        values["CAR_CIRCLE"] = 2 if hdp_active or CS.softHoldActive else 1 if cruise_enabled else 0
 
-        values["NAV_ICON"] = 2 if nav_active else 0
+        # values["NAV_ICON"] = 2 if nav_active else 0
         values["HDA_ICON"] = 5 if hdp_active else 2 if cruise_enabled else 1 if main_enabled else 0
         values["LFA_ICON"] = 5 if hdp_active else 2 if lat_active else 1 if lat_enabled else 0
         values["LKA_ICON"] = 4 if lat_active else 3 if lat_enabled else 0
