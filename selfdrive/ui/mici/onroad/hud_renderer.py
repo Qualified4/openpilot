@@ -445,7 +445,7 @@ class HudRenderer(Widget):
           time_text, time_x, time_y, text_font,
           rl.Color(255, 255, 255, 235),
           font=self._font_display,
-          border_width=1.0,
+          border_width=2.0,
           shadow_offset=0,
           align="left_top",
           y_offset=0.0,
