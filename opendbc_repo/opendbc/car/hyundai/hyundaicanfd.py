@@ -1202,7 +1202,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   current_l_target = create_ccnc_messages.l_lane_f.fill(l_fill)
                   current_r_target = create_ccnc_messages.r_lane_f.fill(r_fill)
 
-                  if lane_raw - create_ccnc_messages.prev_lane_position > 0.01:
+                  if lane_raw - create_ccnc_messages.prev_lane_position < 0:
                     create_ccnc_messages.hold_lane = False
 
                   create_ccnc_messages.prev_lane_position = lane_raw
