@@ -1018,7 +1018,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["SETSPEED_HUD"] = 2
             values["SLA_ICON"] = 2 if (frame % 400) < 200 else 0
         except:
-          values["SLA_ICON"] = 1 if (frame % 40) < 20 else 4
+          if create_ccnc_messages.error_continue:
+            values["SLA_ICON"] = 1 if (frame % 40) < 20 else 4
+            if frame > 4000:
+              create_ccnc_messages.error_continue = False
 
         values["DISTANCE"] = 4 if hdp_active else hud_control.leadDistanceBars
         values["DISTANCE_LEAD"] = 2 if cruise_enabled and hud_control.leadVisible else 1 if main_enabled and hud_control.leadVisible else 0
@@ -1337,25 +1340,25 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel)
             values["FF_LATERAL"] = apply_linear_soft_deadband(create_ccnc_messages.ff_lateral.apply(-ff_lead.dPath), 0, 1) + center_lane_offset
             values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
-          else:
-            create_ccnc_messages.ff_distance.reset()
-            create_ccnc_messages.ff_lateral.reset()
+          # else:
+          #   create_ccnc_messages.ff_distance.reset()
+          #   create_ccnc_messages.ff_lateral.reset()
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel)
             values["LF_DETECT_LATERAL"] = apply_linear_soft_deadband(create_ccnc_messages.lf_lateral.apply(lf_lead.dPath), 3, 1) - center_lane_offset
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
-          else:
-            create_ccnc_messages.lf_distance.reset()
-            create_ccnc_messages.lf_lateral.reset()
+          # else:
+          #   create_ccnc_messages.lf_distance.reset()
+          #   create_ccnc_messages.lf_lateral.reset()
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel)
             values["RF_DETECT_LATERAL"] = apply_linear_soft_deadband(create_ccnc_messages.rf_lateral.apply(-rf_lead.dPath), 3, 1) + center_lane_offset
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
-          else:
-            create_ccnc_messages.rf_distance.reset()
-            create_ccnc_messages.rf_lateral.reset()
+          # else:
+          #   create_ccnc_messages.rf_distance.reset()
+          #   create_ccnc_messages.rf_lateral.reset()
 
           # --- 후측방은 BSD 경고 시 고정 위치에 두부 출력. HDA1은 후측방 레이더 정보가 안채워져서 옴 ---
           BSD_LATERAL_FIXED = 3.0
@@ -1471,3 +1474,5 @@ create_ccnc_messages.rr_distance = NoiseFilter(5, 15, alpha_range=0.05)
 create_ccnc_messages.stabilizer = LeadStabilizer()
 
 create_ccnc_messages.drive_lane_color = LaneHighlightStateMachine()
+
+create_ccnc_messages.error_continue = True
