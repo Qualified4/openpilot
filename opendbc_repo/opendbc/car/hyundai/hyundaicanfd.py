@@ -1162,44 +1162,50 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 leftlaneraw = create_ccnc_messages.last_known_lane_width - rightlaneraw
               elif not r_valid:
                 rightlaneraw = create_ccnc_messages.last_known_lane_width - leftlaneraw
-              else:
-                new_width = leftlaneraw + rightlaneraw
-                if 2 < new_width < 4.5:
-                  create_ccnc_messages.last_known_lane_width = new_width # 마지막 차선 폭을 기억해둠
 
               current_l_target = create_ccnc_messages.l_lane_f.apply(leftlaneraw)
               current_r_target = create_ccnc_messages.r_lane_f.apply(rightlaneraw)
 
-              # 차선 변경 시 위상 변화
+              lane_width = current_l_target + current_r_target
+              if 2 < lane_width < 4.5:
+                create_ccnc_messages.last_known_lane_width = lane_width # 마지막 차선 폭을 기억해둠
+
+              # 차선 변경 시 위상 변화 제어
               if is_auto_lane_changing or is_blinking:
-                if not create_ccnc_messages.draw_center and (create_ccnc_messages.l_lane_f.is_reset or create_ccnc_messages.r_lane_f.is_reset):
-                  # 위상 변화 시 차선 강조 변경
-                  create_ccnc_messages.draw_center = True
+                is_moving_left = desire == 3 or CS.out.leftBlinker
 
-                if create_ccnc_messages.draw_center and create_ccnc_messages.draw_center_count < 5:
-                  create_ccnc_messages.draw_center_count += 1
-                  # 왼쪽으로 가고 있었으면 차선 왼쪽으로 이동
-                  if desire == 3 or CS.out.leftBlinker:
-                    current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width)
-                    current_r_target = create_ccnc_messages.r_lane_f.fill(0)
-                  # 오른쪽으로 가고 있었으면 차선 오른쪽으로 이동
-                  else:
-                    current_l_target = create_ccnc_messages.l_lane_f.fill(0)
-                    current_r_target = create_ccnc_messages.r_lane_f.fill(create_ccnc_messages.last_known_lane_width)
+                lane_raw = leftlaneraw if is_moving_left else rightlaneraw
+                lane_filter = create_ccnc_messages.l_lane_f if is_moving_left else create_ccnc_messages.r_lane_f
 
-                # 자동 차로 변경 중에는 차로 강조
+                # 위상 변화 시 차선 강조 변경
+                if not create_ccnc_messages.draw_center:
+                  if lane_filter.is_reset or lane_raw < 0.1:
+                    create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = True
+                    create_ccnc_messages.prev_lane_position = lane_raw
+
+                # RNN 보간 방지
+                if create_ccnc_messages.hold_lane:
+                  l_fill = create_ccnc_messages.last_known_lane_width if is_moving_left else 0
+                  r_fill = 0 if is_moving_left else create_ccnc_messages.last_known_lane_width
+                  current_l_target = create_ccnc_messages.l_lane_f.fill(l_fill)
+                  current_r_target = create_ccnc_messages.r_lane_f.fill(r_fill)
+
+                  if lane_raw - create_ccnc_messages.prev_lane_position > 0.01:
+                    create_ccnc_messages.hold_lane = False
+
+                  create_ccnc_messages.prev_lane_position = lane_raw
+
+                # LCA 중에는 차로 강조
                 if is_auto_lane_changing:
                   if create_ccnc_messages.draw_center:
                     values["LANE_HIGHLIGHT"] = 1
                     values["LANE_HIGHLIGHT_DISTANCE"] = 60
-                  # 위상 변화 전 대상 차로 강조
-                  elif desire == 3:
-                    values["LANE_LEFT"] = 1
-                  elif desire == 4:
-                    values["LANE_RIGHT"] = 1
+                  else:
+                    values["LANE_LEFT" if desire == 3 else "LANE_RIGHT"] = 1
+                elif abs(current_l_target - current_r_target) < create_ccnc_messages.last_known_lane_width / 3:
+                  create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = False
               else:
-                create_ccnc_messages.draw_center = False
-                create_ccnc_messages.draw_center_count = 0
+                create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = False
 
               # 필터 적용 및 정규화
               norm_l_lane = 15 + (current_l_target - 1.7) * create_ccnc_messages.lane_scale_per_m
@@ -1430,7 +1436,8 @@ create_ccnc_messages.lane_curv = NoiseFilter(3, 0, alpha_range=0.3)
 
 # 차선 넘어감 감지
 create_ccnc_messages.draw_center = False
-create_ccnc_messages.draw_center_count = 0
+create_ccnc_messages.hold_lane = False
+create_ccnc_messages.prev_lane_position = 0
 
 # 차선 노이즈 필터
 create_ccnc_messages.lane_scale_per_m = 15 / 1.7
@@ -1445,9 +1452,9 @@ create_ccnc_messages.rf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], err
 create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=0.2, error_range=0.6)
 create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=0.2, error_range=0.6)
 create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=0.2, error_range=0.6)
-create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(-0.1, -1.0), states=(1, 2))
-create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(-0.1, -1.0), states=(1, 2))
-create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(-0.1, -1.0), states=(1, 2))
+create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(-0.1, -1.2), states=(1, 2))
+create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(-0.1, -1.2), states=(1, 2))
+create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(-0.1, -1.2), states=(1, 2))
 
 create_ccnc_messages.lr_distance = NoiseFilter(5, 15, alpha_range=0.05)
 create_ccnc_messages.rr_distance = NoiseFilter(5, 15, alpha_range=0.05)
