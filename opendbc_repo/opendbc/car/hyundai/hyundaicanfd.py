@@ -1205,14 +1205,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               norm_l_lane = 15 + (current_l_target - 1.7) * create_ccnc_messages.lane_scale_per_m
               norm_r_lane = 15 + (current_r_target - 1.7) * create_ccnc_messages.lane_scale_per_m
 
-              # 최종 출력
-              total = norm_l_lane + norm_r_lane
-              # 차선 폭이 너무 좁게 인식 되면 2m로 변경
-              if total < 10:
-                if norm_l_lane < norm_r_lane:
-                  norm_r_lane = 20 - norm_l_lane
-                else:
-                  norm_l_lane = 20 - norm_r_lane
+              # # 최종 출력
+              # total = norm_l_lane + norm_r_lane
+              # # 차선 폭이 너무 좁게 인식 되면 2m로 변경
+              # if total < 10:
+              #   if norm_l_lane < norm_r_lane:
+              #     norm_r_lane = 20 - norm_l_lane
+              #   else:
+              #     norm_l_lane = 20 - norm_r_lane
 
               values["LANELINE_LEFT_POSITION"] = max(0, min(30, int(round(norm_l_lane))))
               values["LANELINE_RIGHT_POSITION"] = max(0, min(30, int(round(norm_r_lane))))
