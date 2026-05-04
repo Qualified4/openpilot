@@ -21,7 +21,7 @@ class LaneHighlightStateMachine:
   def update(self, accel, drive_mode, v_ego):
     # 상태별 전이 로직
     if self.state == 4:
-      if accel < 0 and v_ego > 0.2:
+      if accel < -0.3 and v_ego > 0.2:
         return self.state # 상태 유지
     elif self.state == 5:
       if drive_mode != 4 and accel > 1:
@@ -1013,7 +1013,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         set_speed_in_units = hud_control.setSpeed * (CV.MS_TO_KPH if CS.is_metric else CV.MS_TO_MPH)
         values["vSetDis"] = int(set_speed_in_units + 0.5)
         try:
-          if CS.out.vCruiseCluster > values["vSetDis"]:
+          if cruise_enabled and CS.out.vCruiseCluster > values["vSetDis"]:
             values["SETSPEED"] = 2
             values["SETSPEED_HUD"] = 2
             values["SLA_ICON"] = 2 if (frame % 400) < 200 else 0
@@ -1126,7 +1126,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 target_idx = i
 
             # 2. 단일 지점 곡률 계산
-            if target_idx > 0 and md.position.x[target_idx] >= 5.0:
+            if target_idx > 0 and md.position.x[target_idx] >= 10.0:
               x_dist = md.position.x[target_idx]
               y_diff = md.position.y[0] - md.position.y[target_idx]
 
@@ -1197,10 +1197,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
                 # RNN 보간 방지
                 if create_ccnc_messages.hold_lane:
-                  l_fill = create_ccnc_messages.last_known_lane_width if is_moving_left else 0
-                  r_fill = 0 if is_moving_left else create_ccnc_messages.last_known_lane_width
-                  current_l_target = create_ccnc_messages.l_lane_f.fill(l_fill)
-                  current_r_target = create_ccnc_messages.r_lane_f.fill(r_fill)
+                  current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width if is_moving_left else 0)
+                  current_r_target = create_ccnc_messages.r_lane_f.fill(0 if is_moving_left else create_ccnc_messages.last_known_lane_width)
 
                   if lane_raw - create_ccnc_messages.prev_lane_position > 0.01:
                     create_ccnc_messages.hold_lane = False
@@ -1222,15 +1220,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # 필터 적용 및 정규화
               norm_l_lane = 15 + (current_l_target - 1.7) * create_ccnc_messages.lane_scale_per_m
               norm_r_lane = 15 + (current_r_target - 1.7) * create_ccnc_messages.lane_scale_per_m
-
-              # # 최종 출력
-              # total = norm_l_lane + norm_r_lane
-              # # 차선 폭이 너무 좁게 인식 되면 2m로 변경
-              # if total < 10:
-              #   if norm_l_lane < norm_r_lane:
-              #     norm_r_lane = 20 - norm_l_lane
-              #   else:
-              #     norm_l_lane = 20 - norm_r_lane
 
               values["LANELINE_LEFT_POSITION"] = max(0, min(30, int(round(norm_l_lane))))
               values["LANELINE_RIGHT_POSITION"] = max(0, min(30, int(round(norm_r_lane))))
@@ -1304,7 +1293,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             ]
 
             # 리드를 필터링하고 버킷으로 분류
-            valid_leads = [l for l in all_leads if l.status and l.radar and 0 < l.dRel < 100.0]
+            valid_leads = [l for l in all_leads if l.status and l.radar and 0 < l.dRel < 90.0]
 
             lead_visible = hud_control.leadVisible
 
@@ -1329,7 +1318,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 if right_lane_width > 2.2 and l.vLeadK > 2 and dist_score < rf_min_dist:
                   rf_min_dist, rf_lead = dist_score, l
 
-          # 타겟 미인식 시 0.5초 정도 실제 사라졌는지 기다림
+          # 타겟 미인식 시 0.3초 정도 실제 사라졌는지 기다림
           # 차선 경계에서 같은 타겟 식별 시 조정
           ff_lead, lf_lead, rf_lead = create_ccnc_messages.stabilizer.apply(ff_lead, lf_lead, rf_lead)
 
@@ -1340,7 +1329,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel)
             values["FF_LATERAL"] = apply_linear_soft_deadband(create_ccnc_messages.ff_lateral.apply(-ff_lead.dPath), 0, 1) + center_lane_offset
             values["FF_DETECT"] = create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
-          # else:
+          else:
+            values["FF_DETECT"] = 0 # 순정 디텍션 제거
           #   create_ccnc_messages.ff_distance.reset()
           #   create_ccnc_messages.ff_lateral.reset()
           # 전방 좌측(LF) 차량 정보 업데이트
