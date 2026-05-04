@@ -1015,26 +1015,23 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         try:
           if cruise_enabled:
             if CS.out.vCruiseCluster > values["vSetDis"]:
-              if not create_ccnc_messages.sla_was_active:
+              if create_ccnc_messages.sla_active_time < 1:
                 create_ccnc_messages.sla_active_time = time.monotonic()
-                create_ccnc_messages.sla_was_active = True
               values["SETSPEED"] = 2
               values["SETSPEED_HUD"] = 2
               elapsed = time.monotonic() - create_ccnc_messages.sla_active_time
-              values["SLA_ICON"] = 2 if (elapsed % 4.0) < 2.0 else 0
+              values["SLA_ICON"] = 2 if (elapsed % 3.5) < 2.0 else 0
             else:
-              create_ccnc_messages.sla_was_active = False
-              if CS.ccnc_0x162 is not None and CS.ccnc_0x162["SPEEDLIMIT"] > 0:
+              create_ccnc_messages.sla_active_time = 0
+              if CS.ccnc_0x162 is not None and values["SLA_ICON"] > 0:
                 if CS.ccnc_0x162["SPEEDLIMIT"] > CS.out.vCruiseCluster:
                   values["SLA_ICON"] = 3
                 elif CS.ccnc_0x162["SPEEDLIMIT"] < CS.out.vCruiseCluster:
                   values["SLA_ICON"] = 4
                 else:
                   values["SLA_ICON"] = 0
-              else:
-                values["SLA_ICON"] = 0
           else:
-            create_ccnc_messages.sla_was_active = False
+            create_ccnc_messages.sla_active_time = 0
         except:
           values["SLA_ICON"] = 1 if (frame % 40) < 20 else 4
 
@@ -1124,7 +1121,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         # 차선 곡률 표시 (주행 경로의 시작과 끝 y 좌표 차이 이용)
         try:
           if lat_enabled:
-            trust_threshold = 0.5
+            trust_threshold = 0.8
             max_lookahead_x = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [30, 100], [30, 80])
 
             # 1. Peak Search: 경로 중 횡방향 변위(절대값)가 가장 큰 지점을 탐색
@@ -1202,23 +1199,24 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 is_moving_left = desire == 3 or CS.out.leftBlinker
 
                 lane_raw = leftlaneraw if is_moving_left else rightlaneraw
+                swapped_lane = rightlaneraw if is_moving_left else leftlaneraw
                 lane_filter = create_ccnc_messages.l_lane_f if is_moving_left else create_ccnc_messages.r_lane_f
 
                 # 위상 변화 시 차선 강조 변경
                 if not create_ccnc_messages.draw_center:
                   if lane_filter.is_reset or lane_raw < 0.1:
                     create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = True
-                    create_ccnc_messages.prev_lane_position = lane_raw
+                    create_ccnc_messages.prev_lane_position = swapped_lane
 
                 # RNN 보간 방지
                 if create_ccnc_messages.hold_lane:
                   current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width if is_moving_left else 0)
                   current_r_target = create_ccnc_messages.r_lane_f.fill(0 if is_moving_left else create_ccnc_messages.last_known_lane_width)
 
-                  if lane_raw - create_ccnc_messages.prev_lane_position < -0.01:
+                  if swapped_lane - create_ccnc_messages.prev_lane_position > 0.01:
                     create_ccnc_messages.hold_lane = False
 
-                  create_ccnc_messages.prev_lane_position = lane_raw
+                  create_ccnc_messages.prev_lane_position = swapped_lane
 
                 # LCA 중에는 차로 강조
                 if is_auto_lane_changing:
@@ -1335,7 +1333,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           # 타겟 미인식 시 0.3초 정도 실제 사라졌는지 기다림
           # 차선 경계에서 같은 타겟 식별 시 조정
-          ff_lead, lf_lead, rf_lead = create_ccnc_messages.stabilizer.apply(ff_lead, lf_lead, rf_lead)
+          # ff_lead, lf_lead, rf_lead = create_ccnc_messages.stabilizer.apply(ff_lead, lf_lead, rf_lead)
 
           center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
 
@@ -1449,7 +1447,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   return ret
 
 # 곡률 노이즈 필터
-create_ccnc_messages.lane_curv = NoiseFilter(3, 0, alpha_range=0.3)
+create_ccnc_messages.lane_curv = NoiseFilter(5, 0, alpha_range=0.4)
 
 # 차선 넘어감 감지
 create_ccnc_messages.draw_center = False
@@ -1466,9 +1464,9 @@ create_ccnc_messages.r_lane_f = NoiseFilter(5, 1.5, alpha_range=0.25, error_rang
 create_ccnc_messages.ff_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
 create_ccnc_messages.lf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
 create_ccnc_messages.rf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
-create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=0.2, error_range=0.6)
-create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=0.2, error_range=0.6)
-create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=0.2, error_range=0.6)
+create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=0.3, error_range=0.6)
+create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.6)
+create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.6)
 create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(-0.1, -1.2), states=(1, 2))
 create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(-0.1, -1.2), states=(1, 2))
 create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(-0.1, -1.2), states=(1, 2))
@@ -1480,5 +1478,4 @@ create_ccnc_messages.stabilizer = LeadStabilizer()
 
 create_ccnc_messages.drive_lane_color = LaneHighlightStateMachine()
 
-create_ccnc_messages.sla_active_time = 0.0
-create_ccnc_messages.sla_was_active = False
+create_ccnc_messages.sla_active_time = 0
