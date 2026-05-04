@@ -1024,7 +1024,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               values["SLA_ICON"] = 2 if (elapsed % 4.0) < 2.0 else 0
             else:
               create_ccnc_messages.sla_was_active = False
-              if CS.ccnc_0x162 is not None and CS.ccnc_0x162["SPEEDLIMIT_FLASH"] > 0:
+              if CS.ccnc_0x162 is not None and CS.ccnc_0x162["SPEEDLIMIT"] > 0:
                 if CS.ccnc_0x162["SPEEDLIMIT"] > CS.out.vCruiseCluster:
                   values["SLA_ICON"] = 3
                 elif CS.ccnc_0x162["SPEEDLIMIT"] < CS.out.vCruiseCluster:
