@@ -1013,15 +1013,30 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         set_speed_in_units = hud_control.setSpeed * (CV.MS_TO_KPH if CS.is_metric else CV.MS_TO_MPH)
         values["vSetDis"] = int(set_speed_in_units + 0.5)
         try:
-          if cruise_enabled and CS.out.vCruiseCluster > values["vSetDis"]:
-            values["SETSPEED"] = 2
-            values["SETSPEED_HUD"] = 2
-            values["SLA_ICON"] = 2 if (frame % 400) < 200 else 0
+          if cruise_enabled:
+            if CS.out.vCruiseCluster > values["vSetDis"]:
+              if not create_ccnc_messages.sla_was_active:
+                create_ccnc_messages.sla_active_time = time.monotonic()
+                create_ccnc_messages.sla_was_active = True
+              values["SETSPEED"] = 2
+              values["SETSPEED_HUD"] = 2
+              elapsed = time.monotonic() - create_ccnc_messages.sla_active_time
+              values["SLA_ICON"] = 2 if (elapsed % 4.0) < 2.0 else 0
+            else:
+              create_ccnc_messages.sla_was_active = False
+              if CS.ccnc_0x162 is not None and CS.ccnc_0x162["SPEEDLIMIT_FLASH"] > 0:
+                if CS.ccnc_0x162["SPEEDLIMIT"] > CS.out.vCruiseCluster:
+                  values["SLA_ICON"] = 3
+                elif CS.ccnc_0x162["SPEEDLIMIT"] < CS.out.vCruiseCluster:
+                  values["SLA_ICON"] = 4
+                else:
+                  values["SLA_ICON"] = 0
+              else:
+                values["SLA_ICON"] = 0
+          else:
+            create_ccnc_messages.sla_was_active = False
         except:
-          if create_ccnc_messages.error_continue:
-            values["SLA_ICON"] = 1 if (frame % 40) < 20 else 4
-            if frame > 4000:
-              create_ccnc_messages.error_continue = False
+          values["SLA_ICON"] = 1 if (frame % 40) < 20 else 4
 
         values["DISTANCE"] = 4 if hdp_active else hud_control.leadDistanceBars
         values["DISTANCE_LEAD"] = 2 if cruise_enabled and hud_control.leadVisible else 1 if main_enabled and hud_control.leadVisible else 0
@@ -1033,7 +1048,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         values["BACKGROUND"] = 1 if cruise_enabled else 3 if lat_active else 7
         if (left_lane_warning and not CS.out.leftBlinker) or (right_lane_warning and not CS.out.rightBlinker):
-          values["BACKGROUND"] = 6
+          values["BACKGROUND"] = 4
         values["CENTERLINE"] = 1 if HDA_CntrlModSta > 0 or lat_enabled else 0
         values["CAR_CIRCLE"] = 2 if hdp_active or CS.softHoldActive else 1 if cruise_enabled else 0
 
@@ -1109,7 +1124,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         # 차선 곡률 표시 (주행 경로의 시작과 끝 y 좌표 차이 이용)
         try:
           if lat_enabled:
-            trust_threshold = 0.6
+            trust_threshold = 0.5
             max_lookahead_x = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [30, 100], [30, 80])
 
             # 1. Peak Search: 경로 중 횡방향 변위(절대값)가 가장 큰 지점을 탐색
@@ -1200,7 +1215,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width if is_moving_left else 0)
                   current_r_target = create_ccnc_messages.r_lane_f.fill(0 if is_moving_left else create_ccnc_messages.last_known_lane_width)
 
-                  if lane_raw - create_ccnc_messages.prev_lane_position < 0:
+                  if lane_raw - create_ccnc_messages.prev_lane_position < -0.01:
                     create_ccnc_messages.hold_lane = False
 
                   create_ccnc_messages.prev_lane_position = lane_raw
@@ -1465,4 +1480,5 @@ create_ccnc_messages.stabilizer = LeadStabilizer()
 
 create_ccnc_messages.drive_lane_color = LaneHighlightStateMachine()
 
-create_ccnc_messages.error_continue = True
+create_ccnc_messages.sla_active_time = 0.0
+create_ccnc_messages.sla_was_active = False
