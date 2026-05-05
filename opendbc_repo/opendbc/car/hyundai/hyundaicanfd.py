@@ -1316,7 +1316,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # 1. 전방 차량 (Fast Path: 가장 빈번하거나 중요한 조건)
               if -1.5 <= dPath <= 1.5:
                 if lead_visible and dist_score < ff_min_dist:
-                  ff_min_dist, ff_lead, ff_dPath = dist_score, l. dPath
+                  ff_min_dist, ff_lead, ff_dPath = dist_score, l, dPath
 
               # 2. 왼쪽 차선 차량
               elif 1.5 < dPath < 4.3:
