@@ -991,16 +991,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
     if frame % 5 == 0:
       lat_active = CC.latActive
 
-      use_right_lane = md.laneLineProbs[2] > 0.1 and md.laneLineProbs[2] > md.laneLineProbs[1]
-      lane_idx = 2 if use_right_lane else 1
-
-      # 빠른 벡터 연산을 위해 NumPy 배열로 변환
-      best_lane_x = np.array(md.laneLines[lane_idx].x)
-      best_lane_y = np.array(md.laneLines[lane_idx].y)
-
-      # base_y_offset = best_lane_y[0]
-      base_y_offset = np.interp(1.52, best_lane_x, best_lane_y)
-
       if CS.adrv_0x161 is not None:
         main_enabled = CS.out.cruiseState.available
         cruise_enabled = CC.enabled
@@ -1164,36 +1154,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             else:
               max_curve_val = 0.0
 
-
-            # # --- 차선 기반 ---
-            # max_curve_val = 0.0
-
-            # # Peak Search: NumPy 벡터화 및 이진 탐색 활용
-            # limit_idx = np.searchsorted(best_lane_x, max_lookahead_x, side='right')
-
-            # # 첫 번째 점(i=0)을 제외하고 limit_idx까지 슬라이싱
-            # x_slice = best_lane_x[1:limit_idx]
-            # y_slice = best_lane_y[1:limit_idx]
-            # if len(x_slice) > 0:
-            #   # 전체 구간의 횡방향 변위를 한 번에 계산
-            #   y_diffs = base_y_offset - y_slice
-
-            #   # 절대값이 가장 큰 인덱스를 추출
-            #   max_idx = np.argmax(np.abs(y_diffs))
-
-            #   max_y_diff = y_diffs[max_idx]
-            #   max_x_dist = x_slice[max_idx]
-
-            #   # 단일 지점 곡률 계산
-            #   if max_x_dist >= 10.0:
-            #     # 물리 곡률 공식 (2y / x^2) 적용 후 Gain(2000.0) 곱셈
-            #     # 상수 2000.0 설명:
-            #     # - 물리적 곡률(Kappa = 1/R)은 보통 0.0001~0.01 사이의 아주 작은 값임.
-            #     # - 이를 ccNC 계기판 표시 범위인 0~15 사이의 직관적인 수치로 증폭하는 Gain 역할.
-            #     # - 시뮬레이션 결과: R=500m(일반코너)에서 약 8단계, R=150m(급코너)에서 약 15단계 수준임.
-            #     # - 튜닝 팁: 계기판 게이지가 너무 민감하게 차오르면 1500으로 낮추고, 너무 둔하면 2500으로 높여 조절.
-            #     max_curve_val = (2.0 * max_y_diff) / (max_x_dist ** 2) * 2000.0
-
             curvature = round(create_ccnc_messages.lane_curv.apply(max_curve_val))
           else:
             # 횡컨 아니면 핸들 각도 기반 조향
@@ -1324,6 +1284,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         # 2024 쏘나타는 차량 인식 두부(1, 2)만 출력 가능
         try:
           ff_lead = lf_lead = rf_lead = None
+          ego_offset = md.position.y[0]
+          path_y = md.position.y
+          path_x = md.position.x
+          target_lane_shift = path_y[-1]
+          max_lookahead_x = path_x[-1]
 
           left_lane_valid = md.meta.laneWidthLeft > 2.2
           right_lane_valid = md.meta.laneWidthRight > 2.2
@@ -1331,28 +1296,27 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 레이더 정보 갱신
           if CS.radar_state:
             # 좌, 중앙, 우 레이더 트랙의 모든 리드 결합 및 필터링
-            valid_leads = [
+            valid_leads = (
                 l for l in itertools.chain(CS.radar_state.leadsLeft,
                                           CS.radar_state.leadsRight,
                                           CS.radar_state.leadsCenter)
                 if l.status and l.radar and 0 < l.dRel < 100.0
-            ]
-            curves_at_drel = np.interp([l.dRel for l in valid_leads], best_lane_x, best_lane_y)
+            )
 
             lead_visible = hud_control.leadVisible
 
             ff_min_dist = lf_min_dist = rf_min_dist = float('inf')
             ff_dPath = lf_dPath = rf_dPath = 0.0
 
-            for i, l in enumerate(valid_leads):
-              pure_curve = base_y_offset - curves_at_drel[i]
-              dPath = l.yRel - pure_curve
+            for l in valid_leads:
+              interpolation_factor = l.dRel / max_lookahead_x
+              dPath = l.dPath + (target_lane_shift * interpolation_factor)
               dist_score = l.dRel + abs(dPath)
 
               # 1. 전방 차량 (Fast Path: 가장 빈번하거나 중요한 조건)
               if -1.5 <= dPath <= 1.5:
                 if lead_visible and dist_score < ff_min_dist:
-                  ff_min_dist, ff_lead, ff_dPath = dist_score, l, dPath
+                  ff_min_dist, ff_lead, ff_dPath = dist_score, l. dPath
 
               # 2. 왼쪽 차선 차량
               elif 1.5 < dPath < 4.3:
