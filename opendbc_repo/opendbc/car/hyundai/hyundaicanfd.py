@@ -1332,7 +1332,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 if right_lane_valid and l.vLeadK > 1 and dist_score < rf_min_dist:
                   rf_min_dist, rf_lead, rf_dPath = dist_score, l, dPath
 
-          # center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
+          center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
