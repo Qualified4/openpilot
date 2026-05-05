@@ -1132,35 +1132,67 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         # 차선 곡률 표시 (주행 경로의 시작과 끝 y 좌표 차이 이용)
         try:
           if lat_enabled:
-            max_lookahead_x = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [30, 100], [30, 90])
+            max_lookahead_x = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [30, 100], [40, 80])
 
-            max_curve_val = 0.0
+            # --- 차량 주행 경로 기반 ---
+            # Peak Search: 경로 중 횡방향 변위(절대값)가 가장 큰 지점을 탐색
+            trust_threshold = 0.8
+            target_idx = 0
+            max_y_abs = -1.0
 
-            # Peak Search: NumPy 벡터화 및 이진 탐색 활용
-            limit_idx = np.searchsorted(best_lane_x, max_lookahead_x, side='right')
+            for i in range(1, len(md.position.x)):
+              if md.position.yStd[i] > trust_threshold or md.position.x[i] > max_lookahead_x:
+                break
 
-            # 첫 번째 점(i=0)을 제외하고 limit_idx까지 슬라이싱
-            x_slice = best_lane_x[1:limit_idx]
-            y_slice = best_lane_y[1:limit_idx]
-            if len(x_slice) > 0:
-              # 전체 구간의 횡방향 변위를 한 번에 계산
-              y_diffs = base_y_offset - y_slice
+              y_abs = abs(md.position.y[i] - md.position.y[0])
+              if y_abs > max_y_abs:
+                max_y_abs = y_abs
+                target_idx = i
 
-              # 절대값이 가장 큰 인덱스를 추출
-              max_idx = np.argmax(np.abs(y_diffs))
+            # 단일 지점 곡률 계산
+            if target_idx > 0 and md.position.x[target_idx] >= 10.0:
+              x_dist = md.position.x[target_idx]
+              y_diff = md.position.y[0] - md.position.y[target_idx]
 
-              max_y_diff = y_diffs[max_idx]
-              max_x_dist = x_slice[max_idx]
+              # 물리 곡률 공식 (2y / x^2) 적용
+              # 상수 2000.0 설명:
+              # - 물리적 곡률(Kappa = 1/R)은 보통 0.0001~0.01 사이의 아주 작은 값임.
+              # - 이를 ccNC 계기판 표시 범위인 0~15 사이의 직관적인 수치로 증폭하는 Gain 역할.
+              # - 시뮬레이션 결과: R=500m(일반코너)에서 약 8단계, R=150m(급코너)에서 약 15단계 수준임.
+              # - 튜닝 팁: 계기판 게이지가 너무 민감하게 차오르면 1500으로 낮추고, 너무 둔하면 2500으로 높여 조절.
+              max_curve_val = (2.0 * y_diff) / (x_dist ** 2) * 2000.0
+            else:
+              max_curve_val = 0.0
 
-              # 단일 지점 곡률 계산
-              if max_x_dist >= 10.0:
-                # 물리 곡률 공식 (2y / x^2) 적용 후 Gain(2000.0) 곱셈
-                # 상수 2000.0 설명:
-                # - 물리적 곡률(Kappa = 1/R)은 보통 0.0001~0.01 사이의 아주 작은 값임.
-                # - 이를 ccNC 계기판 표시 범위인 0~15 사이의 직관적인 수치로 증폭하는 Gain 역할.
-                # - 시뮬레이션 결과: R=500m(일반코너)에서 약 8단계, R=150m(급코너)에서 약 15단계 수준임.
-                # - 튜닝 팁: 계기판 게이지가 너무 민감하게 차오르면 1500으로 낮추고, 너무 둔하면 2500으로 높여 조절.
-                max_curve_val = (2.0 * max_y_diff) / (max_x_dist ** 2) * 2000.0
+
+            # # --- 차선 기반 ---
+            # max_curve_val = 0.0
+
+            # # Peak Search: NumPy 벡터화 및 이진 탐색 활용
+            # limit_idx = np.searchsorted(best_lane_x, max_lookahead_x, side='right')
+
+            # # 첫 번째 점(i=0)을 제외하고 limit_idx까지 슬라이싱
+            # x_slice = best_lane_x[1:limit_idx]
+            # y_slice = best_lane_y[1:limit_idx]
+            # if len(x_slice) > 0:
+            #   # 전체 구간의 횡방향 변위를 한 번에 계산
+            #   y_diffs = base_y_offset - y_slice
+
+            #   # 절대값이 가장 큰 인덱스를 추출
+            #   max_idx = np.argmax(np.abs(y_diffs))
+
+            #   max_y_diff = y_diffs[max_idx]
+            #   max_x_dist = x_slice[max_idx]
+
+            #   # 단일 지점 곡률 계산
+            #   if max_x_dist >= 10.0:
+            #     # 물리 곡률 공식 (2y / x^2) 적용 후 Gain(2000.0) 곱셈
+            #     # 상수 2000.0 설명:
+            #     # - 물리적 곡률(Kappa = 1/R)은 보통 0.0001~0.01 사이의 아주 작은 값임.
+            #     # - 이를 ccNC 계기판 표시 범위인 0~15 사이의 직관적인 수치로 증폭하는 Gain 역할.
+            #     # - 시뮬레이션 결과: R=500m(일반코너)에서 약 8단계, R=150m(급코너)에서 약 15단계 수준임.
+            #     # - 튜닝 팁: 계기판 게이지가 너무 민감하게 차오르면 1500으로 낮추고, 너무 둔하면 2500으로 높여 조절.
+            #     max_curve_val = (2.0 * max_y_diff) / (max_x_dist ** 2) * 2000.0
 
             curvature = round(create_ccnc_messages.lane_curv.apply(max_curve_val))
           else:
@@ -1213,7 +1245,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             # 위상 변화 시 차선 강조 변경
             if not create_ccnc_messages.draw_center and (lane_filter.is_reset or lane_raw < 0.1):
               create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = True
-              create_ccnc_messages.prev_lane_position = swapped_lane
+              create_ccnc_messages.prev_lane_position = create_ccnc_messages.last_known_lane_width
 
             # RNN 보간 방지
             if create_ccnc_messages.hold_lane:
