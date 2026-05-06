@@ -1124,7 +1124,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             # --- 차량 주행 경로 기반 ---
             # Peak Search: 경로 중 횡방향 변위(절대값)가 가장 큰 지점을 탐색
-            trust_threshold = 0.7
+            trust_threshold = 0.6
             target_idx = 0
             max_y_abs = -1.0
 
@@ -1290,10 +1290,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if CS.radar_state:
             # 좌, 중앙, 우 레이더 트랙의 모든 리드 결합 및 필터링
             valid_leads = (
-                l for l in itertools.chain(CS.radar_state.leadsLeft,
-                                          CS.radar_state.leadsRight,
-                                          CS.radar_state.leadsCenter)
-                if l.status and 0 < l.dRel < 130.0
+              l for l in itertools.chain(CS.radar_state.leadsLeft,
+                                        CS.radar_state.leadsRight,
+                                        CS.radar_state.leadsCenter)
+              if l.dRel < 100.0
             )
 
             lead_visible = hud_control.leadVisible
@@ -1312,17 +1312,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 왼쪽 차선 차량
               elif 1.5 < dPath < 4.5:
-                if left_lane_valid and l.vLeadK > 2 and dist_score < lf_min_dist:
+                if left_lane_valid and (l.vLeadK > 2 or l.radar == False) and dist_score < lf_min_dist:
                   lf_min_dist, lf_lead = dist_score, l
 
               # 오른쪽 차선 차량
               elif -4.5 < dPath < -1.5:
-                if right_lane_valid and l.vLeadK > 2 and dist_score < rf_min_dist:
+                if right_lane_valid and (l.vLeadK > 2 or l.radar == False) and dist_score < rf_min_dist:
                   rf_min_dist, rf_lead = dist_score, l
 
           # 타겟 미인식 시 0.3초 정도 실제 사라졌는지 기다림
           # 차선 경계에서 같은 타겟 식별 시 조정
-          ff_lead, lf_lead, rf_lead = create_ccnc_messages.stabilizer.apply(ff_lead, lf_lead, rf_lead)
+          # ff_lead, lf_lead, rf_lead = create_ccnc_messages.stabilizer.apply(ff_lead, lf_lead, rf_lead)
 
           center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
 
