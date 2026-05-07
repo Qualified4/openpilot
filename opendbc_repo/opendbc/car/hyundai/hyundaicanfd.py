@@ -1228,8 +1228,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = False
 
           # 필터 적용 및 정규화
-          norm_l_lane = 15 + (current_l_target - 0.5) * create_ccnc_messages.lane_scale_per_m
-          norm_r_lane = 15 + (current_r_target - 0.5) * create_ccnc_messages.lane_scale_per_m
+          norm_l_lane = 15 + (current_l_target - 1.6) * create_ccnc_messages.lane_scale_per_m
+          norm_r_lane = 15 + (current_r_target - 1.6) * create_ccnc_messages.lane_scale_per_m
 
           values["LANELINE_LEFT_POSITION"] = max(0, min(30, int(round(norm_l_lane))))
           values["LANELINE_RIGHT_POSITION"] = max(0, min(30, int(round(norm_r_lane))))
