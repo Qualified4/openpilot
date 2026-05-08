@@ -41,89 +41,57 @@ class LaneHighlightStateMachine:
     return self.state
 
 class LeadStabilizer:
-  def __init__(self, hold_time=0.3, dist_threshold=1.0, vel_threshold=0.5, lat_threshold=0.2):
-    # 파라미터 세팅: 짧은 센서 깜빡임(Drop) 방어 및 타이트한 물리적 연속성 검증
-    self._states = {ch: {"id": None, "obj": None, "time": 0} for ch in ["FF", "LF", "RF"]}
-    self._hold_time = hold_time
-    self._dist_threshold = dist_threshold
-    self._vel_threshold = vel_threshold
-    self._lat_threshold = lat_threshold
+    def __init__(self, ff_center=0.0, lf_center=3, rf_center=-3, 
+                 hold_time=0.3, lat_threshold=1.0):
+        """
+        Args:
+            ff_center, lf_center, rf_center: 각 채널의 중심 y 위치
+            hold_time: 센서 소실 시 잔상을 유지할 시간 (0.3초)
+            lat_threshold: 중심으로부터 유지할 경로 오차 범위 (2.0m)
+        """
+        self._centers = {"FF": ff_center, "LF": lf_center, "RF": rf_center}
+        self._states = {ch: {"obj": None, "time": 0} for ch in ["FF", "LF", "RF"]}
+        
+        self._hold_time = hold_time
+        self._lat_threshold = lat_threshold
 
-  def _is_same_vehicle(self, obj1, id1, obj2, id2):
-    """두 객체가 물리적으로 동일한 차량인지 판별하는 헬퍼 메서드"""
-    if obj1 is None or obj2 is None:
-      return False
+    def _is_in_path(self, ch, obj):
+        """객체가 설정된 중심값으로부터 2m 이내에 있는지 확인"""
+        if obj is None: return False
+        return abs(obj.dPath - self._centers[ch]) < self._lat_threshold
 
-    # 레이더 ID가 유지되었다면 동일 차량으로 간주 (단, 비전 기반 등 유효하지 않은 ID(-1) 제외)
-    if id1 != -1 and id1 == id2:
-      return True
+    def apply(self, ff, lf, rf):
+        now = time.monotonic()
+        inputs = {"FF": ff, "LF": lf, "RF": rf}
+        output_objs = []
 
-    # ID가 끊겨도 위치(종/횡거리)와 상대 속도가 오차 범위 내면 동일 차량으로 간주
-    dist_match = abs(obj1.dRel - obj2.dRel) < self._dist_threshold
-    vel_match = abs(obj1.vRel - obj2.vRel) < self._vel_threshold
-    lat_match = abs(obj1.yRel - obj2.yRel) < self._lat_threshold
+        for ch in ["FF", "LF", "RF"]:
+            new_obj = inputs[ch]
+            state = self._states[ch]
 
-    return dist_match and vel_match and lat_match
+            # 1. 새로운 객체가 들어온 경우 (Not None 및 상태 유효)
+            if new_obj is not None and getattr(new_obj, 'status', True):
+                # 경로 오차 2m 이내일 때만 업데이트 및 출력
+                if self._is_in_path(ch, new_obj):
+                    state["obj"] = new_obj
+                    state["time"] = now
+                else:
+                    # 경로 밖이라면 기존 잔상 유지 로직으로 넘기기 위해 None 처리 가능
+                    # (여기선 들어온 객체가 경로 밖이면 무시하고 기존 잔상을 검토함)
+                    pass
 
-  def apply(self, ff, lf, rf):
-    now = time.monotonic()
-    raw_leads = {"FF": ff, "LF": lf, "RF": rf}
+            # 2. 잔상 유지 및 만료 검사
+            # 입력이 None이거나 경로를 벗어난 경우, 기존에 저장된 객체가 있다면 시간 검사
+            if state["obj"] is not None:
+                if (now - state["time"]) >= self._hold_time:
+                    # 유지 시간 초과 시 삭제
+                    state["obj"] = None
+                    state["time"] = 0
 
-    # 현재 프레임에서 실제로 유효한 타겟들만 모아둠 (읽기 전용 스냅샷)
-    current_active = {ch: obj for ch, obj in raw_leads.items() if obj is not None and obj.status}
+            # 최종적으로 결정된 해당 채널의 객체 추가
+            output_objs.append(state["obj"])
 
-    # FF -> LF -> RF 순서로 처리하여 FF(내 앞차)에 최우선권 부여
-    for ch in ["FF", "LF", "RF"]:
-      state = self._states[ch]
-      current_obj = raw_leads[ch]
-
-      # 중복 감지 및 즉시 삭제
-      if current_obj is not None and current_obj.status:
-        is_duplicate = False
-
-        for prior_ch in ["FF", "LF", "RF"]:
-          if prior_ch == ch:
-            break # 나보다 우선순위가 높은 채널만 검사 (예: ch가 LF면 FF만 검사)
-
-          prior_state = self._states[prior_ch]
-          if prior_state["obj"] is not None:
-            # 나보다 우선순위가 높은 채널에 나와 물리적으로 똑같은 차가 등록되어 있는가?
-            if self._is_same_vehicle(current_obj, current_obj.radarTrackId, prior_state["obj"], prior_state["id"]):
-              is_duplicate = True
-              break
-
-        # 중복(유령)으로 판명되면 데이터 일괄 삭제
-        if is_duplicate:
-          current_obj = None
-          state["obj"] = None
-          self._states[ch] = {"id": None, "obj": None, "time": 0}
-
-      # 상태 업데이트 및 잔상 파괴 검사
-      if current_obj is not None and current_obj.status:
-        # 중복이 아닌 진짜 새 데이터가 들어온 경우: 메모리 갱신
-        self._states[ch] = {"id": current_obj.radarTrackId, "obj": current_obj, "time": now}
-
-      elif state["obj"] is not None:
-        # 센서는 비었는데 기존 잔상이 남아있는 경우: 삭제 조건 검사
-        is_definitely_moved = False
-
-        for other_ch, new_obj in current_active.items():
-          if other_ch == ch: continue
-
-          # 다른 채널에 내 잔상과 똑같은 차가 나타났는가? (이동 확인)
-          if self._is_same_vehicle(new_obj, new_obj.radarTrackId, state["obj"], state["id"]):
-            is_definitely_moved = True
-            break
-
-        # 유지 시간(hold_time) 만료 여부 확인
-        is_expired = (now - state["time"]) >= self._hold_time
-
-        # 다른 곳으로 완전히 이동했거나, 잔상 수명이 다했다면 삭제
-        if is_definitely_moved or is_expired:
-          self._states[ch] = {"id": None, "obj": None, "time": 0}
-
-    # 최종적으로 정리된 객체들을 순서대로 반환
-    return [self._states[ch]["obj"] for ch in ["FF", "LF", "RF"]]
+        return output_objs
 
 class ThresholdTracker:
   def __init__(self, bounds, states):
