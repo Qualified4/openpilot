@@ -41,57 +41,30 @@ class LaneHighlightStateMachine:
     return self.state
 
 class LeadStabilizer:
-    def __init__(self, ff_center=0.0, lf_center=3, rf_center=-3, 
-                 hold_time=0.3, lat_threshold=1.0):
-        """
-        Args:
-            ff_center, lf_center, rf_center: 각 채널의 중심 y 위치
-            hold_time: 센서 소실 시 잔상을 유지할 시간 (0.3초)
-            lat_threshold: 중심으로부터 유지할 경로 오차 범위 (2.0m)
-        """
-        self._centers = {"FF": ff_center, "LF": lf_center, "RF": rf_center}
-        self._states = {ch: {"obj": None, "time": 0} for ch in ["FF", "LF", "RF"]}
-        
-        self._hold_time = hold_time
-        self._lat_threshold = lat_threshold
+  def __init__(self, ff_center=0.0, lf_center=3.0, rf_center=-3.0, hold_time=0.3, lat_threshold=1.0):
+    self._centers = {"FF": ff_center, "LF": lf_center, "RF": rf_center}
+    self._states = {ch: {"obj": None, "time": 0} for ch in ["FF", "LF", "RF"]}
+    self._hold_time = hold_time
+    self._lat_threshold = lat_threshold
 
-    def _is_in_path(self, ch, obj):
-        """객체가 설정된 중심값으로부터 2m 이내에 있는지 확인"""
-        if obj is None: return False
-        return abs(obj.dPath - self._centers[ch]) < self._lat_threshold
+  def apply(self, ff, lf, rf):
+    now = time.monotonic()
+    inputs = {"FF": ff, "LF": lf, "RF": rf}
 
-    def apply(self, ff, lf, rf):
-        now = time.monotonic()
-        inputs = {"FF": ff, "LF": lf, "RF": rf}
-        output_objs = []
+    for ch, new_obj in inputs.items():
+      state = self._states[ch]
 
-        for ch in ["FF", "LF", "RF"]:
-            new_obj = inputs[ch]
-            state = self._states[ch]
+      if new_obj is not None:
+        # 범위 내에 있으면 객체와 시간 갱신, 범위 밖이면 즉시 삭제
+        if abs(new_obj.dPath - self._centers[ch]) < self._lat_threshold:
+          state["obj"], state["time"] = new_obj, now
+        else:
+          state["obj"] = None
+      elif state["obj"] is not None and (now - state["time"]) >= self._hold_time:
+        # 객체가 None인 경우에만 잔상 만료 여부 확인
+        state["obj"] = None
 
-            # 1. 새로운 객체가 들어온 경우 (Not None 및 상태 유효)
-            if new_obj is not None and getattr(new_obj, 'status', True):
-                # 경로 오차 2m 이내일 때만 업데이트 및 출력
-                if self._is_in_path(ch, new_obj):
-                    state["obj"] = new_obj
-                    state["time"] = now
-                else:
-                    # 경로 밖이라면 기존 잔상 유지 로직으로 넘기기 위해 None 처리 가능
-                    # (여기선 들어온 객체가 경로 밖이면 무시하고 기존 잔상을 검토함)
-                    pass
-
-            # 2. 잔상 유지 및 만료 검사
-            # 입력이 None이거나 경로를 벗어난 경우, 기존에 저장된 객체가 있다면 시간 검사
-            if state["obj"] is not None:
-                if (now - state["time"]) >= self._hold_time:
-                    # 유지 시간 초과 시 삭제
-                    state["obj"] = None
-                    state["time"] = 0
-
-            # 최종적으로 결정된 해당 채널의 객체 추가
-            output_objs.append(state["obj"])
-
-        return output_objs
+    return [self._states[ch]["obj"] for ch in ["FF", "LF", "RF"]]
 
 class ThresholdTracker:
   def __init__(self, bounds, states):
@@ -1116,7 +1089,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # - 이를 ccNC 계기판 표시 범위인 0~15 사이의 직관적인 수치로 증폭하는 Gain 역할.
               # - 시뮬레이션 결과: R=500m(일반코너)에서 약 8단계, R=150m(급코너)에서 약 15단계 수준임.
               # - 튜닝 팁: 계기판 게이지가 너무 민감하게 차오르면 1500으로 낮추고, 너무 둔하면 2500으로 높여 조절.
-              max_curve_val = (2.0 * y_diff) / (x_dist ** 2) * 1800.0
+              max_curve_val = (2.0 * y_diff) / (x_dist ** 2) * 1600.0
             else:
               max_curve_val = 0.0
 
@@ -1195,12 +1168,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           else:
             create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = False
 
-          # 필터 적용 및 정규화
-          norm_l_lane = 15.5 + (current_l_target - 1.7) * create_ccnc_messages.lane_scale_per_m
-          norm_r_lane = 15.5 + (current_r_target - 1.7) * create_ccnc_messages.lane_scale_per_m
-
-          values["LANELINE_LEFT_POSITION"] = max(0, min(30, int(round(norm_l_lane))))
-          values["LANELINE_RIGHT_POSITION"] = max(0, min(30, int(round(norm_r_lane))))
+          values["LANELINE_LEFT_POSITION"] = int(round(np.interp(current_l_target, [0.0, 3.0], [0, 30])))
+          values["LANELINE_RIGHT_POSITION"] = int(round(np.interp(current_r_target, [0.0, 3.0], [0, 30])))
 
           # 차선 변경 아이콘
           if lat_enabled:
@@ -1280,12 +1249,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 왼쪽 차선 차량
               elif 1.5 < dPath < 4.5:
-                if left_lane_valid and (l.vLead > 2 or l.radar == False) and dist_score < lf_min_dist:
+                if left_lane_valid and l.vLead > 2 and dist_score < lf_min_dist:
                   lf_min_dist, lf_lead = dist_score, l
 
               # 오른쪽 차선 차량
               elif -4.5 < dPath < -1.5:
-                if right_lane_valid and (l.vLead > 2 or l.radar == False) and dist_score < rf_min_dist:
+                if right_lane_valid and l.vLead > 2 and dist_score < rf_min_dist:
                   rf_min_dist, rf_lead = dist_score, l
 
           # 타겟 미인식 시 0.3초 정도 실제 사라졌는지 기다림
@@ -1404,7 +1373,6 @@ create_ccnc_messages.hold_lane = False
 create_ccnc_messages.prev_lane_position = 0
 
 # 차선 노이즈 필터
-create_ccnc_messages.lane_scale_per_m = 15 / 1.7
 create_ccnc_messages.last_known_lane_width = 3.0
 create_ccnc_messages.l_lane_f = NoiseFilter(5, 1.5, alpha_range=0.25, error_range=0.7)
 create_ccnc_messages.r_lane_f = NoiseFilter(5, 1.5, alpha_range=0.25, error_range=0.7)
