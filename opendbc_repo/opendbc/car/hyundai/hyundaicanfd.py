@@ -1089,7 +1089,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # - 이를 ccNC 계기판 표시 범위인 0~15 사이의 직관적인 수치로 증폭하는 Gain 역할.
               # - 시뮬레이션 결과: R=500m(일반코너)에서 약 8단계, R=150m(급코너)에서 약 15단계 수준임.
               # - 튜닝 팁: 계기판 게이지가 너무 민감하게 차오르면 1500으로 낮추고, 너무 둔하면 2500으로 높여 조절.
-              max_curve_val = (2.0 * y_diff) / (x_dist ** 2) * 1600.0
+              max_curve_val = (2.0 * y_diff) / (x_dist ** 2) * 1750.0
             else:
               max_curve_val = 0.0
 
