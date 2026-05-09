@@ -55,11 +55,8 @@ class LeadStabilizer:
       state = self._states[ch]
 
       if new_obj is not None:
-        # 범위 내에 있으면 객체와 시간 갱신, 범위 밖이면 즉시 삭제
-        if abs(new_obj.dPath - self._centers[ch]) < self._lat_threshold:
-          state["obj"], state["time"] = new_obj, now
-        else:
-          state["obj"] = None
+        state["obj"] = new_obj
+        state["time"] = now if abs(new_obj.dPath - self._centers[ch]) < self._lat_threshold else 0
       elif state["obj"] is not None and (now - state["time"]) >= self._hold_time:
         # 객체가 None인 경우에만 잔상 만료 여부 확인
         state["obj"] = None
@@ -1143,18 +1140,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             # 위상 변화 시 차선 강조 변경
             if not create_ccnc_messages.draw_center and (lane_filter.is_reset or lane_raw < 0.1):
-              create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = True
+              create_ccnc_messages.draw_center = True
               create_ccnc_messages.prev_lane_position = create_ccnc_messages.last_known_lane_width
+              create_ccnc_messages.hold_lane_escape_count = 0
 
             # RNN 보간 방지
-            if create_ccnc_messages.hold_lane:
+            if create_ccnc_messages.hold_lane_escape_count < 2:
+              if swapped_lane - create_ccnc_messages.prev_lane_position > 0.01:
+                create_ccnc_messages.hold_lane_escape_count += 1
+              create_ccnc_messages.prev_lane_position = swapped_lane
               current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width if is_moving_left else 0)
               current_r_target = create_ccnc_messages.r_lane_f.fill(0 if is_moving_left else create_ccnc_messages.last_known_lane_width)
-
-              if swapped_lane - create_ccnc_messages.prev_lane_position > 0.01:
-                create_ccnc_messages.hold_lane = False
-
-              create_ccnc_messages.prev_lane_position = swapped_lane
 
             # LCA 중에는 차로 강조
             if is_auto_lane_changing:
@@ -1164,9 +1160,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               else:
                 values["LANE_LEFT" if desire == 3 else "LANE_RIGHT"] = 1
             elif abs(current_l_target - current_r_target) < create_ccnc_messages.last_known_lane_width / 3:
-              create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = False
+              create_ccnc_messages.draw_center = False
+              create_ccnc_messages.hold_lane_escape_count = 0
           else:
-            create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = False
+            create_ccnc_messages.draw_center = False
+            create_ccnc_messages.hold_lane_escape_count = 0
 
           values["LANELINE_LEFT_POSITION"] = int(round(np.interp(current_l_target, [0.0, 3.0], [0, 30])))
           values["LANELINE_RIGHT_POSITION"] = int(round(np.interp(current_r_target, [0.0, 3.0], [0, 30])))
@@ -1249,12 +1247,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 왼쪽 차선 차량
               elif 1.5 < dPath < 4.5:
-                if left_lane_valid and l.vLead > 2 and dist_score < lf_min_dist:
+                if left_lane_valid and l.vLeadK > 2 and dist_score < lf_min_dist:
                   lf_min_dist, lf_lead = dist_score, l
 
               # 오른쪽 차선 차량
               elif -4.5 < dPath < -1.5:
-                if right_lane_valid and l.vLead > 2 and dist_score < rf_min_dist:
+                if right_lane_valid and l.vLeadK > 2 and dist_score < rf_min_dist:
                   rf_min_dist, rf_lead = dist_score, l
 
           # 타겟 미인식 시 0.3초 정도 실제 사라졌는지 기다림
@@ -1369,8 +1367,8 @@ create_ccnc_messages.lane_curv = NoiseFilter(3, 0, alpha_range=0.4)
 
 # 차선 넘어감 감지
 create_ccnc_messages.draw_center = False
-create_ccnc_messages.hold_lane = False
 create_ccnc_messages.prev_lane_position = 0
+create_ccnc_messages.hold_lane_escape_count = 0
 
 # 차선 노이즈 필터
 create_ccnc_messages.last_known_lane_width = 3.0
