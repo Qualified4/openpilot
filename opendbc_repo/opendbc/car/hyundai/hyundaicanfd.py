@@ -201,7 +201,7 @@ def ease_in_interp(x, x_range, y_range, power=2):
   # 결과값 매핑
   return y_range[0] + (y_range[1] - y_range[0]) * eased_t
 
-def apply_linear_soft_deadband(value, center, radius, degree=3):
+def apply_curved_deadband(value, center, radius, degree=3):
   # 중심으로부터의 거리 계산
   diff = abs(value - center)
   # 데드밴드 범위를 벗어나면 원본 값 그대로 반환
@@ -1240,7 +1240,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             lead_visible = hud_control.leadVisible
 
             ff_min_dist = lf_min_dist = rf_min_dist = float('inf')
-            ff_dPath = lf_dPath = rf_dPath = 0.0
 
             for l in valid_leads:
               dPath = l.dPath
@@ -1270,19 +1269,19 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel)
-            values["FF_LATERAL"] = apply_linear_soft_deadband(create_ccnc_messages.ff_lateral.apply(-ff_lead.dPath), 0, 1) + center_lane_offset
+            values["FF_LATERAL"] = apply_curved_deadband(create_ccnc_messages.ff_lateral.apply(-ff_lead.dPath), 0, 1) + center_lane_offset
             values["FF_DETECT"] = 2 if ff_lead.vLead < 3 else create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
           else:
             values["FF_DETECT"] = 0 # 순정 디텍션 제거
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel)
-            values["LF_DETECT_LATERAL"] = apply_linear_soft_deadband(create_ccnc_messages.lf_lateral.apply(lf_lead.dPath), 3, 1) - center_lane_offset
+            values["LF_DETECT_LATERAL"] = apply_curved_deadband(create_ccnc_messages.lf_lateral.apply(lf_lead.dPath), 3, 1) - center_lane_offset
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel)
-            values["RF_DETECT_LATERAL"] = apply_linear_soft_deadband(create_ccnc_messages.rf_lateral.apply(-rf_lead.dPath), 3, 1) + center_lane_offset
+            values["RF_DETECT_LATERAL"] = apply_curved_deadband(create_ccnc_messages.rf_lateral.apply(-rf_lead.dPath), 3, 1) + center_lane_offset
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
 
           # --- 후측방은 BSD 경고 시 고정 위치에 두부 출력. HDA1은 후측방 레이더 정보가 안채워져서 옴 ---
@@ -1390,9 +1389,9 @@ create_ccnc_messages.rf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], err
 create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=0.3, error_range=0.4)
 create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.4)
 create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.4)
-create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(0.2, -1), states=(1, 2))
-create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(0.2, -1), states=(1, 2))
-create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(0.2, -1), states=(1, 2))
+create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(0.1, -0.1), states=(1, 2))
+create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(0.1, -0.1), states=(1, 2))
+create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(0.1, -0.1), states=(1, 2))
 
 create_ccnc_messages.lr_distance = NoiseFilter(5, 15, alpha_range=0.05)
 create_ccnc_messages.rr_distance = NoiseFilter(5, 15, alpha_range=0.05)
