@@ -1145,7 +1145,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               create_ccnc_messages.hold_lane_escape_count = 0
 
             # RNN 보간 방지
-            if create_ccnc_messages.hold_lane_escape_count < 2:
+            if 0 <= create_ccnc_messages.hold_lane_escape_count < 2:
               if swapped_lane - create_ccnc_messages.prev_lane_position > 0.01:
                 create_ccnc_messages.hold_lane_escape_count += 1
               create_ccnc_messages.prev_lane_position = swapped_lane
@@ -1161,10 +1161,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 values["LANE_LEFT" if desire == 3 else "LANE_RIGHT"] = 1
             elif abs(current_l_target - current_r_target) < create_ccnc_messages.last_known_lane_width / 3:
               create_ccnc_messages.draw_center = False
-              create_ccnc_messages.hold_lane_escape_count = 0
+              create_ccnc_messages.hold_lane_escape_count = -1
           else:
             create_ccnc_messages.draw_center = False
-            create_ccnc_messages.hold_lane_escape_count = 0
+            create_ccnc_messages.hold_lane_escape_count = -1
 
           values["LANELINE_LEFT_POSITION"] = int(round(np.interp(current_l_target, [0.0, 3.0], [0, 30])))
           values["LANELINE_RIGHT_POSITION"] = int(round(np.interp(current_r_target, [0.0, 3.0], [0, 30])))
@@ -1368,7 +1368,7 @@ create_ccnc_messages.lane_curv = NoiseFilter(3, 0, alpha_range=0.4)
 # 차선 넘어감 감지
 create_ccnc_messages.draw_center = False
 create_ccnc_messages.prev_lane_position = 0
-create_ccnc_messages.hold_lane_escape_count = 0
+create_ccnc_messages.hold_lane_escape_count = -1
 
 # 차선 노이즈 필터
 create_ccnc_messages.last_known_lane_width = 3.0
