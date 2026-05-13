@@ -1242,7 +1242,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             ff_min_dist = lf_min_dist = rf_min_dist = float('inf')
 
             for l in valid_leads:
-              dPath = l.dPath * np.interp(l.dRel, [50,80], [0.0, 1.5])
+              dPath = l.dPath * np.interp(l.dRel, [40,80], [1.0, 1.5])
               dist_score = l.dRel + abs(dPath)
 
               # 전방 차량
@@ -1389,9 +1389,9 @@ create_ccnc_messages.rf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], err
 create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=0.3, error_range=0.4)
 create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.4)
 create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.4)
-create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(0.1, -0.1), states=(1, 2))
-create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(0.1, -0.1), states=(1, 2))
-create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(0.1, -0.1), states=(1, 2))
+create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(0.5, -0.5), states=(1, 2))
+create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(0.5, -0.5), states=(1, 2))
+create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(0.5, -0.5), states=(1, 2))
 
 create_ccnc_messages.lr_distance = NoiseFilter(5, 15, alpha_range=0.05)
 create_ccnc_messages.rr_distance = NoiseFilter(5, 15, alpha_range=0.05)
