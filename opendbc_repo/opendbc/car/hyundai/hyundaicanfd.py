@@ -1076,7 +1076,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 target_idx = i
 
             # 단일 지점 곡률 계산
-            if target_idx > 0 and md.position.x[target_idx] >= 10.0:
+            if target_idx > 0 and md.position.x[target_idx] >= 20.0:
               x_dist = md.position.x[target_idx]
               y_diff = md.position.y[0] - md.position.y[target_idx]
 
@@ -1234,7 +1234,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               l for l in itertools.chain(CS.radar_state.leadsLeft,
                                         CS.radar_state.leadsRight,
                                         CS.radar_state.leadsCenter)
-              if l.radar and 1 < l.dRel < 130.0
+              if l.radar and 1 < l.dRel < 100.0
             )
 
             lead_visible = hud_control.leadVisible
@@ -1242,7 +1242,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             ff_min_dist = lf_min_dist = rf_min_dist = float('inf')
 
             for l in valid_leads:
-              dPath = l.dPath * np.interp(l.dRel, [50,90], [1.0, 1.3])
+              dPath = l.dPath * np.interp(l.dRel, [50,90], [1.0, 1.4])
               dist_score = l.dRel + abs(dPath)
 
               # 전방 차량
