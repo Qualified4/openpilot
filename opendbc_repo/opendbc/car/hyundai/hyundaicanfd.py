@@ -1235,7 +1235,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               l for l in itertools.chain(CS.radar_state.leadsLeft,
                                         CS.radar_state.leadsRight,
                                         CS.radar_state.leadsCenter)
-              if l.radar and 1 < l.dRel < 100.0
+              if l.radar and 1 < l.dRel < 130.0
             )
 
             lead_visible = hud_control.leadVisible
@@ -1243,8 +1243,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             ff_min_dist = lf_min_dist = rf_min_dist = float('inf')
 
             for lead in valid_leads:
-              dPath = lead.dPath * np.interp(lead.dRel, [50,90], [1.0, 1.3])
-              dist_score = lead.dRel + abs(dPath)
+              dRel = lead.dRel
+              dPath = lead.dPath * np.interp(dRel, [50,90], [1.0, 1.3])
+              dist_score = dRel + abs(dPath)
 
               # 전방 차량
               if -1.5 <= dPath <= 1.5:
@@ -1252,16 +1253,16 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   ff_min_dist, ff_lead, ff_dPath = dist_score, lead, dPath
 
               # 왼쪽 차선 차량
-              elif 1.5 < dPath < 4.5:
+              elif 1.5 < dPath < 4.5 and dRel < 80:
                 if left_lane_valid and lead.vLeadK > 2 and dist_score < lf_min_dist:
                   lf_min_dist, lf_lead, lf_dPath = dist_score, lead, dPath
 
               # 오른쪽 차선 차량
-              elif -4.5 < dPath < -1.5:
+              elif -4.5 < dPath < -1.5 and dRel < 80:
                 if right_lane_valid and lead.vLeadK > 2 and dist_score < rf_min_dist:
                   rf_min_dist, rf_lead, rf_dPath = dist_score, lead, dPath
 
-          ff_lead, lf_lead, rf_lead = create_ccnc_messages.stabilizer.apply(ff_lead, lf_lead, rf_lead)
+          # ff_lead, lf_lead, rf_lead = create_ccnc_messages.stabilizer.apply(ff_lead, lf_lead, rf_lead)
 
           center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
 
@@ -1378,22 +1379,22 @@ create_ccnc_messages.right_hold_position = 0
 
 # 차선 노이즈 필터
 create_ccnc_messages.last_known_lane_width = 3.0
-create_ccnc_messages.l_lane_f = NoiseFilter(5, 1.5, alpha_range=0.25, error_range=0.7)
-create_ccnc_messages.r_lane_f = NoiseFilter(5, 1.5, alpha_range=0.25, error_range=0.7)
+create_ccnc_messages.l_lane_f = NoiseFilter(3, 1.5, alpha_range=0.25, error_range=0.7)
+create_ccnc_messages.r_lane_f = NoiseFilter(3, 1.5, alpha_range=0.25, error_range=0.7)
 
 # 차량 거리 필터
 create_ccnc_messages.ff_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
 create_ccnc_messages.lf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
 create_ccnc_messages.rf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
-create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=0.3, error_range=0.4)
-create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.4)
-create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.4)
+create_ccnc_messages.ff_lateral = NoiseFilter(5, 0, alpha_range=0.3, error_range=0.4)
+create_ccnc_messages.lf_lateral = NoiseFilter(5, 3, alpha_range=0.3, error_range=0.4)
+create_ccnc_messages.rf_lateral = NoiseFilter(5, 3, alpha_range=0.3, error_range=0.4)
 create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(1, -0.5), states=(1, 2))
 create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(1, -0.5), states=(1, 2))
 create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(1, -0.5), states=(1, 2))
 
-create_ccnc_messages.lr_distance = NoiseFilter(5, 15, alpha_range=0.05)
-create_ccnc_messages.rr_distance = NoiseFilter(5, 15, alpha_range=0.05)
+create_ccnc_messages.lr_distance = NoiseFilter(1, 15, alpha_range=0.05)
+create_ccnc_messages.rr_distance = NoiseFilter(1, 15, alpha_range=0.05)
 
 create_ccnc_messages.stabilizer = LeadStabilizer()
 
