@@ -1093,10 +1093,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             curvature = round(create_ccnc_messages.lane_curv.apply(max_curve_val))
           else:
             # 횡컨 아니면 핸들 각도 기반 조향
-            curvature = round(CS.out.steeringAngleDeg / 3)
+            curvature = round(CS.out.steeringAngleDeg / 3.5)
         except:
           # 모델 데이터 예외 발생 시 핸들 각도 기반 백업
-          curvature = round(CS.out.steeringAngleDeg / 3)
+          curvature = round(CS.out.steeringAngleDeg / 3.5)
           values["LFA_ICON"] = 5
 
         values["LANELINE_CURVATURE"] = min(abs(curvature), 15) + (-1 if curvature < 0 else 0)
