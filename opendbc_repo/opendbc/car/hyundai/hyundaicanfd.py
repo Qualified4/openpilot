@@ -1244,7 +1244,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             for lead in valid_leads:
               dRel = lead.dRel
-              dPath = lead.dPath * np.interp(dRel, [50,90], [1.0, 1.3])
+              dPath = lead.dPath * np.interp(dRel, [50,90], [1.0, 1.1])
               dist_score = dRel + abs(dPath)
 
               # 전방 차량
