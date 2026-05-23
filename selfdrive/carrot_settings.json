@@ -1865,7 +1865,7 @@
       "egroup": "FDIST",
       "etitle": "TF(1): TimeFollow1x0.01s(110)",
       "edescr": "Following Distance Level 1",
-      "min": 30,
+      "min": 20,
       "max": 300,
       "default": 110,
       "unit": 5,
