@@ -106,6 +106,16 @@ class NoiseFilter:
     self._buffer.clear()
     return self._filtered_value
 
+  def fill(self, value):
+    """
+    현재 필터의 버퍼를 특정 값으로 가득 채우고 필터 출력값도 동기화합니다.
+    reset과 달리 내부 설정값(default_value 등)은 유지하며 데이터 흐름만 강제 수정합니다.
+    """
+    self._filtered_value = value
+    self._buffer.extend([self._filtered_value] * self._buffer.maxlen)
+
+    return self._filtered_value
+
   def _get_median(self):
     buf_len = len(self._buffer)
     if buf_len == 0:
@@ -1109,6 +1119,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             if not create_ccnc_messages.draw_center and (lane_filter.is_reset or lane_raw < 0.1):
               create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = True
               create_ccnc_messages.prev_lane_position = 6.0
+              create_ccnc_messages.swapping_lane_position.fill(6.0)
               create_ccnc_messages.hold_lane_escape_count = 0
               prev_l_val = create_ccnc_messages.l_lane_f.value
               prev_r_val = create_ccnc_messages.r_lane_f.value
@@ -1120,7 +1131,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             # RNN 보간 방지
             if create_ccnc_messages.hold_lane:
-              swapped_lane_position = rightlaneraw if create_ccnc_messages.is_moving_left else leftlaneraw
+              swapped_lane_position = create_ccnc_messages.swapping_lane_position.apply(rightlaneraw if create_ccnc_messages.is_moving_left else leftlaneraw)
               if swapped_lane_position - create_ccnc_messages.prev_lane_position > 0.01:
                 create_ccnc_messages.hold_lane_escape_count += 1
                 if create_ccnc_messages.hold_lane_escape_count >= 2:
@@ -1129,11 +1140,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 create_ccnc_messages.hold_lane_escape_count = 0
               create_ccnc_messages.prev_lane_position = swapped_lane_position
               if create_ccnc_messages.is_moving_left:
-                current_l_target = create_ccnc_messages.l_lane_f.reset(create_ccnc_messages.last_known_lane_width)
+                current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width)
                 current_r_target = create_ccnc_messages.r_lane_f.apply(0)
               else:
                 current_l_target = create_ccnc_messages.l_lane_f.apply(0)
-                current_r_target = create_ccnc_messages.r_lane_f.reset(create_ccnc_messages.last_known_lane_width)
+                current_r_target = create_ccnc_messages.r_lane_f.fill(create_ccnc_messages.last_known_lane_width)
 
             # LCA 중에는 차로 강조
             if is_auto_lane_changing:
@@ -1352,6 +1363,7 @@ create_ccnc_messages.hold_lane_escape_count = 0
 create_ccnc_messages.left_hold_position = 0
 create_ccnc_messages.right_hold_position = 0
 create_ccnc_messages.is_moving_left = False
+create_ccnc_messages.swapping_lane_position = NoiseFilter(3, 0, alpha_range=1.0)
 
 # 차선 노이즈 필터
 create_ccnc_messages.last_known_lane_width = 3.0
