@@ -104,15 +104,6 @@ class NoiseFilter:
     """값을 초기화하고 버퍼를 완전히 비웁니다."""
     self._filtered_value = new_value if new_value is not None else self._default_value
     self._buffer.clear()
-
-  def fill(self, value):
-    """
-    현재 필터의 버퍼를 특정 값으로 가득 채우고 필터 출력값도 동기화합니다.
-    reset과 달리 내부 설정값(default_value 등)은 유지하며 데이터 흐름만 강제 수정합니다.
-    """
-    self._filtered_value = value
-    self._buffer.extend([self._filtered_value] * self._buffer.maxlen)
-
     return self._filtered_value
 
   def _get_median(self):
@@ -1120,8 +1111,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = True
               create_ccnc_messages.prev_lane_position = 6.0
               create_ccnc_messages.hold_lane_escape_count = 0
-              create_ccnc_messages.left_hold_position = create_ccnc_messages.last_known_lane_width if is_moving_left else 0
-              create_ccnc_messages.right_hold_position = 0 if is_moving_left else create_ccnc_messages.last_known_lane_width
+              prev_l_val = create_ccnc_messages.l_lane_f.value
+              prev_r_val = create_ccnc_messages.r_lane_f.value
+              if is_moving_left:
+                create_ccnc_messages.r_lane_f.reset(prev_l_val)
+              else:
+                create_ccnc_messages.l_lane_f.reset(prev_r_val)
 
             # RNN 보간 방지
             if create_ccnc_messages.hold_lane:
@@ -1132,8 +1127,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               else:
                 create_ccnc_messages.hold_lane_escape_count = 0
               create_ccnc_messages.prev_lane_position = swapped_lane_position
-              current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.left_hold_position)
-              current_r_target = create_ccnc_messages.r_lane_f.fill(create_ccnc_messages.right_hold_position)
+              if is_moving_left:
+                current_l_target = create_ccnc_messages.l_lane_f.reset(create_ccnc_messages.last_known_lane_width)
+                current_r_target = create_ccnc_messages.r_lane_f.apply(0)
+              else:
+                current_l_target = create_ccnc_messages.l_lane_f.apply(0)
+                current_r_target = create_ccnc_messages.r_lane_f.reset(create_ccnc_messages.last_known_lane_width)
 
             # LCA 중에는 차로 강조
             if is_auto_lane_changing:
@@ -1212,7 +1211,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               l for l in itertools.chain(CS.radar_state.leadsLeft,
                                         CS.radar_state.leadsRight,
                                         CS.radar_state.leadsCenter)
-              if l.radar and 1 < l.dRel < 130.0
+              if l.radar
             )
 
             lead_visible = hud_control.leadVisible
@@ -1221,7 +1220,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             for lead in valid_leads:
               dRel = lead.dRel
-              dPath = lead.dPath * np.interp(dRel, [50,90], [1.0, 1.1])
+              dPath = lead.dPath
               dist_score = dRel + abs(dPath)
 
               # 전방 차량
@@ -1232,12 +1231,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # 왼쪽 차선 차량
               elif 1.5 < dPath < 4.5 and dRel < 80:
                 if left_lane_valid and lead.vLeadK > 2 and dist_score < lf_min_dist:
-                  lf_min_dist, lf_lead, lf_dPath = dist_score, lead, dPath
+                  lf_min_dist, lf_lead, lf_dPath = dist_score, lead, dPath * np.interp(dRel, [10, 15, 50, 80], [1.1, 1.0, 1.0, 1.15])
 
               # 오른쪽 차선 차량
               elif -4.5 < dPath < -1.5 and dRel < 80:
                 if right_lane_valid and lead.vLeadK > 2 and dist_score < rf_min_dist:
-                  rf_min_dist, rf_lead, rf_dPath = dist_score, lead, dPath
+                  rf_min_dist, rf_lead, rf_dPath = dist_score, lead, dPath * np.interp(dRel, [10, 15, 50, 80], [1.1, 1.0, 1.0, 1.15])
 
           center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
 
@@ -1251,12 +1250,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel)
-            values["LF_DETECT_LATERAL"] = apply_curved_deadband(create_ccnc_messages.lf_lateral.apply(lf_dPath), 3, 0.5) - center_lane_offset
+            values["LF_DETECT_LATERAL"] = apply_curved_deadband(create_ccnc_messages.lf_lateral.apply(lf_dPath), 3, 0.8, 3) - center_lane_offset
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel)
-            values["RF_DETECT_LATERAL"] = apply_curved_deadband(create_ccnc_messages.rf_lateral.apply(-rf_dPath), 3, 0.5) + center_lane_offset
+            values["RF_DETECT_LATERAL"] = apply_curved_deadband(create_ccnc_messages.rf_lateral.apply(-rf_dPath), 3, 0.8, 3) + center_lane_offset
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
 
           # --- 후측방은 BSD 경고 시 고정 위치에 두부 출력. HDA1은 후측방 레이더 정보가 안채워져서 옴 ---
