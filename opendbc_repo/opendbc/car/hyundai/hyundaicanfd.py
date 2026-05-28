@@ -1085,7 +1085,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           r_valid = r_prob > 0.3 or is_auto_lane_changing or is_blinking
 
           if not l_valid and not r_valid:
-            leftlaneraw = rightlaneraw = create_ccnc_messages.last_known_lane_width / 2
+            leftlaneraw = rightlaneraw = 1.3
           elif not l_valid:
             leftlaneraw = create_ccnc_messages.last_known_lane_width - rightlaneraw
           elif not r_valid:
@@ -1103,7 +1103,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             is_moving_left = CS.out.leftBlinker or desire == 3
 
             lane_raw = leftlaneraw if is_moving_left else rightlaneraw
-            swapped_lane_position = rightlaneraw if is_moving_left else leftlaneraw
             lane_filter = create_ccnc_messages.l_lane_f if is_moving_left else create_ccnc_messages.r_lane_f
 
             # 위상 변화 시 차선 강조 변경
@@ -1113,13 +1112,15 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               create_ccnc_messages.hold_lane_escape_count = 0
               prev_l_val = create_ccnc_messages.l_lane_f.value
               prev_r_val = create_ccnc_messages.r_lane_f.value
-              if is_moving_left:
+              create_ccnc_messages.is_moving_left = is_moving_left
+              if create_ccnc_messages.is_moving_left:
                 create_ccnc_messages.r_lane_f.reset(prev_l_val)
               else:
                 create_ccnc_messages.l_lane_f.reset(prev_r_val)
 
             # RNN 보간 방지
             if create_ccnc_messages.hold_lane:
+              swapped_lane_position = rightlaneraw if create_ccnc_messages.is_moving_left else leftlaneraw
               if swapped_lane_position - create_ccnc_messages.prev_lane_position > 0.01:
                 create_ccnc_messages.hold_lane_escape_count += 1
                 if create_ccnc_messages.hold_lane_escape_count >= 2:
@@ -1127,7 +1128,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               else:
                 create_ccnc_messages.hold_lane_escape_count = 0
               create_ccnc_messages.prev_lane_position = swapped_lane_position
-              if is_moving_left:
+              if create_ccnc_messages.is_moving_left:
                 current_l_target = create_ccnc_messages.l_lane_f.reset(create_ccnc_messages.last_known_lane_width)
                 current_r_target = create_ccnc_messages.r_lane_f.apply(0)
               else:
@@ -1226,7 +1227,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # 전방 차량
               if -1.5 <= dPath <= 1.5:
                 if lead_visible and dist_score < ff_min_dist:
-                  ff_min_dist, ff_lead, ff_dPath = dist_score, lead, dPath
+                  ff_min_dist, ff_lead, ff_dPath = dist_score, lead, dPath * np.interp(dRel, [80, 90], [1.0, 0.7])
 
               # 왼쪽 차선 차량
               elif 1.5 < dPath < 4.5 and dRel < 80:
@@ -1350,6 +1351,7 @@ create_ccnc_messages.prev_lane_position = 0
 create_ccnc_messages.hold_lane_escape_count = 0
 create_ccnc_messages.left_hold_position = 0
 create_ccnc_messages.right_hold_position = 0
+create_ccnc_messages.is_moving_left = False
 
 # 차선 노이즈 필터
 create_ccnc_messages.last_known_lane_width = 3.0
