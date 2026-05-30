@@ -58,7 +58,7 @@ class DesireHelper:
     self.side_gap_margin  = 3.0
     self.bsd_clear_sec    = 0.0
     self.object_clear_sec = 0.3
-    self.bsd_hold_sec     = 1.5
+    self.bsd_hold_sec     = 1.0
     self.ignore_bsd = False
 
     self.prev_desire_enabled = False

@@ -198,10 +198,10 @@ class SideState:
     self.bsd_detected_now = bsd_now
 
     # 코너 레이더 없는 차량은 hold 시간을 늘려 보수적으로 동작
-    effective_hold_sec = bsd_hold_sec if corner_radar_active else max(bsd_hold_sec, 3.5)
+    # effective_hold_sec = bsd_hold_sec if corner_radar_active else max(bsd_hold_sec, 3.5)
 
     if self.bsd_detected_now:
-      self.bsd_hold_counter = int(effective_hold_sec / DT_MDL)
+      self.bsd_hold_counter = int(bsd_hold_sec / DT_MDL)
       self.bsd_clear_count  = 0
     else:
       if self.bsd_hold_counter > 0:

@@ -989,7 +989,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         if values["ALERTS_5"] in [11] and CS.softHoldActive == 0:
           values["ALERTS_5"] = 0
 
-        lane_color = 6 if md is not None and md.meta.laneChangeAvailableLeft else 2
+        # LANELINE 경고 판단 (CAN raw 기준)
         if lane_line_check >= 1:
             lane_line_warn_left  = CS.out.leftLaneLine  % 10 not in (0, 5)
             lane_line_warn_right = CS.out.rightLaneLine % 10 not in (0, 5)
