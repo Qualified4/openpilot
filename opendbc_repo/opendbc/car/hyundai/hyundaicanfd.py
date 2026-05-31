@@ -1088,8 +1088,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           leftlaneraw = abs(md.laneLines[1].y[0])
           rightlaneraw = abs(md.laneLines[2].y[0])
 
-          l_valid = l_prob > 0.3 or is_auto_lane_changing or is_blinking
-          r_valid = r_prob > 0.3 or is_auto_lane_changing or is_blinking
+          l_valid = l_prob > 0.3 # or is_auto_lane_changing or is_blinking
+          r_valid = r_prob > 0.3 # or is_auto_lane_changing or is_blinking
 
           if not l_valid and not r_valid:
             leftlaneraw = rightlaneraw = 1.3
@@ -1156,6 +1156,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             elif abs(current_l_target - current_r_target) < create_ccnc_messages.last_known_lane_width / 3:
               create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = False
               create_ccnc_messages.hold_lane_escape_count = 0
+              create_ccnc_messages.lane_phase_min = 10.0
           else:
             create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = False
             create_ccnc_messages.hold_lane_escape_count = 0
