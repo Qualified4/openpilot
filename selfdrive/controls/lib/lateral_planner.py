@@ -73,8 +73,6 @@ class LateralPlanner:
     self.curve_speed = 0
     self.lanemode_possible_count = 0
     self.laneless_only = True
-    self.lane_change_mult_current = 1.0   # lane_change_multiplier 페이드 추적용
-
 
   def reset_mpc(self, x0=None):
     if x0 is None:
@@ -116,9 +114,7 @@ class LateralPlanner:
       self.v_plan = np.clip(car_speed, MIN_SPEED, np.inf)
       self.v_ego = self.v_plan[0]
       self.plan_a = np.array(md.acceleration.x)
-      is_lane_changing = (md.meta.desire != log.Desire.none)
-
-      if not is_lane_changing and md.velocity.x[-1] < md.velocity.x[0] * 0.7:  # TODO: 모델이 감속을 요청하는 경우 속도테이블이 레인모드를 할수 없음. 속도테이블을 새로 만들어야함..
+      if md.velocity.x[-1] < md.velocity.x[0] * 0.7:  # TODO: 모델이 감속을 요청하는 경우 속도테이블이 레인모드를 할수 없음. 속도테이블을 새로 만들어야함..
         self.lanemode_possible_count = 0
         self.laneless_only = True
       else:
@@ -141,14 +137,10 @@ class LateralPlanner:
     # Turn off lanes during lane change
     #if self.DH.desire == log.Desire.laneChangeRight or self.DH.desire == log.Desire.laneChangeLeft:
 
-    lane_change_target = 0.0 if (md.meta.desire != log.Desire.none or carrot.atc_active) else 1.0
-    if lane_change_target < self.lane_change_mult_current:
-      # 차선변경 시작: 즉시 OFF (레인 경로 간섭 방지)
-      self.lane_change_mult_current = 0.0
+    if md.meta.desire != log.Desire.none or carrot.atc_active:
+      self.LP.lane_change_multiplier = 0.0 #md.meta.laneChangeProb
     else:
-      # 차선변경 완료 후: 0.5초에 걸쳐 서서히 ON (경로 복귀 충격 방지)
-      self.lane_change_mult_current = min(1.0, self.lane_change_mult_current + DT_MDL / 0.5)
-    self.LP.lane_change_multiplier = self.lane_change_mult_current
+      self.LP.lane_change_multiplier = 1.0
 
     # lanelines calculation?
     self.LP.lanefull_mode = self.useLaneLineMode
