@@ -1088,8 +1088,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           leftlaneraw = abs(md.laneLines[1].y[0])
           rightlaneraw = abs(md.laneLines[2].y[0])
 
-          l_valid = l_prob > 0.3 # or is_auto_lane_changing or is_blinking
-          r_valid = r_prob > 0.3 # or is_auto_lane_changing or is_blinking
+          l_valid = l_prob > 0.3 or is_auto_lane_changing or is_blinking
+          r_valid = r_prob > 0.3 or is_auto_lane_changing or is_blinking
 
           if not l_valid and not r_valid:
             leftlaneraw = rightlaneraw = 1.3
@@ -1099,7 +1099,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             rightlaneraw = create_ccnc_messages.last_known_lane_width - leftlaneraw
 
           # 차선 변경 시 위상 변화 제어
-          if is_auto_lane_changing or is_blinking:
+          if is_auto_lane_changing or is_blinking and CS.out.vEgo > 6:
             # 위상 변화 시 차선 강조 변경
             if not create_ccnc_messages.draw_center:
               is_moving_left = CS.out.leftBlinker or desire == 3
