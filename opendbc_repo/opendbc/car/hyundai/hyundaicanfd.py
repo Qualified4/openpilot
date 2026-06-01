@@ -1153,7 +1153,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 values["LANE_HIGHLIGHT_DISTANCE"] = 60
               else:
                 values["LANE_LEFT" if desire == 3 else "LANE_RIGHT"] = 1
-            elif abs(current_l_target - current_r_target) < create_ccnc_messages.last_known_lane_width / 3:
+            elif abs(current_l_target - current_r_target) < create_ccnc_messages.last_known_lane_width / 5:
               create_ccnc_messages.draw_center = create_ccnc_messages.hold_lane = False
               create_ccnc_messages.hold_lane_escape_count = 0
               create_ccnc_messages.lane_phase_min = 10.0
