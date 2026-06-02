@@ -1251,12 +1251,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # 왼쪽 차선 차량
               elif 1.5 < dPath < 4.5 and dRel < 80:
                 if left_lane_valid and lead.vLeadK > 2 and dist_score < lf_min_dist:
-                  lf_min_dist, lf_lead, lf_dPath = dist_score, lead, dPath * np.interp(dRel, [10, 15, 50, 80], [1.1, 1.0, 1.0, 1.15])
+                  lf_min_dist, lf_lead, lf_dPath = dist_score, lead, dPath * np.interp(dRel, [0, 5, 60, 80], [1.1, 1.0, 1.0, 1.15])
 
               # 오른쪽 차선 차량
               elif -4.5 < dPath < -1.5 and dRel < 80:
                 if right_lane_valid and lead.vLeadK > 2 and dist_score < rf_min_dist:
-                  rf_min_dist, rf_lead, rf_dPath = dist_score, lead, dPath * np.interp(dRel, [10, 15, 50, 80], [1.1, 1.0, 1.0, 1.15])
+                  rf_min_dist, rf_lead, rf_dPath = dist_score, lead, dPath * np.interp(dRel, [0, 5, 60, 80], [1.1, 1.0, 1.0, 1.15])
 
           center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
 
