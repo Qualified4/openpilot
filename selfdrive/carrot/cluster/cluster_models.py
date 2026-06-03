@@ -159,6 +159,7 @@ class ClusterUiState:
     surround_pitch_deg: float
     surround_view_active: bool
     lanes: tuple[LaneMarking, ...]
+    camera_view_mode: int = 0
     extra_left_lane_visible: bool = False
     extra_right_lane_visible: bool = False
     left_road_edge_offset: float | None = None
@@ -238,6 +239,7 @@ class ClusterUiState:
     display_speed_kph: float | None = None
     git_status: GitBranchStatus | None = None
     actual_fps: float | None = None
+    cluster_core_usage_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
