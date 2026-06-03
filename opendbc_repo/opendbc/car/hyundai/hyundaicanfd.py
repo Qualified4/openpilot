@@ -1219,13 +1219,16 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         # 2024 쏘나타는 차량 인식 두부(1, 2)만 출력 가능
         try:
           ff_lead = lf_lead = rf_lead = None
-          ff_dPath = lf_dPath = rf_dPath = 0
+          ff_yRel = lf_yRel = rf_yRel = 0
 
           left_lane_valid = md.meta.laneWidthLeft > 2.2
           right_lane_valid = md.meta.laneWidthRight > 2.2
 
           # 레이더 정보 갱신
           if CS.radar_state:
+            # 상단에서 계산된 계기판 표시용 curvature 변수 활용 (UnboundLocalError 방지)
+            current_curvature = create_ccnc_messages.lane_curv.value
+
             # 좌, 중앙, 우 레이더 트랙의 모든 리드 결합 및 필터링
             valid_leads = (
               l for l in itertools.chain(CS.radar_state.leadsLeft,
@@ -1240,42 +1243,50 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             for lead in valid_leads:
               dRel = lead.dRel
-              dPath = lead.dPath
-              dist_score = dRel + abs(dPath)
+              yRel = lead.yRel
+
+              # 1. 상단에서 계산한 curvature(계기판 표시용 곡률)을 횡방향 물리 오프셋으로 역산
+              # 곡률(kappa) = -curvature / 1750.0 (curvature가 음수일 때 좌측 커브)
+              # 오프셋 = 0.5 * kappa * dRel^2 = -curvature * (dRel ** 2) / 3500.0
+              curve_offset_y = -current_curvature * (dRel ** 2) / 3500.0
+
+              # 2. 직선 물리 좌표 yRel에서 곡률 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
+              corrected_yRel = yRel - curve_offset_y
+              dist_score = dRel + abs(corrected_yRel)
 
               # 전방 차량
-              if -1.5 <= dPath <= 1.5:
+              if -1.5 <= corrected_yRel <= 1.5:
                 if lead_visible and dist_score < ff_min_dist:
-                  ff_min_dist, ff_lead, ff_dPath = dist_score, lead, dPath * np.interp(dRel, [80, 90], [1.0, 0.7])
+                  ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [80, 90], [1.0, 0.7])
 
               # 왼쪽 차선 차량
-              elif 1.5 < dPath < 4.5 and dRel < 80:
+              elif 1.5 < corrected_yRel < 4.5 and dRel < 80:
                 if left_lane_valid and lead.vLeadK > 2 and dist_score < lf_min_dist:
-                  lf_min_dist, lf_lead, lf_dPath = dist_score, lead, dPath * np.interp(dRel, [0, 5, 60, 80], [1.1, 1.0, 1.0, 1.15])
+                  lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [0, 5, 60, 80], [1.1, 1.0, 1.0, 1.15])
 
               # 오른쪽 차선 차량
-              elif -4.5 < dPath < -1.5 and dRel < 80:
+              elif -4.5 < corrected_yRel < -1.5 and dRel < 80:
                 if right_lane_valid and lead.vLeadK > 2 and dist_score < rf_min_dist:
-                  rf_min_dist, rf_lead, rf_dPath = dist_score, lead, dPath * np.interp(dRel, [0, 5, 60, 80], [1.1, 1.0, 1.0, 1.15])
+                  rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [0, 5, 60, 80], [1.1, 1.0, 1.0, 1.15])
 
           center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel)
-            values["FF_LATERAL"] = apply_curved_deadband(create_ccnc_messages.ff_lateral.apply(-ff_dPath), 0, 0.5) + center_lane_offset
+            values["FF_LATERAL"] = apply_curved_deadband(create_ccnc_messages.ff_lateral.apply(-ff_yRel), 0, 0.5)
             values["FF_DETECT"] = 2 if ff_lead.vLead < 3 else create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
           else:
             values["FF_DETECT"] = 0 # 순정 디텍션 제거
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel)
-            values["LF_DETECT_LATERAL"] = apply_curved_deadband(create_ccnc_messages.lf_lateral.apply(lf_dPath), 3, 0.8, 3) - center_lane_offset
+            values["LF_DETECT_LATERAL"] = apply_curved_deadband(create_ccnc_messages.lf_lateral.apply(lf_yRel), 3, 0.8, 3)
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel)
-            values["RF_DETECT_LATERAL"] = apply_curved_deadband(create_ccnc_messages.rf_lateral.apply(-rf_dPath), 3, 0.8, 3) + center_lane_offset
+            values["RF_DETECT_LATERAL"] = apply_curved_deadband(create_ccnc_messages.rf_lateral.apply(-rf_yRel), 3, 0.8, 3)
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
 
           # --- 후측방은 BSD 경고 시 고정 위치에 두부 출력. HDA1은 후측방 레이더 정보가 안채워져서 옴 ---
