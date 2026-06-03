@@ -1251,7 +1251,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               curve_offset_y = -current_curvature * (dRel) / 3500.0
 
               # 2. 직선 물리 좌표 yRel에서 곡률 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
-              corrected_yRel = yRel - curve_offset_y
+              corrected_yRel = yRel # - curve_offset_y
               dist_score = dRel + abs(corrected_yRel)
 
               # 전방 차량
