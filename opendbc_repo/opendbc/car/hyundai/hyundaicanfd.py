@@ -1248,7 +1248,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # 1. 상단에서 계산한 curvature(계기판 표시용 곡률)을 횡방향 물리 오프셋으로 역산
               # 곡률(kappa) = -curvature / 1750.0 (curvature가 음수일 때 좌측 커브)
               # 오프셋 = 0.5 * kappa * dRel^2 = -curvature * (dRel ** 2) / 3500.0
-              curve_offset_y = -current_curvature * (dRel ** 2) / 1750.0
+              curve_offset_y = -current_curvature * (dRel) / 3500.0
 
               # 2. 직선 물리 좌표 yRel에서 곡률 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
               corrected_yRel = yRel - curve_offset_y
