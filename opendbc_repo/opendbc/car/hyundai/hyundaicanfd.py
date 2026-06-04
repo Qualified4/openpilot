@@ -1138,9 +1138,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               if is_moving_left:
                 current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width)
-                current_r_target = create_ccnc_messages.r_lane_f.reset(create_ccnc_messages.hold_lane_escape_count * 0.05)
+                current_r_target = create_ccnc_messages.r_lane_f.reset(create_ccnc_messages.hold_lane_escape_count * 0.1)
               else:
-                current_l_target = create_ccnc_messages.l_lane_f.reset(create_ccnc_messages.hold_lane_escape_count * 0.05)
+                current_l_target = create_ccnc_messages.l_lane_f.reset(create_ccnc_messages.hold_lane_escape_count * 0.1)
                 current_r_target = create_ccnc_messages.r_lane_f.fill(create_ccnc_messages.last_known_lane_width)
             elif create_ccnc_messages.draw_center:
               MAX_STEP = 0.15  # 한 루프(프레임)당 최대 허용 변화량 (m단위, 부드러움 조절용)
