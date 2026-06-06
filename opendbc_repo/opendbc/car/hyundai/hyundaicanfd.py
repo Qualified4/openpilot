@@ -1136,12 +1136,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               else:
                 create_ccnc_messages.hold_lane_escape_count = 0
 
+              holding_factor = create_ccnc_messages.hold_lane_escape_count * 0.1
               if is_moving_left:
-                current_l_target = create_ccnc_messages.l_lane_f.fill(create_ccnc_messages.last_known_lane_width)
-                current_r_target = create_ccnc_messages.r_lane_f.reset(create_ccnc_messages.hold_lane_escape_count * 0.1)
+                current_l_target = create_ccnc_messages.l_lane_f.reset(create_ccnc_messages.last_known_lane_width - holding_factor)
+                current_r_target = create_ccnc_messages.r_lane_f.reset(holding_factor)
               else:
-                current_l_target = create_ccnc_messages.l_lane_f.reset(create_ccnc_messages.hold_lane_escape_count * 0.1)
-                current_r_target = create_ccnc_messages.r_lane_f.fill(create_ccnc_messages.last_known_lane_width)
+                current_l_target = create_ccnc_messages.l_lane_f.reset(holding_factor)
+                current_r_target = create_ccnc_messages.r_lane_f.reset(create_ccnc_messages.last_known_lane_width - holding_factor)
             elif create_ccnc_messages.draw_center:
               MAX_STEP = 0.15  # 한 루프(프레임)당 최대 허용 변화량 (m단위, 부드러움 조절용)
               prev_l = create_ccnc_messages.l_lane_f.value
@@ -1173,9 +1174,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             current_l_target = create_ccnc_messages.l_lane_f.apply(leftlaneraw)
             current_r_target = create_ccnc_messages.r_lane_f.apply(rightlaneraw)
 
-          lane_width = current_l_target + current_r_target
-          if 2 < lane_width < 4.5:
-            create_ccnc_messages.last_known_lane_width = lane_width # 마지막 차선 폭을 기억해둠
+            lane_width = current_l_target + current_r_target
+            if 2 < lane_width < 4.5:
+              create_ccnc_messages.last_known_lane_width = lane_width # 마지막 차선 폭을 기억해둠
 
           values["LANELINE_LEFT_POSITION"] = int(round(np.interp(current_l_target, [0.0, 3.0], [0, 30])))
           values["LANELINE_RIGHT_POSITION"] = int(round(np.interp(current_r_target, [0.0, 3.0], [0, 30])))
@@ -1270,12 +1271,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 왼쪽 차선 차량
               elif 1.5 < corrected_yRel < 4.5 and dRel < 90:
-                if dist_score < lf_min_dist and lead.vLeadK > 2.5:
+                if dist_score < lf_min_dist and lead.vLeadK > 3:
                   lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
               # 오른쪽 차선 차량
               elif -4.5 < corrected_yRel < -1.5 and dRel < 90:
-                if dist_score < rf_min_dist and lead.vLeadK > 2.5:
+                if dist_score < rf_min_dist and lead.vLeadK > 3:
                   rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
           center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
@@ -1283,7 +1284,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel) * 0.8
-            values["FF_LATERAL"] = apply_curved_deadband(create_ccnc_messages.ff_lateral.apply(-ff_yRel), 0, 0.6, 1)
+            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_curved_deadband(-ff_yRel, 0, 0.6, 1))
             values["FF_DETECT"] = 2 if ff_lead.vLead < 3 else create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
           else:
             values["FF_DETECT"] = 0 # 순정 디텍션 제거
@@ -1292,14 +1293,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             if lf_lead.dRel < 5.0:
               lf_yRel = max(lf_yRel, 2.5)
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel) * 0.8
-            values["LF_DETECT_LATERAL"] = apply_curved_deadband(create_ccnc_messages.lf_lateral.apply(lf_yRel), 3, 0.9, 2)
+            values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_curved_deadband(lf_yRel, 3, 0.9, 2))
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
             if rf_lead.dRel < 5.0:
               rf_yRel = min(rf_yRel, -2.5)
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel) * 0.8
-            values["RF_DETECT_LATERAL"] = apply_curved_deadband(create_ccnc_messages.rf_lateral.apply(-rf_yRel), 3, 0.9, 2)
+            values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_curved_deadband(-rf_yRel, 3, 0.9, 2))
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
 
           # --- 후측방은 BSD 경고 시 고정 위치에 두부 출력. HDA1은 후측방 레이더 정보가 안채워져서 옴 ---
