@@ -1239,6 +1239,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             # 상단에서 계산된 계기판 표시용 curvature 변수 활용 (UnboundLocalError 방지)
             current_curvature = create_ccnc_messages.lane_curv.value
 
+            lane_bound = np.interp(abs(current_curvature), [0, 15], [1.5, 2.0])
+
             # 좌, 중앙, 우 레이더 트랙의 모든 리드 결합 및 필터링
             valid_leads = (
               l for l in itertools.chain(CS.radar_state.leadsLeft,
@@ -1258,24 +1260,24 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # 1. 상단에서 계산한 curvature(계기판 표시용 곡률)을 횡방향 물리 오프셋으로 역산
               # 곡률(kappa) = -curvature / 1750.0 (curvature가 음수일 때 좌측 커브)
               # 오프셋 = 0.5 * kappa * dRel^2 = -curvature * (dRel ** 2) / 3500.0
-              curve_offset_y = -current_curvature * (dRel ** 2) / 3500.0
+              curve_offset_y = (-current_curvature * (dRel ** 2) / 3500.0) * 1.1
 
               # 2. 직선 물리 좌표 yRel에서 곡률 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
               corrected_yRel = yRel + curve_offset_y
               dist_score = dRel + abs(corrected_yRel)
 
               # 전방 차량
-              if -1.5 <= corrected_yRel <= 1.5:
+              if -lane_bound <= corrected_yRel <= lane_bound:
                 if lead_visible and dist_score < ff_min_dist and dist_score > 0.5:
                   ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [60, 90], [1.0, 0.6])
 
               # 왼쪽 차선 차량
-              elif 1.5 < corrected_yRel < 4.5 and dRel < 90:
+              elif lane_bound < corrected_yRel < 4.5 and dRel < 90:
                 if dist_score < lf_min_dist and lead.vLeadK > 4:
                   lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
               # 오른쪽 차선 차량
-              elif -4.5 < corrected_yRel < -1.5 and dRel < 90:
+              elif -4.5 < corrected_yRel < -lane_bound and dRel < 90:
                 if dist_score < rf_min_dist and lead.vLeadK > 4:
                   rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
