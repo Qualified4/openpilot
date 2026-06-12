@@ -1199,7 +1199,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             r_valid = r_qual in (2, 3) and not math.isclose(rightlaneraw, 2.0248375) and rightlaneraw != 0
 
             if not l_valid and not r_valid:
-              l_target = r_target = 30.0
+              l_target = r_target = 14.0
             elif not l_valid:
               l_target = create_ccnc_messages.last_known_lane_width_cam - r_target
             elif not r_valid:
