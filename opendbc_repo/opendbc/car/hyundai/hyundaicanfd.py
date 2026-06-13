@@ -1088,8 +1088,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           leftlaneraw = abs(md.laneLines[1].y[0])
           rightlaneraw = abs(md.laneLines[2].y[0])
 
-          l_valid = l_prob > 0.3 or is_auto_lane_changing or is_blinking
-          r_valid = r_prob > 0.3 or is_auto_lane_changing or is_blinking
+          l_valid = l_prob > 0.5 or is_auto_lane_changing or is_blinking
+          r_valid = r_prob > 0.5 or is_auto_lane_changing or is_blinking
 
           if not l_valid and not r_valid:
             leftlaneraw = rightlaneraw = 1.3
@@ -1239,7 +1239,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             # 상단에서 계산된 계기판 표시용 curvature 변수 활용 (UnboundLocalError 방지)
             current_curvature = create_ccnc_messages.lane_curv.value
 
-            lane_bound = np.interp(abs(current_curvature), [0, 15], [1.5, 2.0])
+            lane_bound = np.interp(abs(current_curvature), [0, 15], [1.5, 2.5])
 
             # 좌, 중앙, 우 레이더 트랙의 모든 리드 결합 및 필터링
             valid_leads = (
@@ -1260,7 +1260,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # 1. 상단에서 계산한 curvature(계기판 표시용 곡률)을 횡방향 물리 오프셋으로 역산
               # 곡률(kappa) = -curvature / 1750.0 (curvature가 음수일 때 좌측 커브)
               # 오프셋 = 0.5 * kappa * dRel^2 = -curvature * (dRel ** 2) / 3500.0
-              curve_offset_y = (-current_curvature * (dRel ** 2) / 3500.0) * 1.1
+              curve_offset_y = -current_curvature * ((dRel * 1.1) ** 2) / 3500.0
 
               # 2. 직선 물리 좌표 yRel에서 곡률 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
               corrected_yRel = yRel + curve_offset_y
@@ -1306,7 +1306,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
 
           # --- 후측방은 BSD 경고 시 고정 위치에 두부 출력. HDA1은 후측방 레이더 정보가 안채워져서 옴 ---
-          BSD_LATERAL_FIXED = 3.0
+          BSD_LATERAL_FIXED = 2.8
           if CS.out.leftBlindspot:
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(8)
             values["LR_DETECT_LATERAL"] = BSD_LATERAL_FIXED - center_lane_offset
