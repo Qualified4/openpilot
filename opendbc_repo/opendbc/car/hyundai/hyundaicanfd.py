@@ -115,6 +115,20 @@ class NoiseFilter:
 
     return self._filtered_value
 
+  def update_alpha(self, new_alpha):
+    """
+    고정 알파 모드에서 알파 값을 업데이트합니다.
+    """
+    if self.apply == self._apply_fixed:
+      self._alpha = np.clip(new_alpha, 0.001, 1.0)
+
+  def reset_alpha(self):
+    """
+    고정 알파 모드에서 알파 값을 초기값으로 되돌립니다.
+    """
+    if self.apply == self._apply_fixed:
+      self._alpha = self._a_min
+
   def _get_median(self):
     buf_len = len(self._buffer)
     if buf_len == 0:
@@ -1084,22 +1098,31 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           l_prob = md.laneLineProbs[1]
           r_prob = md.laneLineProbs[2]
 
-          # 차량 중심으로부터의 차선 거리(m)
+          # --- 차선 변경 상태 관리 및 알파값 조정 ---
+          is_currently_lane_changing = is_auto_lane_changing or (is_blinking and CS.out.vEgo > 6)
+          if is_currently_lane_changing != create_ccnc_messages._is_lane_change_active:
+            if is_currently_lane_changing:
+              create_ccnc_messages.l_lane_f.update_alpha(0.6)
+              create_ccnc_messages.r_lane_f.update_alpha(0.6)
+            else:
+              create_ccnc_messages.l_lane_f.reset_alpha()
+              create_ccnc_messages.r_lane_f.reset_alpha()
+            create_ccnc_messages._is_lane_change_active = is_currently_lane_changing
+
           leftlaneraw = abs(md.laneLines[1].y[0])
           rightlaneraw = abs(md.laneLines[2].y[0])
 
-          l_valid = l_prob > 0.5 or is_auto_lane_changing or is_blinking
-          r_valid = r_prob > 0.5 or is_auto_lane_changing or is_blinking
+          l_valid = l_prob > 0.3 or is_auto_lane_changing or is_blinking
+          r_valid = r_prob > 0.3 or is_auto_lane_changing or is_blinking
 
           if not l_valid and not r_valid:
-            leftlaneraw = rightlaneraw = 1.3
+            leftlaneraw = rightlaneraw = 1.5
           elif not l_valid:
             leftlaneraw = create_ccnc_messages.last_known_lane_width - rightlaneraw
           elif not r_valid:
             rightlaneraw = create_ccnc_messages.last_known_lane_width - leftlaneraw
 
-          # 차선 변경 시 위상 변화 제어
-          if is_auto_lane_changing or is_blinking and CS.out.vEgo > 6:
+          if is_currently_lane_changing:
             is_moving_left = CS.out.leftBlinker or desire == 3
             # 위상 변화 시 차선 강조 변경
             if not create_ccnc_messages.draw_center:
@@ -1246,7 +1269,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               l for l in itertools.chain(CS.radar_state.leadsLeft,
                                         CS.radar_state.leadsRight,
                                         CS.radar_state.leadsCenter)
-              if l.radar
+              if l.radar and l.dRel > 0.1
             )
 
             lead_visible = hud_control.leadVisible
@@ -1267,18 +1290,18 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               dist_score = dRel + abs(corrected_yRel)
 
               # 전방 차량
-              if -lane_bound <= corrected_yRel <= lane_bound:
+              if -1.5 <= corrected_yRel <= 1.5:
                 if lead_visible and dist_score < ff_min_dist and dist_score > 0.5:
                   ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [60, 90], [1.0, 0.6])
 
               # 왼쪽 차선 차량
               elif lane_bound < corrected_yRel < 4.5 and dRel < 90:
-                if dist_score < lf_min_dist and lead.vLeadK > 4:
+                if dist_score < lf_min_dist and lead.vLeadK > 5:
                   lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
               # 오른쪽 차선 차량
               elif -4.5 < corrected_yRel < -lane_bound and dRel < 90:
-                if dist_score < rf_min_dist and lead.vLeadK > 4:
+                if dist_score < rf_min_dist and lead.vLeadK > 5:
                   rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
           center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
@@ -1391,6 +1414,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 # 곡률 노이즈 필터
 create_ccnc_messages.lane_curv = NoiseFilter(3, 0, alpha_range=0.5)
 
+# 차선 변경 상태 플래그
+create_ccnc_messages._is_lane_change_active = False
+
 # 차선 넘어감 감지
 create_ccnc_messages.draw_center = False
 create_ccnc_messages.hold_lane_escape_count = 0
@@ -1398,8 +1424,8 @@ create_ccnc_messages.lane_phase_min = 10.0
 
 # 차선 노이즈 필터
 create_ccnc_messages.last_known_lane_width = 3.0
-create_ccnc_messages.l_lane_f = NoiseFilter(3, 1.5, alpha_range=0.4)
-create_ccnc_messages.r_lane_f = NoiseFilter(3, 1.5, alpha_range=0.4)
+create_ccnc_messages.l_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2)
+create_ccnc_messages.r_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2)
 
 # 차량 거리 필터
 create_ccnc_messages.ff_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
