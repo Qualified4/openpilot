@@ -41,7 +41,14 @@ from cluster_config import (
     VEHICLE_LENGTH_M,
     VEHICLE_WIDTH_M,
 )
-from cluster_models import ClusterUiState, DetectedVehicle, LaneMarking, ModelPathPoint, RadarPoint
+from cluster_models import (
+    ClusterUiState,
+    DetectedVehicle,
+    LaneMarking,
+    ModelPathPoint,
+    RadarPoint,
+    radar_position_is_zero,
+)
 from cluster_utils import clamp, darken, lighten, smoothstep
 
 
@@ -58,6 +65,7 @@ RADAR_ROAD_EDGE_STATIONARY_CLEARANCE_M = 1.05
 RADAR_ROAD_EDGE_OUTSIDE_MARGIN_M = 0.0
 RADAR_ROAD_EDGE_KEEP_OUTSIDE_MARGIN_M = 0.85
 RADAR_ROAD_EDGE_STABLE_VEHICLE_OUTSIDE_MARGIN_M = 2.25
+RADAR_NARROW_SHOULDER_MAX_WIDTH_M = 2.50
 RADAR_ROAD_EDGE_KEEP_SPEED_KPH = 18.0
 RADAR_ROAD_EDGE_KEEP_MIN_VALID_COUNT = 20
 RADAR_ROAD_EDGE_STABLE_VEHICLE_MIN_VALID_COUNT = 20
@@ -1636,9 +1644,35 @@ def path_metric_color(accel_mps2: float) -> Color:
 
 
 def radar_points_for_display(state: ClusterUiState) -> tuple[RadarPoint, ...]:
+    points = state.radar_points
+    if any(radar_position_is_zero(point.longitudinal_m, point.lateral_m) for point in points):
+        points = tuple(
+            point
+            for point in points
+            if not radar_position_is_zero(point.longitudinal_m, point.lateral_m)
+        )
     if state.radar_display_mode == CLUSTER_RADAR_DISPLAY_DETAIL:
-        return state.radar_points
-    return merged_radar_points(state.radar_points, state)
+        return points
+    return merged_radar_points(points, state)
+
+
+def detected_vehicle_is_zero_radar_sample(vehicle: DetectedVehicle) -> bool:
+    if not radar_position_is_zero(vehicle.longitudinal_m, vehicle.lateral_m):
+        return False
+    return (
+        vehicle.source == "radarState"
+        or vehicle.source == "carState"
+        or vehicle.source in ("radarPoint", "liveTracks")
+        or vehicle.source.startswith("CAN 0x")
+    )
+
+
+def detected_vehicles_without_zero_radar_samples(
+    vehicles: tuple[DetectedVehicle, ...],
+) -> tuple[DetectedVehicle, ...]:
+    if not any(detected_vehicle_is_zero_radar_sample(vehicle) for vehicle in vehicles):
+        return vehicles
+    return tuple(vehicle for vehicle in vehicles if not detected_vehicle_is_zero_radar_sample(vehicle))
 
 
 def merged_radar_points(points: tuple[RadarPoint, ...], state: ClusterUiState) -> tuple[RadarPoint, ...]:
@@ -1865,6 +1899,7 @@ def detected_vehicles_for_display(
     vehicles: tuple[DetectedVehicle, ...],
     state: ClusterUiState,
 ) -> tuple[DetectedVehicle, ...]:
+    vehicles = detected_vehicles_without_zero_radar_samples(vehicles)
     if state.radar_display_mode == CLUSTER_RADAR_DISPLAY_DETAIL or len(vehicles) < 2:
         return vehicles
     selected: list[DetectedVehicle] = []
@@ -2094,6 +2129,8 @@ def radar_point_is_vehicle_candidate(point: RadarPoint, state: ClusterUiState, l
     if not 2.5 <= point.longitudinal_m <= RADAR_VEHICLE_MAX_DISTANCE_M:
         return False
     if abs(point.lateral_m) > lane_width_m * RADAR_VEHICLE_MAX_LATERAL_LANES:
+        return False
+    if radar_point_is_in_narrow_shoulder(point, state, lane_width_m):
         return False
     if radar_point_is_confirmed_vehicle_source(point):
         return True
@@ -2380,6 +2417,54 @@ def road_edge_lateral_at(
         return edge_offset * lane_width_m
     return None
 
+
+def lane_marking_lateral_at(marking: LaneMarking, forward_m: float, lane_width_m: float) -> float:
+    lateral = model_line_lateral_at(marking.model_points, forward_m, marking.model_lateral_shift_m)
+    return lateral if lateral is not None else marking.offset * lane_width_m
+
+
+def radar_point_is_in_narrow_shoulder(
+    point: RadarPoint,
+    state: ClusterUiState,
+    lane_width_m: float,
+) -> bool:
+    lane_laterals = tuple(
+        lane_marking_lateral_at(marking, point.longitudinal_m, lane_width_m)
+        for marking in state.lanes
+        if marking.visible
+    )
+    if not lane_laterals:
+        return False
+
+    left_edge_m = road_edge_lateral_at(
+        state.left_road_edge_points,
+        state.left_road_edge_lateral_shift_m,
+        state.left_road_edge_offset,
+        point.longitudinal_m,
+        lane_width_m,
+    )
+    if left_edge_m is not None:
+        left_lane_m = min((lateral for lateral in lane_laterals if lateral > left_edge_m), default=None)
+        if left_lane_m is not None:
+            shoulder_width_m = left_lane_m - left_edge_m
+            if 0.0 <= shoulder_width_m <= RADAR_NARROW_SHOULDER_MAX_WIDTH_M and point.lateral_m <= left_lane_m:
+                return True
+
+    right_edge_m = road_edge_lateral_at(
+        state.right_road_edge_points,
+        state.right_road_edge_lateral_shift_m,
+        state.right_road_edge_offset,
+        point.longitudinal_m,
+        lane_width_m,
+    )
+    if right_edge_m is not None:
+        right_lane_m = max((lateral for lateral in lane_laterals if lateral < right_edge_m), default=None)
+        if right_lane_m is not None:
+            shoulder_width_m = right_edge_m - right_lane_m
+            if 0.0 <= shoulder_width_m <= RADAR_NARROW_SHOULDER_MAX_WIDTH_M and point.lateral_m >= right_lane_m:
+                return True
+
+    return False
 
 
 def radar_point_road_edge_distance_m(point: RadarPoint, state: ClusterUiState, lane_width_m: float) -> float | None:
@@ -3059,8 +3144,9 @@ def build_cluster_scene(
     profile_stage = profile_scene_start(profile_add)
     lane_width_m = max(2.4, min(4.6, state.lane_width_m or DEFAULT_LANE_WIDTH_M))
     display_radar_points = radar_points_for_display(state)
-    if display_radar_points is not state.radar_points:
-        state = replace(state, radar_points=display_radar_points)
+    display_detected_vehicles = detected_vehicles_without_zero_radar_samples(state.detected_vehicles)
+    if display_radar_points is not state.radar_points or display_detected_vehicles != state.detected_vehicles:
+        state = replace(state, radar_points=display_radar_points, detected_vehicles=display_detected_vehicles)
     anchor_x_m = ego_anchor_x_m(state, lane_width_m)
     scene_shift_x_m = -anchor_x_m
     relative_scene_x_offset_m = -scene_shift_x_m
