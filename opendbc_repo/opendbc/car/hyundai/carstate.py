@@ -29,6 +29,7 @@ BUTTONS_DICT = {Buttons.RES_ACCEL: ButtonType.accelCruise, Buttons.SET_DECEL: Bu
 GearShifter = structs.CarState.GearShifter
 
 READY_COUNT_OK = 200
+TRAILER_DISCONNECT_GRACE_FRAMES = int(5.0 / DT_CTRL)
 
 
 NUMERIC_TO_TZ = {
@@ -167,6 +168,12 @@ class CarState(CarStateBase):
     self.cp_alt = None
     self.controls_ready_count = 0
 
+    # trailer detection
+    self.trailer_connected = False
+    self.trailer_timeout_cnt = 0
+    self.trailer_connected_prev = False
+    self.trailer_status = None
+
   def monitor_fingerprint(self, can_parsers, canfd):
     if self.controls_ready_count <= READY_COUNT_OK:
       if Params().get_bool("ControlsReady"):
@@ -257,6 +264,7 @@ class CarState(CarStateBase):
           add_and_cache(self.cp, "DOORS_SEATBELTS", "doors_seatbelts")
         elif self.controls_ready_count == 126:
           add_and_cache(self.cp, "CRUISE_BUTTONS_ALT2", "cruise_buttons_alt2", ignore_counter = True)
+          add_and_cache(self.cp, "TRAILER_STATUS", "trailer_status", ignore_counter = True)
 
 
 
@@ -540,6 +548,27 @@ class CarState(CarStateBase):
     else:
       ret.steeringAngleDeg = cp.vl["STEERING_SENSORS"]["STEERING_ANGLE"] * -1
 
+    trailer_signal = self.trailer_status is not None and self.trailer_status["TRAILER_CONNECTED"] != 0
+    if trailer_signal:
+      # Rising edge is immediate so trailer-specific behavior is preserved.
+      self.trailer_timeout_cnt = 0
+      self.trailer_connected = True
+    elif self.trailer_connected:
+      # During ignition-off, the trailer bit can clear before the cluster shuts down.
+      # Keep suppression active through that transient, while still detecting a real
+      # disconnect after 5 seconds at the 100 Hz CarState update rate.
+      self.trailer_timeout_cnt += 1
+      if self.trailer_timeout_cnt > TRAILER_DISCONNECT_GRACE_FRAMES:
+        self.trailer_connected = False
+    else:
+      self.trailer_timeout_cnt = 0
+
+    ret.trailerConnected = self.trailer_connected
+
+    if self.trailer_connected != self.trailer_connected_prev:
+      print(f"[TRAILER_DEBUG] connected={self.trailer_connected} timeout={self.trailer_timeout_cnt}")
+      self.trailer_connected_prev = self.trailer_connected
+
     ret.steeringTorque = cp.vl["MDPS"]["STEERING_COL_TORQUE"]
     ret.steeringTorqueEps = cp.vl["MDPS"]["STEERING_OUT_TORQUE"]
     ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > self.params.STEER_THRESHOLD, 5)
@@ -731,6 +760,7 @@ class CarState(CarStateBase):
                         *create_button_events(self.main_buttons[-1], prev_main_buttons, {1: ButtonType.mainCruise})]
 
     self.paddle_button_prev = paddle_button
+
     return ret
 
   def get_can_parsers_canfd(self, CP):
@@ -740,6 +770,7 @@ class CarState(CarStateBase):
       msgs += [
         ("CRUISE_BUTTONS", 50)
       ]
+
     return {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], msgs, CanBus(CP).ECAN),
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus(CP).CAM),
