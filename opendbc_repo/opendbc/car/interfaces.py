@@ -402,10 +402,11 @@ class CarInterfaceBase(ABC):
     return self.lat_torque_nn_model is not None
 
 
-  def apply(self, c: structs.CarControl, now_nanos: int | None = None, model_v2=None) -> tuple[structs.CarControl.Actuators, list[CanData]]:
+  def apply(self, c: structs.CarControl, now_nanos: int | None = None, model_v2=None, radar_state = None) -> tuple[structs.CarControl.Actuators, list[CanData]]:
     if now_nanos is None:
       now_nanos = int(time.monotonic() * 1e9)
     self.CS.modelV2 = model_v2
+    self.CS.radar_state = radar_state # 레이더 추적 CS에 넘기기
     return self.CC.update(c, self.CS, now_nanos)
 
   @staticmethod

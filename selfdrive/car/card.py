@@ -263,7 +263,8 @@ class Car:
       # send car controls over can
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
       model_v2 = self.sm['modelV2'] if self.sm.valid['modelV2'] and self.sm.alive['modelV2'] else None
-      self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, model_v2)
+      radar_state = self.sm['radarState'] if self.sm.valid['radarState'] else None
+      self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, model_v2, radar_state)
       self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
 
       self.CC_prev = CC
