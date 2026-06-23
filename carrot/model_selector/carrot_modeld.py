@@ -46,7 +46,7 @@ from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value, get_curvature_from_plan
-from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_pose_msg, PublishState
+from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_pose_msg, fill_driving_model_data, PublishState
 from openpilot.common.file_chunker import read_file_chunked
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 
@@ -115,6 +115,21 @@ RECOVERY_POWER = 1.0  # planplus lane-recovery gain
 
 IMG_QUEUE_SHAPE = (6*(ModelConstants.MODEL_RUN_FREQ//ModelConstants.MODEL_CONTEXT_FREQ + 1), 128, 256)
 assert IMG_QUEUE_SHAPE[0] == 30
+
+
+def img_queue_shape(img_shape: tuple[int, ...]) -> tuple[int, int, int]:
+    """Return legacy standalone-warp queue shape for a model image input.
+
+    Metadata image inputs are shaped (batch, stacked_channels, h/2, w/2),
+    typically (1, 12, 128, 256).  The legacy warp pkl keeps a rolling channel
+    buffer shaped (queued_channels, h/2, w/2); derive it from metadata so custom
+    models with non-default image sizes don't reuse the old 512x256 assumption.
+    """
+    if len(img_shape) != 4:
+      raise ValueError(f"unexpected image input shape: {img_shape}")
+    n_channels = img_shape[1] // ModelConstants.N_FRAMES
+    queued_channels = (ModelConstants.MODEL_RUN_FREQ // ModelConstants.MODEL_CONTEXT_FREQ + (ModelConstants.N_FRAMES - 1)) * n_channels
+    return queued_channels, img_shape[2], img_shape[3]
 
 
 def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
@@ -278,10 +293,10 @@ class ModelState:
       self.full_input_queues.update_dtypes_and_shapes({k: self.numpy_inputs[k].dtype}, {k: self.numpy_inputs[k].shape})
     self.full_input_queues.reset()
 
-    self.img_queues = {'img': Tensor.zeros(IMG_QUEUE_SHAPE, dtype='uint8').contiguous().realize(),
-                       'big_img': Tensor.zeros(IMG_QUEUE_SHAPE, dtype='uint8').contiguous().realize()}
+    self.img_queues = {k: Tensor.zeros(img_queue_shape(self.vision_input_shapes[k]), dtype='uint8').contiguous().realize()
+                       for k in self.vision_input_names}
     self.full_frames : dict[str, Tensor] = {}
-    self._blob_cache : dict[int, Tensor] = {}
+    self._blob_cache : dict[tuple[str, int], Tensor] = {}
     self.transforms_np = {k: np.zeros((3,3), dtype=np.float32) for k in self.img_queues}
     self.transforms = {k: Tensor(v, device='NPY').realize() for k, v in self.transforms_np.items()}
     self.vision_output = np.zeros(vision_output_size, dtype=np.float32)
@@ -330,7 +345,7 @@ class ModelState:
         self.update_imgs = pickle.load(f)
 
     for key in bufs.keys():
-      ptr = bufs[key].data.ctypes.data
+      ptr = np.frombuffer(bufs[key].data, dtype=np.uint8).ctypes.data
       yuv_size = self.frame_buf_params[key][3]
       # There is a ringbuffer of imgs, just cache tensors pointing to all of them
       cache_key = (key, ptr)
@@ -588,7 +603,7 @@ def main(demo=False):
 
       action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego, lat_smooth_seconds, vEgoStopping)
       prev_action = action
-      fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
+      fill_model_msg(modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
                      frame_drop_ratio, meta_main.timestamp_eof, model_execution_time, live_calib_seen)
 
@@ -615,6 +630,7 @@ def main(demo=False):
       mt3 = time.perf_counter()
       drivingdata_send.drivingModelData.modelExecutionTime = mt3 - mt1
 
+      fill_driving_model_data(drivingdata_send, modelv2_send)
       fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames, meta_main.timestamp_eof, live_calib_seen)
       pm.send('modelV2', modelv2_send)
       pm.send('drivingModelData', drivingdata_send)

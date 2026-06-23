@@ -262,9 +262,8 @@ class Car:
     if self.sm.all_alive(['carControl']):
       # send car controls over can
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
-      MD = self.sm['modelV2'] if self.sm.valid['modelV2'] else None
-      radar_state = self.sm['radarState'] if self.sm.valid['radarState'] else None
-      self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, MD, radar_state)
+      model_v2 = self.sm['modelV2'] if self.sm.valid['modelV2'] and self.sm.alive['modelV2'] else None
+      self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, model_v2)
       self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
 
       self.CC_prev = CC
@@ -302,7 +301,7 @@ class Car:
     finally:
       e.set()
       t.join()
-    
+
 def main():
   #config_realtime_process(4, Priority.CTRL_HIGH)
   config_realtime_process(6, Priority.CTRL_HIGH)
