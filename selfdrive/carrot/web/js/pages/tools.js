@@ -445,12 +445,6 @@ function renderToolsMeta() {
   const unreadCount = Math.max(0, Number(window.CarrotToolsNotifications?.unreadCount?.() || 0));
   statusEl.classList.toggle("has-unread", unreadCount > 0);
   statusEl.dataset.unreadCount = unreadCount > 0 ? String(unreadCount) : "";
-  if (unreadCount > 0) {
-    const badge = document.createElement("span");
-    badge.className = "tools-meta__unreadBadge";
-    badge.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
-    statusEl.appendChild(badge);
-  }
   const track = document.createElement("span");
   track.className = "tools-meta__statusTrack";
   track.textContent = toolsMetaStatusText || "-";
@@ -1036,7 +1030,7 @@ function initToolsPage() {
     const groups = Array.from(document.querySelectorAll("#pageTools .tools-group"));
     const applyToolsStagger = () => {
       const items = Array.from(document.querySelectorAll(
-        "#pageTools .tools-scroll-stack > .row-wrap:first-child, #pageTools .tools-group, #pageTools .tools-group.is-open .tools-group__body > *"
+        "#pageTools .tools-scroll-stack > .row-wrap:first-child, #pageTools .tools-group, #pageTools .tools-group.is-open .tools-group__bodyInner > *"
       )).filter((node) => !node.hidden && !node.classList.contains("hidden"));
       items.forEach((node, index) => {
         node.classList.add("ui-stagger-item");
@@ -1053,19 +1047,28 @@ function initToolsPage() {
       const savedState = localStorage.getItem("tools_group_" + groupName);
       const shouldOpen = savedState !== null ? savedState === "true" : true;
 
+      // Open/close is driven by the .is-open class so the body can animate its
+      // height (grid-template-rows 1fr↔0fr). Using `hidden` (display:none) would
+      // break the transition, so it is no longer toggled here.
       group.classList.toggle("is-open", shouldOpen);
-      body.hidden = !shouldOpen;
-      body.classList.toggle("hidden", !shouldOpen);
       toggle.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
 
       bindNodeOnce(toggle, "toolsGroupToggle", () => {
-        const nextOpen = body.hidden;
-        body.hidden = !nextOpen;
-        body.classList.toggle("hidden", !nextOpen);
+        const nextOpen = !group.classList.contains("is-open");
+        // One-shot fold (same pattern as the settings profile section): reset
+        // motion state, commit a baseline reflow, flip the static state, then
+        // play the motion class and clear it after the run for a clean finish.
+        group.classList.remove("is-expanding", "is-collapsing");
+        if (group.__toolsGroupMotionTimer) clearTimeout(group.__toolsGroupMotionTimer);
+        void group.offsetWidth;
         group.classList.toggle("is-open", nextOpen);
+        group.classList.add(nextOpen ? "is-expanding" : "is-collapsing");
         toggle.setAttribute("aria-expanded", nextOpen ? "true" : "false");
         localStorage.setItem("tools_group_" + groupName, nextOpen ? "true" : "false");
-        applyToolsStagger();
+        group.__toolsGroupMotionTimer = window.setTimeout(() => {
+          group.classList.remove("is-expanding", "is-collapsing");
+          group.__toolsGroupMotionTimer = null;
+        }, 280);
       });
     });
     applyToolsStagger();
