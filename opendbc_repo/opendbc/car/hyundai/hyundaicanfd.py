@@ -1068,36 +1068,20 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             max_lookahead_x = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [30, 100], [30, 80])
 
             # --- 차량 주행 경로 기반 ---
-            # Peak Search: S-커브에 올바르게 대응하기 위해 경로의 첫 번째 정점을 찾습니다.
-            trust_threshold = 0.8 # yStd는 편차이므로 작을수록 좋음. 허용할 최대 편차.
-            uncertain_count = 0
-            UNCERTAIN_CONSECUTIVE_FRAMES = 3
+            # Peak Search: 경로 중 횡방향 변위(절대값)가 가장 큰 지점을 탐색
+            trust_threshold = 0.8
             peak_idx = 0
-            peak_y_abs = -1.0
+            max_y_abs = -1.0
 
-            # 정점(peak) 감지 로직을 위한 상수 정의
-            MIN_PEAK_THRESHOLD = 0.3  # 의미있는 커브로 인식할 최소 횡방향 편차 (m)
-            PEAK_FALLOFF_RATIO = 0.8  # 정점을 지났다고 판단할 편차 감소 비율 (최대값의 80% 미만)
-
+            # 현재 차량 위치인 0은 의미 없으니 1부터
             for i in range(1, len(md.position.x)):
-              if md.position.x[i] > max_lookahead_x:
+              if md.position.yStd[i] > trust_threshold or md.position.x[i] > max_lookahead_x:
                 break
-
-              # 불확실성이 높은 지점은 건너뛰되, 연속적으로 불확실하면 탐색 중단
-              if md.position.yStd[i] > trust_threshold:
-                uncertain_count += 1
-                if uncertain_count >= UNCERTAIN_CONSECUTIVE_FRAMES:
-                  break
-                continue
-              uncertain_count = 0
 
               y_abs = abs(md.position.y[i])
-              if y_abs > peak_y_abs:
-                peak_y_abs = y_abs
+              if y_abs > max_y_abs:
+                max_y_abs = y_abs
                 peak_idx = i
-              # 정점을 지난 후 편차가 20% 이상 감소하면 첫 번째 커브가 끝난 것으로 간주하고 탐색 중단
-              elif peak_y_abs > MIN_PEAK_THRESHOLD and y_abs < peak_y_abs * PEAK_FALLOFF_RATIO:
-                break
 
             # 단일 지점 곡률 계산
             if peak_idx > 0 and md.position.x[peak_idx] >= 20.0:
@@ -1107,14 +1091,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # 거리에 따라 곡률 계산 게인을 조절합니다.
               # 30m 이내: 2000, 50m 이상: 1750, 그 사이는 선형으로 보간합니다.
               # 이 상수는 물리적 곡률(Kappa)을 계기판에 표시하기 적합한 값으로 증폭하는 역할을 합니다.
-              curve_gain = np.interp(x_dist, [30, 50], [2000.0, 1750.0])
+              # - 튜닝 팁: 계기판 게이지가 너무 민감하게 차오르면 1500으로 낮추고, 너무 둔하면 2500으로 높여 조절.
+              curve_gain = np.interp(x_dist, [30, 60], [2000.0, 1750.0])
 
               # 물리 곡률 공식 (2y / x^2) 적용
               # 상수 2000.0 설명:
               # - 물리적 곡률(Kappa = 1/R)은 보통 0.0001~0.01 사이의 아주 작은 값임.
               # - 이를 ccNC 계기판 표시 범위인 0~15 사이의 직관적인 수치로 증폭하는 Gain 역할.
               # - 시뮬레이션 결과: R=500m(일반코너)에서 약 8단계, R=150m(급코너)에서 약 15단계 수준임.
-              # - 튜닝 팁: 계기판 게이지가 너무 민감하게 차오르면 1500으로 낮추고, 너무 둔하면 2500으로 높여 조절.
               max_curve_val = (2.0 * y_diff) / (x_dist ** 2) * curve_gain
             else:
               max_curve_val = 0.0
