@@ -179,6 +179,16 @@ class NoiseFilter:
   def value(self):
     return self._filtered_value
 
+def check_radar_in_road_edge(line, dRel, yRel) -> bool:
+  if line is None or len(line.x) < 2:
+    return False
+
+  # Assuming line.x is sorted
+  if dRel < line.x[0] or dRel > line.x[-1]:
+    return False
+
+  return np.interp(dRel, line.x, line.y) > yRel + 0.1 if yRel > 0 else np.interp(dRel, line.x, line.y) < yRel - 0.1
+
 def ease_in_interp(x, x_range, y_range, power=2):
   # x를 0~1 사이 비율로 변환
   t = (x - x_range[0]) / (x_range[1] - x_range[0])
@@ -1062,6 +1072,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if not CS.out.parkingBrake:
             values["LANE_HIGHLIGHT"] = 2
 
+        is_auto_lane_changing = desire in (3, 4)
+        is_blinking = CS.out.leftBlinker != CS.out.rightBlinker
+        is_currently_lane_changing = is_auto_lane_changing or (is_blinking and CS.out.vEgo > 6)
+
         # 차선 곡률 표시 (주행 경로의 시작과 끝 y 좌표 차이 이용)
         try:
           if lat_enabled:
@@ -1071,11 +1085,20 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             # Peak Search: 경로 중 횡방향 변위(절대값)가 가장 큰 지점을 탐색
             trust_threshold = 0.8
             peak_idx = 0
-            max_y_abs = -1.0
+            max_y_abs = 0.0
+            start_search_idx = 0
+            start_found = not is_currently_lane_changing
 
-            # 현재 차량 위치인 0은 의미 없으니 1부터
+            min_curvature_calc_distance = 20 if is_currently_lane_changing else 0
+
             for i in range(1, len(md.position.x)):
-              if md.position.yStd[i] > trust_threshold or md.position.x[i] > max_lookahead_x:
+              x = md.position.x[i]
+
+              if not start_found and x >= min_curvature_calc_distance:
+                start_search_idx = i
+                start_found = True
+
+              if md.position.yStd[i] > trust_threshold or x > max_lookahead_x:
                 break
 
               y_abs = abs(md.position.y[i])
@@ -1083,16 +1106,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 max_y_abs = y_abs
                 peak_idx = i
 
-            # 단일 지점 곡률 계산
-            if peak_idx > 0 and md.position.x[peak_idx] >= 20.0:
-              x_dist = md.position.x[peak_idx]
-              y_diff = md.position.y[peak_idx]
+            if peak_idx > 0 and md.position.x[peak_idx] >= 20.0 + min_curvature_calc_distance:
+              x_dist = md.position.x[peak_idx] - min_curvature_calc_distance
+              y_diff = md.position.y[peak_idx] - md.position.y[start_search_idx]
 
               # 거리에 따라 곡률 계산 게인을 조절합니다.
-              # 30m 이내: 2000, 50m 이상: 1750, 그 사이는 선형으로 보간합니다.
               # 이 상수는 물리적 곡률(Kappa)을 계기판에 표시하기 적합한 값으로 증폭하는 역할을 합니다.
               # - 튜닝 팁: 계기판 게이지가 너무 민감하게 차오르면 1500으로 낮추고, 너무 둔하면 2500으로 높여 조절.
-              curve_gain = np.interp(x_dist, [30, 60], [2000.0, 1750.0])
+              curve_gain = np.interp(x_dist, [30, 60], [2000.0, 1800.0])
 
               # 물리 곡률 공식 (2y / x^2) 적용
               # 상수 2000.0 설명:
@@ -1117,13 +1138,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         try:
           # 차선 위치 갱신: 항시 적용
-          is_auto_lane_changing = desire in (3, 4)
-          is_blinking = CS.out.leftBlinker != CS.out.rightBlinker
           l_prob = md.laneLineProbs[1]
           r_prob = md.laneLineProbs[2]
 
           # --- 차선 변경 상태 관리 및 알파값 조정 ---
-          is_currently_lane_changing = is_auto_lane_changing or (is_blinking and CS.out.vEgo > 6)
           if is_currently_lane_changing != create_ccnc_messages._is_lane_change_active:
             if is_currently_lane_changing:
               create_ccnc_messages.l_lane_f.update_alpha(0.6)
@@ -1300,6 +1318,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             ff_min_dist = lf_min_dist = rf_min_dist = float('inf')
 
+            # 로드엣지 설정
+            left_edge = md.roadEdges[0] if len(md.roadEdges) >= 2 else None
+            right_edge = md.roadEdges[1] if len(md.roadEdges) >= 2 else None
+
             for lead in valid_leads:
               dRel = lead.dRel
               yRel = lead.yRel
@@ -1320,12 +1342,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 왼쪽 차선 차량
               elif lane_bound < corrected_yRel < 4.5 and dRel < 90:
-                if dist_score < lf_min_dist and lead.vLeadK > 5:
+                # 속도 5km/h 이상 또는 도로 경계선 이내인지 확인
+                if dist_score < lf_min_dist and (lead.vLeadK > 5 or check_radar_in_road_edge(left_edge, dRel, corrected_yRel)):
                   lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
               # 오른쪽 차선 차량
               elif -4.5 < corrected_yRel < -lane_bound and dRel < 90:
-                if dist_score < rf_min_dist and lead.vLeadK > 5:
+                # 속도 5km/h 이상 또는 도로 경계선 이내인지 확인
+                if dist_score < rf_min_dist and (lead.vLeadK > 5 or check_radar_in_road_edge(right_edge, dRel, corrected_yRel)):
                   rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
           # 전방(FF) 차량 정보 업데이트
