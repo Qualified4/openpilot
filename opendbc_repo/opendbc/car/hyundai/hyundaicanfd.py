@@ -1329,13 +1329,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 왼쪽 차선 차량
               elif lane_bound < corrected_yRel < 4.5 and dRel < 90:
-                # 속도 5km/h 이상 또는 도로 경계선 이내인지 확인
                 if dist_score < lf_min_dist and lead.vLeadK > 5:
                   lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
               # 오른쪽 차선 차량
               elif -4.5 < corrected_yRel < -lane_bound and dRel < 90:
-                # 속도 5km/h 이상 또는 도로 경계선 이내인지 확인
                 if dist_score < rf_min_dist and lead.vLeadK > 5:
                   rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
