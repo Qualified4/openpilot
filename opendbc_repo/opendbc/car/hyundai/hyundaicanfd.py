@@ -179,16 +179,6 @@ class NoiseFilter:
   def value(self):
     return self._filtered_value
 
-def check_radar_in_road_edge(line, dRel, yRel) -> bool:
-  if line is None or len(line.x) < 2:
-    return False
-
-  # Assuming line.x is sorted
-  if dRel < line.x[0] or dRel > line.x[-1]:
-    return False
-
-  return abs(np.interp(dRel, line.x, line.y)) > abs(yRel * 0.9)
-
 def ease_in_interp(x, x_range, y_range, power=2):
   # x를 0~1 사이 비율로 변환
   t = (x - x_range[0]) / (x_range[1] - x_range[0])
@@ -1300,9 +1290,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           ff_lead = lf_lead = rf_lead = None
           ff_yRel = lf_yRel = rf_yRel = 0
 
-          left_lane_valid = md.meta.laneWidthLeft > 2.2
-          right_lane_valid = md.meta.laneWidthRight > 2.2
-
           # 레이더 정보 갱신
           if CS.radar_state:
             # 상단에서 계산된 계기판 표시용 curvature 변수 활용 (UnboundLocalError 방지)
@@ -1321,10 +1308,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             lead_visible = hud_control.leadVisible
 
             ff_min_dist = lf_min_dist = rf_min_dist = float('inf')
-
-            # 로드엣지 설정
-            left_edge = md.roadEdges[0] if len(md.roadEdges) >= 2 else None
-            right_edge = md.roadEdges[1] if len(md.roadEdges) >= 2 else None
 
             for lead in valid_leads:
               dRel = lead.dRel
@@ -1347,13 +1330,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # 왼쪽 차선 차량
               elif lane_bound < corrected_yRel < 4.5 and dRel < 90:
                 # 속도 5km/h 이상 또는 도로 경계선 이내인지 확인
-                if dist_score < lf_min_dist and (lead.vLeadK > 5 or check_radar_in_road_edge(left_edge, dRel, corrected_yRel)):
+                if dist_score < lf_min_dist and lead.vLeadK > 5:
                   lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
               # 오른쪽 차선 차량
               elif -4.5 < corrected_yRel < -lane_bound and dRel < 90:
                 # 속도 5km/h 이상 또는 도로 경계선 이내인지 확인
-                if dist_score < rf_min_dist and (lead.vLeadK > 5 or check_radar_in_road_edge(right_edge, dRel, corrected_yRel)):
+                if dist_score < rf_min_dist and lead.vLeadK > 5:
                   rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
           # 전방(FF) 차량 정보 업데이트
