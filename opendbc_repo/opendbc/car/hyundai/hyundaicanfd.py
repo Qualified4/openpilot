@@ -187,7 +187,7 @@ def check_radar_in_road_edge(line, dRel, yRel) -> bool:
   if dRel < line.x[0] or dRel > line.x[-1]:
     return False
 
-  return np.interp(dRel, line.x, line.y) > yRel + 0.1 if yRel > 0 else np.interp(dRel, line.x, line.y) < yRel - 0.1
+  return abs(np.interp(dRel, line.x, line.y)) > abs(yRel * 0.9)
 
 def ease_in_interp(x, x_range, y_range, power=2):
   # x를 0~1 사이 비율로 변환
