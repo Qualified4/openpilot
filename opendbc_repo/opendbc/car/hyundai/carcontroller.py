@@ -29,6 +29,8 @@ PRE_OVERRIDE_FILTERED_MIN_RATIO = 0.65
 PRE_OVERRIDE_MIN_RATE_RATIO = 0.50
 PRE_OVERRIDE_CONFIRM_FRAMES = 2
 PRE_OVERRIDE_MAX_TORQUE_DELTA = -10.0
+LOW_SPEED_ANGLE_TORQUE_PROTECT_SPEED = 8.0  # m/s
+LOW_SPEED_ANGLE_TORQUE_PROTECT_MIN_ANGLE = 50.0  # deg
 
 vibrate_intervals = [
   (0.0, 0.5),
@@ -264,6 +266,27 @@ class CarController(CarControllerBase):
     if angle_control:
       apply_steer_req = CC.latActive
 
+    angle_torque_cap = self.angle_max_torque
+    if angle_control and CC.latActive and CS.out.vEgo < LOW_SPEED_ANGLE_TORQUE_PROTECT_SPEED:
+      angle_abs = abs(CS.out.steeringAngleDeg)
+      if angle_abs > LOW_SPEED_ANGLE_TORQUE_PROTECT_MIN_ANGLE:
+        eps_torque_abs = abs(CS.out.steeringTorqueEps)
+        steering_rate_abs = abs(CS.out.steeringRateDeg)
+
+        # Keep full authority for normal low-speed turns. Only soften the
+        # Hyundai angle-control torque authority when the EPS is loaded or the
+        # steering wheel is already moving quickly at a large angle.
+        angle_based_cap = float(np.interp(angle_abs,
+                                          [50.0, 90.0, 150.0, 220.0],
+                                          [self.angle_max_torque, 220.0, 180.0, 150.0]))
+        speed_blend = float(np.interp(CS.out.vEgo, [3.0, LOW_SPEED_ANGLE_TORQUE_PROTECT_SPEED],
+                                      [1.0, 0.0]))
+        eps_blend = float(np.interp(eps_torque_abs, [12.0, 22.0], [0.0, 1.0]))
+        rate_blend = float(np.interp(steering_rate_abs, [120.0, 260.0], [0.0, 1.0]))
+        protect_blend = max(eps_blend, rate_blend) * speed_blend
+        angle_torque_cap = float(np.interp(protect_blend, [0.0, 1.0],
+                                           [self.angle_max_torque, angle_based_cap]))
+
     steering_pressed_rising = CS.out.steeringPressed and not self.steering_pressed_prev
     if steering_pressed_rising:
       if 0 < self.full_recovery_frames < int(5.0 / DT_CTRL):
@@ -272,21 +295,26 @@ class CarController(CarControllerBase):
       self.recovering_from_override = True
 
     torque_threshold = max(self.params.STEER_THRESHOLD, 1.0)
-    driver_torque_abs = abs(float(CS.out.steeringTorque))
+    # Filter signed torque so alternating sensor noise cancels out before its
+    # magnitude is used for pre-override prediction.
+    driver_torque = float(CS.out.steeringTorque)
+    driver_torque_abs = abs(driver_torque)
     if not CC.latActive:
-      self.driver_torque_filtered = driver_torque_abs
-      self.driver_torque_filtered_prev = driver_torque_abs
+      self.driver_torque_filtered = driver_torque
+      self.driver_torque_filtered_prev = driver_torque
       self.pre_override_frames = 0
     else:
       torque_filter_alpha = DT_CTRL / (DRIVER_TORQUE_FILTER_TAU + DT_CTRL)
       self.driver_torque_filtered_prev = self.driver_torque_filtered
-      self.driver_torque_filtered += torque_filter_alpha * (driver_torque_abs - self.driver_torque_filtered)
+      self.driver_torque_filtered += torque_filter_alpha * (driver_torque - self.driver_torque_filtered)
 
-    driver_torque_rate = max(0.0, (self.driver_torque_filtered - self.driver_torque_filtered_prev) / DT_CTRL)
-    torque_ratio = self.driver_torque_filtered / torque_threshold
+    driver_torque_filtered_abs = abs(self.driver_torque_filtered)
+    driver_torque_filtered_prev_abs = abs(self.driver_torque_filtered_prev)
+    driver_torque_rate = max(0.0, (driver_torque_filtered_abs - driver_torque_filtered_prev_abs) / DT_CTRL)
+    torque_ratio = driver_torque_filtered_abs / torque_threshold
     raw_torque_ratio = driver_torque_abs / torque_threshold
     predicted_torque_ratio = (
-      self.driver_torque_filtered + driver_torque_rate * PRE_OVERRIDE_PREDICTION_TIME
+      driver_torque_filtered_abs + driver_torque_rate * PRE_OVERRIDE_PREDICTION_TIME
     ) / torque_threshold
     pre_override_candidate = (
       CC.latActive and
@@ -349,7 +377,7 @@ class CarController(CarControllerBase):
       # During recovery, taper the rate to zero. Only steeringPressed can reduce authority.
       torque_delta = base_rate_up * float(np.interp(torque_ratio, [0.6, 0.8], [1.0, 0.0]))
     self.lkas_max_torque = float(np.clip(self.lkas_max_torque + torque_delta,
-                                         self.params.ANGLE_MIN_TORQUE, self.angle_max_torque))
+                                         self.params.ANGLE_MIN_TORQUE, angle_torque_cap))
 
     if not CS.out.steeringPressed and self.recovering_from_override and self.lkas_max_torque >= self.angle_max_torque:
       self.recovering_from_override = False
@@ -538,7 +566,10 @@ class CarController(CarControllerBase):
 
     new_actuators = actuators.as_builder()
     new_actuators.torque = apply_torque / self.params.STEER_MAX
-    new_actuators.torqueOutputCan = apply_torque
+    # torqueOutputCan reflects the steering authority value actually sent over CAN.
+    # Torque-control platforms send the signed torque command, while angle-control
+    # platforms send LKAS_ANGLE_MAX_TORQUE alongside the requested angle.
+    new_actuators.torqueOutputCan = self.lkas_max_torque if angle_control else apply_torque
     new_actuators.steeringAngleDeg = float(apply_angle)
     new_actuators.accel = accel
 
