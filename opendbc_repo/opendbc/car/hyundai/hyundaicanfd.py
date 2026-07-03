@@ -1073,17 +1073,16 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         # 차선 곡률 표시 (주행 경로의 시작과 끝 y 좌표 차이 이용)
         try:
           if lat_enabled:
-            max_lookahead_x = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [30, 100], [30, 80])
+            max_lookahead_x = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [20, 100], [30, 80])
 
             # --- 차량 주행 경로 기반 ---
             # Peak Search: 경로 중 횡방향 변위(절대값)가 가장 큰 지점을 탐색
             trust_threshold = 0.8
-            peak_idx = 0
             max_y_abs = 0.0
-            start_search_idx = 0
+            peak_idx = start_search_idx = 0
             start_found = not is_currently_lane_changing
 
-            min_curvature_calc_distance = 20 if is_currently_lane_changing else 0
+            min_curvature_calc_distance = 30 if is_currently_lane_changing else 0
 
             for i in range(1, len(md.position.x)):
               x = md.position.x[i]
@@ -1100,8 +1099,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 max_y_abs = y_abs
                 peak_idx = i
 
-            if peak_idx > 0 and md.position.x[peak_idx] >= 20.0 + min_curvature_calc_distance:
-              x_dist = md.position.x[peak_idx] - min_curvature_calc_distance
+            if start_search_idx != peak_idx and md.position.x[peak_idx] >= (20.0 + min_curvature_calc_distance):
+              x_dist = md.position.x[peak_idx]
               y_diff = md.position.y[peak_idx] - md.position.y[start_search_idx]
 
               # 물리 곡률 공식 (2y / x^2) 적용
@@ -1117,10 +1116,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             curvature = round(create_ccnc_messages.lane_curv.apply(-max_curve_val)) # 디스플레이 곡률은 음수 반전해야 정상 방향이 나옴
           else:
             # 횡컨 아니면 핸들 각도 기반 조향
-            curvature = round(CS.out.steeringAngleDeg / 4)
+            curvature = round(CS.out.steeringAngleDeg / 3)
         except:
           # 모델 데이터 예외 발생 시 핸들 각도 기반 백업
-          curvature = round(CS.out.steeringAngleDeg / 4)
+          curvature = round(CS.out.steeringAngleDeg / 3)
           values["LFA_ICON"] = 5
 
         values["LANELINE_CURVATURE"] = min(abs(curvature), 15) + (-1 if curvature < 0 else 0)
@@ -1298,7 +1297,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               l for l in itertools.chain(CS.radar_state.leadsLeft,
                                         CS.radar_state.leadsRight,
                                         CS.radar_state.leadsCenter)
-              if l.radar and l.dRel > 0.1
+              if l.radar and l.dRel > 1
             )
 
             lead_visible = hud_control.leadVisible
@@ -1310,9 +1309,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               yRel = lead.yRel
 
               # 1. 상단에서 계산한 curvature(계기판 표시용 곡률)을 횡방향 물리 오프셋으로 역산
-              # 곡률(kappa) = -curvature / 1750.0 (curvature가 음수일 때 좌측 커브)
-              # 오프셋 = 0.5 * kappa * dRel^2 = -curvature * (dRel ** 2) / 3500.0
-              curve_offset_y = -current_curvature * ((dRel * 1.1) ** 2) / 3500.0
+              # 곡률(kappa) = -curvature / 1800.0 (curvature가 음수일 때 좌측 커브)
+              # 오프셋 = 0.5 * kappa * dRel^2 = -curvature * (dRel ** 2) / 3600.0
+              curve_offset_y = -current_curvature * ((dRel * 1.1) ** 2) / 3600.0
 
               # 2. 직선 물리 좌표 yRel에서 곡률 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
               corrected_yRel = yRel + curve_offset_y
