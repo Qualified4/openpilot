@@ -29,8 +29,8 @@ PRE_OVERRIDE_FILTERED_MIN_RATIO = 0.65
 PRE_OVERRIDE_MIN_RATE_RATIO = 0.50
 PRE_OVERRIDE_CONFIRM_FRAMES = 2
 PRE_OVERRIDE_MAX_TORQUE_DELTA = -10.0
-LOW_SPEED_ANGLE_TORQUE_PROTECT_SPEED = 8.0  # m/s
-LOW_SPEED_ANGLE_TORQUE_PROTECT_MIN_ANGLE = 50.0  # deg
+LOW_SPEED_ANGLE_RATE_RAMP_SPEED = 15.0 * CV.KPH_TO_MS
+MID_SPEED_ANGLE_RATE_LIMIT_SPEED = 40.0 * CV.KPH_TO_MS
 
 vibrate_intervals = [
   (0.0, 0.5),
@@ -85,10 +85,17 @@ def apply_steer_angle_limits_physics(desired_sw_deg: float,
     if np.isfinite(model_y_std_1s) and model_y_std_1s >= 0.0:
       y_std_1s = model_y_std_1s
   max_sw_rate_deg_per_tick = float(np.interp(y_std_1s, [0.1, 0.2, 0.4], [2.0, 1.5, 0.8]))
-
   v = max(float(v_ego), 1.0)
 
   target_sw = float(np.clip(desired_sw_deg, -steer_sw_max_deg, steer_sw_max_deg))
+  if v_ego < MID_SPEED_ANGLE_RATE_LIMIT_SPEED:
+    # Keep low/mid-speed angle commands quieter without reducing LKAS_ANGLE_MAX_TORQUE.
+    # Allow the angle, but slow the arrival: 0~15 kph ramps 0.8->1.1 deg/tick,
+    # then 15~40 kph tapers 1.1->0.8 deg/tick. Above 40 kph, physics limits take over.
+    low_mid_speed_cap = float(np.interp(v_ego,
+                                        [0.0, LOW_SPEED_ANGLE_RATE_RAMP_SPEED, MID_SPEED_ANGLE_RATE_LIMIT_SPEED],
+                                        [0.8, 1.1, 0.8]))
+    max_sw_rate_deg_per_tick = min(max_sw_rate_deg_per_tick, low_mid_speed_cap)
 
   target_rw = target_sw / steer_ratio
   last_rw   = float(last_sw_deg) / steer_ratio
@@ -123,7 +130,7 @@ def apply_steer_angle_limits_physics(desired_sw_deg: float,
 
   cmd_sw = cmd_rw * steer_ratio
   return float(np.clip(cmd_sw, -steer_sw_max_deg, steer_sw_max_deg))
-  
+
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
@@ -213,7 +220,7 @@ class CarController(CarControllerBase):
         self.steerDeltaDownLC = steerDeltaDownLC
       else:
         self.steerDeltaDownLC = self.steerDeltaDown
-        
+
       self.soft_hold_mode = 1 if params.get_int("AutoCruiseControl") > 1 else 2
       self.hapticFeedbackWhenSpeedCamera = int(params.get_int("HapticFeedbackWhenSpeedCamera"))
 
@@ -235,7 +242,7 @@ class CarController(CarControllerBase):
     else:
       self.params.STEER_DELTA_UP = self.steerDeltaUp
       self.params.STEER_DELTA_DOWN = self.steerDeltaDown
-    
+
     angle_control = self.CP.flags & HyundaiFlags.ANGLE_CONTROL
 
     # steering torque
@@ -247,7 +254,7 @@ class CarController(CarControllerBase):
                                                                        self.angle_limit_counter, self.max_angle_frames,
                                                                        MAX_ANGLE_CONSECUTIVE_FRAMES)
 
-    #apply_angle = apply_std_steer_angle_limits(actuators.steeringAngleDeg, self.apply_angle_last, CS.out.vEgoRaw, 
+    #apply_angle = apply_std_steer_angle_limits(actuators.steeringAngleDeg, self.apply_angle_last, CS.out.vEgoRaw,
     #                                           CS.out.steeringAngleDeg, CC.latActive, self.params.ANGLE_LIMITS)
 
     apply_angle = apply_steer_angle_limits_physics(
@@ -262,30 +269,11 @@ class CarController(CarControllerBase):
       CS.modelV2,
     )
 
-    
+
     if angle_control:
       apply_steer_req = CC.latActive
 
     angle_torque_cap = self.angle_max_torque
-    if angle_control and CC.latActive and CS.out.vEgo < LOW_SPEED_ANGLE_TORQUE_PROTECT_SPEED:
-      angle_abs = abs(CS.out.steeringAngleDeg)
-      if angle_abs > LOW_SPEED_ANGLE_TORQUE_PROTECT_MIN_ANGLE:
-        eps_torque_abs = abs(CS.out.steeringTorqueEps)
-        steering_rate_abs = abs(CS.out.steeringRateDeg)
-
-        # Keep full authority for normal low-speed turns. Only soften the
-        # Hyundai angle-control torque authority when the EPS is loaded or the
-        # steering wheel is already moving quickly at a large angle.
-        angle_based_cap = float(np.interp(angle_abs,
-                                          [50.0, 90.0, 150.0, 220.0],
-                                          [self.angle_max_torque, 220.0, 180.0, 150.0]))
-        speed_blend = float(np.interp(CS.out.vEgo, [3.0, LOW_SPEED_ANGLE_TORQUE_PROTECT_SPEED],
-                                      [1.0, 0.0]))
-        eps_blend = float(np.interp(eps_torque_abs, [12.0, 22.0], [0.0, 1.0]))
-        rate_blend = float(np.interp(steering_rate_abs, [120.0, 260.0], [0.0, 1.0]))
-        protect_blend = max(eps_blend, rate_blend) * speed_blend
-        angle_torque_cap = float(np.interp(protect_blend, [0.0, 1.0],
-                                           [self.angle_max_torque, angle_based_cap]))
 
     steering_pressed_rising = CS.out.steeringPressed and not self.steering_pressed_prev
     if steering_pressed_rising:
@@ -420,7 +408,7 @@ class CarController(CarControllerBase):
 
     active_speed_decel = hud_control.activeCarrot == 3 and self.activeCarrot != 3 # 3: Speed Decel
     self.activeCarrot = hud_control.activeCarrot
-    if active_speed_decel and self.speedCameraHapticEndFrame < 0: # 과속카메라 감속시작      
+    if active_speed_decel and self.speedCameraHapticEndFrame < 0: # 과속카메라 감속시작
       self.speedCameraHapticEndFrame = self.frame + (8.0 / DT_CTRL)  #8초간 켜줌.
     elif not active_speed_decel:
       self.speedCameraHapticEndFrame = -1
@@ -469,7 +457,7 @@ class CarController(CarControllerBase):
         can_sends.extend(hyundaicanfd.create_steering_messages_camera_scc(self.frame, self.packer, self.CP, self.CAN, CC, apply_steer_req, apply_torque, CS, apply_angle, self.lkas_max_torque, angle_control))
       else:
         can_sends.extend(hyundaicanfd.create_steering_messages(self.packer, self.CP, self.CAN, CC.enabled, apply_steer_req, apply_torque, apply_angle, self.lkas_max_torque, angle_control))
-              
+
       # prevent LFA from activating on HDA2 by sending "no lane lines detected" to ADAS ECU
       if self.frame % 5 == 0 and hda2 and not camera_scc:
         can_sends.extend(hyundaicanfd.create_suppress_lfa(self.packer, self.CAN, CS))
@@ -535,7 +523,7 @@ class CarController(CarControllerBase):
         #jerk = 3.0 if actuators.longControlState == LongCtrlState.pid else 1.0
         use_fca = self.CP.flags & HyundaiFlags.USE_FCA.value
         if camera_scc:
-          
+
           can_sends.extend(hyundaican.create_acc_commands_scc(self.packer, CC.enabled, accel, self.hyundai_jerk, int(self.frame / 2),
                                                           hud_control, set_speed_in_units, stopping,
                                                           CC.cruiseControl.override, casper_ev, CS, self.soft_hold_mode))
@@ -763,7 +751,7 @@ class HyundaiJerk:
             self.carrot_cruise_accel = max(carrot_cruise, self.carrot_cruise_accel - 1.0 * DT_CTRL) #  점진적으로 줄임.
     if self.carrot_cruise == 0:
       self.carrot_cruise_accel = CS.out.aEgo
-    
+
   def make_jerk(self, CP, CS, accel, actuators, hud_control):
     if actuators.longControlState == LongCtrlState.stopping:
       self.jerk = self.jerk_u_min / 2 - CS.out.aEgo
