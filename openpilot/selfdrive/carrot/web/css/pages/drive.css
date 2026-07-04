@@ -1,4 +1,4 @@
-/* ── WebRTC Video ─────────────────────────────────────────── */
+﻿/* ?? WebRTC Video ??????????????????????????????????????????? */
 .rtcVideo {
   width: 100%;
   border-radius: var(--r-md);
@@ -285,6 +285,10 @@ body[data-page="carrot"] #driveHudCard {
   transition: opacity 0.3s ease;
 }
 
+.vision-start-overlay[hidden] {
+  display: none !important;
+}
+
 .vision-start-overlay__message {
   position: absolute;
   top: 50%;
@@ -470,7 +474,7 @@ body[data-page="carrot"] #driveHudCard {
 .carrot-stage__loadingActions {
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 0.72fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   margin-top: 2px;
 }
@@ -481,12 +485,6 @@ body[data-page="carrot"] #driveHudCard {
   margin: 0;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--md-surface-cont-h) 84%, transparent);
-}
-
-.carrot-stage__loadingAction--primary {
-  border-color: color-mix(in srgb, var(--md-primary) 58%, var(--md-outline-var));
-  background: color-mix(in srgb, var(--md-primary) 18%, var(--md-surface-cont-h));
-  color: var(--md-primary);
 }
 
 .carrot-stage__loadingAction:disabled {
@@ -547,7 +545,7 @@ body[data-page="carrot"] .carrot-hud-dock {
   overflow: hidden;
 }
 
-@media (orientation: landscape) {
+@media (min-aspect-ratio: 13/10), (horizontal-viewport-segments: 2), (vertical-viewport-segments: 2), (min-width: 640px) and (min-height: 650px) {
   .page--drive {
     display: block;
     height: var(--app-vv-height, 100dvh);
@@ -680,7 +678,7 @@ body[data-page="carrot"] #driveHudCard.driveHudCard--overlay .hudWrap {
   background: transparent;
 }
 
-/* Zoom-bias controls — bottom edge of the map dock. They nudge the global
+/* Zoom-bias controls ??bottom edge of the map dock. They nudge the global
    zoom offset (added on top of the automatic speed-based zoom) so each
    device/resolution can be tuned. */
 .carrot-map-zoom {
@@ -773,7 +771,7 @@ body[data-page="carrot"] #driveHudCard.driveHudCard--overlay .hudWrap {
   display: none !important;
 }
 
-@media (orientation: portrait) {
+@media (aspect-ratio < 13/10) and (max-width: 639px), (aspect-ratio < 13/10) and (max-height: 649px) {
   .carrot-map-dock {
     display: none !important;
   }
@@ -817,7 +815,7 @@ body[data-page="carrot"] #driveHudCard.driveHudCard--loading {
   background: transparent;
 }
 
-@media (orientation: landscape) {
+@media (min-aspect-ratio: 13/10), (horizontal-viewport-segments: 2), (vertical-viewport-segments: 2), (min-width: 640px) and (min-height: 650px) {
   .rtcVideo {
     max-height: 40vh;
     width: auto;
@@ -879,7 +877,7 @@ body[data-page="carrot"] #driveHudCard.driveHudCard--loading {
   z-index: 2;
 }
 
-@media (orientation: portrait) {
+@media (aspect-ratio < 13/10) and (max-width: 639px), (aspect-ratio < 13/10) and (max-height: 649px) {
   .carrot-rtc-perf-summary {
     display: none !important;
   }
@@ -1182,6 +1180,76 @@ body[data-page="carrot"] #driveHudCard.driveHudCard--loading {
   border-color: color-mix(in srgb, var(--md-primary) 64%, rgba(255, 255, 255, 0.18));
   background: color-mix(in srgb, var(--md-primary) 13%, var(--md-surface-cont-h));
   color: var(--md-primary);
+}
+
+.carrot-stage__controlBtn--sound {
+  min-width: 68px;
+}
+
+.carrot-stage__controlBtn--sound.is-active {
+  border-color: color-mix(in srgb, #49dd82 72%, rgba(255, 255, 255, 0.22));
+  background: color-mix(in srgb, #49dd82 18%, var(--md-surface-cont-h));
+  color: #b9ffd2;
+  box-shadow: 0 0 0 1px rgba(73, 221, 130, 0.12), 0 0 14px rgba(73, 221, 130, 0.12), 0 8px 22px rgba(0, 0, 0, 0.24);
+}
+
+.app-dialog--web-sound .app-dialog__sheet {
+  width: min(calc(100vw - 32px), 430px);
+}
+
+.app-dialog--web-sound .app-dialog__body {
+  white-space: normal;
+}
+
+.web-sound-dialog {
+  display: grid;
+  gap: 18px;
+}
+
+.web-sound-dialog__description {
+  margin: 0;
+  color: var(--md-on-surface-var);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.web-sound-dialog__toggle {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 0 4px;
+  color: var(--md-on-surface);
+  font-size: 15px;
+  font-weight: 850;
+  line-height: 1.2;
+}
+
+.web-sound-dialog__volume {
+  display: grid;
+  gap: 10px;
+  padding: 2px 4px 0;
+  color: var(--md-on-surface);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.web-sound-dialog__volume-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.web-sound-dialog__volume-head output {
+  color: var(--md-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.web-sound-dialog__volume-slider {
+  width: 100%;
+  accent-color: var(--md-primary);
 }
 
 .carrot-stage__controlBtn--record {
