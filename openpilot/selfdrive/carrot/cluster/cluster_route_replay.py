@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import bz2
 import io
@@ -76,6 +76,11 @@ RADAR_FRONT_MAX_LONGITUDINAL_M = 180.0
 CORNER_RADAR_REAR_MIN_LONGITUDINAL_M = -180.0
 CCNC_CORNER_RADAR_ADDRESS = 0x162
 ADRV_CORNER_RADAR_ADDRESS = 0x1EA
+CORNER_OBJECT_TRACK_ID_OFFSET = 200
+CORNER_OBJECT_TRACK_COUNT = 20
+CORNER_OBJECT_180_TRACK_ID_OFFSET = 240
+CORNER_OBJECT_180_TRACK_COUNT = 10
+CORNER_OBJECT_SOURCE = "cornerRadar"
 HYUNDAI_CAMERA_CAN_BUS_MOD = 2
 CORNER_RADAR_DBC_MESSAGES = {
     CCNC_CORNER_RADAR_ADDRESS: "CCNC_0x162",
@@ -1538,7 +1543,15 @@ class RouteLogParser:
         self.live_track_radar_t = event_t
 
     def _radar_points_from_current_state(self, event_t: float) -> tuple[RadarPoint, ...]:
-        if event_t - self.live_track_radar_t < RADAR_POINT_STALE_S:
+        live_tracks_fresh = event_t - self.live_track_radar_t < RADAR_POINT_STALE_S
+        if live_tracks_fresh:
+            corner_points = sorted_radar_points(
+                point for point in self.live_track_radar_points.values() if point.source == CORNER_OBJECT_SOURCE
+            )
+            if corner_points:
+                return corner_points
+
+        if live_tracks_fresh:
             return sorted_radar_points(self.live_track_radar_points.values())
         return ()
 
@@ -3042,7 +3055,18 @@ def live_track_to_radar_point(track: Any, index: int, ego_speed_kph: float) -> R
     if not -12.0 <= lateral_m <= 12.0:
         return None
     track_id = safe_optional_int(track, "trackId")
-    label = f"T{track_id}" if track_id is not None else f"T{index:03d}"
+    is_corner_object = (
+        track_id is not None
+        and (
+            CORNER_OBJECT_TRACK_ID_OFFSET <= track_id < CORNER_OBJECT_TRACK_ID_OFFSET + CORNER_OBJECT_TRACK_COUNT
+            or CORNER_OBJECT_180_TRACK_ID_OFFSET <= track_id < CORNER_OBJECT_180_TRACK_ID_OFFSET + CORNER_OBJECT_180_TRACK_COUNT
+        )
+    )
+    label = (
+        corner_track_label(track_id)
+        if is_corner_object
+        else (f"T{track_id}" if track_id is not None else f"T{index:03d}")
+    )
     rel_speed_mps = safe_optional_float(track, "vRel")
     lead_speed_mps = safe_optional_float(track, "vLead")
     absolute_speed_kph = None
@@ -3058,7 +3082,7 @@ def live_track_to_radar_point(track: Any, index: int, ego_speed_kph: float) -> R
         label=label,
         longitudinal_m=d_rel,
         lateral_m=lateral_m,
-        source="liveTracks",
+        source=CORNER_OBJECT_SOURCE if is_corner_object else "liveTracks",
         relative_speed_mps=rel_speed_mps,
         absolute_speed_kph=absolute_speed_kph,
         lateral_speed_mps=lat_speed_mps,
@@ -3066,6 +3090,12 @@ def live_track_to_radar_point(track: Any, index: int, ego_speed_kph: float) -> R
         probability=0.72 if measured else 0.38,
         valid=1 if measured else 0,
     )
+
+
+def corner_track_label(track_id: int) -> str:
+    if CORNER_OBJECT_180_TRACK_ID_OFFSET <= track_id < CORNER_OBJECT_180_TRACK_ID_OFFSET + CORNER_OBJECT_180_TRACK_COUNT:
+        return f"CR180_{track_id - CORNER_OBJECT_180_TRACK_ID_OFFSET:02d}"
+    return f"CR{track_id - CORNER_OBJECT_TRACK_ID_OFFSET:02d}"
 
 
 def sorted_radar_points(points: Any) -> tuple[RadarPoint, ...]:
@@ -3101,6 +3131,12 @@ def dbc_unsigned(data: bytes, start: int, length: int, byte_order: str) -> int:
         value = (value << 1) | ((data[bit // 8] >> (bit % 8)) & 1)
         bit = bit + 15 if bit % 8 == 0 else bit - 1
     return value
+
+
+def dbc_signed(data: bytes, start: int, length: int, byte_order: str) -> int:
+    value = dbc_unsigned(data, start, length, byte_order)
+    sign_bit = 1 << (length - 1)
+    return value - (1 << length) if value & sign_bit else value
 
 
 def has_nearby_vehicle(
@@ -3543,3 +3579,4 @@ def lane_color_from_code(code: int) -> tuple[int, int, int] | None:
     if color_code == 2:
         return YELLOW
     return None
+
