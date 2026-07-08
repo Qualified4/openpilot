@@ -109,7 +109,7 @@ DRIVE_CAMERA_EGO_BOTTOM_POSITION_M = (0.0, -6.0, 5.00)
 DRIVE_CAMERA_EGO_BOTTOM_TARGET_M = (0.0, 14.0, -1.00)
 DRIVE_VIEW_REAR_RELATIVE_M = -5.0
 DRIVE_VIEW_REAR_ROAD_MARGIN_M = 8.0
-LONGITUDINAL_RENDER_DISTANCE_SCALE = 0.5
+LONGITUDINAL_RENDER_DISTANCE_SCALE = 0.4
 DRIVE_VIEW_REAR_VISIBLE_M = EGO_FORWARD_M + DRIVE_VIEW_REAR_RELATIVE_M
 DRIVE_VIEW_ROAD_START_M = (
     DRIVE_VIEW_REAR_VISIBLE_M - DRIVE_VIEW_REAR_ROAD_MARGIN_M
@@ -387,6 +387,13 @@ def render_relative_forward_m(relative_forward_m: float) -> float:
 
 def render_scene_forward_m(relative_forward_m: float) -> float:
     return data_scene_forward_m(render_relative_forward_m(relative_forward_m))
+
+
+def detected_vehicle_scene_forward_m(vehicle: DetectedVehicle) -> float:
+    forward_m = render_scene_forward_m(vehicle.longitudinal_m)
+    if vehicle.longitudinal_m > 0.0 and (vehicle.primary or vehicle.cut_in):
+        forward_m += VEHICLE_LENGTH_M * 0.5
+    return forward_m
 
 
 def scene_data_relative_forward_m(forward_m: float) -> float:
@@ -3084,6 +3091,10 @@ def vehicle_color_for_detection(
     theme: ClusterTheme = LIGHT_CLUSTER_THEME,
     source_color_mode: int = 0,
 ) -> tuple[int, int, int]:
+    if vehicle.cut_in:
+        return AMBER
+    if vehicle.primary:
+        return theme.primary_vehicle
     if (
         vehicle.absolute_speed_kph is not None
         and vehicle.absolute_speed_kph <= -RADAR_MOVING_VEHICLE_MIN_SPEED_KPH
@@ -3284,7 +3295,8 @@ def build_cluster_scene(
     display_detected_vehicles = detected_vehicles_without_zero_radar_samples(state.detected_vehicles)
     if raw_corner_active:
         display_detected_vehicles = tuple(
-            vehicle for vehicle in display_detected_vehicles if detected_vehicle_is_rear_corner_summary(vehicle)
+            vehicle for vehicle in display_detected_vehicles
+            if detected_vehicle_is_rear_corner_summary(vehicle) or vehicle_source_is_front_radar(vehicle.source)
         )
     if display_radar_points is not state.radar_points or display_detected_vehicles != state.detected_vehicles:
         state = replace(state, radar_points=display_radar_points, detected_vehicles=display_detected_vehicles)
@@ -3441,7 +3453,7 @@ def build_cluster_scene(
         detected_vehicle_boxes = tuple(
             vehicle_box(
                 clamp(detected.lateral_m / lane_width_m, -2.2, 2.2),
-                render_scene_forward_m(detected.longitudinal_m),
+                detected_vehicle_scene_forward_m(detected),
                 state.steering,
                 lane_width_m,
                 vehicle_color_for_detection(detected, theme, state.radar_source_color_mode),

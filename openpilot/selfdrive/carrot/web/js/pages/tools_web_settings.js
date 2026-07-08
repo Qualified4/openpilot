@@ -1,353 +1,9 @@
 "use strict";
 
-// Web-only settings dialog. Server-backed settings belong to the device, while
-// last-page history remains browser-local by design.
-
-const WEB_SETTINGS_GROUPS = [
-  {
-    id: "general",
-    labelKey: "web_settings_general",
-    defaultLabel: "General",
-    items: [
-      {
-        id: "auto_update_git_pull",
-        type: "toggle",
-        titleKey: "web_auto_update",
-        defaultTitle: "Auto update",
-        descKey: "web_auto_update_desc",
-        defaultDesc: "Automatically run git pull when updates are available. This will not reboot.",
-      },
-    ],
-  },
-  {
-    id: "display",
-    labelKey: "web_settings_display",
-    defaultLabel: "Display",
-    items: [
-      {
-        id: "start_page",
-        type: "select",
-        titleKey: "web_start_page",
-        defaultTitle: "Start menu",
-        descKey: "web_start_page_desc",
-        defaultDesc: "Choose which menu opens first when Carrot Web loads.",
-        options: [
-          { value: "last", labelKey: "web_start_page_last", defaultLabel: "Last tab" },
-          { value: "carrot", labelKey: "home", defaultLabel: "Drive" },
-          { value: "setting", labelKey: "setting", defaultLabel: "Setting" },
-          { value: "tools", labelKey: "tools", defaultLabel: "Tools" },
-          { value: "logs", labelKey: "logs", defaultLabel: "Logs" },
-          { value: "terminal", labelKey: "terminal", defaultLabel: "Terminal" },
-        ],
-      },
-    ],
-  },
-  {
-    id: "vision",
-    labelKey: "web_settings_carrot_vision",
-    defaultLabel: "Carrot Vision",
-    items: [
-      {
-        id: "vision_fullscreen_default",
-        type: "toggle",
-        titleKey: "web_vision_fullscreen_default",
-        defaultTitle: "Vision fullscreen",
-        descKey: "web_vision_fullscreen_default_desc",
-        defaultDesc: "Automatically enter fullscreen when Carrot Vision starts.",
-      },
-      {
-        id: "kmap_enabled",
-        type: "toggle",
-        titleKey: "web_kmap_enabled",
-        defaultTitle: "Carrot map",
-        descKey: "web_kmap_enabled_desc",
-        defaultDesc: "Show the kmap iframe on the drive vision screen.",
-      },
-      {
-        id: "kmap_overlay_heading_up",
-        type: "toggle",
-        titleKey: "web_kmap_heading_up",
-        defaultTitle: "Heading-up path",
-        descKey: "web_kmap_heading_up_desc",
-        defaultDesc: "Draw the local path relative to the vehicle heading.",
-      },
-      {
-        id: "kmap_overlay_curvature_color",
-        type: "toggle",
-        titleKey: "web_kmap_curvature_color",
-        defaultTitle: "Curve color",
-        descKey: "web_kmap_curvature_color_desc",
-        defaultDesc: "Tint local path segments more strongly on sharper bends.",
-      },
-      {
-        id: "kmap_map_type",
-        type: "select",
-        titleKey: "web_kmap_map_type",
-        defaultTitle: "Map type",
-        descKey: "web_kmap_map_type_desc",
-        defaultDesc: "Kakao base layer for the Carrot map (reloads the map on change).",
-        options: [
-          { value: "roadmap", labelKey: "web_kmap_map_type_roadmap", defaultLabel: "Roadmap" },
-          { value: "satellite", labelKey: "web_kmap_map_type_satellite", defaultLabel: "Satellite" },
-          { value: "hybrid", labelKey: "web_kmap_map_type_hybrid", defaultLabel: "Hybrid" },
-        ],
-      },
-      {
-        id: "nav_hud_enabled",
-        type: "toggle",
-        titleKey: "web_nav_hud_enabled",
-        defaultTitle: "Nav HUD",
-        descKey: "web_nav_hud_enabled_desc",
-        defaultDesc: "Show the small turn-by-turn card at the top of Carrot Vision.",
-      },
-    ],
-  },
-];
-
-const WEB_LAST_PAGE_KEY = "carrot_web_last_page";
-const WEB_AUTO_UPDATE_COOLDOWN_MS = 10 * 60 * 1000;
-const WEB_PRIMARY_PAGES = new Set(["carrot", "setting", "tools", "logs", "terminal"]);
-const WEB_SETTING_DEFAULTS = {
-  auto_update_git_pull: false,
-  start_page: "last",
-  web_language: "",
-  vision_fullscreen_default: true,
-  kmap_enabled: false,
-  kmap_url: "https://jominki354.github.io/kmap/",
-  kmap_overlay_heading_up: true,
-  kmap_overlay_curvature_color: false,
-  kmap_map_type: "roadmap",
-  nav_hud_enabled: true,
-};
-
-const webSettingsState = { ...WEB_SETTING_DEFAULTS };
-window.CarrotWebSettingsState = webSettingsState;
-
-let activeWebSettingsGroup = "general";
-let webSettingsLoaded = false;
-let webSettingsLoadPromise = null;
-let webAutoUpdateInFlight = false;
-let webAutoUpdateLastAttempt = 0;
-
-function normalizeWebSettingValue(key, value) {
-  if (key === "auto_update_git_pull") {
-    if (typeof value === "string") return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-    return Boolean(value);
-  }
-  if (key === "start_page") {
-    const page = String(value || "").trim().toLowerCase();
-    return page === "last" || WEB_PRIMARY_PAGES.has(page) ? page : WEB_SETTING_DEFAULTS.start_page;
-  }
-  if (key === "web_language") {
-    if (typeof normalizeLangCode === "function") return normalizeLangCode(value);
-    const lang = String(value || "").trim().toLowerCase();
-    return ["en", "ko", "zh"].includes(lang) ? lang : "";
-  }
-  if (key === "kmap_enabled" ||
-      key === "vision_fullscreen_default" ||
-      key === "kmap_overlay_heading_up" ||
-      key === "kmap_overlay_curvature_color" ||
-      key === "nav_hud_enabled") {
-    if (typeof value === "string") return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-    return Boolean(value);
-  }
-  if (key === "kmap_url") {
-    const url = String(value || "").trim();
-    return url || WEB_SETTING_DEFAULTS.kmap_url;
-  }
-  if (key === "kmap_map_type") {
-    const mt = String(value || "").trim().toLowerCase();
-    return ["roadmap", "satellite", "hybrid"].includes(mt) ? mt : WEB_SETTING_DEFAULTS.kmap_map_type;
-  }
-  return value;
-}
-
-function applyWebSettings(settings = {}) {
-  Object.keys(WEB_SETTING_DEFAULTS).forEach((key) => {
-    const value = Object.prototype.hasOwnProperty.call(settings, key) ? settings[key] : WEB_SETTING_DEFAULTS[key];
-    webSettingsState[key] = normalizeWebSettingValue(key, value);
-  });
-  return webSettingsState;
-}
-
-applyWebSettings(window.__CARROT_BOOTSTRAP__?.webSettings || {});
-
-async function requestWebSettings(method = "GET", body = null) {
-  const options = { method };
-  if (body) {
-    options.headers = { "Content-Type": "application/json" };
-    options.body = JSON.stringify(body);
-  }
-  if (typeof requestJson === "function") {
-    return requestJson("/api/web_settings", options);
-  }
-  const response = await fetch("/api/web_settings", options);
-  const payload = await response.json();
-  if (!response.ok || payload?.ok === false) {
-    throw new Error(payload?.error || `HTTP ${response.status}`);
-  }
-  return payload;
-}
-
-async function loadWebSettings(force = false) {
-  if (!force && webSettingsLoaded) return webSettingsState;
-  if (webSettingsLoadPromise) return webSettingsLoadPromise;
-  webSettingsLoadPromise = requestWebSettings("GET")
-    .then((payload) => {
-      webSettingsLoaded = true;
-      return applyWebSettings(payload?.settings || {});
-    })
-    .finally(() => {
-      webSettingsLoadPromise = null;
-    });
-  return webSettingsLoadPromise;
-}
-
-function getWebSettingByKey(key, fallback = undefined) {
-  if (!Object.prototype.hasOwnProperty.call(WEB_SETTING_DEFAULTS, key)) return fallback;
-  return webSettingsState[key] ?? fallback ?? WEB_SETTING_DEFAULTS[key];
-}
-
-async function setWebSettingByKey(key, value) {
-  if (!Object.prototype.hasOwnProperty.call(WEB_SETTING_DEFAULTS, key)) return undefined;
-  const previous = webSettingsState[key];
-  const next = normalizeWebSettingValue(key, value);
-  webSettingsState[key] = next;
-  try {
-    const payload = await requestWebSettings("POST", { [key]: next });
-    applyWebSettings(payload?.settings || { [key]: next });
-    window.dispatchEvent(new CustomEvent("carrot:websettingschange", {
-      detail: { key, value: webSettingsState[key], settings: { ...webSettingsState } },
-    }));
-  } catch (err) {
-    webSettingsState[key] = previous;
-    throw err;
-  }
-  return webSettingsState[key];
-}
-
-function getWebSettingValue(item) {
-  return getWebSettingByKey(item.id, WEB_SETTING_DEFAULTS[item.id]);
-}
-
-function setWebSettingValue(item, value) {
-  return setWebSettingByKey(item.id, value);
-}
-
-function getWebStartPage() {
-  const setting = getWebStartPageSetting();
-  if (setting !== "last") return setting;
-  try {
-    const lastPage = localStorage.getItem(WEB_LAST_PAGE_KEY);
-    return WEB_PRIMARY_PAGES.has(lastPage) ? lastPage : "carrot";
-  } catch {
-    return "carrot";
-  }
-}
-
-function getWebStartPageSetting() {
-  return normalizeWebSettingValue("start_page", webSettingsState.start_page);
-}
-
-function setWebStartPage(value) {
-  return setWebSettingByKey("start_page", value);
-}
-
-function recordWebLastPage(page) {
-  if (!WEB_PRIMARY_PAGES.has(page)) return;
-  try {
-    localStorage.setItem(WEB_LAST_PAGE_KEY, page);
-  } catch {}
-}
-
-function renderWebSettingsItem(item) {
-  const title = getUIText(item.titleKey, item.defaultTitle);
-  const desc = getUIText(item.descKey, item.defaultDesc);
-  if (item.type === "toggle") {
-    const checked = getWebSettingValue(item);
-    return `
-      <label class="web-settings-row web-settings-row--toggle" data-web-setting="${escapeHtml(item.id)}">
-        <span class="web-settings-row__copy">
-          <span class="web-settings-row__title">${escapeHtml(title)}</span>
-          <span class="web-settings-row__desc">${escapeHtml(desc)}</span>
-        </span>
-        <span class="web-settings-switch">
-          <input class="web-settings-switch__input" type="checkbox" ${checked ? "checked" : ""} />
-          <span class="web-settings-switch__slider" aria-hidden="true"></span>
-        </span>
-      </label>`;
-  }
-
-  if (item.type === "select") {
-    const value = getWebSettingValue(item);
-    const options = (item.options || []).map((option) => `
-      <option value="${escapeHtml(option.value)}" ${option.value === value ? "selected" : ""}>
-        ${escapeHtml(getUIText(option.labelKey, option.defaultLabel))}
-      </option>
-    `).join("");
-    return `
-      <label class="web-settings-row web-settings-row--select" data-web-setting="${escapeHtml(item.id)}">
-        <span class="web-settings-row__copy">
-          <span class="web-settings-row__title">${escapeHtml(title)}</span>
-          <span class="web-settings-row__desc">${escapeHtml(desc)}</span>
-        </span>
-        <select class="web-settings-select" aria-label="${escapeHtml(title)}">
-          ${options}
-        </select>
-      </label>`;
-  }
-
-  return `
-    <div class="web-settings-row">
-      <div class="web-settings-row__title">${escapeHtml(title)}</div>
-      ${desc ? `<div class="web-settings-row__desc">${escapeHtml(desc)}</div>` : ""}
-    </div>`;
-}
-
-function renderWebSettingsGroup(group) {
-  const title = getUIText(group.labelKey, group.defaultLabel);
-  const body = group.items.length
-    ? group.items.map(renderWebSettingsItem).join("")
-    : `<div class="web-settings-empty">${escapeHtml(getUIText("web_settings_empty", "No general web settings yet."))}</div>`;
-
-  return `
-    <section class="web-settings-group" data-web-settings-panel="${escapeHtml(group.id)}" ${group.id === activeWebSettingsGroup ? "" : "hidden"}>
-      <div class="web-settings-group__title">${escapeHtml(title)}</div>
-      <div class="web-settings-group__body">${body}</div>
-    </section>`;
-}
-
-function renderWebSettingsDialogHtml() {
-  const groups = WEB_SETTINGS_GROUPS.map((group) => {
-    const active = group.id === activeWebSettingsGroup;
-    return `
-      <button type="button" class="web-settings-nav__item ${active ? "is-active" : ""}" data-web-settings-group="${escapeHtml(group.id)}" aria-pressed="${active ? "true" : "false"}">
-        ${escapeHtml(getUIText(group.labelKey, group.defaultLabel))}
-      </button>`;
-  }).join("");
-
-  return `
-    <div class="web-settings-dialog">
-      <nav class="web-settings-nav" aria-label="${escapeHtml(getUIText("web_settings", "Web Settings"))}">
-        ${groups}
-      </nav>
-      <div class="web-settings-panels">
-        ${WEB_SETTINGS_GROUPS.map(renderWebSettingsGroup).join("")}
-      </div>
-    </div>`;
-}
-
-function syncWebSettingsDialog() {
-  document.querySelectorAll("[data-web-settings-group]").forEach((button) => {
-    const active = button.dataset.webSettingsGroup === activeWebSettingsGroup;
-    button.classList.toggle("is-active", active);
-    button.setAttribute("aria-pressed", active ? "true" : "false");
-  });
-  document.querySelectorAll("[data-web-settings-panel]").forEach((panel) => {
-    panel.hidden = panel.dataset.webSettingsPanel !== activeWebSettingsGroup;
-  });
-}
-
+// Web settings dialog controller. Schema lives in tools_web_settings_schema.js,
+// state/API in tools_web_settings_state.js, rendering in
+// tools_web_settings_render.js — this module only opens the dialog and wires
+// row events to the setters.
 function bindWebSettingsDialogEvents() {
   document.querySelectorAll("[data-web-settings-group]").forEach((button) => {
     if (button.dataset.webSettingsBound === "1") return;
@@ -362,7 +18,7 @@ function bindWebSettingsDialogEvents() {
     if (row.dataset.webSettingBound === "1") return;
     row.dataset.webSettingBound = "1";
     const item = WEB_SETTINGS_GROUPS.flatMap((group) => group.items).find((entry) => entry.id === row.dataset.webSetting);
-    const input = row.querySelector(".web-settings-switch__input");
+    const input = row.querySelector(".c-switch__input");
     const select = row.querySelector(".web-settings-select");
     if (!item) return;
     if (input) {
@@ -391,7 +47,166 @@ function bindWebSettingsDialogEvents() {
         });
       });
     }
+    const textInput = row.querySelector(".web-settings-input");
+    if (textInput) {
+      textInput.addEventListener("change", () => {
+        setWebSettingValue(item, textInput.value)
+          .then(() => {
+            textInput.value = String(getWebSettingValue(item) ?? "");
+          })
+          .catch((err) => {
+            textInput.value = String(getWebSettingValue(item) ?? "");
+            if (typeof showAppToast === "function") {
+              showAppToast(err?.message || String(err), { tone: "error" });
+            }
+          });
+      });
+      textInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") textInput.blur();
+      });
+    }
   });
+
+  document.querySelectorAll("[data-web-setting-action]").forEach((row) => {
+    if (row.dataset.webSettingActionBound === "1") return;
+    row.dataset.webSettingActionBound = "1";
+    const button = row.querySelector(".web-settings-action");
+    if (!button) return;
+    if (row.dataset.webSettingAction === "toss_connection_test") {
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        button.dataset.busy = "1";
+        try {
+          await runTossConnectionTest();
+        } finally {
+          delete button.dataset.busy;
+          syncWebSettingsActionStates();
+        }
+      });
+    }
+  });
+
+  syncWebSettingsActionStates();
+}
+
+function syncWebSettingsActionStates() {
+  document.querySelectorAll("[data-web-setting-action]").forEach((row) => {
+    const item = WEB_SETTINGS_GROUPS.flatMap((group) => group.items).find((entry) => entry.id === row.dataset.webSettingAction);
+    if (!item || typeof item.enabledWhen !== "function") return;
+    const button = row.querySelector(".web-settings-action");
+    if (!button || button.dataset.busy === "1") return;
+    const enabled = Boolean(item.enabledWhen());
+    button.disabled = !enabled;
+    button.title = enabled ? "" : getUIText(item.disabledHintKey, item.defaultDisabledHint || "");
+  });
+}
+
+window.addEventListener("carrot:websettingschange", syncWebSettingsActionStates);
+
+/* ── Toss connection test popup ─────────────────────────── */
+const TOSS_TEST_STEPS = [
+  { id: "config", labelKey: "web_toss_test_step_config", defaultLabel: "Check settings" },
+  { id: "connect", labelKey: "web_toss_test_step_connect", defaultLabel: "Contact server" },
+  { id: "auth", labelKey: "web_toss_test_step_auth", defaultLabel: "Verify token & status" },
+];
+
+function closeTossTestPopup() {
+  document.getElementById("tossTestPop")?.remove();
+}
+
+function openTossTestPopup() {
+  closeTossTestPopup();
+  const title = getUIText("web_toss_test_title", "Toss server connection test");
+  const pop = document.createElement("div");
+  pop.id = "tossTestPop";
+  pop.className = "toss-test-pop";
+  pop.innerHTML = `
+    <div class="toss-test-pop__card" role="dialog" aria-live="polite" aria-label="${escapeHtml(title)}">
+      <div class="toss-test-pop__title">${escapeHtml(title)}</div>
+      <ul class="toss-test-pop__steps">
+        ${TOSS_TEST_STEPS.map((step) => `
+          <li class="toss-test-step" data-toss-step="${step.id}" data-state="pending">
+            <span class="toss-test-step__icon" aria-hidden="true"></span>
+            <span class="toss-test-step__label">${escapeHtml(getUIText(step.labelKey, step.defaultLabel))}</span>
+            <span class="toss-test-step__note"></span>
+          </li>`).join("")}
+      </ul>
+      <div class="toss-test-pop__result" hidden></div>
+      <button type="button" class="toss-test-pop__close">${escapeHtml(getUIText("web_toss_test_close", "Close"))}</button>
+    </div>`;
+  pop.querySelector(".toss-test-pop__close").addEventListener("click", closeTossTestPopup);
+  pop.addEventListener("click", (ev) => {
+    if (ev.target === pop && pop.classList.contains("is-done")) closeTossTestPopup();
+  });
+  document.body.appendChild(pop);
+  return pop;
+}
+
+function setTossTestStep(pop, stepId, state, note = "") {
+  const row = pop.querySelector(`[data-toss-step="${stepId}"]`);
+  if (!row) return;
+  row.dataset.state = state; // pending | running | ok | fail | skip
+  const icon = row.querySelector(".toss-test-step__icon");
+  if (icon) icon.textContent = state === "ok" ? "✓" : state === "fail" ? "✕" : state === "skip" ? "–" : "";
+  const noteEl = row.querySelector(".toss-test-step__note");
+  if (noteEl) noteEl.textContent = note;
+}
+
+function finishTossTest(pop, ok, message) {
+  const result = pop.querySelector(".toss-test-pop__result");
+  if (result) {
+    result.hidden = false;
+    result.textContent = message;
+    result.classList.toggle("is-ok", ok);
+    result.classList.toggle("is-fail", !ok);
+  }
+  pop.classList.add("is-done");
+}
+
+async function runTossConnectionTest() {
+  const pop = openTossTestPopup();
+
+  setTossTestStep(pop, "config", "running");
+  const url = String(getWebSettingByKey("toss_upload_url", "") || "").trim();
+  const token = String(getWebSettingByKey("toss_upload_token", "") || "").trim();
+  if (!url || !token) {
+    const reason = !url
+      ? getUIText("web_toss_test_no_url", "Toss server URL is not set")
+      : getUIText("web_toss_test_no_token", "Access token is not set");
+    setTossTestStep(pop, "config", "fail", reason);
+    setTossTestStep(pop, "connect", "skip");
+    setTossTestStep(pop, "auth", "skip");
+    finishTossTest(pop, false, getUIText("web_toss_connection_failed", "Toss server connection failed"));
+    return;
+  }
+  setTossTestStep(pop, "config", "ok", url.replace(/^https?:\/\//i, ""));
+
+  setTossTestStep(pop, "connect", "running");
+  try {
+    const payload = await postJson("/api/dashcam/upload/test", {});
+    if (!pop.isConnected) return;
+    const elapsed = Number(payload?.elapsed_ms);
+    const statusNote = `HTTP ${payload?.status ?? 200}${Number.isFinite(elapsed) ? ` · ${elapsed}ms` : ""}`;
+    setTossTestStep(pop, "connect", "ok");
+    setTossTestStep(pop, "auth", "ok", statusNote);
+    finishTossTest(pop, true, getUIText("web_toss_connection_ok", "Toss server connection OK"));
+  } catch (err) {
+    if (!pop.isConnected) return;
+    const remoteStatus = Number(err?.payload?.status);
+    if (Number.isFinite(remoteStatus) && remoteStatus > 0) {
+      // The toss server answered over HTTPS, so the connection itself is fine —
+      // the failure is the token or the server-side health state.
+      setTossTestStep(pop, "connect", "ok");
+      const authFailed = remoteStatus === 401 || remoteStatus === 403;
+      setTossTestStep(pop, "auth", "fail", authFailed
+        ? getUIText("web_toss_test_auth_failed", "Authentication failed — check the token")
+        : `HTTP ${remoteStatus}`);
+    } else {
+      setTossTestStep(pop, "connect", "fail", err?.message || String(err));
+      setTossTestStep(pop, "auth", "skip");
+    }
+    finishTossTest(pop, false, `${getUIText("web_toss_connection_failed", "Toss server connection failed")}: ${err?.message || err}`);
+  }
 }
 
 async function openWebSettingsDialog() {
@@ -413,55 +228,12 @@ async function openWebSettingsDialog() {
   return dialogPromise;
 }
 
-async function runWebAutoUpdateGitPull(status = {}) {
-  if (!getWebSettingByKey("auto_update_git_pull", false)) return;
-  if (webAutoUpdateInFlight) return;
-  if (document.hidden) return;
-  const behind = Math.max(0, Number(status.behind || 0));
-  if (behind <= 0) return;
-  if (Date.now() - webAutoUpdateLastAttempt < WEB_AUTO_UPDATE_COOLDOWN_MS) return;
-
-  webAutoUpdateInFlight = true;
-  webAutoUpdateLastAttempt = Date.now();
-  try {
-    if (typeof toolsLogNotice === "function") {
-      toolsLogNotice(getUIText("web_auto_update_running", "Auto update: running git pull."), { label: "auto update" });
-    }
-    if (typeof runTool === "function") {
-      await runTool("git_pull");
-    } else {
-      await postJson("/api/tools", { action: "git_pull" });
-    }
-    if (typeof refreshToolsMetaInfo === "function") await refreshToolsMetaInfo();
-    if (typeof refreshGitPullStatus === "function") await refreshGitPullStatus({ force: true, ttlMs: 0 });
-    if (typeof toolsLogNotice === "function") {
-      toolsLogNotice(getUIText("web_auto_update_done", "Auto update complete. Reboot was not requested."), { label: "auto update" });
-    }
-  } catch (err) {
-    if (typeof showAppToast === "function") {
-      showAppToast(getUIText("web_auto_update_failed", "Auto update failed"), { tone: "error" });
-    }
-    if (typeof toolsLogNotice === "function") {
-      toolsLogNotice(err?.message || String(err), { label: "auto update", meta: false });
-    }
-  } finally {
-    webAutoUpdateInFlight = false;
-  }
-}
-
 function handleWebAutoUpdateStatus(status = {}) {
   // Auto update now runs device-side in carrot_server (services/auto_update.py),
   // so it works without the web open and won't double-pull. Intentionally a
-  // no-op here; runWebAutoUpdateGitPull is kept for backward compatibility.
+  // no-op here; kept because tools.js still calls it on git-status updates.
   void status;
 }
 
-window.loadWebSettings = loadWebSettings;
-window.getWebSettingByKey = getWebSettingByKey;
-window.setWebSettingByKey = setWebSettingByKey;
-window.getWebStartPage = getWebStartPage;
-window.getWebStartPageSetting = getWebStartPageSetting;
-window.setWebStartPage = setWebStartPage;
-window.recordWebLastPage = recordWebLastPage;
 window.openWebSettingsDialog = openWebSettingsDialog;
 window.handleWebAutoUpdateStatus = handleWebAutoUpdateStatus;
