@@ -529,6 +529,7 @@ class HudRenderer(Widget):
 
   def _draw_infos(self, pos_x: int):
     FONT_SIZE = 18
+    LINE_HEIGHT = FONT_SIZE + 4
 
     cpu_text = self._get_cpu_temp_text()
 
@@ -546,19 +547,19 @@ class HudRenderer(Widget):
 
     try:
       accel_factor = float(ui_state.sm['liveTorqueParameters'].latAccelFactorFiltered)
-      af_text = f"{accel_factor:.2f}"
+      af_text = f"{accel_factor:.3f}"
     except Exception:
       af_text = "-.--"
 
     try:
       friction = float(ui_state.sm["liveTorqueParameters"].frictionCoefficientFiltered)
-      fr_text = f"{friction:.2f}"
+      fr_text = f"{friction:.3f}"
     except Exception:
       fr_text = "-.--"
 
-    info_text = f"{cpu_text} | {sr_text} | {ld_text} | {af_text} | {fr_text}"
-
-    draw_text_ui_style(info_text, pos_x, 0, FONT_SIZE, rl.Color(230, 230, 230, 255), font=self._font_display, border_width=2.0, shadow_offset = 0, align="right_top", y_offset=0.0)
+    info_lines = (cpu_text, ld_text, sr_text, af_text, fr_text)
+    for line_index, info_text in enumerate(info_lines):
+      draw_text_ui_style(info_text, pos_x, line_index * LINE_HEIGHT, FONT_SIZE, rl.Color(230, 230, 230, 255), font=self._font_display, border_width=2.0, shadow_offset=0, align="right_top", y_offset=0.0)
 
   def _get_gear_text(self) -> str:
     sm = ui_state.sm
