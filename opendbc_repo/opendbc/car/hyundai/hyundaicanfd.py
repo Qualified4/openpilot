@@ -1313,17 +1313,36 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             right_road_edge_clear = road_edge_is_clear(right_road_edge, 1)
             min_side_lead_speed = max(CS.out.vEgo * 0.2, 5.0)
 
-            # 좌, 중앙, 우 레이더 트랙의 모든 리드 결합 및 필터링
+            # modelProb is overwritten for the custom side/center radar lists,
+            # so match the radar track directly against the raw vision lead.
+            FF_VISION_PROB_MIN = 0.4
+            FF_VISION_DISTANCE_MIN_M = 5.0
+            FF_VISION_LATERAL_MAX_M = 2.0
+            FF_SIDE_ADVANTAGE_M = 3.0
+            vision_lead = md.leadsV3[0] if len(md.leadsV3) > 0 else None
+            vision_lead_valid = (vision_lead is not None and vision_lead.prob >= FF_VISION_PROB_MIN
+                                 and len(vision_lead.x) > 0 and len(vision_lead.y) > 0)
+            if vision_lead_valid:
+              vision_dRel = vision_lead.x[0] - 1.52  # model camera position -> radar position
+              vision_yRel = -vision_lead.y[0]
+
+            # Keep all lists for seamless lane-boundary transitions, while
+            # retaining whether a candidate came from the center list.
             valid_leads = (
-              l for l in itertools.chain(CS.radar_state.leadsLeft,
-                                        CS.radar_state.leadsRight,
-                                        CS.radar_state.leadsCenter)
+              (l, is_center) for l, is_center in itertools.chain(
+                ((l, False) for l in CS.radar_state.leadsLeft),
+                ((l, False) for l in CS.radar_state.leadsRight),
+                ((l, True) for l in CS.radar_state.leadsCenter),
+              )
               if l.radar and l.dRel > 1
             )
 
             ff_min_dist = lf_min_dist = rf_min_dist = float('inf')
+            ff_center_lead = ff_side_lead = None
+            ff_center_yRel = ff_side_yRel = 0
+            ff_center_score = ff_side_score = float('inf')
 
-            for lead in valid_leads:
+            for lead, is_center_lead in valid_leads:
               dRel = lead.dRel
               yRel = lead.yRel
 
@@ -1338,8 +1357,16 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 전방 차량
               if -1.5 <= corrected_yRel <= 1.5:
-                if dist_score < ff_min_dist and dist_score > 0.5:
-                  ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [60, 90], [1.0, 0.6])
+                vision_distance_limit = max(FF_VISION_DISTANCE_MIN_M, vision_dRel * 0.25) if vision_lead_valid else 0
+                vision_matched = (vision_lead_valid
+                                  and abs(dRel - vision_dRel) <= vision_distance_limit
+                                  and abs(yRel - vision_yRel) <= FF_VISION_LATERAL_MAX_M)
+                if vision_matched and dist_score > 0.5:
+                  ff_y_rel = corrected_yRel * np.interp(dRel, [60, 90], [1.0, 0.6])
+                  if is_center_lead and dist_score < ff_center_score:
+                    ff_center_score, ff_center_lead, ff_center_yRel = dist_score, lead, ff_y_rel
+                  elif not is_center_lead and dist_score < ff_side_score:
+                    ff_side_score, ff_side_lead, ff_side_yRel = dist_score, lead, ff_y_rel
 
               # 왼쪽 차선 차량
               elif lane_bound < corrected_yRel < 4.5 and dRel < 90:
@@ -1362,6 +1389,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     right_edge_y = road_edge_y(right_road_edge, dRel)
                     if corrected_yRel > right_edge_y + curve_offset_y + ROAD_EDGE_INNER_CLEARANCE_M:
                       rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
+
+            # Prefer a center-list match, unless a side-list match is clearly
+            # closer. This preserves FF continuity as a track changes lists.
+            if ff_center_lead and (not ff_side_lead or ff_center_score <= ff_side_score + FF_SIDE_ADVANTAGE_M):
+              ff_lead, ff_yRel = ff_center_lead, ff_center_yRel
+            elif ff_side_lead:
+              ff_lead, ff_yRel = ff_side_lead, ff_side_yRel
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
