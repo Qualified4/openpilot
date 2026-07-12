@@ -59,6 +59,7 @@ class RouteOverlay:
     video_frame_id: str | None = None
     video_status: str | None = None
     panel_visible: bool = True
+    cutin_status: str | None = None
     data_lines: tuple[str, ...] = ()
 
 
@@ -132,6 +133,7 @@ class DetectedVehicle:
     ttc_s: float | None = None
     x_std_m: float | None = None
     y_std_m: float | None = None
+    radar_track_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
