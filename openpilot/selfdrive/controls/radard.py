@@ -867,10 +867,27 @@ class RadarD:
       self.lead_one_front_radar_vision_match = True
     return lead_dict, radar
 
-  def _is_cutin_enter_candidate(self, t: Track) -> bool:
+  def _cutin_is_closer_or_matches_lead_one(self, t: Track, matched_front: bool = False) -> bool:
+    if self._track_is_closer_than_lead_one(t):
+      return True
+    if not matched_front:
+      return False
+
+    lead_one = self.radar_state.leadOne
+    if not lead_one.status or not lead_one.radar:
+      return False
+    if int(lead_one.radarTrackId) >= CORNER_235_TRACK_ID_START:
+      return False
+
+    return (
+      abs(t.dRel - float(lead_one.dRel)) < CORNER_FRONT_MATCH_DREL and
+      abs(t.vRel - float(lead_one.vRel)) < CORNER_FRONT_MATCH_VREL
+    )
+
+  def _is_cutin_enter_candidate(self, t: Track, matched_front: bool = False) -> bool:
     if not self.detect_cut_in or not self.lane_line_available or not self._is_corner_track(t):
       return False
-    if not self._track_is_closer_than_lead_one(t):
+    if not self._cutin_is_closer_or_matches_lead_one(t, matched_front):
       return False
     if t.cnt < self.cutin_min_track_age:
       return False
@@ -886,10 +903,10 @@ class RadarD:
       return False
     return True
 
-  def _is_cutin_keep_candidate(self, t: Track) -> bool:
+  def _is_cutin_keep_candidate(self, t: Track, matched_front: bool = False) -> bool:
     if not self.detect_cut_in or not self.lane_line_available or not self._is_corner_track(t):
       return False
-    if not self._track_is_closer_than_lead_one(t):
+    if not self._cutin_is_closer_or_matches_lead_one(t, matched_front):
       return False
     if not (2.5 < t.dRel < 55.0 and t.vLead > 2.0):
       return False
@@ -903,10 +920,10 @@ class RadarD:
       abs(t.dPath_future) < CUTIN_KEEP_MAX_DPATH_FUTURE
     )
 
-  def _update_cutin_sticky(self, t: Track) -> bool:
-    if self._is_cutin_enter_candidate(t):
+  def _update_cutin_sticky(self, t: Track, matched_front: bool = False) -> bool:
+    if self._is_cutin_enter_candidate(t, matched_front):
       t.cut_in_count = min(t.cut_in_count + 1, CUTIN_STICKY_FRAMES)
-    elif t.cut_in_count > 0 and self._is_cutin_keep_candidate(t):
+    elif t.cut_in_count > 0 and self._is_cutin_keep_candidate(t, matched_front):
       t.cut_in_count = max(t.cut_in_count - 1, 0)
     else:
       t.cut_in_count = 0
@@ -927,6 +944,12 @@ class RadarD:
     if not lead_one.status:
       return True
     return t.dRel + CUTIN_PROMOTE_DREL_MARGIN < lead_one.dRel
+
+  def _lead_is_closer_than_lead_one(self, lead: dict[str, Any]) -> bool:
+    lead_one = self.radar_state.leadOne
+    if not lead_one.status:
+      return True
+    return lead["dRel"] + CUTIN_PROMOTE_DREL_MARGIN < lead_one.dRel
 
   def _corner_stopped_can_replace_lead_one(self, stopped: dict[str, Any]) -> bool:
     lead_one = self.radar_state.leadOne
@@ -1034,7 +1057,7 @@ class RadarD:
         continue
       elif y_rel_neg < 0: #left_lane_y:
         ld = self._corner_lead_from_track(c, 0, 0) if is_corner else c.get_RadarState(0, 0)
-        if self._update_cutin_sticky(c):
+        if self._update_cutin_sticky(c, matching_front is not None):
           ld['modelProb'] = 0.03
           cutin_list.append(ld)
         if is_corner:
@@ -1043,7 +1066,7 @@ class RadarD:
           front_left_list.append(ld)
       else:
         ld = self._corner_lead_from_track(c, 0, 0) if is_corner else c.get_RadarState(0, 0)
-        if self._update_cutin_sticky(c):
+        if self._update_cutin_sticky(c, matching_front is not None):
           ld['modelProb'] = 0.03
           cutin_list.append(ld)
         if is_corner:
@@ -1123,13 +1146,9 @@ class RadarD:
     chosen = None
     detected = self.radar_detected
 
-    if self.cornerLeadStopped and self.cornerLeadStopped.get("status"):
-      if self._corner_stopped_can_replace_lead_one(self.cornerLeadStopped):
-        chosen = self.cornerLeadStopped
-        chosen["modelProb"] = 0.04
-        detected = True
-
-    elif self.leadCenter and self.leadCenter["status"] and is_radar_center_promotion_safe(self.leadCenter):
+    if (self.leadCenter and self.leadCenter["status"] and
+        not self._lead_is_corner_track(self.leadCenter) and
+        is_radar_center_promotion_safe(self.leadCenter)):
       lead_one = self.radar_state.leadOne
       vision_prob = lead_one.modelProb if lead_one.status else 0.0
 
