@@ -1292,6 +1292,27 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             lane_bound = np.interp(abs(current_curvature), [0, 15], [1.5, 2.5])
 
+            # roadEdges[0]/[1] are the left/right road boundaries in the
+            # model's vehicle coordinate frame.
+            left_road_edge = md.roadEdges[0] if len(md.roadEdges) > 0 else None
+            right_road_edge = md.roadEdges[1] if len(md.roadEdges) > 1 else None
+            ROAD_EDGE_STD_MAX = 0.5
+            ROAD_EDGE_INNER_CLEARANCE_M = 1.25  # half a vehicle width (1.0 m) + 0.25 m margin
+
+            def road_edge_y(edge, distance):
+              if edge is None or len(edge.x) == 0 or len(edge.y) == 0:
+                return None
+              return np.interp(distance, edge.x, edge.y)
+
+            def road_edge_is_clear(edge, index):
+              return (edge is not None and len(edge.x) > 0 and len(edge.y) > 0
+                      and len(md.roadEdgeStds) > index and math.isfinite(md.roadEdgeStds[index])
+                      and md.roadEdgeStds[index] <= ROAD_EDGE_STD_MAX)
+
+            left_road_edge_clear = road_edge_is_clear(left_road_edge, 0)
+            right_road_edge_clear = road_edge_is_clear(right_road_edge, 1)
+            min_side_lead_speed = max(CS.out.vEgo * 0.2, 5.0)
+
             # 좌, 중앙, 우 레이더 트랙의 모든 리드 결합 및 필터링
             valid_leads = (
               l for l in itertools.chain(CS.radar_state.leadsLeft,
@@ -1299,8 +1320,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                                         CS.radar_state.leadsCenter)
               if l.radar and l.dRel > 1
             )
-
-            lead_visible = hud_control.leadVisible
 
             ff_min_dist = lf_min_dist = rf_min_dist = float('inf')
 
@@ -1319,18 +1338,30 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 전방 차량
               if -1.5 <= corrected_yRel <= 1.5:
-                if lead_visible and dist_score < ff_min_dist and dist_score > 0.5:
+                if dist_score < ff_min_dist and dist_score > 0.5:
                   ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [60, 90], [1.0, 0.6])
 
               # 왼쪽 차선 차량
               elif lane_bound < corrected_yRel < 4.5 and dRel < 90:
-                if dist_score < lf_min_dist and lead.vLeadK > 5:
-                  lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
+                if dist_score < lf_min_dist:
+                  if lead.vLeadK >= min_side_lead_speed:
+                    lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
+                  elif left_road_edge_clear:
+                    # Compare only selected candidates, using the vehicle center plus its half-width margin.
+                    left_edge_y = road_edge_y(left_road_edge, dRel)
+                    if corrected_yRel < left_edge_y + curve_offset_y - ROAD_EDGE_INNER_CLEARANCE_M:
+                      lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
               # 오른쪽 차선 차량
               elif -4.5 < corrected_yRel < -lane_bound and dRel < 90:
-                if dist_score < rf_min_dist and lead.vLeadK > 5:
-                  rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
+                if dist_score < rf_min_dist:
+                  if lead.vLeadK >= min_side_lead_speed:
+                    rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
+                  elif right_road_edge_clear:
+                    # Compare only selected candidates, using the vehicle center plus its half-width margin.
+                    right_edge_y = road_edge_y(right_road_edge, dRel)
+                    if corrected_yRel > right_edge_y + curve_offset_y + ROAD_EDGE_INNER_CLEARANCE_M:
+                      rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
