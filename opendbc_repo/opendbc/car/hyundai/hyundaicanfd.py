@@ -1297,7 +1297,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             left_road_edge = md.roadEdges[0] if len(md.roadEdges) > 0 else None
             right_road_edge = md.roadEdges[1] if len(md.roadEdges) > 1 else None
             ROAD_EDGE_STD_MAX = 0.5
-            ROAD_EDGE_INNER_CLEARANCE_M = 1.25  # half a vehicle width (1.0 m) + 0.25 m margin
+            ROAD_EDGE_INNER_CLEARANCE_M = 0.85  # half a vehicle width (1.0 m) + 0.25 m margin
 
             def road_edge_y(edge, distance):
               if edge is None or len(edge.x) == 0 or len(edge.y) == 0:
