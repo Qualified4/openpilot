@@ -352,7 +352,7 @@ class HudRenderer(Widget):
         valid_temps = [float(t) for t in cpu_temps]
         if len(valid_temps) > 0:
           cpu_temp = sum(valid_temps) / float(len(valid_temps))
-          return f"{cpu_temp:.0f}"
+          return f"{cpu_temp:.1f}"
     except Exception:
       pass
 
@@ -535,7 +535,7 @@ class HudRenderer(Widget):
 
     try:
       steer_ratio = float(ui_state.sm['liveParameters'].steerRatio)
-      sr_text = f"{steer_ratio:.1f}"
+      sr_text = f"{steer_ratio:.2f}"
     except Exception:
       sr_text = "--.-"
 
@@ -559,7 +559,7 @@ class HudRenderer(Widget):
 
     info_lines = (cpu_text, ld_text, sr_text, af_text, fr_text)
     for line_index, info_text in enumerate(info_lines):
-      draw_text_ui_style(info_text, pos_x, line_index * LINE_HEIGHT, FONT_SIZE, rl.Color(230, 230, 230, 255), font=self._font_display, border_width=2.0, shadow_offset=0, align="right_top", y_offset=0.0)
+      draw_text_ui_style(info_text, pos_x, LINE_HEIGHT * 2 + line_index * LINE_HEIGHT, FONT_SIZE, rl.Color(230, 230, 230, 255), font=self._font_display, border_width=2.0, shadow_offset=0, align="right_top", y_offset=0.0)
 
   def _get_gear_text(self) -> str:
     sm = ui_state.sm
