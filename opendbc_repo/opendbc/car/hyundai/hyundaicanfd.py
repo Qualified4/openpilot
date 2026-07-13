@@ -1297,7 +1297,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             left_road_edge = md.roadEdges[0] if len(md.roadEdges) > 0 else None
             right_road_edge = md.roadEdges[1] if len(md.roadEdges) > 1 else None
             ROAD_EDGE_STD_MAX = 0.5
-            ROAD_EDGE_INNER_CLEARANCE_M = 0.85  # half a vehicle width (1.0 m) + 0.25 m margin
+            ROAD_EDGE_INNER_CLEARANCE_M = 0.55  # half a vehicle width (1.0 m) + 0.25 m margin
 
             def road_edge_y(edge, distance):
               if edge is None or len(edge.x) == 0 or len(edge.y) == 0:
@@ -1373,7 +1373,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 if dist_score < lf_min_dist:
                   if lead.vLeadK >= min_side_lead_speed:
                     lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
-                  elif left_road_edge_clear:
+                  elif left_road_edge_clear and lead.vLeadK >= 0:
                     # Compare only selected candidates, using the vehicle center plus its half-width margin.
                     left_edge_y = road_edge_y(left_road_edge, dRel)
                     if corrected_yRel < left_edge_y + curve_offset_y - ROAD_EDGE_INNER_CLEARANCE_M:
@@ -1384,7 +1384,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 if dist_score < rf_min_dist:
                   if lead.vLeadK >= min_side_lead_speed:
                     rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
-                  elif right_road_edge_clear:
+                  elif right_road_edge_clear and lead.vLeadK >= 0:
                     # Compare only selected candidates, using the vehicle center plus its half-width margin.
                     right_edge_y = road_edge_y(right_road_edge, dRel)
                     if corrected_yRel > right_edge_y + curve_offset_y + ROAD_EDGE_INNER_CLEARANCE_M:
