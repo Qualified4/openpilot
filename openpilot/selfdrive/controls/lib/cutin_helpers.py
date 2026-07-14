@@ -14,6 +14,7 @@ CUTIN_ASSOC_MAX_YREL = 0.75
 CUTIN_ASSOC_MAX_VREL = 2.5
 CORNER_TRACK_ID_RANGES = ((200, 220), (240, 250))
 CORNER_RADAR_SOURCES = ("corner235", "corner180")
+STABLE_CORNER_TRACK_ID_START = 1000
 CUTIN_FAST_CONFIRM_MAX_DREL = 10.0
 CUTIN_FAST_CONFIRM_MIN_INWARD_SPEED = 0.65
 CUTIN_URGENT_CONFIRM_MIN_INWARD_SPEED = 0.55
@@ -29,12 +30,16 @@ CUTIN_PROJECTED_BOOST_MIN_TEMPORAL_INWARD_SPEED = 0.3
 FRONT_CUTIN_MIN_DREL_M = 5.0
 FRONT_CUTIN_MAX_DREL_M = 50.0
 FRONT_CUTIN_MAX_ABS_YREL_M = 7.0
-FRONT_CUTIN_MAX_FRAME_Y_JUMP_M = 0.60
+CUTIN_MAX_FRAME_Y_JUMP_M = 0.60
 FRONT_CUTIN_MIN_CONFIRM_S = 0.30
 
 
 def is_corner_track_id(track_id: int) -> bool:
   return any(start <= track_id < end for start, end in CORNER_TRACK_ID_RANGES)
+
+
+def is_stable_corner_track_id(track_id: int) -> bool:
+  return track_id >= STABLE_CORNER_TRACK_ID_START
 
 
 def is_corner_radar_source(source: Any) -> bool:
@@ -53,6 +58,15 @@ def is_front_radar_cutin_candidate(track_id: int, radar_source: str, d_rel: floa
     track_id != 0 and
     FRONT_CUTIN_MIN_DREL_M <= d_rel <= FRONT_CUTIN_MAX_DREL_M and
     abs(y_rel) <= FRONT_CUTIN_MAX_ABS_YREL_M
+  )
+
+
+def is_cutin_track_discontinuous(prev_measured: bool, prev_d_rel: float, prev_y_rel: float, prev_v_lead: float,
+                                 d_rel: float, y_rel: float, v_lead: float) -> bool:
+  return prev_measured and (
+    abs(d_rel - prev_d_rel) > 5.0 or
+    abs(y_rel - prev_y_rel) > CUTIN_MAX_FRAME_Y_JUMP_M or
+    abs(v_lead - prev_v_lead) > 7.0
   )
 
 
@@ -158,6 +172,10 @@ def associate_cutin_tracks(
   candidates: list[tuple[float, int, int]] = []
   for current_id, (d_rel, y_rel, v_rel) in current.items():
     for previous_id, (prev_d_rel, prev_y_rel, prev_v_rel) in previous.items():
+      # Stable corner IDs describe the physical radar object, not its CAN slot.
+      # Never carry cut-in history between two different physical objects.
+      if current_id != previous_id and (is_stable_corner_track_id(current_id) or is_stable_corner_track_id(previous_id)):
+        continue
       d_delta = abs(d_rel - prev_d_rel)
       y_delta = abs(y_rel - prev_y_rel)
       v_delta = abs(v_rel - prev_v_rel)

@@ -1,4 +1,6 @@
 from openpilot.selfdrive.controls.lib.cutin_helpers import (
+  associate_cutin_tracks,
+  is_cutin_track_discontinuous,
   is_fast_cutin_entry,
   is_front_radar_cutin_candidate,
   is_front_radar_cutin_enabled,
@@ -6,6 +8,26 @@ from openpilot.selfdrive.controls.lib.cutin_helpers import (
 
 
 class TestFrontRadarCutin:
+  def test_corner_track_lateral_jump_resets_cutin_history(self):
+    assert is_cutin_track_discontinuous(
+      True,
+      prev_d_rel=18.75,
+      prev_y_rel=10.70,
+      prev_v_lead=5.0,
+      d_rel=17.80,
+      y_rel=9.80,
+      v_lead=5.0,
+    )
+    assert not is_cutin_track_discontinuous(
+      True,
+      prev_d_rel=18.75,
+      prev_y_rel=10.70,
+      prev_v_lead=5.0,
+      d_rel=18.50,
+      y_rel=10.50,
+      v_lead=5.0,
+    )
+
   def test_enable_condition(self):
     assert is_front_radar_cutin_enabled(3, 0, "hyundai")
     assert is_front_radar_cutin_enabled(3, 1, "hyundai")
@@ -26,3 +48,10 @@ class TestFrontRadarCutin:
     args = (6.2, 20.0, 2.84, 1.59, 0.72, 0.45)
     assert is_fast_cutin_entry(*args, v_rel=3.0)
     assert not is_fast_cutin_entry(*args, v_rel=3.01)
+
+  def test_stable_corner_ids_do_not_inherit_another_objects_history(self):
+    old_object = {1000: (3.6, -4.65, -4.05)}
+    new_object = {1001: (4.0, -4.30, -4.95)}
+
+    assert associate_cutin_tracks(old_object, new_object) == {}
+    assert associate_cutin_tracks(old_object, {1000: (3.5, -4.60, -4.10)}) == {1000: 1000}
