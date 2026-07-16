@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+from collections import deque
+from collections.abc import Callable
+from contextlib import suppress
 import copy
 import errno
+import ipaddress
 import json
 import secrets
+import socket
 import struct
 import threading
 import time
@@ -17,6 +23,8 @@ from aiohttp import WSMsgType, web
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 7714
+DISCOVERY_PORT = 7705
+DISCOVERY_INTERVAL_S = 1.0
 PROTOCOL_VERSION = 2
 MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 CONTROL_WEBSOCKET_HEARTBEAT_S = 5.0
@@ -24,6 +32,7 @@ STREAM_WEBSOCKET_HEARTBEAT_S = 10.0
 BIND_RETRY_COUNT = 10
 BIND_RETRY_INTERVAL_S = 0.5
 MAP_THEMES = frozenset(("auto", "dark", "light"))
+MAP_TYPES = frozenset(("normal", "satellite"))
 BINARY_HEADER = struct.Struct(">4sBBBBIIQQIHH")
 
 JSON_NAMES = (
@@ -57,6 +66,98 @@ CLEAR_REASONS = {
   4: "passed",
   5: "invalid",
 }
+
+
+def detect_advertise_ip(bind_host: str) -> str:
+  if bind_host not in ("", "0.0.0.0", "::"):
+    return bind_host
+  probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  try:
+    probe.connect(("8.8.8.8", 80))
+    return str(probe.getsockname()[0])
+  except OSError:
+    try:
+      return socket.gethostbyname(socket.gethostname())
+    except OSError:
+      return "127.0.0.1"
+  finally:
+    probe.close()
+
+
+def _interface_ipv4_addresses() -> tuple[tuple[str, str | None, str | None], ...]:
+  try:
+    import psutil
+  except ImportError:
+    return ()
+  addresses = []
+  for interface_addresses in psutil.net_if_addrs().values():
+    for address in interface_addresses:
+      if address.family != socket.AF_INET or address.address.startswith("127."):
+        continue
+      addresses.append((address.address, address.netmask, address.broadcast))
+  return tuple(addresses)
+
+
+def discovery_targets(advertise_ip: str | None = None) -> tuple[tuple[str, str], ...]:
+  interfaces = _interface_ipv4_addresses()
+  targets = []
+  for address, netmask, broadcast in interfaces:
+    if advertise_ip is not None and address != advertise_ip:
+      continue
+    if not broadcast and netmask:
+      try:
+        broadcast = str(ipaddress.ip_network(f"{address}/{netmask}", strict=False).broadcast_address)
+      except ValueError:
+        broadcast = None
+    targets.append((address, broadcast or "255.255.255.255"))
+
+  if not targets:
+    address = advertise_ip or detect_advertise_ip(DEFAULT_HOST)
+    if not address.startswith("127."):
+      targets.append((address, "255.255.255.255"))
+  return tuple(dict.fromkeys(targets))
+
+
+class CarrotNaviDiscoveryBeacon:
+  def __init__(self, advertise_ip: str | None = None, interval_s: float = DISCOVERY_INTERVAL_S) -> None:
+    self.advertise_ip = advertise_ip
+    self.interval_s = max(0.2, float(interval_s))
+    self._stop = threading.Event()
+    self._thread: threading.Thread | None = None
+
+  def start(self) -> None:
+    if self._thread is not None:
+      return
+    self._stop.clear()
+    self._thread = threading.Thread(target=self._run, name="carrot_navi_discovery", daemon=True)
+    self._thread.start()
+
+  def stop(self) -> None:
+    self._stop.set()
+    if self._thread is not None:
+      self._thread.join(timeout=1.0)
+    self._thread = None
+
+  def broadcast_once(self) -> None:
+    for source_ip, broadcast_ip in discovery_targets(self.advertise_ip):
+      body = json.dumps({"ip": source_ip, "navi_debug": 1}).encode("utf-8")
+      sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+      try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.bind((source_ip, 0))
+        sock.sendto(body, (broadcast_ip, DISCOVERY_PORT))
+      except OSError:
+        continue
+      finally:
+        sock.close()
+
+  def _run(self) -> None:
+    while not self._stop.is_set():
+      try:
+        self.broadcast_once()
+      except OSError:
+        pass
+      self._stop.wait(self.interval_s)
 
 
 def now_ms() -> int:
@@ -132,6 +233,7 @@ def _stream_params(
   kind: str,
   name: str,
   map_theme: str = "auto",
+  map_type: str = "normal",
 ) -> dict[str, Any]:
   if kind == "json":
     return {
@@ -160,6 +262,7 @@ def _stream_params(
     "h264_keyframe_interval_sec": 2,
     "camera_mode": "app_sync",
     "map_theme": map_theme,
+    "map_type": map_type,
     "zoom": 11.0,
     "tilt": 50.0,
     "bearing": 0.0,
@@ -177,10 +280,14 @@ def build_manifest(
   session_id: str,
   revision: int = 1,
   map_theme: str = "auto",
+  map_type: str = "normal",
 ) -> dict[str, Any]:
   normalized_map_theme = str(map_theme).strip().lower()
   if normalized_map_theme not in MAP_THEMES:
     raise ValueError(f"unsupported map theme: {map_theme}")
+  normalized_map_type = str(map_type).strip().lower()
+  if normalized_map_type not in MAP_TYPES:
+    raise ValueError(f"unsupported map type: {map_type}")
   streams = []
   for handle, (kind, name) in enumerate(CATALOG, start=1):
     streams.append({
@@ -189,7 +296,7 @@ def build_manifest(
       "schema_version": 1,
       "stream_handle": handle,
       "enabled": True,
-      "params": _stream_params(kind, name, normalized_map_theme),
+      "params": _stream_params(kind, name, normalized_map_theme, normalized_map_type),
     })
   return {
     "type": "subscription_manifest",
@@ -257,12 +364,16 @@ class CarrotNaviReceiver:
     self,
     port: int = DEFAULT_PORT,
     map_theme: str = "auto",
+    map_type: str = "normal",
   ) -> None:
     self._lock = threading.RLock()
     self._port = port
     self._map_theme = str(map_theme).strip().lower()
     if self._map_theme not in MAP_THEMES:
       raise ValueError(f"unsupported map theme: {map_theme}")
+    self._map_type = str(map_type).strip().lower()
+    if self._map_type not in MAP_TYPES:
+      raise ValueError(f"unsupported map type: {map_type}")
     self._session_id: str | None = None
     self._app_version = ""
     self._manifest: dict[str, Any] | None = None
@@ -278,10 +389,12 @@ class CarrotNaviReceiver:
     self._control_events: list[dict[str, Any]] = []
     self._state_generation = 0
     self._media_generation = 0
+    self._media_updates: deque[ItemRecord] = deque(maxlen=256)
     self._state_changed = threading.Event()
     self._cereal_publish_count = 0
     self._last_cereal_publish_mono_ns = 0
     self._cereal_error: str | None = None
+    self._navigation_log_values: dict[str, str] = {}
 
   def negotiate(self, requirements: dict[str, Any], app_version: str) -> dict[str, Any]:
     if requirements.get("type") != "requirements_query" \
@@ -301,11 +414,12 @@ class CarrotNaviReceiver:
       raise ValueError("app v2 catalog does not match receiver catalog")
 
     session_id = secrets.token_hex(8)
-    manifest = build_manifest(
-      session_id,
-      map_theme=self._map_theme,
-    )
     with self._lock:
+      manifest = build_manifest(
+        session_id,
+        map_theme=self._map_theme,
+        map_type=self._map_type,
+      )
       self._session_id = session_id
       self._app_version = app_version
       self._manifest = manifest
@@ -315,11 +429,28 @@ class CarrotNaviReceiver:
       }
       self._records.clear()
       self._binary_configs.clear()
+      self._media_updates.clear()
       self._session_received_count = 0
       self._control_events.clear()
+      self._navigation_log_values.clear()
       self._last_error = None
       self._mark_state_changed_locked()
     return copy.deepcopy(manifest)
+
+  def set_map_appearance(self, map_theme: str, map_type: str) -> bool:
+    normalized_map_theme = str(map_theme).strip().lower()
+    normalized_map_type = str(map_type).strip().lower()
+    if normalized_map_theme not in MAP_THEMES:
+      raise ValueError(f"unsupported map theme: {map_theme}")
+    if normalized_map_type not in MAP_TYPES:
+      raise ValueError(f"unsupported map type: {map_type}")
+    with self._lock:
+      if normalized_map_theme == self._map_theme and normalized_map_type == self._map_type:
+        return False
+      self._map_theme = normalized_map_theme
+      self._map_type = normalized_map_type
+      self._mark_state_changed_locked()
+      return True
 
   def control_connected(self) -> None:
     with self._lock:
@@ -363,6 +494,7 @@ class CarrotNaviReceiver:
 
       key = f"json:{name}"
       self._validate_sequence_locked(key, sequence)
+      value = copy.deepcopy(envelope.get("value")) if present else None
       self._records[key] = ItemRecord(
         kind="json",
         name=name,
@@ -372,7 +504,7 @@ class CarrotNaviReceiver:
         sequence=sequence,
         source_timestamp_ms=source_timestamp_ms,
         present=present,
-        value=copy.deepcopy(envelope.get("value")) if present else None,
+        value=value,
         payload=None,
         message_type=None,
         format_or_reason=None,
@@ -386,6 +518,34 @@ class CarrotNaviReceiver:
       )
       self._mark_received_locked(peer)
       self._mark_state_changed_locked()
+      self._log_navigation_update_locked(name, sequence, present, value, envelope.get("reason"))
+
+  def _log_navigation_update_locked(
+    self,
+    name: str,
+    sequence: int,
+    present: bool,
+    value: Any,
+    reason: Any,
+  ) -> None:
+    labels = {
+      "guidance_current": "TBT current",
+      "guidance_next": "TBT next",
+      "speed": "SDI",
+    }
+    label = labels.get(name)
+    if label is None:
+      return
+    content: Any = value if present else {"present": False, "reason": str(reason or "source_absent")}
+    try:
+      text = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+      text = repr(content)
+    text = text[:1500]
+    if self._navigation_log_values.get(name) == text:
+      return
+    self._navigation_log_values[name] = text
+    print(f"[carrot_navi][{label}] seq={sequence} {text}", flush=True)
 
   def record_binary(self, session_id: str, kind: str, name: str,
                     metadata: dict[str, int], payload: bytes, peer: str) -> None:
@@ -430,7 +590,9 @@ class CarrotNaviReceiver:
       if kind == "render" and message_type == 2:
         self._binary_configs[key] = record
       self._media_generation += 1
+      self._media_updates.append(record)
       self._mark_received_locked(peer)
+      self._state_changed.set()
 
   def fail(self, message: str, peer: str = "-") -> None:
     with self._lock:
@@ -449,6 +611,8 @@ class CarrotNaviReceiver:
         "service": "carrot_navi_receiver",
         "port": self._port,
         "protocol_version": PROTOCOL_VERSION,
+        "map_theme": self._map_theme,
+        "map_type": self._map_type,
         "control_connected": self._control_connections > 0,
         "control_connections": self._control_connections,
         "session_id": self._session_id,
@@ -495,6 +659,12 @@ class CarrotNaviReceiver:
     changed = self._state_changed.wait(max(0.0, timeout))
     self._state_changed.clear()
     return changed
+
+  def drain_media_updates(self) -> list[ItemRecord]:
+    with self._lock:
+      updates = list(self._media_updates)
+      self._media_updates.clear()
+      return updates
 
   def record_cereal_publish(self, error: str | None = None) -> None:
     with self._lock:
@@ -594,6 +764,67 @@ class CarrotNaviReceiver:
 
 
 RECEIVER_KEY = web.AppKey("carrot_navi_receiver", CarrotNaviReceiver)
+WEBSOCKETS_KEY = web.AppKey("carrot_navi_websockets", set)
+APPEARANCE_READER_KEY = web.AppKey("carrot_navi_appearance_reader", Callable)
+
+
+class ClusterNaviAppearanceParamReader:
+  THEMES = {0: "auto", 1: "dark", 2: "light"}
+  TYPES = {0: "normal", 1: "satellite"}
+
+  def __init__(self, params: Any | None = None) -> None:
+    if params is None:
+      from openpilot.common.params import Params
+
+      params = Params()
+    self.params = params
+
+  def read(self) -> tuple[str, str]:
+    try:
+      theme_value = int(self.params.get_int("ClusterNaviMapTheme"))
+    except Exception:
+      theme_value = 1
+    try:
+      type_value = int(self.params.get_int("ClusterNaviMapType"))
+    except Exception:
+      type_value = 0
+    return self.THEMES.get(theme_value, "dark"), self.TYPES.get(type_value, "normal")
+
+  def __call__(self) -> tuple[str, str]:
+    return self.read()
+
+
+def _track_websocket(request: web.Request, ws: web.WebSocketResponse) -> None:
+  request.app[WEBSOCKETS_KEY].add(ws)
+
+
+def _untrack_websocket(request: web.Request, ws: web.WebSocketResponse) -> None:
+  request.app[WEBSOCKETS_KEY].discard(ws)
+
+
+async def _watch_map_appearance(app: web.Application) -> None:
+  receiver = app[RECEIVER_KEY]
+  reader = app[APPEARANCE_READER_KEY]
+  while True:
+    map_theme, map_type = reader()
+    if receiver.set_map_appearance(map_theme, map_type):
+      sockets = tuple(app[WEBSOCKETS_KEY])
+      if sockets:
+        await asyncio.gather(*(
+          ws.close(code=1012, message=b"map appearance changed")
+          for ws in sockets
+        ), return_exceptions=True)
+    await asyncio.sleep(1.0)
+
+
+async def _map_appearance_context(app: web.Application):
+  task = asyncio.create_task(_watch_map_appearance(app))
+  try:
+    yield
+  finally:
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+      await task
 
 
 def _peer(request: web.Request) -> str:
@@ -614,6 +845,25 @@ def _protocol_error(code: str, message: str, kind: str | None = None,
   if name is not None:
     result["name"] = name
   return result
+
+
+async def _safe_send_json(ws: web.WebSocketResponse, payload: dict[str, Any]) -> bool:
+  if ws.closed:
+    return False
+  try:
+    await ws.send_json(payload)
+    return True
+  except (ConnectionError, RuntimeError):
+    return False
+
+
+async def _safe_close_websocket(ws: web.WebSocketResponse, code: int, message: bytes) -> None:
+  if ws.closed:
+    return
+  try:
+    await ws.close(code=code, message=message)
+  except (ConnectionError, RuntimeError):
+    pass
 
 
 async def index(request: web.Request) -> web.Response:
@@ -648,26 +898,34 @@ async def ws_control(request: web.Request) -> web.WebSocketResponse:
     compress=False,
   )
   await ws.prepare(request)
+  _track_websocket(request, ws)
   receiver.control_connected()
+  print(f"[carrot_navi][WS] control connected peer={peer} app={app_version}", flush=True)
   try:
     async for message in ws:
       if message.type != WSMsgType.TEXT:
         error = "v2 control accepts JSON text only"
         receiver.fail(error, peer)
-        await ws.send_json(_protocol_error("invalid_control_message", error))
+        if not await _safe_send_json(ws, _protocol_error("invalid_control_message", error)):
+          break
         continue
       try:
         payload = parse_json_object(message.data)
         if payload.get("type") == "requirements_query":
           manifest = receiver.negotiate(payload, app_version)
-          await ws.send_json(manifest)
+          if not await _safe_send_json(ws, manifest):
+            break
         else:
           receiver.record_control(payload, peer)
       except (TypeError, ValueError) as exc:
         receiver.fail(str(exc), peer)
-        await ws.send_json(_protocol_error("invalid_control_message", str(exc)))
+        print(f"[carrot_navi][WS] control rejected peer={peer}: {exc}", flush=True)
+        if not await _safe_send_json(ws, _protocol_error("invalid_control_message", str(exc))):
+          break
   finally:
     receiver.control_disconnected()
+    _untrack_websocket(request, ws)
+    print(f"[carrot_navi][WS] control disconnected peer={peer} app={app_version}", flush=True)
   return ws
 
 
@@ -682,6 +940,7 @@ async def ws_json(request: web.Request) -> web.WebSocketResponse:
     compress=False,
   )
   await ws.prepare(request)
+  _track_websocket(request, ws)
   try:
     receiver.stream_config(session_id, "json", name)
     async for message in ws:
@@ -690,8 +949,11 @@ async def ws_json(request: web.Request) -> web.WebSocketResponse:
       receiver.record_json(session_id, name, parse_json_object(message.data), peer)
   except (TypeError, ValueError) as exc:
     receiver.fail(str(exc), peer)
-    await ws.send_json(_protocol_error("json_stream_error", str(exc), "json", name))
-    await ws.close(code=1008, message=b"invalid JSON stream")
+    print(f"[carrot_navi][WS] json:{name} rejected peer={peer}: {exc}", flush=True)
+    await _safe_send_json(ws, _protocol_error("json_stream_error", str(exc), "json", name))
+    await _safe_close_websocket(ws, 1008, b"invalid JSON stream")
+  finally:
+    _untrack_websocket(request, ws)
   return ws
 
 
@@ -706,6 +968,7 @@ async def _ws_binary(request: web.Request, kind: str) -> web.WebSocketResponse:
     compress=False,
   )
   await ws.prepare(request)
+  _track_websocket(request, ws)
   try:
     receiver.stream_config(session_id, kind, name)
     async for message in ws:
@@ -715,8 +978,11 @@ async def _ws_binary(request: web.Request, kind: str) -> web.WebSocketResponse:
       receiver.record_binary(session_id, kind, name, metadata, payload, peer)
   except (KeyError, TypeError, ValueError) as exc:
     receiver.fail(str(exc), peer)
-    await ws.send_json(_protocol_error("binary_stream_error", str(exc), kind, name))
-    await ws.close(code=1008, message=b"invalid binary stream")
+    print(f"[carrot_navi][WS] {kind}:{name} rejected peer={peer}: {exc}", flush=True)
+    await _safe_send_json(ws, _protocol_error("binary_stream_error", str(exc), kind, name))
+    await _safe_close_websocket(ws, 1008, b"invalid binary stream")
+  finally:
+    _untrack_websocket(request, ws)
   return ws
 
 
@@ -728,9 +994,16 @@ async def ws_render(request: web.Request) -> web.WebSocketResponse:
   return await _ws_binary(request, "render")
 
 
-def create_app(receiver: CarrotNaviReceiver | None = None) -> web.Application:
+def create_app(
+  receiver: CarrotNaviReceiver | None = None,
+  appearance_reader: Callable[[], tuple[str, str]] | None = None,
+) -> web.Application:
   app = web.Application(client_max_size=MAX_MESSAGE_BYTES)
   app[RECEIVER_KEY] = receiver or CarrotNaviReceiver()
+  app[WEBSOCKETS_KEY] = set()
+  if appearance_reader is not None:
+    app[APPEARANCE_READER_KEY] = appearance_reader
+    app.cleanup_ctx.append(_map_appearance_context)
   app.router.add_get("/", index)
   app.router.add_get("/health", health)
   app.router.add_get("/api/navi/latest", latest)
@@ -748,13 +1021,14 @@ def run_receiver_app(
   *,
   retry_count: int = BIND_RETRY_COUNT,
   retry_interval_s: float = BIND_RETRY_INTERVAL_S,
+  appearance_reader: Callable[[], tuple[str, str]] | None = None,
 ) -> None:
   retry_count = max(0, int(retry_count))
   retry_interval_s = max(0.0, float(retry_interval_s))
   for retry in range(retry_count + 1):
     try:
       web.run_app(
-        create_app(receiver),
+        create_app(receiver, appearance_reader),
         host=host,
         port=port,
         access_log=None,
@@ -775,11 +1049,23 @@ def main() -> None:
   parser = argparse.ArgumentParser(description="Carrot Navi WebSocket receiver")
   parser.add_argument("--host", default=DEFAULT_HOST)
   parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-  parser.add_argument("--map-theme", choices=tuple(sorted(MAP_THEMES)), default="dark")
+  parser.add_argument("--advertise-ip", default=None)
+  parser.add_argument("--no-beacon", action="store_true")
+  parser.add_argument("--map-theme", choices=tuple(sorted(MAP_THEMES)), default=None)
+  parser.add_argument("--map-type", choices=tuple(sorted(MAP_TYPES)), default=None)
   parser.add_argument("--no-cereal", action="store_true")
   args = parser.parse_args()
 
-  receiver = CarrotNaviReceiver(port=args.port, map_theme=args.map_theme)
+  param_reader = ClusterNaviAppearanceParamReader()
+
+  def read_map_appearance() -> tuple[str, str]:
+    param_map_theme, param_map_type = param_reader()
+    return args.map_theme or param_map_theme, args.map_type or param_map_type
+
+  map_theme, map_type = read_map_appearance()
+  receiver = CarrotNaviReceiver(port=args.port, map_theme=map_theme, map_type=map_type)
+  advertise_ip = args.advertise_ip or (args.host if args.host not in ("", "0.0.0.0", "::") else None)
+  beacon = None if args.no_beacon else CarrotNaviDiscoveryBeacon(advertise_ip)
   publisher = None
   if not args.no_cereal:
     try:
@@ -791,10 +1077,19 @@ def main() -> None:
       receiver.record_cereal_publish(f"publisher unavailable: {exc}")
       print(f"[carrot_navi] cereal publisher unavailable: {exc}")
 
-  print(f"[carrot_navi] starting receiver on {args.host}:{args.port}")
+  if beacon is not None:
+    beacon.start()
+    advertised = ", ".join(address for address, _ in discovery_targets(advertise_ip)) or "unavailable"
+    print(f"[carrot_navi] discovery advertising {advertised}:{args.port} via UDP {DISCOVERY_PORT}")
+  print(
+    f"[carrot_navi] starting receiver on {args.host}:{args.port} "
+    f"map_theme={map_theme} map_type={map_type}",
+  )
   try:
-    run_receiver_app(receiver, args.host, args.port)
+    run_receiver_app(receiver, args.host, args.port, appearance_reader=read_map_appearance)
   finally:
+    if beacon is not None:
+      beacon.stop()
     if publisher is not None:
       publisher.stop()
 

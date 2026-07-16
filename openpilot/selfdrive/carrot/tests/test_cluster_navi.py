@@ -2,6 +2,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 import sys
+import threading
 import time
 
 import pytest
@@ -15,7 +16,14 @@ sys.path.insert(0, str(CLUSTER_DIR))
 
 from cluster_navi import fresh_carrot_navi, parse_carrot_navi
 from cluster_navi_overlay import merge_navi_overlay_state
-from cluster_navi_source import MAP_FRAME_STALE_TIMEOUT_MS, NaviSimulatorSource
+from cluster_navi_source import (
+  MAP_FRAME_STALE_TIMEOUT_MS,
+  H264DecodeWorker,
+  NaviIpcMediaSource,
+  NaviSimulatorSource,
+  _H264DecodeRequest,
+  _H264DecodeResult,
+)
 from cluster_models import NaviDashboardState, NaviMediaFrame, TpmsInfo
 from cluster_renderer import SIDE_GAUGE_OUTLINE, ClusterUiRenderer
 
@@ -139,6 +147,84 @@ def test_stale_map_frame_is_removed_from_media_cache():
   assert "render:map_main" not in source._media
 
 
+def test_h264_decode_worker_drops_backlog_until_next_keyframe():
+  started = threading.Event()
+  release = threading.Event()
+  reset_calls = []
+
+  class FakeDecoder:
+    def reset(self):
+      reset_calls.append(True)
+
+    def decode(self, payload):
+      if payload.endswith(b"1"):
+        started.set()
+        assert release.wait(1.0)
+      return payload[-1:] * 4, 1, 1
+
+  def request(sequence, *, keyframe=False):
+    return _H264DecodeRequest(
+      epoch=1,
+      key="render:map_main",
+      sequence=sequence,
+      payload=str(sequence).encode(),
+      config_payload=b"config",
+      config_sequence=1,
+      keyframe=keyframe,
+    )
+
+  worker = H264DecodeWorker(decoder_factory=FakeDecoder)
+  try:
+    worker.submit(request(1, keyframe=True))
+    assert started.wait(1.0)
+    worker.submit(request(2))
+    worker.submit(request(3))
+    worker.submit(request(4))
+    worker.submit(request(5))
+    worker.submit(request(6, keyframe=True))
+    release.set()
+
+    latest = None
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and (latest is None or latest.frame.sequence != 6):
+      results = worker.poll()
+      if results:
+        latest = results[-1]
+      time.sleep(0.005)
+
+    assert latest is not None
+    assert latest.frame.sequence == 6
+    assert latest.frame.data == b"6666"
+    assert worker.dropped_requests == 4
+    assert len(reset_calls) == 1
+  finally:
+    release.set()
+    worker.close()
+
+
+def test_navi_source_rejects_stale_h264_worker_result():
+  source = object.__new__(NaviSimulatorSource)
+  source._media = {}
+  source._media_epoch = 2
+  source._h264_requested_sequences = {"render:map_main": 8}
+  stale = _H264DecodeResult(
+    epoch=2,
+    frame=NaviMediaFrame("render:map_main", 7, True, "image/rgba", 1, 1, b"old!"),
+  )
+  latest = _H264DecodeResult(
+    epoch=2,
+    frame=NaviMediaFrame("render:map_main", 8, True, "image/rgba", 1, 1, b"new!"),
+  )
+  results = iter(((stale,), (latest,)))
+  source._h264_worker = SimpleNamespace(poll=lambda: next(results))
+
+  source._apply_h264_results()
+  assert source._media == {}
+
+  source._apply_h264_results()
+  assert source._media["render:map_main"].sequence == 8
+
+
 def test_disconnected_dashboard_draws_system_panel(monkeypatch):
   renderer = object.__new__(ClusterUiRenderer)
   dashboard = NaviDashboardState(False, "tcp://127.0.0.1:7714")
@@ -163,6 +249,85 @@ def test_disconnected_dashboard_draws_system_panel(monkeypatch):
     "panel_h": 478,
     "status_text": "NAVI DISCONNECTED",
   }
+
+
+def test_live_navi_guidance_media_is_scaled_up(monkeypatch):
+  renderer = object.__new__(ClusterUiRenderer)
+  frames = {
+    key: NaviMediaFrame(key, 1, True, "image/rgba", 1, 1, b"rgba")
+    for key in ("render:map_main", "image:tbt_current_compact", "image:tbt_next", "image:lane_bottom")
+  }
+  dashboard = NaviDashboardState(True, "ipc://carrotNaviMedia", media=tuple(frames.values()))
+  drawn = {}
+
+  monkeypatch.setattr(
+    ClusterUiRenderer,
+    "_current_theme",
+    lambda self: SimpleNamespace(faint=(0, 0, 0, 0), route_panel_bg=(0, 0, 0, 255)),
+  )
+  monkeypatch.setattr(ClusterUiRenderer, "_rounded_rect", lambda *args, **kwargs: None)
+  monkeypatch.setattr(ClusterUiRenderer, "_draw_navi_crossroad_box", lambda *args, **kwargs: None)
+  monkeypatch.setattr(ClusterUiRenderer, "_navi_media_fitted_size", lambda self, frame, rect: (rect.width, rect.height))
+
+  def capture_media(self, frame, rect, **kwargs):
+    if frame is not None:
+      drawn[frame.key] = rect
+    return True
+
+  monkeypatch.setattr(ClusterUiRenderer, "_draw_navi_media", capture_media)
+  monkeypatch.setattr("cluster_renderer.rl.draw_rectangle_rec", lambda *args, **kwargs: None)
+  monkeypatch.setattr("cluster_renderer.rl.begin_scissor_mode", lambda *args, **kwargs: None)
+  monkeypatch.setattr("cluster_renderer.rl.end_scissor_mode", lambda: None)
+
+  renderer._draw_navi_live_panel(SimpleNamespace(navi_live=None, navi_dashboard=dashboard))
+
+  assert drawn["image:tbt_current_compact"].width == pytest.approx(310.0 * 1.2)
+  assert drawn["image:tbt_current_compact"].height == pytest.approx(116.0 * 1.2)
+  assert drawn["image:tbt_next"].width == pytest.approx(190.0 * 1.2)
+  assert drawn["image:tbt_next"].height == pytest.approx(68.0 * 1.2)
+  assert drawn["image:lane_bottom"].width == pytest.approx(226.0 * 1.2)
+  assert drawn["image:lane_bottom"].height == pytest.approx(67.0 * 1.2)
+
+
+def test_ipc_media_source_restores_standalone_navigation_images():
+  media = SimpleNamespace(
+    schemaVersion=1,
+    sessionId="ipc-session",
+    kind="image",
+    name="tbt_next",
+    sequence=7,
+    present=True,
+    reason="",
+    messageType=1,
+    formatOrReason=1,
+    width=32,
+    height=24,
+    payload=b"\x89PNG\r\n\x1a\ncontent",
+  )
+
+  class FakeMessaging:
+    def __init__(self):
+      self.messages = [SimpleNamespace(carrotNaviMedia=media)]
+
+    def sub_sock(self, service, conflate):
+      assert service == "carrotNaviMedia"
+      assert conflate is False
+      return object()
+
+    def drain_sock(self, _socket):
+      messages, self.messages = self.messages, []
+      return messages
+
+  source = NaviIpcMediaSource(FakeMessaging())
+  dashboard = source.update(SimpleNamespace(session_id="ipc-session"))
+
+  assert dashboard.connected is True
+  assert dashboard.endpoint == "ipc://carrotNaviMedia"
+  assert dashboard.session_id == "ipc-session"
+  assert dashboard.received_count == 1
+  assert dashboard.media == (
+    NaviMediaFrame("image:tbt_next", 7, True, "image/png", 32, 24, b"\x89PNG\r\n\x1a\ncontent"),
+  )
 
 
 def test_navi_panel_shifts_3d_camera_modes_left():

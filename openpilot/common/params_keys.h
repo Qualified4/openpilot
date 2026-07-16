@@ -186,6 +186,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ClusterHudCoreMode", {PERSISTENT, INT, "0"}},
     {"ClusterHudPriority", {PERSISTENT, INT, "10"}},
     {"ClusterHudTheme", {PERSISTENT, INT, "0"}},
+    {"ClusterNaviMapTheme", {PERSISTENT, INT, "1"}},
+    {"ClusterNaviMapType", {PERSISTENT, INT, "0"}},
     {"ClusterHudLiveFps", {PERSISTENT, INT, "1"}},
     {"ClusterHudScreenMode", {PERSISTENT, INT, "0"}},
     {"ClusterHudCameraViewMode", {PERSISTENT, INT, "0"}},
@@ -280,6 +282,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"EnableRadarTracks", {PERSISTENT, INT, "0"}},
     {"RadarLatFactor", {PERSISTENT, INT, "0"}},
     {"EnableCornerRadar", {PERSISTENT, INT, "0"}},
+    {"RadarLeadModelMode", {PERSISTENT, INT, "0"}},
 
     {"EnableRadarTracksResult", {PERSISTENT | CLEAR_ON_MANAGER_START, INT}},
     {"CanParserResult", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, STRING}},

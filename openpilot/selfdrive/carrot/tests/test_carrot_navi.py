@@ -1,19 +1,27 @@
 import asyncio
 import errno
+import json
 import struct
+from types import SimpleNamespace
 
 import pytest
+from aiohttp import WSMsgType
 from aiohttp.test_utils import TestClient, TestServer
 
 from openpilot.selfdrive.carrot.carrot_navi import (
   BINARY_HEADER,
   CATALOG,
+  CarrotNaviDiscoveryBeacon,
+  ClusterNaviAppearanceParamReader,
   CarrotNaviReceiver,
+  DISCOVERY_PORT,
   PROTOCOL_VERSION,
   build_manifest,
   create_app,
+  discovery_targets,
   parse_binary_packet,
   run_receiver_app,
+  _safe_send_json,
 )
 from openpilot.selfdrive.carrot.carrot_navi_cereal import CarrotNaviCerealPublisher, build_carrot_navi_payload
 
@@ -33,6 +41,47 @@ def requirements_query() -> dict:
       for kind, name in CATALOG
     ],
   }
+
+
+def test_standalone_discovery_advertises_new_navi_endpoint(monkeypatch):
+  sent = []
+
+  class FakeSocket:
+    def setsockopt(self, *args):
+      pass
+
+    def sendto(self, body, address):
+      sent.append((body, address))
+
+    def bind(self, address):
+      assert address == ("192.168.0.10", 0)
+
+    def close(self):
+      pass
+
+  monkeypatch.setattr("openpilot.selfdrive.carrot.carrot_navi.socket.socket", lambda *args: FakeSocket())
+
+  CarrotNaviDiscoveryBeacon("192.168.0.10").broadcast_once()
+
+  assert len(sent) == 1
+  body, address = sent[0]
+  assert json.loads(body) == {"ip": "192.168.0.10", "navi_debug": 1}
+  assert address == ("255.255.255.255", DISCOVERY_PORT)
+
+
+def test_discovery_advertises_each_ubuntu_network_interface(monkeypatch):
+  monkeypatch.setattr(
+    "openpilot.selfdrive.carrot.carrot_navi._interface_ipv4_addresses",
+    lambda: (
+      ("192.168.10.5", "255.255.255.0", "192.168.10.255"),
+      ("10.42.0.1", "255.255.255.0", None),
+    ),
+  )
+
+  assert discovery_targets() == (
+    ("192.168.10.5", "192.168.10.255"),
+    ("10.42.0.1", "10.42.0.255"),
+  )
 
 
 def test_receiver_app_retries_temporary_port_conflict(monkeypatch):
@@ -81,13 +130,124 @@ def test_manifest_enables_complete_catalog():
 
 
 def test_manifest_requests_configured_map_appearance():
-  manifest = build_manifest("12345678", map_theme="dark")
+  manifest = build_manifest("12345678", map_theme="dark", map_type="satellite")
   map_stream = next(stream for stream in manifest["streams"] if stream["kind"] == "render")
 
   assert map_stream["params"]["map_theme"] == "dark"
+  assert map_stream["params"]["map_type"] == "satellite"
 
   with pytest.raises(ValueError, match="map theme"):
     build_manifest("12345678", map_theme="neon")
+  with pytest.raises(ValueError, match="map type"):
+    build_manifest("12345678", map_type="terrain")
+
+
+def test_cluster_navi_map_params_and_receiver_updates_next_manifest():
+  class FakeParams:
+    values = {"ClusterNaviMapTheme": 2, "ClusterNaviMapType": 1}
+
+    def get_int(self, key):
+      return self.values[key]
+
+  reader = ClusterNaviAppearanceParamReader(FakeParams())
+  receiver = CarrotNaviReceiver(map_theme="dark", map_type="normal")
+
+  assert reader() == ("light", "satellite")
+  assert receiver.set_map_appearance(*reader()) is True
+  assert receiver.set_map_appearance(*reader()) is False
+
+  manifest = receiver.negotiate(requirements_query(), "test-app")
+  map_stream = next(stream for stream in manifest["streams"] if stream["kind"] == "render")
+  assert map_stream["params"]["map_theme"] == "light"
+  assert map_stream["params"]["map_type"] == "satellite"
+  assert receiver.health()["map_theme"] == "light"
+  assert receiver.health()["map_type"] == "satellite"
+
+
+def test_receiver_logs_changed_tbt_and_sdi_values(capsys):
+  receiver = CarrotNaviReceiver()
+  manifest = receiver.negotiate(requirements_query(), "test-app")
+  streams = {stream["name"]: stream for stream in manifest["streams"] if stream["kind"] == "json"}
+
+  def record(name, sequence, value):
+    stream = streams[name]
+    receiver.record_json(manifest["session_id"], name, {
+      "type": "item_update",
+      "protocol_version": 2,
+      "session_id": manifest["session_id"],
+      "manifest_revision": manifest["revision"],
+      "schema_version": 1,
+      "kind": "json",
+      "name": name,
+      "stream_handle": stream["stream_handle"],
+      "sequence": sequence,
+      "source_timestamp_ms": 1000 + sequence,
+      "present": True,
+      "value": value,
+    }, "192.168.0.171")
+
+  current = {"distance_m": 320, "turn_type": 12, "main_text": "Turn left"}
+  record("guidance_current", 1, current)
+  record("guidance_current", 2, current)
+  record("guidance_next", 1, {"distance_m": 950, "turn_type": 6, "main_text": "Turn right"})
+  record("speed", 1, {
+    "current_kph": 48,
+    "road_limit_kph": 50,
+    "sdi": {"type": 1, "distance_m": 420, "speed_limit_kph": 50},
+  })
+
+  output = capsys.readouterr().out
+  assert output.count("[carrot_navi][TBT current]") == 1
+  assert "[carrot_navi][TBT next]" in output
+  assert '"main_text":"Turn left"' in output
+  assert "[carrot_navi][SDI]" in output
+  assert '"distance_m":420' in output
+
+
+def test_safe_websocket_error_send_ignores_closing_transport():
+  class ClosingWebSocket:
+    closed = False
+
+    async def send_json(self, _payload):
+      raise ConnectionResetError("Cannot write to closing transport")
+
+  assert asyncio.run(_safe_send_json(ClosingWebSocket(), {"error": True})) is False
+
+
+def test_map_param_change_reconnects_websocket_with_new_manifest():
+  appearance = ["dark", "normal"]
+
+  async def scenario():
+    receiver = CarrotNaviReceiver(map_theme=appearance[0], map_type=appearance[1])
+    client = TestClient(TestServer(create_app(receiver, lambda: tuple(appearance))))
+    await client.start_server()
+    first_control = None
+    second_control = None
+    try:
+      first_control = await client.ws_connect("/api/navi/ws/v2/control/10.0.0")
+      await first_control.send_json(requirements_query())
+      first_manifest = await first_control.receive_json()
+      first_map = next(stream for stream in first_manifest["streams"] if stream["kind"] == "render")
+      assert first_map["params"]["map_type"] == "normal"
+
+      appearance[:] = ["light", "satellite"]
+      message = await first_control.receive(timeout=2.0)
+      assert message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED)
+
+      second_control = await client.ws_connect("/api/navi/ws/v2/control/10.0.0")
+      await second_control.send_json(requirements_query())
+      second_manifest = await second_control.receive_json()
+      second_map = next(stream for stream in second_manifest["streams"] if stream["kind"] == "render")
+      assert second_map["params"]["map_theme"] == "light"
+      assert second_map["params"]["map_type"] == "satellite"
+    finally:
+      if second_control is not None:
+        await second_control.close()
+      if first_control is not None:
+        await first_control.close()
+      await client.close()
+
+  asyncio.run(scenario())
 
 
 def test_parse_binary_packet_validates_cn_v2_payload():
@@ -348,6 +508,7 @@ def test_payload_bounds_route_and_publisher_sends_dedicated_service():
 
   class FakeMessage:
     carrotNavi = None
+    carrotNaviMedia = None
 
   class FakePubMaster:
     def __init__(self, services):
@@ -367,7 +528,7 @@ def test_payload_bounds_route_and_publisher_sends_dedicated_service():
 
     @staticmethod
     def new_message(service, valid):
-      assert service == "carrotNavi"
+      assert service in ("carrotNavi", "carrotNaviMedia")
       assert valid is True
       return FakeMessage()
 
@@ -377,9 +538,31 @@ def test_payload_bounds_route_and_publisher_sends_dedicated_service():
 
   assert publisher.publish_once(snapshot) == 11
   assert messaging.pub_master is not None
-  assert messaging.pub_master.services == ["carrotNavi"]
+  assert messaging.pub_master.services == ["carrotNavi", "carrotNaviMedia"]
   assert len(messaging.pub_master.sent) == 1
   service, message = messaging.pub_master.sent[0]
   assert service == "carrotNavi"
   assert len(message.carrotNavi["route"]["polyline"]) == 256
   assert receiver.health()["cereal_publish_count"] == 1
+
+  media_record = SimpleNamespace(
+    kind="image",
+    name="tbt_next",
+    sequence=5,
+    source_timestamp_ms=1234,
+    received_mono_ns=5678,
+    present=True,
+    message_type=1,
+    format_or_reason=1,
+    flags=0,
+    width=32,
+    height=24,
+    reason=None,
+    payload=b"png-data",
+  )
+  publisher.publish_media(media_record, "session")
+  service, message = messaging.pub_master.sent[-1]
+  assert service == "carrotNaviMedia"
+  assert message.carrotNaviMedia["sessionId"] == "session"
+  assert message.carrotNaviMedia["name"] == "tbt_next"
+  assert message.carrotNaviMedia["payload"] == b"png-data"
