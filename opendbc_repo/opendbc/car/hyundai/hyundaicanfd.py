@@ -1299,6 +1299,33 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             ROAD_EDGE_STD_MAX = 0.8
             ROAD_EDGE_INNER_CLEARANCE_M = 0.15  # half a vehicle width (1.0 m) + 0.25 m margin
 
+            # Helper function for vision lead matching
+            def _is_vision_lead_match(lead, vision_lead):
+              if vision_lead is None:
+                return False
+              vision_dRel = vision_lead.x[0]
+              vision_yRel = -vision_lead.y[0]
+              # vision lead와 현재 lead의 dRel, yRel을 비교하여 일치 여부 판단
+              return abs(lead.dRel - vision_dRel) < 2.0 and abs(lead.yRel - vision_yRel) < 1.0
+
+            # Helper function for side lead validity check
+            def _is_side_lead_valid(lead, corrected_yRel, dRel, road_edge_clear_flag, road_edge_obj, is_left_side, current_curve_offset_y):
+              if lead.vLeadK >= min_side_lead_speed:
+                return True
+              if road_edge_clear_flag and lead.vLeadK >= 0:
+                # Compare only selected candidates, using the vehicle center plus its half-width margin.
+                edge_y = road_edge_y(road_edge_obj, dRel)
+                if edge_y is None:
+                  return False
+                if is_left_side:
+                  return corrected_yRel < edge_y + current_curve_offset_y - ROAD_EDGE_INNER_CLEARANCE_M
+                else:
+                  return corrected_yRel > edge_y + current_curve_offset_y + ROAD_EDGE_INNER_CLEARANCE_M
+              return False
+
+            ff_min_dist = 1000.0
+            lf_min_dist = 1000.0
+            rf_min_dist = 1000.0
             def road_edge_y(edge, distance):
               if edge is None or len(edge.x) == 0 or len(edge.y) == 0:
                 return None
@@ -1311,17 +1338,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             left_road_edge_clear = road_edge_is_clear(left_road_edge, 0)
             right_road_edge_clear = road_edge_is_clear(right_road_edge, 1)
-            min_side_lead_speed = max(CS.out.vEgo * 0.2, 5.0)
-
-            # 좌, 중앙, 우 레이더 트랙의 모든 리드 결합 및 필터링
-            valid_leads = (
-              l for l in itertools.chain(CS.radar_state.leadsLeft,
-                                        CS.radar_state.leadsRight,
-                                        CS.radar_state.leadsCenter)
-              if l.dRel > 1
-            )
-
-            ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
             vision_lead = md.leadsV3[0] if len(md.leadsV3) > 0 else None
 
             for lead in valid_leads:
@@ -1338,40 +1354,19 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               dist_score = dRel + abs(corrected_yRel)
 
               # 전방 차량
-              if -1.5 <= corrected_yRel <= 1.5:
-                if dist_score < ff_min_dist:
-                  is_vision_lead_match = False
-                  if vision_lead is not None:
-                      vision_dRel = vision_lead.x[0]
-                      vision_yRel = -vision_lead.y[0]
-                      # vision lead와 현재 lead의 dRel, yRel을 비교하여 일치 여부 판단
-                      if abs(lead.dRel - vision_dRel) < 2.0 and abs(lead.yRel - vision_yRel) < 1.0:
-                          is_vision_lead_match = True
-                  # 속도가 5 이상이거나, 5 미만이더라도 비전 리드와 일치하면 전방 차량 후보로 간주
-                  if lead.vLeadK > 5 or is_vision_lead_match:
-                    ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [60, 90], [1.0, 0.6])
+              if -1.5 <= corrected_yRel <= 1.5: # 전방 좁은 영역
+                if dist_score < ff_min_dist and (lead.vLeadK > 5 or _is_vision_lead_match(lead, vision_lead)):
+                  ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [60, 90], [1.0, 0.6]) # yRel 보간
 
               # 왼쪽 차선 차량
               elif lane_bound < corrected_yRel < 4.5 and dRel < 90:
-                if dist_score < lf_min_dist:
-                  if lead.vLeadK >= min_side_lead_speed:
-                    lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
-                  elif left_road_edge_clear and lead.vLeadK >= 0:
-                    # Compare only selected candidates, using the vehicle center plus its half-width margin.
-                    left_edge_y = road_edge_y(left_road_edge, dRel)
-                    if corrected_yRel < left_edge_y + curve_offset_y - ROAD_EDGE_INNER_CLEARANCE_M:
-                      lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
+                if dist_score < lf_min_dist and _is_side_lead_valid(lead, corrected_yRel, dRel, left_road_edge_clear, left_road_edge, is_left_side=True, current_curve_offset_y=curve_offset_y):
+                  lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1]) # yRel 보간
 
               # 오른쪽 차선 차량
               elif -4.5 < corrected_yRel < -lane_bound and dRel < 90:
-                if dist_score < rf_min_dist:
-                  if lead.vLeadK >= min_side_lead_speed:
-                    rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
-                  elif right_road_edge_clear and lead.vLeadK >= 0:
-                    # Compare only selected candidates, using the vehicle center plus its half-width margin.
-                    right_edge_y = road_edge_y(right_road_edge, dRel)
-                    if corrected_yRel > right_edge_y + curve_offset_y + ROAD_EDGE_INNER_CLEARANCE_M:
-                      rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
+                if dist_score < rf_min_dist and _is_side_lead_valid(lead, corrected_yRel, dRel, right_road_edge_clear, right_road_edge, is_left_side=False, current_curve_offset_y=curve_offset_y):
+                  rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1]) # yRel 보간
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
