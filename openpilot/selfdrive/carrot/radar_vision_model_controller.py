@@ -33,6 +33,10 @@ def _finite(value: Any, fallback: float = 0.0) -> float:
   return parsed if math.isfinite(parsed) else fallback
 
 
+def cutin_is_ahead_of_primary(cutin_d_rel: float, primary_d_rel: float | None) -> bool:
+  return primary_d_rel is None or cutin_d_rel <= primary_d_rel
+
+
 def _first(values: Any, fallback: float = 0.0) -> float:
   try:
     return _finite(values[0], fallback)
@@ -267,7 +271,10 @@ class VisionModelRadarController:
   def _external_control_usable(prediction: RadarLeadPrediction) -> bool:
     obj = prediction.features.radar_object
     if obj.front_track_id is not None or obj.scc_track_id is not None:
-      return 1.0 < obj.d_rel < 160.0
+      # Unmatched stationary front returns are commonly tunnel/gantry ghosts.
+      # A stopped object still becomes leadOne when vision matches it; do not
+      # independently feed a radar-only stationary ghost to MPC as leadTwo.
+      return 1.0 < obj.d_rel < 160.0 and obj.v_lead > 2.0
     if obj.d_rel <= 2.0 or obj.d_rel >= 120.0:
       return False
     if obj.v_lead > 2.0:
@@ -285,6 +292,7 @@ class VisionModelRadarController:
     return (
       (obj.front_track_id is not None or obj.scc_track_id is not None)
       and 1.0 < obj.d_rel < 160.0
+      and obj.v_lead > 2.0
       and prediction.features.track_age >= STEALTH_LEAD_MIN_TRACK_AGE
       and abs(prediction.features.d_path) < STEALTH_LEAD_MAX_DPATH_M
       and prediction.features.in_lane_prob >= STEALTH_LEAD_MIN_IN_LANE_PROB
@@ -345,7 +353,11 @@ class VisionModelRadarController:
     cutin_pairs = [
       (prediction, self._lead_from_prediction(prediction, prediction.cutin_prob, v_ego))
       for prediction in result.decision.cutin_candidates
-      if self._external_control_usable(prediction)
+    ]
+    primary_d_rel = lead_one.get("dRel") if lead_one is not None else None
+    relevant_cutin_pairs = [
+      (prediction, lead) for prediction, lead in cutin_pairs
+      if lead is not None and cutin_is_ahead_of_primary(float(lead["dRel"]), primary_d_rel)
     ]
     external_pairs = [
       (prediction, self._lead_from_prediction(prediction, prediction.external_prob, v_ego))
@@ -389,13 +401,14 @@ class VisionModelRadarController:
         held_lead = self._lead_from_prediction(held_primary, held_primary.lead_prob, v_ego, prefer_front=True)
         if held_lead is not None:
           primary_hold_pair = (held_primary, held_lead)
-    # Do not let the same physical object compete with itself as both MPC lead0
-    # and lead1. It is still reported as a cut-in before it becomes primary.
-    cutin_leads = tuple(lead for prediction, lead in cutin_pairs if lead is not None and not matches_primary(prediction))
+    # Report independent cut-in decisions even when they are not safe leadTwo
+    # control inputs, but do not re-report the vision-matched primary object as
+    # a separate cut-in.
+    cutin_leads = tuple(lead for prediction, lead in relevant_cutin_pairs if not matches_primary(prediction))
     external_leads = tuple(lead for _, lead in external_pairs if lead is not None)
     lead_two = next((
-      lead for prediction, lead in cutin_pairs
-      if lead is not None and not matches_primary(prediction)
+      lead for prediction, lead in relevant_cutin_pairs
+      if not matches_primary(prediction) and self._external_control_usable(prediction)
     ), None)
     if lead_two is None:
       lead_two = next((

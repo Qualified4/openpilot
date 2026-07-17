@@ -15,7 +15,6 @@ import csv
 import gzip
 import json
 import math
-import re
 import shutil
 import sys
 import threading
@@ -34,6 +33,7 @@ except ModuleNotFoundError:
 
 try:
   from openpilot.selfdrive.carrot.radar_lead_model import (
+    CUTIN_ACTIVE_CURRENT_MIN,
     CUTIN_TEMPORAL_THRESHOLD_MAX,
     RadarLeadContext,
     RadarLeadDecisionFilter,
@@ -43,6 +43,7 @@ try:
   )
 except ModuleNotFoundError:
   from radar_lead_model import (
+    CUTIN_ACTIVE_CURRENT_MIN,
     CUTIN_TEMPORAL_THRESHOLD_MAX,
     RadarLeadContext,
     RadarLeadDecisionFilter,
@@ -57,9 +58,9 @@ except ModuleNotFoundError:
   from radar_lead_controller import RadarLeadModelController
 
 try:
-  from openpilot.selfdrive.carrot.radar_vision_model_controller import PRIMARY_STEALTH_HOLD_S, STEALTH_LEAD_HOLD_S, VisionModelRadarController, VisionRadarMatcher
+  from openpilot.selfdrive.carrot.radar_vision_model_controller import PRIMARY_STEALTH_HOLD_S, STEALTH_LEAD_HOLD_S, VisionModelRadarController, VisionRadarMatcher, cutin_is_ahead_of_primary
 except ModuleNotFoundError:
-  from radar_vision_model_controller import PRIMARY_STEALTH_HOLD_S, STEALTH_LEAD_HOLD_S, VisionModelRadarController, VisionRadarMatcher
+  from radar_vision_model_controller import PRIMARY_STEALTH_HOLD_S, STEALTH_LEAD_HOLD_S, VisionModelRadarController, VisionRadarMatcher, cutin_is_ahead_of_primary
 
 
 RADAR_TO_CAMERA = 1.52
@@ -160,6 +161,7 @@ class ValidationReview:
   end_s: float
   scene: str
   target_track_ids: tuple[int, ...] = ()
+  forbidden_lead_two_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -243,6 +245,7 @@ def validation_review_events(
   previous_vision_unmatched = False
   previous_lead_one = False
   previous_lead_two_only = False
+  previous_forbidden_lead_two: int | None = None
   last_cutin_event_time: dict[int, float] = {}
   for index, frame in enumerate(frames):
     selection = selector.select(frame, index)
@@ -269,9 +272,19 @@ def validation_review_events(
         events_by_frame[index] = tuple(events)
       continue
 
+    primary_track_id = selection.lead_one.track_id if selection.lead_one is not None else None
     current_cutins = {
-      selection.lead_two.track_id
-    } if selection.lead_two is not None and selection.lead_two.reason.endswith("active cutin") else set()
+      candidate.track_id for candidate in selection.active_cutin_candidates
+      if candidate.track_id != primary_track_id
+      and (candidate.score >= CUTIN_ACTIVE_CURRENT_MIN or candidate.track_id in previous_cutins)
+    }
+    if (
+      selection.lead_two is not None
+      and selection.lead_two.track_id != primary_track_id
+      and selection.lead_two.reason.endswith("active cutin")
+      and (selection.lead_two.score >= CUTIN_ACTIVE_CURRENT_MIN or selection.lead_two.track_id in previous_cutins)
+    ):
+      current_cutins.add(selection.lead_two.track_id)
     new_cutins = {
       track_id for track_id in current_cutins - previous_cutins
       if frame.time_s - last_cutin_event_time.get(track_id, -math.inf) >= 1.0
@@ -280,6 +293,23 @@ def validation_review_events(
       events.extend(f"CUT-IN id {track_id}" for track_id in sorted(new_cutins))
       last_cutin_event_time.update((track_id, frame.time_s) for track_id in new_cutins)
     previous_cutins = current_cutins
+
+    forbidden_lead_two = None
+    if review is not None and selection.lead_two is not None:
+      forbidden_ids = set(review.forbidden_lead_two_ids)
+      if selection.lead_two.track_id in forbidden_ids:
+        forbidden_lead_two = selection.lead_two.track_id
+        if forbidden_lead_two != previous_forbidden_lead_two:
+          events.append(f"FALSE leadTwo id {forbidden_lead_two}")
+    previous_forbidden_lead_two = forbidden_lead_two
+
+    # A maintained cut-in validation case must pause only for the decision it
+    # is labeling. Lead continuity diagnostics remain visible in the UI, but
+    # must not interrupt CUT-IN review playback.
+    if review is not None:
+      if events:
+        events_by_frame[index] = tuple(events)
+      continue
 
     current_vision_lead = selection.lead_one is not None and selection.lead_one.track_id < 0
     if current_vision_lead and not previous_vision_lead:
@@ -307,9 +337,7 @@ def validation_review_events(
 
 
 def qcamera_path_for_log(log_path: Path) -> Path:
-  match = re.fullmatch(r"(?:rlog|qlog)(\.\d+)?\.zst", log_path.name)
-  suffix = match.group(1) if match is not None and match.group(1) is not None else ""
-  return log_path.parent / f"qcamera{suffix}.ts"
+  return log_path.parent / "qcamera.ts"
 
 
 def play_review_alert(events: tuple[str, ...]) -> None:
@@ -1481,12 +1509,17 @@ class MultitaskLeadSelector:
 
       def matches_primary(prediction: Any) -> bool:
         return bool(primary_aliases & frozenset(prediction.features.aliases))
+      primary_d_rel = lead_one.d_rel if lead_one is not None else None
+
+      def cutin_relevant(prediction: Any) -> bool:
+        return cutin_is_ahead_of_primary(prediction.features.radar_object.d_rel, primary_d_rel)
+
       active_leads = [] if vision_matcher is not None else [
         Candidate(track_id(value), value.lead_prob, "MLP active lead") for value in decision.lead_candidates
       ]
       active_cutins = [
         Candidate(track_id(value), value.cutin_prob, "MLP active cutin")
-        for value in decision.cutin_candidates if not matches_primary(value)
+        for value in decision.cutin_candidates if not matches_primary(value) and cutin_relevant(value)
       ]
       active_external = [
         Candidate(track_id(value), value.external_prob, "MLP active external")
@@ -1524,6 +1557,7 @@ class MultitaskLeadSelector:
       lead_two_prediction = next((
         prediction for prediction in decision.cutin_candidates
         if not matches_primary(prediction)
+        and cutin_relevant(prediction)
         and VisionModelRadarController._external_control_usable(prediction)
       ), None)
       lead_two_reason = "MLP active cutin"
@@ -2319,7 +2353,9 @@ class SimulatorUI:
         return
       if rl.check_collision_point_rec(mouse, timeline):
         self.paused = True
+        previous_index = self.index
         self.seek((mouse.x - timeline.x) / timeline.width * self.times[-1])
+        self._pause_for_review(previous_index, self.index)
       elif rl.check_collision_point_rec(mouse, map_rect):
         clicked = self._nearest_clicked_point(map_rect, frame, mouse)
         if clicked is not None:
@@ -2442,6 +2478,7 @@ def resolve_validation_case(
     case_id=str(case["id"]), expected=str(case["expected"]), source=str(case["source"]),
     start_s=float(window[0]), end_s=float(window[1]), scene=str(case["scene"]),
     target_track_ids=tuple(int(value) for value in case.get("target_track_ids", ())),
+    forbidden_lead_two_ids=tuple(int(value) for value in case.get("forbidden_lead_two_ids", ())),
   )
   return route_root / str(case["vehicle_folder"]) / Path(str(case["log"])), review
 

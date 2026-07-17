@@ -102,6 +102,8 @@ be reviewed as separate results.
 | `KIA_K8_HEV_1ST_GEN 4aa2ded146fd78b9` | `00000221--1ee7be4212--18\rlog.zst` | corner | 48-53 s | Persistent false cut-in around 50 s | PASS, no detection |
 | `HYUNDAI_IONIQ_9 c92fab3f15c0dbfb` | `000001a7--54660d9df7--2\rlog.zst` | corner | 0-33 s | False positives near 2 s and 29 s | PASS, no detection |
 | `HYUNDAI_IONIQ_9 c92fab3f15c0dbfb` | `000001a5--ba129171a3--22\rlog.zst` | corner | 30-37 s | Adjacent vehicle remains in its lane on a curve near 33 s | PASS, no detection |
+| `HYUNDAI_IONIQ_5_PE 8b06424f3adf2bd3` | `00000cd2--ea0776cc10--4\rlog.zst` | front+corner | 12-14.5 s | Stopped id 33 at 7.65 m is behind leadOne at 3.55 m | PASS, current model suppresses cut-in output and audio |
+| `HYUNDAI_PALISADE b84b4a4fbb604be1` | `00000bef--a8eb1d8c98--2\rlog.zst` | front | 24.4-25.2 s | Close right vehicle id 35 enters before becoming leadOne | PASS, front-only lane-history cut-in at 24.64 s |
 
 The two `000001a7--54660d9df7--2` failures cover different mechanisms:
 
@@ -155,7 +157,9 @@ radar model:
 py -3.12 openpilot/selfdrive/carrot/radar_lead_validation_review.py
 ```
 
-Each route starts at 0 seconds and plays through the full log. Playback pauses
+Each unique route starts at 0 seconds and plays through the full log. Multiple
+validation windows that reference the same rlog are grouped, so that physical
+log is opened only once. Playback pauses
 with a two-tone alert only when a model cut-in becomes active. Press Space to
 resume after a cut-in, press R to restart the current log, and close the window
 to open the next case. Only final `leadOne` and `leadTwo` are displayed by
