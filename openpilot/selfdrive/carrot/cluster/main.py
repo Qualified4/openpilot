@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import argparse
 import gc
-import ipaddress
 import os
 from dataclasses import replace
 import signal
-import socket
 import sys
 import threading
 import time
@@ -78,7 +76,7 @@ from cluster_route_replay import (
     adjacent_route_log_path,
 )
 from cluster_simulator import ClusterSimulator, RandomInputSource
-from cluster_system_monitor import ClusterProcessCoreUsageSampler
+from cluster_system_monitor import ClusterProcessCoreUsageSampler, NetworkAddressProvider
 from cluster_usb_display import TuringUsbDisplay, find_supported_usb_product, product_id_for_hud_mode
 from cluster_usb_pipeline import AsyncJpegUsbPipeline
 
@@ -98,66 +96,11 @@ CAMERA_VIEW_PARAM_POLL_SECONDS = 1.0
 RADAR_PARAM_POLL_SECONDS = 1.0
 HUD_MODE_PARAM_POLL_SECONDS = 1.0
 HUD_MIRROR_PARAM_POLL_SECONDS = 1.0
-NETWORK_ADDRESS_POLL_SECONDS = 2.0
 
 try:
     from openpilot.system.hardware import TICI
 except Exception:
     TICI = False
-
-
-class NetworkAddressProvider:
-    def __init__(self) -> None:
-        self._params = None
-        self._next_refresh = 0.0
-        self._address: str | None = None
-        try:
-            from openpilot.common.params import Params
-
-            self._params = Params("/dev/shm/params")
-        except Exception:
-            pass
-
-    def address(self, now: float) -> str | None:
-        if now < self._next_refresh:
-            return self._address
-        self._next_refresh = now + NETWORK_ADDRESS_POLL_SECONDS
-        address = self._param_address()
-        self._address = address or self._socket_address()
-        return self._address
-
-    def _param_address(self) -> str | None:
-        if self._params is None:
-            return None
-        try:
-            value = self._params.get("NetworkAddress")
-        except Exception:
-            return None
-        return self._valid_address(value)
-
-    @classmethod
-    def _socket_address(cls) -> str | None:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                sock.connect(("8.8.8.8", 80))
-                return cls._valid_address(sock.getsockname()[0])
-        except OSError:
-            return None
-
-    @staticmethod
-    def _valid_address(value: object) -> str | None:
-        if isinstance(value, bytes):
-            value = value.decode("utf-8", errors="replace")
-        text = str(value or "").strip()
-        if not text:
-            return None
-        try:
-            addr = ipaddress.ip_address(text)
-        except ValueError:
-            return None
-        if addr.is_unspecified or addr.is_loopback or addr.is_link_local:
-            return None
-        return str(addr)
 
 
 def live_debug_panel_enabled(screen_mode: int) -> bool:
@@ -928,6 +871,7 @@ def run_demo(
     h264_render_nv12_buffer: bytearray | None = None
     h264_render_nv12_layout: tuple[int, int, int, int, int, int, bool] | None = None
     h264_direct_nv12_input = False
+    h264_async_nv12_input = False
 
     def switch_route_source(
         new_path: Path,
@@ -1029,13 +973,18 @@ def run_demo(
                     h264_pipeline.native_direct_input_available()
                     and renderer.direct_nv12_readback_available()
                 )
+                h264_async_nv12_input = (
+                    h264_direct_nv12_input
+                    and renderer.async_nv12_readback_available()
+                )
                 print(
                     f"Using H264 native NV12 render path: "
                     f"{h264_pipeline.encoder_width}x{h264_pipeline.encoder_height} "
                     f"stride={stride} scanlines={y_scanlines}/{uv_scanlines} "
                     f"uv_offset={uv_offset} bytes={input_bytes} render_bytes={render_bytes} "
                     f"active_submit={'on' if active_submit else 'off'} "
-                    f"direct_ion={'on' if h264_direct_nv12_input else 'off'} flip_x=on",
+                    f"direct_ion={'on' if h264_direct_nv12_input else 'off'} "
+                    f"async_pbo={'on' if h264_async_nv12_input else 'off'} flip_x=on",
                     flush=True,
                 )
             if usb_h264_test_pattern:
@@ -1564,8 +1513,56 @@ def run_demo(
                             if h264_render_nv12_layout is None:
                                 raise RuntimeError("H264 GPU NV12 render path is missing the native layout")
                             stride, y_scanlines, uv_scanlines, uv_offset, input_bytes, render_bytes, _ = h264_render_nv12_layout
-                            direct_submitted = False
-                            if h264_direct_nv12_input:
+                            native_frame_handled = False
+                            if h264_async_nv12_input:
+                                try:
+                                    if renderer.async_nv12_readback_ready():
+                                        profile_stage = time.perf_counter()
+                                        with h264_pipeline.native_nv12_input_buffer() as direct_input:
+                                            profile.add_elapsed("main.usb_h264.acquire_pbo", profile_stage)
+
+                                            profile_stage = time.perf_counter()
+                                            if not renderer.copy_async_nv12_readback(
+                                                direct_input.address,
+                                                direct_input.size,
+                                            ):
+                                                raise DirectNv12ReadbackError(
+                                                    "ready NV12 PBO was unavailable during copy"
+                                                )
+                                            profile.add_elapsed("main.usb_h264.copy_pbo", profile_stage)
+
+                                            profile_stage = time.perf_counter()
+                                            h264_pipeline.submit_native_nv12_input(direct_input)
+                                            profile.add_elapsed("main.usb_h264.submit_pbo", profile_stage)
+
+                                    if renderer.async_nv12_readback_can_enqueue():
+                                        profile_stage = time.perf_counter()
+                                        with renderer.render_to_nv12_buffer(
+                                            state,
+                                            h264_pipeline.encoder_width,
+                                            h264_pipeline.encoder_height,
+                                            stride,
+                                            y_scanlines,
+                                            uv_scanlines,
+                                            uv_offset,
+                                            render_bytes,
+                                            flip_x=not bool(active_hud_mirror_mode & 1),
+                                            async_readback=True,
+                                        ):
+                                            pass
+                                        profile.add_elapsed("main.usb.render_nv12_pbo_total", profile_stage)
+                                    else:
+                                        profile.add("main.usb_h264.pbo_ring_full_drop", 0.0)
+                                    native_frame_handled = True
+                                except DirectNv12ReadbackError as exc:
+                                    h264_async_nv12_input = False
+                                    renderer.disable_async_nv12_readback()
+                                    print(
+                                        f"H264 asynchronous PBO readback unavailable; using synchronous direct ION: {exc}",
+                                        flush=True,
+                                    )
+
+                            if not native_frame_handled and h264_direct_nv12_input:
                                 try:
                                     profile_stage = time.perf_counter()
                                     with h264_pipeline.native_nv12_input_buffer() as direct_input:
@@ -1590,16 +1587,17 @@ def run_demo(
                                         profile_stage = time.perf_counter()
                                         h264_pipeline.submit_native_nv12_input(direct_input)
                                         profile.add_elapsed("main.usb_h264.submit_direct", profile_stage)
-                                    direct_submitted = True
+                                    native_frame_handled = True
                                 except DirectNv12ReadbackError as exc:
                                     h264_direct_nv12_input = False
+                                    h264_async_nv12_input = False
                                     renderer.disable_direct_nv12_readback()
                                     print(
                                         f"H264 direct ION readback unavailable; using staged NV12 fallback: {exc}",
                                         flush=True,
                                     )
 
-                            if not direct_submitted:
+                            if not native_frame_handled:
                                 profile_stage = time.perf_counter()
                                 with renderer.render_to_nv12_buffer(
                                     state,
@@ -1721,6 +1719,9 @@ def run_demo(
                 gc.callbacks.remove(gc_hook)
             except ValueError:
                 pass
+        network_address_provider.close()
+        if cluster_core_usage_sampler is not None:
+            cluster_core_usage_sampler.close()
         if h264_pipeline is not None:
             h264_pipeline.close()
         if usb_pipeline is not None:
