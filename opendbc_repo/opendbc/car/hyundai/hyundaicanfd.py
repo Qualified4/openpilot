@@ -1339,17 +1339,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 전방 차량
               if -1.5 <= corrected_yRel <= 1.5:
-                is_vision_lead_match = False
-                if vision_lead is not None:
-                    vision_dRel = vision_lead.x[0]
-                    vision_yRel = -vision_lead.y[0]
-                    # vision lead와 현재 lead의 dRel, yRel을 비교하여 일치 여부 판단
-                    if abs(lead.dRel - vision_dRel) < 2.0 and abs(lead.yRel - vision_yRel) < 1.0:
-                        is_vision_lead_match = True
-
-                # 속도가 5 이상이거나, 5 미만이더라도 비전 리드와 일치하면 전방 차량 후보로 간주
-                if (lead.vLeadK > 5 or is_vision_lead_match) and dist_score < ff_min_dist:
-                  ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [60, 90], [1.0, 0.6])
+                if dist_score < ff_min_dist:
+                  is_vision_lead_match = False
+                  if vision_lead is not None:
+                      vision_dRel = vision_lead.x[0]
+                      vision_yRel = -vision_lead.y[0]
+                      # vision lead와 현재 lead의 dRel, yRel을 비교하여 일치 여부 판단
+                      if abs(lead.dRel - vision_dRel) < 2.0 and abs(lead.yRel - vision_yRel) < 1.0:
+                          is_vision_lead_match = True
+                  # 속도가 5 이상이거나, 5 미만이더라도 비전 리드와 일치하면 전방 차량 후보로 간주
+                  if lead.vLeadK > 5 or is_vision_lead_match:
+                    ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [60, 90], [1.0, 0.6])
 
               # 왼쪽 차선 차량
               elif lane_bound < corrected_yRel < 4.5 and dRel < 90:
