@@ -1284,6 +1284,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         try:
           ff_lead = lf_lead = rf_lead = None
           ff_yRel = lf_yRel = rf_yRel = 0
+          min_side_lead_speed = max(CS.out.vEgo * 0.2, 5.0)
 
           # 레이더 정보 갱신
           if CS.radar_state:
