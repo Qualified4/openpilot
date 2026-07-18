@@ -1298,7 +1298,15 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             left_road_edge = md.roadEdges[0] if len(md.roadEdges) > 0 else None
             right_road_edge = md.roadEdges[1] if len(md.roadEdges) > 1 else None
             ROAD_EDGE_STD_MAX = 0.8
-            ROAD_EDGE_INNER_CLEARANCE_M = 0.15  # half a vehicle width (1.0 m) + 0.25 m margin
+            ROAD_EDGE_INNER_CLEARANCE_M = 1.25  # half a vehicle width (1.0 m) + 0.25 m margin
+
+            ff_min_dist = 1000.0
+            lf_min_dist = 1000.0
+            rf_min_dist = 1000.0
+            def road_edge_y(edge, distance):
+              if edge is None or len(edge.x) == 0 or len(edge.y) == 0:
+                return None
+              return np.interp(distance, edge.x, edge.y)
 
             # Helper function for vision lead matching
             def _is_vision_lead_match(lead, vision_lead):
@@ -1324,14 +1332,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   return corrected_yRel > edge_y + current_curve_offset_y + ROAD_EDGE_INNER_CLEARANCE_M
               return False
 
-            ff_min_dist = 1000.0
-            lf_min_dist = 1000.0
-            rf_min_dist = 1000.0
-            def road_edge_y(edge, distance):
-              if edge is None or len(edge.x) == 0 or len(edge.y) == 0:
-                return None
-              return np.interp(distance, edge.x, edge.y)
-
             def road_edge_is_clear(edge, index):
               return (edge is not None and len(edge.x) > 0 and len(edge.y) > 0
                       and len(md.roadEdgeStds) > index and math.isfinite(md.roadEdgeStds[index])
@@ -1355,7 +1355,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # 1. 상단에서 계산한 curvature(계기판 표시용 곡률)을 횡방향 물리 오프셋으로 역산
               # 곡률(kappa) = -curvature / 1800.0 (curvature가 음수일 때 좌측 커브)
               # 오프셋 = 0.5 * kappa * dRel^2 = -curvature * (dRel ** 2) / 3600.0
-              curve_offset_y = -current_curvature * ((dRel * 1.1) ** 2) / 3500.0
+              curve_offset_y = -current_curvature * ((dRel * 1.1) ** 2) / 3600.0
 
               # 2. 직선 물리 좌표 yRel에서 곡률 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
               corrected_yRel = yRel + curve_offset_y
@@ -1363,7 +1363,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 전방 차량
               if -1.5 <= corrected_yRel <= 1.5: # 전방 좁은 영역
-                if dist_score < ff_min_dist and (lead.vLeadK > 5 or _is_vision_lead_match(lead, vision_lead)):
+                if dist_score < ff_min_dist and dist_score > 0.5:
                   ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [60, 90], [1.0, 0.6]) # yRel 보간
 
               # 왼쪽 차선 차량
