@@ -1341,6 +1341,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             right_road_edge_clear = road_edge_is_clear(right_road_edge, 1)
             vision_lead = md.leadsV3[0] if len(md.leadsV3) > 0 else None
 
+            valid_leads = (
+              l for l in itertools.chain(CS.radar_state.leadsLeft,
+                                        CS.radar_state.leadsRight,
+                                        CS.radar_state.leadsCenter)
+              if l.dRel > 1
+            )
+
             for lead in valid_leads:
               dRel = lead.dRel
               yRel = lead.yRel
