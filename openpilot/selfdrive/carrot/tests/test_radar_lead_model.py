@@ -1,11 +1,15 @@
 from dataclasses import replace
 
+import numpy as np
+
 from openpilot.selfdrive.carrot.radar_lead_model import (
   MODEL_FEATURE_NAMES,
   RadarLeadContext,
   RadarLeadDecisionFilter,
   RadarLeadFeatureBuilder,
   RadarLeadPrediction,
+  RadarLeadModel,
+  anticipatory_eligibility,
 )
 from openpilot.selfdrive.carrot.radar_object_fusion import FusedRadarObject
 
@@ -42,6 +46,30 @@ def context(time_s: float) -> RadarLeadContext:
 def uncertain_lane_context(time_s: float) -> RadarLeadContext:
   sample = context(time_s)
   return replace(sample, lane_probs=(0.2, 0.45, 0.35, 0.2))
+
+
+def test_anticipatory_eligibility_requires_sustained_lane_inward_motion() -> None:
+  matrix = np.zeros((1, len(MODEL_FEATURE_NAMES)), dtype=np.float32)
+  values = {
+    "d_rel": 20.0, "v_lead": 15.0, "track_age": 12.0,
+    "d_path": 2.4, "future_d_path": 1.8,
+    "h8_present": 1.0, "h8_dt": 0.4, "h8_d_path": 2.7,
+    "h12_present": 1.0, "h12_dt": 0.6, "h12_d_path": 2.9,
+    "lane1_prob": 0.9, "lane2_prob": 0.9,
+  }
+  for name, value in values.items():
+    matrix[0, MODEL_FEATURE_NAMES.index(name)] = value
+
+  assert anticipatory_eligibility(matrix, np).tolist() == [True]
+
+  matrix[0, MODEL_FEATURE_NAMES.index("h8_d_path")] = 2.4
+  assert anticipatory_eligibility(matrix, np).tolist() == [False]
+
+
+def test_anticipatory_probability_remap_preserves_decision_threshold() -> None:
+  result = RadarLeadModel._remap_probability(np.asarray([0.9], dtype=np.float32), 0.9, 0.82)
+
+  np.testing.assert_allclose(result, (0.82,), rtol=1e-6)
 
 
 def test_feature_builder_keeps_identity_and_one_second_history() -> None:
@@ -160,6 +188,44 @@ def test_close_parallel_object_with_tiny_lateral_motion_never_activates_cutin() 
 
   assert decision is not None
   assert not decision.cutin_candidates
+
+
+def test_close_stationary_reflection_never_activates_cutin() -> None:
+  builder = RadarLeadFeatureBuilder()
+  decision_filter = RadarLeadDecisionFilter(cutin_threshold=0.82)
+  decision = None
+  obj = replace(
+    fused(y_rel=2.2, yv_rel=-0.3, d_rel=4.8),
+    v_rel=-20.0, v_lead=0.0, front_v_rel=-20.0, corner_v_rel=-20.0,
+  )
+  for frame in range(10):
+    sample = builder.update(context(frame * 0.05), (obj,))[0]
+    sample = replace(sample, d_path=1.7, d_path_future=1.5)
+    decision = decision_filter.update(frame * 0.05, (
+      RadarLeadPrediction(sample, lead_prob=0.0, cutin_prob=0.99, risk_prob=0.99),
+    ))
+
+  assert decision is not None
+  assert not decision.cutin_candidates
+
+
+def test_close_slow_in_lane_cutin_remains_usable() -> None:
+  builder = RadarLeadFeatureBuilder()
+  decision_filter = RadarLeadDecisionFilter(cutin_threshold=0.82)
+  decision = None
+  obj = replace(
+    fused(corner_id=None, y_rel=1.45, yv_rel=-0.2, d_rel=3.3),
+    v_rel=-0.1, v_lead=0.2, front_v_rel=-0.1,
+  )
+  for frame in range(10):
+    sample = builder.update(context(frame * 0.05), (obj,))[0]
+    sample = replace(sample, d_path=1.33, d_path_future=1.32)
+    decision = decision_filter.update(frame * 0.05, (
+      RadarLeadPrediction(sample, lead_prob=0.0, cutin_prob=0.99, risk_prob=0.99),
+    ))
+
+  assert decision is not None
+  assert decision.cutin_candidates
 
 
 def test_inside_object_moving_outward_never_activates_cutin() -> None:

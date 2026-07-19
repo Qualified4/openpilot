@@ -77,13 +77,14 @@ should match live rendering cost more closely.
 renders directly into the Qualcomm/Venus-aligned NV12 layout before submit, so
 the cluster hardware path no longer depends on libyuv or a CPU RGBA-to-NV12
 conversion. On TICI with the current native bridge, the pipeline leases a cached
-ION/V4L2 input buffer. By default GLES queues packed readback into a persistent
-three-slot PBO/fence ring; a later frame nonblockingly maps only completed PBOs,
-copies one packed frame into the leased input, and submits it to VIDC. This moves
-the GPU fence off the render deadline at the cost of one explicit CPU copy and
-one frame of pipeline latency. A full ring drops the new render instead of
-blocking. Missing GLES3 symbols, a one-second fence stall, or a first-use PBO
-error falls back to synchronous direct-ION readback; an incompatible layout or
+ION/V4L2 input buffer. By default GLES imports that DMA-BUF as an ABGR8888
+byte-view framebuffer and runs the existing packed-NV12 shader directly into
+it. A bounded GLES fence completes before cached-ION synchronization and VIDC
+submit. This removes `glReadPixels`, PBO mapping, and the full-frame CPU copy
+without changing shader bytes, orientation, encoder geometry, or cadence.
+Set `CLUSTER_NV12_DMABUF_OUTPUT=0` to select the persistent three-slot PBO/fence
+fallback. An EGL/FBO/fence error also selects PBO automatically. PBO failure
+falls back to synchronous direct-ION readback; an incompatible layout or
 direct-readback failure retains the staged compatibility path. Set
 `CLUSTER_ASYNC_NV12_READBACK=0` to force synchronous direct-ION A/B testing, or
 `CLUSTER_DIRECT_NV12_READBACK=0` to force staged readback.
@@ -99,8 +100,9 @@ that the TURZX panel accepts, and patches hardware SPS frame-crop metadata for
 non-macroblock geometry such as 462x1920. It also asks the V4L2 encoder for
 multi-slice output capped by `--usb-h264-slice-max-bytes` so the resulting NAL
 sizes are closer to the ffmpeg/libx264 stream accepted by TURZX. The default
-H264 bitrate is `auto`, which keeps roughly the same bits per frame as FPS
-changes and resolves to `7M` at 30 FPS. The native default is all-I
+H264 bitrate is `auto`, which preserves the `7M` at 30 FPS per-frame budget
+across the supported live-FPS modes and resolves to `14M` at 60 FPS. The native
+default is all-I
 (`--usb-h264-gop 1`) because TURZX panel corruption measurements improved as
 P-frame references were removed. GOP 3 route replay was much better than the
 earlier long-GOP runs, and GOP 2 further improved compact-overlay tests, but a
@@ -108,8 +110,11 @@ route replay without the overlay showed frequent small block artifacts at GOP 2.
 GOP 1 at 6M removed the visible squares on the same route, with only slightly
 softer compression detail, and a follow-up GOP 1 / 7M run also stayed clean, so
 GOP 1 is the measured stability default for now.
-An explicit `8M` route replay was worse and pushed H264 USB
-chunk writes into large latency spikes, so the auto cap is limited to `7M`. The
+An explicit `8M` route replay was worse and pushed H264 USB chunk writes into
+large latency spikes. That result remains transport evidence, not a reason to
+halve the per-frame quality budget at higher FPS. High-FPS testing therefore
+keeps proportional bitrate and treats any resulting sender or receiver stall as
+the implementation bottleneck. The
 larger `--usb-h264-slice-max-bytes 8192` A/B also looked worse than the default
 4096-byte slice cap, and `2048` caused smaller but more frequent smearing, so
 keep the default slice setting for normal tests. The
@@ -270,16 +275,15 @@ debug UI before navi data has arrived. When output is gated off,
 remain visible.
 The autorun watcher normalizes locale before this dim-only USB path too, so
 vendor USB initialization does not fail before the renderer is launched.
-Manager autostart sets `CLUSTER_REALTIME=0` by default and explicitly restores
-`SCHED_OTHER`. CPU affinity remains enabled: `ClusterHudCoreMode=0` maps to cores
-`1,2,3,4`, while mode `1` maps to all initially allowed CPU cores. Set
-`CLUSTER_REALTIME=1` only for an explicit diagnostic override; in that mode,
-`ClusterHudPriority` controls the common openpilot realtime helper priority with
-range `1..99`, default `10`.
+Manager autostart always configures the cluster process through openpilot's
+realtime helper. `ClusterHudCoreMode=0` maps to cores `1,2,3,4`, while mode `1`
+maps to all initially allowed CPU cores. `ClusterHudPriority` always controls
+the FIFO priority with range `1..99`, default `10`; `CLUSTER_REALTIME` is no
+longer read.
 Changing either param makes the running HUD exit so `cluster_autorun` can
 relaunch it with the new affinity/scheduler settings, without a whole system restart.
-Explicit `CLUSTER_REALTIME`, `CLUSTER_REALTIME_CORES`, or
-`CLUSTER_REALTIME_PRIORITY` environment values still win.
+Explicit `CLUSTER_REALTIME_CORES` or `CLUSTER_REALTIME_PRIORITY` environment
+values still override the corresponding Params.
 On TICI, the HUD reads the local Git branch directly but does not start remote
 `ls-remote` or `fetch` work. PC/window runs retain the periodic remote status.
 Native H.264 callback output is queued as complete access units. The bounded
@@ -364,8 +368,9 @@ run for supervisor retry without silently changing codec. Direct CLI auto uses n
 first encoder choice. `1` forces JPEG, `2` forces native hardware H264, and `3`
 forces ffmpeg/libx264 software H264.
 Native hardware H264 always uses GPU NV12 packing. Supported TICI builds report
-`direct_ion=on` and submit the leased encoder input without an intermediate copy;
-otherwise they report `direct_ion=off` and use staged NV12 readback. If backend
+`dmabuf_output=on` and submit the leased encoder input without readback or an
+intermediate copy. They also report the availability of `async_pbo` and
+`direct_ion` fallbacks. Unsupported builds use the first available fallback. If backend
 `auto` falls back to ffmpeg, the run uses the software RGBA pipe.
 Changing this setting while the HUD is running makes the current HUD process
 exit so `cluster_autorun` can relaunch it with the new encoder choice.
@@ -454,11 +459,11 @@ lane color codes, the current lane markings use that color first
 (`+10=white`, `+20=yellow`) before falling back to the cluster model colors.
 The planned path draws `longitudinalPlan.desiredDistance` as a magenta
 horizontal bar across the current lane width at the matching forward position.
-Changing `ClusterHud` to another supported mode or `0` makes the running HUD
-exit; cleanup sends TURZX brightness zero before releasing the USB device.
-When autorun passes a HUD mode, USB open is pinned to that mode's TURZX PID
-(`1 -> 0x0092`, `2 -> 0x0123`) so a second connected TURZX panel is not opened
-by the vendor library's generic device scan.
+Changing `ClusterHud` away from supported mode `1`, including legacy value `2`
+or `0`, makes the running HUD exit; cleanup sends TURZX brightness zero before
+releasing the USB device. When autorun passes HUD mode `1`, USB open is pinned
+to TURZX PID `0x0092` so a second connected TURZX panel is not opened by the
+vendor library's generic device scan.
 If frame or H264 chunk writes report that the USB device was disconnected, the
 active HUD exits instead of trying to recover in-process. Autorun calls the
 launcher in non-exiting mode so the error returns to the watcher loop, letting
@@ -474,6 +479,12 @@ system/platform fonts if KaiGen is not present.
 Latin/numeric text uses the 160-pixel primary font. The complete Korean glyph
 set uses a separate 32-pixel base atlas with bilinear filtering and no mip chain;
 a host resource smoke produced `8192x4096` rather than the former `8192x8192`.
+Dynamic stroked HUD text keeps the original eight outline draws plus one fill
+draw, but calls the same raylib `DrawTextEx` C symbol directly after preparing
+the font, measurement, UTF-8 text, anchor, and colors once. Set
+`CLUSTER_RAW_STROKED_TEXT=0` to restore the pyray-wrapper path for an A/B or
+recovery run. The switch does not select a different shader, glyph atlas,
+outline algorithm, resolution, or text update cadence.
 Incoming Navi H.264 is decoded on a bounded worker. The default path attempts
 Qualcomm VIDC `/dev/video32` on every platform to produce leased linear NV12
 DMA-BUFs, imports them as EGLImages, and composes them through an external OpenGL
