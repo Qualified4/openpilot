@@ -1284,6 +1284,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         try:
           ff_lead = lf_lead = rf_lead = None
           ff_yRel = lf_yRel = rf_yRel = 0
+          ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
           min_side_lead_speed = max(CS.out.vEgo * 0.2, 5.0)
 
           # 레이더 정보 갱신
@@ -1293,52 +1294,15 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             lane_bound = np.interp(abs(current_curvature), [0, 15], [1.5, 2.5])
 
-            # roadEdges[0]/[1] are the left/right road boundaries in the
-            # model's vehicle coordinate frame.
-            left_road_edge = md.roadEdges[0] if len(md.roadEdges) > 0 else None
-            right_road_edge = md.roadEdges[1] if len(md.roadEdges) > 1 else None
-            ROAD_EDGE_STD_MAX = 0.8
-            ROAD_EDGE_INNER_CLEARANCE_M = 1.25  # half a vehicle width (1.0 m) + 0.25 m margin
-
-            ff_min_dist = 1000.0
-            lf_min_dist = 1000.0
-            rf_min_dist = 1000.0
-            def road_edge_y(edge, distance):
-              if edge is None or len(edge.x) == 0 or len(edge.y) == 0:
-                return None
-              return np.interp(distance, edge.x, edge.y)
-
             # Helper function for vision lead matching
             def _is_vision_lead_match(lead, vision_lead):
               if vision_lead is None:
                 return False
               vision_dRel = vision_lead.x[0]
-              vision_yRel = vision_lead.y[0]
+              vision_yRel = -vision_lead.y[0]
               # vision lead와 현재 lead의 dRel, yRel을 비교하여 일치 여부 판단
               return abs(lead.dRel - vision_dRel) < 2.0 and abs(lead.yRel - vision_yRel) < 1.0
 
-            # Helper function for side lead validity check
-            def _is_side_lead_valid(lead, corrected_yRel, dRel, road_edge_clear_flag, road_edge_obj, is_left_side, current_curve_offset_y):
-              if lead.vLeadK >= min_side_lead_speed:
-                return True
-              if road_edge_clear_flag and lead.vLeadK >= 0:
-                # Compare only selected candidates, using the vehicle center plus its half-width margin.
-                edge_y = road_edge_y(road_edge_obj, dRel)
-                if edge_y is None:
-                  return False
-                if is_left_side:
-                  return corrected_yRel < edge_y + current_curve_offset_y - ROAD_EDGE_INNER_CLEARANCE_M
-                else:
-                  return corrected_yRel > edge_y + current_curve_offset_y + ROAD_EDGE_INNER_CLEARANCE_M
-              return False
-
-            def road_edge_is_clear(edge, index):
-              return (edge is not None and len(edge.x) > 0 and len(edge.y) > 0
-                      and len(md.roadEdgeStds) > index and math.isfinite(md.roadEdgeStds[index])
-                      and md.roadEdgeStds[index] <= ROAD_EDGE_STD_MAX)
-
-            left_road_edge_clear = road_edge_is_clear(left_road_edge, 0)
-            right_road_edge_clear = road_edge_is_clear(right_road_edge, 1)
             vision_lead = md.leadsV3[0] if len(md.leadsV3) > 0 else None
 
             valid_leads = (
@@ -1351,6 +1315,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             for lead in valid_leads:
               dRel = lead.dRel
               yRel = lead.yRel
+              lead_velocity = lead.vLat + lead.vLeadK
 
               # 1. 상단에서 계산한 curvature(계기판 표시용 곡률)을 횡방향 물리 오프셋으로 역산
               # 곡률(kappa) = -curvature / 1800.0 (curvature가 음수일 때 좌측 커브)
@@ -1363,18 +1328,18 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 전방 차량
               if -1.5 <= corrected_yRel <= 1.5: # 전방 좁은 영역
-                if dist_score < ff_min_dist and dist_score > 0.5:
+                if dist_score < ff_min_dist and (lead_velocity > min_side_lead_speed or _is_vision_lead_match(lead, vision_lead)):
                   ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [60, 90], [1.0, 0.6]) # yRel 보간
 
               # 왼쪽 차선 차량
               elif lane_bound < corrected_yRel < 4.5 and dRel < 90:
-                if dist_score < lf_min_dist and _is_side_lead_valid(lead, corrected_yRel, dRel, left_road_edge_clear, left_road_edge, is_left_side=True, current_curve_offset_y=curve_offset_y):
-                  lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1]) # yRel 보간
+                if dist_score < lf_min_dist and lead_velocity > min_side_lead_speed:
+                    lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
               # 오른쪽 차선 차량
               elif -4.5 < corrected_yRel < -lane_bound and dRel < 90:
-                if dist_score < rf_min_dist and _is_side_lead_valid(lead, corrected_yRel, dRel, right_road_edge_clear, right_road_edge, is_left_side=False, current_curve_offset_y=curve_offset_y):
-                  rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1]) # yRel 보간
+                if dist_score < rf_min_dist and lead_velocity > min_side_lead_speed:
+                  rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
