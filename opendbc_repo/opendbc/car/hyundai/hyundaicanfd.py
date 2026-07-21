@@ -1301,7 +1301,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               vision_dRel = vision_lead.x[0]
               vision_yRel = -vision_lead.y[0]
               # vision lead와 현재 lead의 dRel, yRel을 비교하여 일치 여부 판단
-              return abs(lead.dRel - vision_dRel) < 2.0 and abs(lead.yRel - vision_yRel) < 1.0
+              return abs(lead.dRel - vision_dRel) < 5.0 and abs(lead.yRel - vision_yRel) < 2.0
 
             vision_lead = md.leadsV3[0] if len(md.leadsV3) > 0 else None
 
