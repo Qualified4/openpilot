@@ -67,8 +67,9 @@ The reference Carrot receiver in `tools/carrot_upload_server` defaults to:
 - 10 GiB free-space floor
 - strict device, segment, filename, file-type, and path-confinement checks
 
-Uploaded content has no public download route and is never executed. Existing
-files are never deleted automatically.
+Uploaded content has no public download route and is never executed. The DSM
+container runs without root privileges, with a read-only root filesystem and a
+single writable data volume.
 
 ## DSM deployment
 
@@ -89,5 +90,9 @@ sessions, and quota state remain under `/volume1/openpilot/tmux/.state`.
 4. Then delete the old transfer account, disable the DSM FTP service, and
    remove its router/firewall rule if nothing else uses it.
 
-The application does not need DSM FTP, WebDAV, or a shared user credential. The
-receiver never scans or deletes the existing Openpilot tree.
+The application does not need DSM FTP, WebDAV, or a shared user credential.
+DSM keeps the original remote layout. Dashcam files go to
+`/volume1/openpilot/routes/<CarName> <DongleID>/<segment>`, while tmux files go
+to `/volume1/openpilot/<GitBranch>/<CarName> <DongleID>/`. The private
+`/volume1/openpilot/tmux/.state` directory holds manifests, sessions, and quota
+state. The web receiver never scans or deletes the existing Openpilot tree.
