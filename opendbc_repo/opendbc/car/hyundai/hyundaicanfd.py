@@ -1285,7 +1285,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           ff_lead = lf_lead = rf_lead = None
           ff_yRel = lf_yRel = rf_yRel = 0
           ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
-          min_side_lead_speed = max(CS.out.vEgo * 0.2, 5.0)
+          min_side_lead_speed = max(CS.out.vEgo * 0.1, 5.0)
 
           # 레이더 정보 갱신
           if CS.radar_state:
@@ -1301,7 +1301,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               vision_dRel = vision_lead.x[0]
               vision_yRel = -vision_lead.y[0]
               # vision lead와 현재 lead의 dRel, yRel을 비교하여 일치 여부 판단
-              return abs(lead.dRel - vision_dRel) < 5.0 and abs(lead.yRel - vision_yRel) < 2.0
+              return abs(lead.dRel - vision_dRel) < 10.0 and abs(lead.yRel - vision_yRel) < 4.0
 
             vision_lead = md.leadsV3[0] if len(md.leadsV3) > 0 else None
 
@@ -1315,12 +1315,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             for lead in valid_leads:
               dRel = lead.dRel
               yRel = lead.yRel
-              lead_velocity = lead.vLat + lead.vLeadK
 
               # 1. 상단에서 계산한 curvature(계기판 표시용 곡률)을 횡방향 물리 오프셋으로 역산
               # 곡률(kappa) = -curvature / 1800.0 (curvature가 음수일 때 좌측 커브)
               # 오프셋 = 0.5 * kappa * dRel^2 = -curvature * (dRel ** 2) / 3600.0
-              curve_offset_y = -current_curvature * ((dRel * 1.1) ** 2) / 3600.0
+              curve_offset_y = -current_curvature * (dRel ** 2) / 3600.0
 
               # 2. 직선 물리 좌표 yRel에서 곡률 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
               corrected_yRel = yRel + curve_offset_y
@@ -1328,17 +1327,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 전방 차량
               if -1.5 <= corrected_yRel <= 1.5: # 전방 좁은 영역
-                if dist_score < ff_min_dist and (lead_velocity > min_side_lead_speed or _is_vision_lead_match(lead, vision_lead)):
-                  ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [60, 90], [1.0, 0.6]) # yRel 보간
+                if dist_score < ff_min_dist and (lead.vLeadK > min_side_lead_speed or _is_vision_lead_match(lead, vision_lead)):
+                  ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 100], [1.0, 0.6]) # yRel 보간
 
               # 왼쪽 차선 차량
               elif lane_bound < corrected_yRel < 4.5 and dRel < 90:
-                if dist_score < lf_min_dist and lead_velocity > min_side_lead_speed:
+                if dist_score < lf_min_dist and lead.vLeadK > min_side_lead_speed:
                     lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
               # 오른쪽 차선 차량
               elif -4.5 < corrected_yRel < -lane_bound and dRel < 90:
-                if dist_score < rf_min_dist and lead_velocity > min_side_lead_speed:
+                if dist_score < rf_min_dist and lead.vLeadK > min_side_lead_speed:
                   rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
           # 전방(FF) 차량 정보 업데이트
