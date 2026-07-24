@@ -9,6 +9,7 @@ from aiohttp import web
 from openpilot.selfdrive.carrot import carrot_man as carrot_man_module
 from openpilot.selfdrive.carrot import web_upload
 from openpilot.selfdrive.carrot.server.features.dashcam import routes, upload, upload_jobs
+from openpilot.selfdrive.carrot.server.services import dashcam_upload_report
 from openpilot.selfdrive.carrot.server.services import web_settings
 
 
@@ -148,6 +149,139 @@ def test_web_api_url_quotes_every_path_component():
     "route|0",
     "qlog.zst",
   ) == "https://upload.example/api/v1/upload/car%20name%2Fid/route%7C0/qlog.zst"
+
+
+def test_dashcam_upload_report_links_public_segment_and_quotes_storage_directory():
+  payload = {
+    "uploadedAt": "2026-07-23 11:17:18",
+    "remoteBasePath": "https://upload.example/routes/HYUNDAI_IONIQ_5_PE 8b06424f3adf2bd3/",
+    "meta": {
+      "carName": "HYUNDAI_IONIQ_5_PE",
+      "dongleId": "8b06424f3adf2bd3",
+      "commit": "79a2a542",
+    },
+    "results": [{
+      "segment": "00000cfb--69588de3d7--10",
+      "route": "00000cfb--69588de3d7",
+      "segmentIndex": 10,
+      "ok": True,
+      "remotePath": "https://upload.example/routes/HYUNDAI_IONIQ_5_PE 8b06424f3adf2bd3/00000cfb--69588de3d7--10",
+    }],
+  }
+
+  report = dashcam_upload_report.upload_share_text(payload)
+  assert "HYUNDAI_IONIQ_5_PE%208b06424f3adf2bd3" in report
+  assert "[00000cfb--69588de3d7--10 OK · Open](https://upload.example/routes/" in report
+  assert "### Open & Analyze" not in report
+
+
+def test_dashcam_upload_report_adds_one_slice_link_for_consecutive_segments():
+  base = "https://upload.example/routes/TEST CAR 0123456789abcdef"
+  results = [
+    {
+      "segment": f"00000cfb--69588de3d7--{index}",
+      "route": "00000cfb--69588de3d7",
+      "segmentIndex": index,
+      "ok": True,
+      "remotePath": f"{base}/00000cfb--69588de3d7--{index}",
+    }
+    for index in (10, 11, 12)
+  ]
+
+  report = dashcam_upload_report.upload_share_text({"remoteBasePath": f"{base}/", "results": results})
+  assert "### Open & Analyze" in report
+  assert "Segments 10–12 (3 logs) · Web/Video/Tools" in report
+  assert "https://upload.example/routes/TEST%20CAR%200123456789abcdef/00000cfb--69588de3d7--10:13" in report
+  assert report.count(" OK · Open]") == 3
+
+
+def test_dashcam_upload_report_does_not_merge_nonconsecutive_segments():
+  base = "https://upload.example/routes/TEST CAR 0123456789abcdef"
+  results = [
+    {
+      "segment": f"00000cfb--69588de3d7--{index}",
+      "route": "00000cfb--69588de3d7",
+      "segmentIndex": index,
+      "ok": True,
+      "remotePath": f"{base}/00000cfb--69588de3d7--{index}",
+    }
+    for index in (10, 12)
+  ]
+
+  report = dashcam_upload_report.upload_share_text({"remoteBasePath": f"{base}/", "results": results})
+  assert "### Open & Analyze" not in report
+
+
+def test_dashcam_upload_completion_notifies_web_server_and_discord(monkeypatch):
+  segment = "00000cfb--69588de3d7--10"
+  notifications = []
+
+  async def fake_upload_folder(*args, **kwargs):
+    return True
+
+  async def fake_web_complete(base_url, token, payload):
+    notifications.append(("web", base_url, token, payload["results"][0]["segment"]))
+    return {"ok": True, "status": 200}
+
+  async def fake_discord(webhook_url, payload):
+    notifications.append(("discord", webhook_url, payload["shareText"]))
+    return {"configured": True, "ok": True, "status": 204}
+
+  monkeypatch.setattr(upload_jobs, "HAS_PARAMS", False)
+  monkeypatch.setattr(upload, "resolve_upload_target", lambda: {
+    "kind": "carrot", "base_url": "https://upload.example", "token": "session-token",
+  })
+  monkeypatch.setattr(upload, "upload_metadata", lambda params: {
+    "carName": "TEST_CAR",
+    "dongleId": "0123456789abcdef",
+  })
+  monkeypatch.setattr(upload, "upload_share_text", lambda payload: "shared upload report")
+  monkeypatch.setattr(upload, "discord_webhook_url", lambda params: "https://discord.example/webhook")
+  monkeypatch.setattr(upload, "send_discord_webhook", fake_discord)
+  monkeypatch.setattr(upload_jobs, "segment_dir", lambda value: "/tmp/segment")
+  monkeypatch.setattr(upload_jobs, "segment_file_summary", lambda value: [])
+  monkeypatch.setattr(upload_jobs, "upload_folder_to_web", fake_upload_folder)
+  monkeypatch.setattr(upload_jobs, "send_web_upload_complete", fake_web_complete)
+
+  result = asyncio.run(upload_jobs.run_upload_segments([segment]))
+
+  assert result["ok"] is True
+  assert result["webComplete"] == {"ok": True, "status": 200}
+  assert result["discord"] == {"configured": True, "ok": True, "status": 204}
+  assert notifications == [
+    ("web", "https://upload.example", "session-token", segment),
+    ("discord", "https://discord.example/webhook", "shared upload report"),
+  ]
+
+
+def test_dashcam_toss_completion_never_uses_discord(monkeypatch):
+  segment = "00000cfb--69588de3d7--10"
+
+  async def fake_upload_folder(*args, **kwargs):
+    return True
+
+  async def fake_web_complete(base_url, token, payload):
+    return {"ok": True, "status": 200}
+
+  monkeypatch.setattr(upload_jobs, "HAS_PARAMS", False)
+  monkeypatch.setattr(upload, "resolve_upload_target", lambda: {
+    "kind": "toss", "base_url": "https://toss.example", "token": "toss-token",
+  })
+  monkeypatch.setattr(upload, "upload_metadata", lambda params: {
+    "carName": "TEST_CAR", "dongleId": "0123456789abcdef",
+  })
+  monkeypatch.setattr(upload, "upload_share_text", lambda payload: "shared upload report")
+  monkeypatch.setattr(upload, "discord_webhook_url", lambda params: pytest.fail("Toss must not resolve Discord"))
+  monkeypatch.setattr(upload, "send_discord_webhook", lambda *args: pytest.fail("Toss must not send Discord"))
+  monkeypatch.setattr(upload_jobs, "segment_dir", lambda value: "/tmp/segment")
+  monkeypatch.setattr(upload_jobs, "segment_file_summary", lambda value: [])
+  monkeypatch.setattr(upload_jobs, "upload_folder_to_web", fake_upload_folder)
+  monkeypatch.setattr(upload_jobs, "send_web_upload_complete", fake_web_complete)
+
+  result = asyncio.run(upload_jobs.run_upload_segments([segment]))
+
+  assert result["ok"] is True
+  assert result["discord"] == {"configured": False, "ok": False, "skipped": True}
 
 
 def test_tmux_target_uses_automatic_session_token(monkeypatch):

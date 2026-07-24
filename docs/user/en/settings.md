@@ -45,15 +45,23 @@ A full reset or a backup from another vehicle can change many values at once. Sa
 
 ### Per-setting detailed guides
 
-Select the body of a setting, outside its value control, to open its detail screen. The **Detailed guide** panel reads only the relevant section from the `docs/user/en` Markdown files installed on the device.
+Select the body of a setting, outside its value control, to open its detail screen. The information box below the existing setting box always shows **Description**, **Popular**, and **History** tabs, with **Description** selected by default. A tab remains available and shows an empty state when it has no data.
 
-- It uses the on-device document without requiring GitHub or internet access.
-- Select the **Detailed guide** heading to collapse or expand it.
-- A documentation read failure does not disable viewing or changing the setting.
+- **Description** first uses the setting guide for the current language from the validated GitHub published content.
+- Content is shown only when both the published index and guide-page hashes match.
+- If the request or validation fails, Carrot Web uses the last validated browser copy.
+- If neither a validated remote version nor a validated browser copy exists, it shows an empty state instead of using an on-device document.
+- **Popular** shows the collected value distribution as a reference, not as a recommendation.
+- **History** shows the latest three changes first and offers the full history when more records exist.
+- Network or documentation processing failures do not disable viewing or changing the setting.
 - Korean and English Carrot Web sessions use their matching guide language.
 - Until a Chinese guide exists, Chinese titles and short descriptions remain Chinese while the detailed panel explicitly falls back to English.
+- `User Guide > Understanding Settings > All Settings` in the GitHub Wiki lists every
+  setting with the same menu hierarchy, order, and current-language title as Carrot Web.
 
-Several parameters in the same subsection can share one explanation. If a short catalog description and the detailed guide differ, diagnose the current branch against this code-owned guide.
+The information box stays vertically below the existing setting box in both portrait and landscape layouts. Multiplier and default actions keep their existing position and behavior inside the setting box.
+
+Validated published guides are generated against the current setting code's defaults, ranges, and options. If a short catalog description and the detailed guide differ, diagnose the issue together with the current branch's setting code.
 
 ## Reading values and defaults
 
@@ -88,12 +96,12 @@ Ignoring `x0.01`, `x0.001`, `cm`, `km/h`, or `%` can make a value appear one hun
 
 ## Settings map
 
-The current `carrot_settings.json` contains **165 parameters**. Every entry is assigned to one of these menus:
+The current `carrot_settings.json` contains **166 parameters**. Every entry is assigned to one of these menus:
 
 | Category | Count | Groups |
 |---|---:|---|
 | Driving control | 107 | Startup and auto, buttons and presets, steering, speed and deceleration, cruise and following gap |
-| Vehicle and hardware | 14 | Hyundai/Kia, CAN FD/HDA, radar, driver monitoring, vehicle assistance |
+| Vehicle and hardware | 15 | Hyundai/Kia, CAN FD/HDA, radar, driver monitoring, vehicle assistance, device hardware |
 | Display | 33 | Information, path, brightness/on-road view, external HUD |
 | System | 11 | Recording/power, network/map, sound, software |
 
@@ -180,7 +188,7 @@ A lower `AutoNaviSpeedDecelRate` begins slowing farther away. `AutoNaviSpeedSafe
 <a id="vehicle-hardware"></a>
 ## Vehicle and hardware
 
-These 14 settings describe the car and harness configuration. Do not enable them merely as a display experiment.
+These 15 settings describe the car, harness, and device hardware configuration. Do not enable them merely as a display experiment.
 
 | Group | Parameters | Purpose |
 |---|---|---|
@@ -189,11 +197,14 @@ These 14 settings describe the car and harness configuration. Do not enable them
 | Radar | `EnableRadarTracks`, `EnableCornerRadar`, `RadarLeadModelMode` | SCC radar, raw tracks, corner radar, and lead selection |
 | Driver monitoring | `DisableDM`, `MuteDoor`, `MuteSeatbelt` | Driver monitoring and selected vehicle alerts |
 | Vehicle assistance | `MaxAngleFrames`, `SpeedFromPCM` | Steering-angle frames and stock-SCC speed control |
+| Device hardware | `HardwareC3xLite` | Speakerless C3X Lite audio and process configuration |
 
 > [!CAUTION]
 > Incorrect `HyundaiCameraSCC`, `CanfdHDA2`, `EnableRadarTracks`, `RadarLeadModelMode`, or `SpeedFromPCM` values can change vehicle identification, SCC, radar, or longitudinal behavior. Confirm the vehicle, model year, HDA generation, harness location, and whether stock ACC is retained.
 
 See [Radar tracks and corner radar](radar.md) before changing radar modes.
+
+`HardwareC3xLite` must remain off on standard C3 and C3X hardware. Enable it only on a C3X Lite, then reboot the device. The setting skips the unavailable amplifier so startup is not delayed by I2C retries, uses the GPIO buzzer for alerts, disables `micd`, `soundd`, and `loggerd`, and turns off `RecordAudio`. Normal route logging is unavailable while this hardware mode is enabled.
 
 <a id="display"></a>
 ## Display
@@ -210,6 +221,14 @@ Display contains 33 settings. Most on-road display settings are easy to reverse;
 An APN label remaining in the `ShowRouteInfo` description refers to route-input state. It is not an indication that CarrotMan or CarrotLink is supported.
 
 On Hyundai/Kia CAN-FD hybrids, the external HUD's green `EV` indicator is enabled only when ECAN `0xFA` and `0x230` are both present with DLC32. It decodes the four-bit hybrid power-flow mode in `0x230` and shows `EV` for the observed motor/regen modes 1, 2, and 6. The normal HUD shows it between vehicle speed and cruise-set speed; full navigation intentionally omits it. The indicator remains hidden for other mode values and when the capability or sample is missing, invalid, or stale.
+
+The normal external HUD also shows the current driving mode beside the traffic-state dot above vehicle speed. `MyDrivingMode` value `1` is a green Eco badge, `2` an orange Safe badge, `3` a white Normal badge, and `4` a red High badge. The badge is hidden for an unavailable, invalid, or stale `longitudinalPlan` and for values outside that range; full navigation omits it. The adjacent red or green dot is an independent model traffic-state indicator, not a driving-mode state.
+
+### Carrot Vision AR and replay navigation events
+
+Carrot Vision provides separate **Show AR** and **AR debug** controls outside the `carrot_settings.json` catalog. **Show AR** overlays driving guidance on the Vision video and requests the additional real-time data only while it is enabled. **AR debug** adds a troubleshooting panel with sign, anchor, and draw counts, the current blocking reason, and copyable history.
+
+The Replay event timeline also identifies Carrot Navi connection and route-session changes, current and next maneuvers, lane guidance, road-safety alerts, average-speed zones, traffic signals, and intersection guidance. These entries are labels for reviewing transitions recorded in the replay.
 
 <a id="system"></a>
 ## System

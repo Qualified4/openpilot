@@ -293,7 +293,16 @@
   gap: 3px;
 }
 
+.web-settings-row__title-line {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-xs) var(--sp-sm);
+}
+
 .web-settings-row__title {
+  min-width: 0;
   color: var(--md-on-surface);
   font-size: var(--fs-body-sm);
   font-weight: 800;
