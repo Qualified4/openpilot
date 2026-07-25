@@ -1327,7 +1327,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 전방 차량
               if -1.5 <= corrected_yRel <= 1.5: # 전방 좁은 영역
-                if dist_score < ff_min_dist and (lead.vLeadK > min_side_lead_speed or _is_vision_lead_match(lead, vision_lead)):
+                if dist_score < ff_min_dist and dist_score > 0.5: # (lead.vLeadK > min_side_lead_speed or _is_vision_lead_match(lead, vision_lead)):
                   ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 100], [1.0, 0.6]) # yRel 보간
 
               # 왼쪽 차선 차량
