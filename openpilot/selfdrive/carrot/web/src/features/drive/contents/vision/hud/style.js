@@ -15,8 +15,8 @@ export const CSS = `
   font-style:normal;
   font-weight:900;
 }
-/* 구 HUD 완전 배제 — 신규 오버레이가 대체. DOM은 남겨둔다(그래야 DriveVisionHudContent가
- * 생성되고 그 update를 래핑해 실데이터를 받음). !important로 표시만 차단. */
+/* 구 HUD 완전 배제 — 신규 오버레이가 대체. 기존 DOM은 호환 수명주기 루트로만 남기고
+ * 실데이터 렌더는 신규 오버레이 하나가 담당한다. !important로 표시를 차단. */
 #driveHudCard { display:none !important; }
 /* 미니 HUD는 구 HUD가 아니라 별개 기능(웹설정 > HUD > 미니 HUD)이다. 평소에는 이 오버레이가
  * 화면을 차지하므로 함께 숨기되, 미니 HUD 모드가 실제로 켜졌을 때는 그 자체가 유일한 표시
@@ -33,7 +33,7 @@ html:not([data-carrot-mini-hud="1"]) #carrotMiniHud { display:none !important; }
   container-type:size; container-name:chud;
   --chud-font:"CarrotClusterHud", "Segoe UI", system-ui, sans-serif;
   --chud-weight:900;
-  --chud-white:#fff; --chud-carrot:#14bc68; --chud-limit:#de4840; --chud-stroke:#05090c;
+  --chud-white:#fff; --chud-carrot:#14bc68; --chud-limit:#de4840; --chud-amber:#f4ac36; --chud-stroke:#05090c;
   --chud-muted:#96a0ac;
 }
 .chud::before,.chud::after{
@@ -148,6 +148,12 @@ html:not([data-carrot-mini-hud="1"]) #carrotMiniHud { display:none !important; }
 .chud-t-ev{font-weight:var(--chud-weight);fill:var(--chud-carrot);stroke-width:3}
 .chud-t-override{font-weight:var(--chud-weight);stroke-width:2}
 .chud-t-override-label{font-weight:800;stroke-width:2}
+/* 주행모드 배지(연비/안전/일반/고속) — 색은 위젯이 mode별 인라인(fill), 배경 α는 여기서(200/255) */
+.chud-drive-mode-box{fill-opacity:.784;stroke:#fff;stroke-width:2;stroke-linejoin:round}
+/* 흰 글자 + 두꺼운 어두운 외곽선으로 어느 배경(흰 '일반' 포함)에서도 또렷·강조. */
+.chud-drive-mode-label{font-family:var(--chud-font);font-weight:var(--chud-weight);fill:#fff;
+  paint-order:stroke;stroke:var(--chud-stroke);stroke-width:3;stroke-linejoin:round;
+  letter-spacing:.02em}
 .chud-gear-box{fill:rgba(5,9,12,.82);stroke:#fff;stroke-width:3}
 .chud-gear-box.is-muted{stroke:var(--chud-muted)}
 .chud-speed-traffic{overflow:visible}
