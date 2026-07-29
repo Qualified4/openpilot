@@ -25,9 +25,16 @@
 enum SpiError {
   NACK = -2,
   ACK_TIMEOUT = -3,
+  RECOVERY_FAILED = -4,
 };
 
 const unsigned int SPI_ACK_TIMEOUT = 500; // milliseconds
+// A blocked SPI transfer also blocks CAN receive and heartbeat handling. Keep
+// retries well below Panda's 5 second heartbeat timeout, then reconnect cleanly.
+const unsigned int SPI_TRANSFER_RETRY_TIMEOUT = 500; // milliseconds
+const int SPI_MAX_NACK_RETRIES = 8;
+const int SPI_MAX_ACK_TIMEOUTS = 6;
+const int SPI_RECOVERY_MAX_ATTEMPTS = 12;
 const std::string SPI_DEVICE = "/dev/spidev0.0";
 
 class LockEx {
@@ -203,18 +210,27 @@ bool check_checksum(uint8_t *data, int data_len) {
 
 
 int PandaSpiHandle::spi_transfer_retry(uint8_t endpoint, uint8_t *tx_data, uint16_t tx_len, uint8_t *rx_data, uint16_t max_rx_len, unsigned int timeout) {
-  int ret;
+  if (!connected) {
+    return -1;
+  }
+
+  int ret = -1;
   int nack_count = 0;
   int timeout_count = 0;
-  bool timed_out = false;
   double start_time = millis_since_boot();
+  bool retry_exhausted = false;
 
   do {
     ret = spi_transfer(endpoint, tx_data, tx_len, rx_data, max_rx_len, timeout);
 
     if (ret < 0) {
-      timed_out = (timeout != 0) && (timeout_count > 5);
+      nack_count += ret == SpiError::NACK;
       timeout_count += ret == SpiError::ACK_TIMEOUT;
+      const double elapsed = millis_since_boot() - start_time;
+      retry_exhausted = (ret == SpiError::RECOVERY_FAILED) ||
+                        (elapsed >= SPI_TRANSFER_RETRY_TIMEOUT) ||
+                        (nack_count >= SPI_MAX_NACK_RETRIES) ||
+                        (timeout_count >= SPI_MAX_ACK_TIMEOUTS);
 
       // give other threads a chance to run
       std::this_thread::yield();
@@ -222,17 +238,24 @@ int PandaSpiHandle::spi_transfer_retry(uint8_t endpoint, uint8_t *tx_data, uint1
       if (ret == SpiError::NACK) {
         // prevent busy waiting while the panda is NACK'ing
         // due to full TX buffers
-        nack_count += 1;
         if (nack_count > 3) {
           SPILOG(LOGD, "NACK sleep %d", nack_count);
           usleep(std::clamp(nack_count*10, 200, 2000));
         }
       }
     }
-  } while (ret < 0 && connected && !timed_out);
+  } while (ret < 0 && connected && !retry_exhausted);
 
   if (ret < 0) {
-    SPILOG(LOGE, "transfer failed, after %d tries, %.2fms", timeout_count, millis_since_boot() - start_time);
+    const double elapsed = millis_since_boot() - start_time;
+    LOGE("SPI transfer failed: ret=%d, endpoint=0x%x, tx=%u, rx=%u, nacks=%d, timeouts=%d, elapsed=%.2fms",
+         ret, endpoint, tx_len, max_rx_len, nack_count, timeout_count, elapsed);
+
+    // Let native pandad exit. The Python wrapper will reopen the SPI device and
+    // configure Panda and safety from a known state instead of draining stale
+    // sendcan messages after a multi-second stall.
+    comms_healthy = false;
+    connected = false;
   }
 
   return ret;
@@ -395,12 +418,18 @@ fail:
   // ensure slave is in a consistent state
   // and ready for the next transfer
   int nack_cnt = 0;
-  while (nack_cnt < 3) {
+  int recovery_attempts = 0;
+  while ((nack_cnt < 3) && (recovery_attempts < SPI_RECOVERY_MAX_ATTEMPTS)) {
+    recovery_attempts += 1;
     if (wait_for_ack(SPI_NACK, 0x14, 1, SPI_BUF_SIZE/2) == 0) {
       nack_cnt += 1;
     } else {
       nack_cnt = 0;
     }
+  }
+  if (nack_cnt < 3) {
+    LOGE("SPI recovery failed after %d attempts", recovery_attempts);
+    ret = SpiError::RECOVERY_FAILED;
   }
 
   if (ret >= 0) ret = -1;

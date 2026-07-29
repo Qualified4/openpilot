@@ -24,6 +24,7 @@ from cluster_config import (
     CLUSTER_HUD_DEBUG_PARAM,
     CLUSTER_HUD_PARAM,
     CLUSTER_LIVE_FPS_PARAM,
+    CLUSTER_ORIENTATION_PARAM,
     CLUSTER_PRIORITY_PARAM,
     CLUSTER_RADAR_DISPLAY_PARAM,
     CLUSTER_RADAR_INFO_PARAM,
@@ -72,6 +73,8 @@ from cluster_navi_overlay import merge_navi_overlay_state
 from cluster_profile import GcProfileHook, ProfileReporter, freeze_gc_after_init
 from cluster_renderer import ClusterUiRenderer
 from cluster_route_replay import (
+    ROUTE_CORNER_SOURCE_CHOICES,
+    ROUTE_CORNER_SOURCE_LIVE,
     ROUTE_FRONT_RADAR_ONLY_ENV,
     RouteReplaySource,
     adjacent_route_log_path,
@@ -89,7 +92,7 @@ DEFAULT_H264_GOP = 1
 DEFAULT_H264_DIMENSION_ALIGN = 1
 THEME_PARAM_POLL_SECONDS = 1.0
 FPS_PARAM_POLL_SECONDS = 1.0
-BRIGHTNESS_PARAM_POLL_SECONDS = 1.0
+BRIGHTNESS_PARAM_POLL_SECONDS = 0.1
 SCREEN_MODE_PARAM_POLL_SECONDS = 1.0
 CAMERA_VIEW_PARAM_POLL_SECONDS = 1.0
 RADAR_PARAM_POLL_SECONDS = 1.0
@@ -274,6 +277,27 @@ class ClusterHudBrightnessParamReader:
             return normalize_cluster_brightness_percent(self._params.get_int(CLUSTER_BRIGHTNESS_PARAM))
         except Exception:
             return 0
+
+
+class ClusterHudOrientationParamReader:
+    def __init__(self) -> None:
+        self._params = None
+        try:
+            from openpilot.common.params import Params
+
+            self._params = Params()
+        except Exception:
+            pass
+
+    def read(self) -> int:
+        if self._params is None:
+            return 0
+        try:
+            orientation = int(self._params.get_int(CLUSTER_ORIENTATION_PARAM))
+            return orientation if orientation in (0, 1, 2, 3) else 0
+        except Exception:
+            return 0
+
 
 class ClusterHudMirrorParamReader:
     def __init__(self) -> None:
@@ -612,6 +636,7 @@ def run_demo(
     usb_fast_drain_timeout_ms: int,
     route_path: Path,
     route_log: str,
+    route_corner_source: str,
     route_overlay_mode: str,
     route_tools_mode: str,
     camera_view_mode: int | None,
@@ -661,6 +686,9 @@ def run_demo(
     usb_pipeline: AsyncJpegUsbPipeline | None = None
     h264_pipeline: H264UsbPipeline | None = None
     active_brightness_setting = normalize_cluster_brightness_percent(usb_brightness)
+    usb_orientation_param_reader = ClusterHudOrientationParamReader()
+    initial_orientation = usb_orientation_param_reader.read()
+    active_orientation = initial_orientation if initial_orientation in (0, 2) else 0
 
     hud_mirror_param_reader = ClusterHudMirrorParamReader()
     active_hud_mirror_mode = hud_mirror_param_reader.read()
@@ -687,6 +715,9 @@ def run_demo(
                 product_id_for_hud_mode(hud_mode_watch) if hud_mode_watch is not None else None
             ),
         )
+        # H.264 startup command 13 carries this state; do not add another
+        # mandatory sync transaction immediately after USB initialization.
+        usb_display.set_orientation(active_orientation)
         usb_display.set_profile_enabled(profile_render)
         profile_stage = time.perf_counter()
         try:
@@ -820,7 +851,7 @@ def run_demo(
                 route_start_segment,
                 route_max_segments,
                 0.0,
-                "live",
+                route_corner_source,
                 0.0,
             )
         except Exception:
@@ -896,7 +927,7 @@ def run_demo(
                 None,
                 1,
                 0.0,
-                "live",
+                route_corner_source,
                 route_active_corner_lateral_offset_m,
             )
         except Exception as exc:
@@ -1459,6 +1490,18 @@ def run_demo(
                     auto_enabled=usb_brightness_auto_enabled,
                 )
                 usb_display.set_brightness(next_usb_brightness)
+                next_orientation = usb_orientation_param_reader.read()
+                if next_orientation in (0, 2) and next_orientation != active_orientation:
+                    if h264_pipeline is not None and hud_mode_watch is not None:
+                        print(
+                            f"{CLUSTER_ORIENTATION_PARAM} changed from "
+                            f"{active_orientation} to {next_orientation}; exiting for H264 restart",
+                            flush=True,
+                        )
+                        break
+                    if usb_display.set_orientation(next_orientation):
+                        active_orientation = next_orientation
+                        print(f"{CLUSTER_ORIENTATION_PARAM} updated: {active_orientation}", flush=True)
                 next_brightness_param_read = brightness_now + BRIGHTNESS_PARAM_POLL_SECONDS
 
             if output_mode in ("window", "both"):
@@ -2097,6 +2140,15 @@ def parse_args() -> argparse.Namespace:
         help="Route log type to read. rlog has full corner radar data; qlog is faster but downsampled.",
     )
     parser.add_argument(
+        "--route-corner-source",
+        choices=ROUTE_CORNER_SOURCE_CHOICES,
+        default=ROUTE_CORNER_SOURCE_LIVE,
+        help=" ".join((
+            "Corner-radar replay source. live uses recorded liveTracks;",
+            "stable reconstructs physical tracks from raw CAN; raw displays untracked CAN slots.",
+        )),
+    )
+    parser.add_argument(
         "--route-overlay",
         choices=("compact", "full", "off"),
         default="compact",
@@ -2443,6 +2495,7 @@ def main(*, exit_on_error: bool = True) -> None:
             args.usb_fast_drain_timeout_ms,
             args.route,
             args.route_log,
+            args.route_corner_source,
             args.route_overlay,
             args.route_tools,
             args.camera_view_mode,

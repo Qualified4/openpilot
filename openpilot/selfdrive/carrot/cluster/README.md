@@ -121,8 +121,9 @@ keep the default slice setting for normal tests. The
 hardware V4L2 rate-control default remains `--usb-h264-rate-control vbr-cfr`;
 `cbr-cfr` made frequent small blocks and `--usb-h264-realtime-priority` landed
 between VBR-CFR and CBR-CFR, so keep both off for normal tests. The
-ffmpeg/libx264 path remains available as a known-good comparison path. Build
-the native library before hardware testing:
+ffmpeg/libx264 path remains available as a known-good comparison path. Normal
+TICI (`larch64`) SCons builds include both native bridges. To rebuild only
+those targets before hardware testing:
 
 ```bash
 scons system/loggerd/libcluster_h264_encoder_bridge.so
@@ -218,6 +219,19 @@ python selfdrive/carrot/cluster_replay_usb.py /data/media/0/realdata/0000012e--f
 python selfdrive/carrot/cluster_replay_usb.py /data/media/0/realdata/0000012e--f190807d64--36/rlog.zst --fps 20 --usb-brightness 80
 ```
 
+From a Windows checkout whose repository root contains the `openpilot`
+directory, use:
+
+```powershell
+.venv\Scripts\python.exe openpilot\selfdrive\carrot\cluster_replay_usb.py W:\routes\vehicle\segment\rlog.zst --output both
+```
+
+The default `--corner-source live` displays the `liveTracks` actually
+published by the device. Use `--corner-source stable` to reconstruct
+physically continuous corner tracks from raw CAN, or `--corner-source raw` to
+show the untracked CAN slots. Comparing `live` and `stable` is useful when a
+recorded cluster display is missing a corner object.
+
 Use `--route-overlay full` for a larger replay debug panel, or
 `--output usb --route-overlay off` when only the USB panel should be driven.
 Use `--corner-yaw-comp-gain 0.6` to add replay-only corner-radar yaw
@@ -294,9 +308,37 @@ USB; stale access units are dropped and reported instead of failing the run.
 When `--usb-brightness` is omitted, USB launches follow `ClusterHudBrightness`:
 `0` auto follows live `wideRoadCameraState.exposureValPercent` after samples are
 available, falling back to `deviceState.screenBrightnessPercent`; `1` through
-`100` are fixed brightness percentages.
-Brightness commands use no-ACK command `14` during USB initialization and when
-the resolved brightness changes.
+`100` are fixed brightness percentages. `ClusterHudOrientation` supports `0`
+(0 degrees) and `2` (180 degrees); values `1` and `3` are ignored. The existing
+web settings UI stores both Params without a custom slider path. The running
+HUD checks the stored brightness and orientation every 100 ms. Brightness
+applies without restarting. A managed H.264 orientation change exits cleanly
+and autorun relaunches immediately. The new stream uses the captured
+`10, 111, 112, 13, 14, 52, 102, 15, 17` setup sequence, including the selected
+raw orientation in command `13`.
+
+Changed display settings follow the capture-derived command procedure:
+
+- Brightness: command `10` (sync), wait about 20 ms, then command `14` with
+  byte 8 set to `int(percent / 100 * 102)`.
+- Screen rotation: command `10` (sync), wait about 20 ms, then command `13`
+  with byte 8 set to supported raw orientation `0` or `2`.
+
+The sync and setting write are one USB-locked transaction so an image frame
+cannot split the pair. Both runtime writes are nonblocking on TICI; pending
+responses are drained by the next bounded USB operation, so a missing sync ACK
+cannot terminate the HUD. Initial orientation is stored locally before USB
+open and carried by H.264 setup command `13`. H.264 startup waits for each captured
+setup delay, uses captured finalizer command `52` instead of the
+reference-library command `41`, clears the 464x1920 overlay, then applies FPS
+and queries the chunk size. Setup writes remain nonblocking on TICI and drain
+pending responses before subsequent writes; waiting synchronously for every
+ACK prevented the H.264 stream from starting. Shutdown sends command `123`
+followed by two bounded command-`122` status drains before releasing USB. The
+panel does not visibly apply command `13` during an active H.264 stream, so
+managed H.264 uses the automatic restart described above.
+`--usb-h264-orientation` remains a separate diagnostic option controlling
+encoder/render geometry.
 
 The launcher defaults to `--input live`, subscribes to openpilot cereal services,
 and renders live `carState`, `modelV2`, `radarState`, `liveTracks`,
