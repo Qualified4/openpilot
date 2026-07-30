@@ -1334,17 +1334,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 전방 차량
               if -1.5 <= corrected_yRel <= 1.5: # 전방 좁은 영역
-                if dist_score < ff_min_dist and dRel > 0.2 and (lead.vLeadK * CV.MS_TO_KPH > min_front_lead_speed or _is_vision_lead_match(lead, vision_lead)):
+                if dist_score < ff_min_dist and dRel > 0.2 and (lead.vLeadK * CV.MS_TO_KPH > min_front_lead_speed):
                   ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 100], [1.0, 0.6]) # yRel 보간
 
               # 왼쪽 차선 차량
               elif lane_bound < corrected_yRel < 4.5 and dRel < 90:
-                if dist_score < lf_min_dist and lead.vLeadK >= 0 and (lead.vLeadK * CV.MS_TO_KPH > min_side_lead_speed or (l_line_prob > 0.3 and corrected_yRel < l_line_edge)):
+                if dist_score < lf_min_dist and lead.vLeadK * CV.MS_TO_KPH > min_side_lead_speed:
                     lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
               # 오른쪽 차선 차량
               elif -4.5 < corrected_yRel < -lane_bound and dRel < 90:
-                if dist_score < rf_min_dist and lead.vLeadK >= 0 and (lead.vLeadK * CV.MS_TO_KPH > min_side_lead_speed or (r_line_prob > 0.3 and corrected_yRel > r_line_edge)):
+                if dist_score < rf_min_dist and lead.vLeadK * CV.MS_TO_KPH > min_side_lead_speed:
                   rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
           # 전방(FF) 차량 정보 업데이트
