@@ -11,7 +11,6 @@ from typing import Any
 from openpilot.selfdrive.carrot.radar_motion.lead_selection import (
   DPathLeadCandidate,
   DPathLeadTwoTracker,
-  can_start_current_path_lead_two,
   cutin_can_compete_with_primary,
   front_cutin_motion_supported,
   lead_duplicates_primary,
@@ -29,11 +28,13 @@ from openpilot.selfdrive.carrot.radar_motion.primary import (
   RadarPointSnapshot,
   VisionRadarMatcher,
   apply_vision_bracket_cutin_support,
+  lead_from_vision,
   lead_from_radar_point,
+  match_dpath_primary_lead,
   prefer_front_radar_kinematics,
-  select_primary_radar_points,
   snapshot_radar_points,
   vision_lead_from_model,
+  vision_only_lead_allowed,
 )
 
 
@@ -65,6 +66,16 @@ def _model_path(model: Any) -> tuple[tuple[float, float], ...]:
     for x, y in zip(position.x, position.y, strict=False)
     if math.isfinite(float(x)) and math.isfinite(float(y))
   )
+
+
+def _model_ego_speed(model: Any, fallback: float) -> float:
+  velocity = getattr(model, "velocity", None)
+  values = getattr(velocity, "x", ()) if velocity is not None else ()
+  try:
+    value = float(values[0])
+  except (IndexError, TypeError, ValueError):
+    return float(fallback)
+  return value if math.isfinite(value) else float(fallback)
 
 
 @dataclass(frozen=True)
@@ -340,27 +351,15 @@ class DPathRadarController:
     self.lead_dynamics.update(points, radar_reaction_factor)
     front_kinematic_matches = self.front_kinematic_associator.update(points)
 
-    # This is intentionally first: model lead zero identifies leadOne only
-    # among the independently measured front/SCC stream.
-    primary_match = self.primary_matcher.match(
+    # This is intentionally first: model lead zero identifies leadOne with
+    # front-first radar selection before independent CUT-IN prediction.
+    primary_match = match_dpath_primary_lead(
+      self.primary_matcher,
       model,
-      select_primary_radar_points(
-        points,
-        self.enable_radar_tracks,
-      ),
+      points,
       path,
       time_s=time_s,
-      stationary_points=(
-        points
-        if self.enable_radar_tracks > 0
-        else select_primary_radar_points(
-          points,
-          self.enable_radar_tracks,
-        )
-      ),
-      # Motion-sensor choice controls CUT-IN prediction only. leadOne remains
-      # front/SCC-first; corner radar is its continuity fallback.
-      prefer_primary_stationary=True,
+      enable_radar_tracks=self.enable_radar_tracks,
     )
     lead_one = None
     if primary_match is not None:
@@ -370,6 +369,24 @@ class DPathRadarController:
         primary_match.probability,
         primary_match.score,
       )
+    else:
+      vision = self.primary_matcher.vision_fallback
+      if (
+        vision is not None
+        and vision_only_lead_allowed(
+          self.enable_radar_tracks,
+          side_cutin_supported=(
+            self.primary_matcher
+            .vision_only_side_cutin_supported
+          ),
+        )
+      ):
+        lead_one = lead_from_vision(
+          vision,
+          path,
+          v_ego,
+          model_v_ego=_model_ego_speed(model, v_ego),
+        )
     motion_points = self._select_motion_points(points)
     scoped_motion_points = _scoped_motion_points(motion_points, path)
     predictions = self.motion_predictor.update(
@@ -542,26 +559,6 @@ class DPathRadarController:
             ),
           )
         ),
-        current_path_motion=(
-          self.motion_sensitivity.cut_in_enabled
-          and can_start_current_path_lead_two(
-            prediction.source,
-            float(lead["dRel"]),
-            prediction.current_path_occupancy,
-            (
-              getattr(
-                prediction,
-                "reason",
-                "",
-              ) != "insufficient measured dPath history"
-            ),
-            getattr(prediction, "front_tracked_close_entry", False),
-          )
-        )
-        and (
-          getattr(prediction, "path_entry_age_s", None) is None
-          or front_motion_supported
-        ),
       ))
     if (
       active_identity is not None
@@ -589,7 +586,6 @@ class DPathRadarController:
             continuity_id=continuity_id,
             retainable=True,
             confirmed_cutin=False,
-            current_path_motion=False,
           ))
     selection = self.lead_two_tracker.update(
       time_s,
