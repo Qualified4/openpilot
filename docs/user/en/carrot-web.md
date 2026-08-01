@@ -15,6 +15,8 @@ Carrot Web is a local web interface for viewing and managing carrotpilot from a 
 
 Example: `http://192.168.0.25:7000`
 
+Select the white carrot icon on the device to show a large QR code for its current address. On C3, use the bottom-left button; on C4, use the bottom status-icon row. Scan it with a phone on the same network to connect. If the device IP changes while the QR screen is open, both the QR code and displayed address update automatically. Long addresses scale to fit instead of being shortened. The last QR refresh time appears below the address as numeric `HH:MM:SS`, with the 30-second auto-close countdown on the right. Tap the QR screen to close it, or leave it open and it closes when the countdown reaches zero.
+
 Carrot Web is a local device-management interface. Do not expose it directly to the internet or give its address, a remote-support link, or terminal access to an untrusted person.
 
 ## Pages at a glance
@@ -39,8 +41,10 @@ The Drive page displays live video and driving state. Its usual layout contains 
 
 - Select `Start Drive Vision` to begin connecting to the camera stream.
 - The HUD may show vehicle speed, set speed, speed limit, following gap, lead vehicle, and driving alerts.
+- The LFA lane wings distinguish lane-mode intent from actual control: dim wings mean lane mode is requested but not currently controlling, bright green wings mean lane-line control is active, and no wings mean laneless mode is requested.
 - The lower-left corner shows the hottest CPU-core temperature in Celsius. If temperature data is unavailable, it keeps a `--°C` placeholder instead of hiding the indicator.
 - Enable or disable AR in `Tools > Web Settings`.
+- `Tools > Web Settings > Navigation` also provides Carrot Navi map type (normal or satellite) and map theme (dark or light).
 - If another browser owns the video stream, the page may say that it is in use elsewhere. Select `Use here` only when you intend to move the stream to the current browser.
 - A parked device or unavailable camera/driving data produces a waiting state instead of live video.
 

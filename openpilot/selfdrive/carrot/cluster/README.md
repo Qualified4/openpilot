@@ -404,10 +404,12 @@ missing, invalid, or stale longitudinal plans hide the badge. The red and
 green traffic-state icons share the slot immediately to its left and remain
 independent of driving mode. Full navigation mode omits both speed-mode
 indicators.
-The normal and road camera HUDs use the same fixed TPMS diagram below the
-acceleration, steering, fuel, and DEF gauges. It remains hidden only when all
-four pressure values are unavailable; individual missing values show `--`, and
-values below 31 psi are red. The surrounding area stays transparent. When
+The normal and road camera HUDs use the same fixed toy-car TPMS diagram below
+the acceleration, steering, fuel, and DEF gauges. Its transparent PNG is loaded
+into one GPU texture at renderer startup, then each unchanged-size live pressure
+value is drawn inside its corresponding enlarged tire. It remains hidden only
+when all four pressure values are unavailable; individual missing values show
+`--`, and values below 31 psi are red. The surrounding area stays transparent. When
 external navigation is active or its dashboard is connected, the green `NAV`
 status appears below the Wi-Fi icon instead of the former lower-right `NAVI`
 label. The center clock, EV indicator, and fuel/DEF gauges are unchanged.
@@ -449,16 +451,33 @@ intermediate copy. They also report the availability of `async_pbo` and
 `auto` falls back to ffmpeg, the run uses the software RGBA pipe.
 Changing this setting while the HUD is running makes the current HUD process
 exit so `cluster_autorun` can relaunch it with the new encoder choice.
-`ClusterHudScreenMode` controls optional debug views: `0` default, `1` shows
-the live debug panel with grouped `LIVE DELAY`, `LIVE TORQUE`, `STEERING`, and
-`LATERAL PLAN` rows, `2` shows the system information panel with memory and CPU
-core usage, `3` shows a large debug graph selected by `ShowPlotMode` with the
-driving scene disabled, and `4`
-shows the same graph in the right-side panel while keeping the driving scene.
-`5` shows the right-side driving report while keeping the driving scene. The
+`ClusterHudScreenMode` controls the right-side content. `-1` uses the entire
+display for either 3D camera view, suppresses information panels, and balances
+the clock, side gauges, TPMS, traffic image, turn signals, and status footer
+across the full width. In road-camera view it behaves exactly like mode `0`.
+Mode `0` is the default mode that switches between navigation and the driving
+report, `1` shows the live debug panel with grouped `LIVE DELAY`, `LIVE TORQUE`,
+`STEERING`, and `LATERAL PLAN` rows, `2` is the system-debug slot rendering commit
+`c0a6773f794a5e4e86aeca8e14515232abc26b1b`'s mode-0 default system screen,
+`3` shows a large debug graph selected by `ShowPlotMode` with the driving scene
+disabled, and `4` shows the same graph in the information panel while keeping
+the driving scene. Mode `4` keeps the acceleration, steering, fuel, and DEF
+gauges immediately to the left of the graph instead of near the center of the
+driving view; the gauge block follows the graph when the panel layout is
+swapped, while TPMS remains with the driving view.
+`5` shows the driving report in the information panel while keeping the driving scene. The
 report uses a large trip/event summary card and a separate system-load card
-with the stored calibration pitch/yaw. The same mode can be validated with
+with four 2-by-2 circular gauges. A lower target plots stored calibration pitch
+vertically and yaw horizontally around the calibrated center while retaining
+the numeric angles. The same mode can be validated with
 `cluster_replay_usb.py ROUTE --trip-report`.
+`ClusterHudPanelLayout=0` keeps the driving view on the left and the current
+information panel on the right. Value `1` swaps the two regions without
+restarting the HUD. The information region includes screen-mode debug panels,
+the driving report, route diagnostics, and live navigation, including panels
+made visible by `ClusterHudDebug`. Full-screen graph and navigation modes are
+not rearranged. Route replay can validate the swapped layout with
+`cluster_replay_usb.py ROUTE --trip-report --panel-layout driving-right`.
 The renderer polls `LanguageSetting` and `IsMetric` about once per second.
 Korean (`ko`) and English (`en`) localize driving-report, driving-mode, and
 navigation status labels; unsupported language values fall back to English.
@@ -471,12 +490,25 @@ other presentation with
 `cluster_replay_usb.py ROUTE --trip-report --language en --imperial`.
 In default screen mode (`0`), the trip report is shown while no live navigation
 is being received and the navigation panel returns automatically when reception
-starts. Mode 5 keeps the branch, network address, and frame-rate status in the
-lower-left camera area while omitting the lower-right core-usage text that would
-overlap the report. In road-camera view, ungrouped radar detections are projected
+starts. System-debug mode (`2`) reproduces the reference commit's mode-0 system
+screen and does not use the current automatic report fallback. It keeps the
+navigation/disconnected-system panel whenever a navigation dashboard exists,
+and falls back to the route overlay only when no navigation panel source exists.
+Fullscreen-3D mode (`-1`) never reserves a navigation/report panel in either 3D
+camera view, even when Navi data is available. Switching to road-camera view
+re-enables the complete mode-0 panel selection and panel-layout behavior.
+Left-edge HUD items keep their normal margins, right-edge gauges and TPMS keep
+their small-3D-view right margins at the physical display edge, and the clock,
+world, and turn signals use the full-display center axis.
+Mode `5` keeps the branch, network address, and
+frame-rate status in the lower-left camera area while omitting the lower-right
+core-usage text that would overlap the report. In road-camera view, ungrouped radar detections are projected
 as small transparent rounded source-colored markers, while detected vehicles
 are enclosed by larger transparent rounded frames using their existing
-detection colors.
+detection colors. Vehicle frames use a single low-segment outline, ignore noisy
+radar-derived yaw when calculating their screen width, and are discarded before
+drawing when an incomplete or edge-clipped projection would create a stretched
+frame.
 Mode `3` also hides the speed, accel, clock, turn-signal, and git HUD so the
 large graph uses the available center/right height with only a small margin.
 Mode `4` keeps the driving HUD and uses the maximum right-side panel height with

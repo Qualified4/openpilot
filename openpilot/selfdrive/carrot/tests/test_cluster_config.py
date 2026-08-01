@@ -6,8 +6,13 @@ CLUSTER_DIR = Path(__file__).resolve().parents[1] / "cluster"
 sys.path.insert(0, str(CLUSTER_DIR))
 
 from cluster_config import (
+  CLUSTER_PANEL_LAYOUT_DRIVING_LEFT,
+  CLUSTER_PANEL_LAYOUT_DRIVING_RIGHT,
+  CLUSTER_SCREEN_MODE_DEBUG_SYSTEM,
+  CLUSTER_SCREEN_MODE_FULLSCREEN_3D,
   CLUSTER_SCREEN_MODE_TRIP_REPORT,
   normalize_cluster_live_fps,
+  normalize_cluster_panel_layout,
   normalize_cluster_screen_mode,
   resolved_usb_h264_bitrate,
 )
@@ -39,3 +44,26 @@ def test_cluster_screen_mode_five_selects_trip_report():
   assert normalize_cluster_screen_mode(5) == CLUSTER_SCREEN_MODE_TRIP_REPORT
   assert normalize_cluster_screen_mode("trip-report") == CLUSTER_SCREEN_MODE_TRIP_REPORT
   assert normalize_cluster_screen_mode("navi-debug") == 0
+
+
+def test_cluster_screen_mode_two_selects_debug_system():
+  assert CLUSTER_SCREEN_MODE_DEBUG_SYSTEM == 2
+  assert normalize_cluster_screen_mode(2) == CLUSTER_SCREEN_MODE_DEBUG_SYSTEM
+  assert normalize_cluster_screen_mode("system") == CLUSTER_SCREEN_MODE_DEBUG_SYSTEM
+  assert normalize_cluster_screen_mode("debug_system") == CLUSTER_SCREEN_MODE_DEBUG_SYSTEM
+
+
+def test_cluster_screen_mode_minus_one_selects_fullscreen_3d():
+  assert CLUSTER_SCREEN_MODE_FULLSCREEN_3D == -1
+  assert normalize_cluster_screen_mode(-1) == CLUSTER_SCREEN_MODE_FULLSCREEN_3D
+  assert normalize_cluster_screen_mode("3d-fullscreen") == CLUSTER_SCREEN_MODE_FULLSCREEN_3D
+  assert normalize_cluster_screen_mode("fullscreen_3d") == CLUSTER_SCREEN_MODE_FULLSCREEN_3D
+
+
+def test_cluster_panel_layout_accepts_named_and_numeric_sides():
+  assert normalize_cluster_panel_layout(0) == CLUSTER_PANEL_LAYOUT_DRIVING_LEFT
+  assert normalize_cluster_panel_layout("driving-left") == CLUSTER_PANEL_LAYOUT_DRIVING_LEFT
+  assert normalize_cluster_panel_layout(1) == CLUSTER_PANEL_LAYOUT_DRIVING_RIGHT
+  assert normalize_cluster_panel_layout("driving-right") == CLUSTER_PANEL_LAYOUT_DRIVING_RIGHT
+  assert normalize_cluster_panel_layout("swap") == CLUSTER_PANEL_LAYOUT_DRIVING_RIGHT
+  assert normalize_cluster_panel_layout("invalid") == CLUSTER_PANEL_LAYOUT_DRIVING_LEFT
