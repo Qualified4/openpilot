@@ -191,20 +191,30 @@ def ease_in_interp(x, x_range, y_range, power=2):
   return y_range[0] + (y_range[1] - y_range[0]) * eased_t
 
 def apply_curved_deadband(value, center, radius, degree=2):
-  # 중심으로부터의 거리 계산
-  diff = abs(value - center)
-  # 데드밴드 범위를 벗어나면 원본 값 그대로 반환
-  if diff >= radius:
-      return value
+    # 1. 입력의 부호(+1 또는 -1) 추출
+    sign = 1 if value >= 0 else -1
+    abs_val = abs(value)
 
-  # 0~1 사이의 비율 t
-  t = diff / radius
+    # 2. 중심(center)으로부터의 거리 계산
+    diff = abs_val - center
 
-  # 지수(degree)가 높을수록 중앙에 더 강하게 집중됨
-  # degree=1 (Linear), degree=2 (Quadratic), degree=3 (Cubic)
-  weight = t ** degree
+    # 3. 데드밴드 영향 범위를 벗어나면 원본 값 그대로 반환
+    # (center 기준 radius 이상 멀어지거나, center 안쪽으로 radius 이상 들어간 경우)
+    if diff >= radius or diff <= -radius:
+        return value
 
-  return (1.0 - weight) * center + (weight * value)
+    # 4. 곡선 보간 비율 t 계산 (0 ~ 1 범위로 정규화)
+    # diff = 0 (center 위치)일 때 t = 0 (완전 감쇠)
+    # diff = radius 또는 -radius 일 때 t = 1 (원본 유지)
+    t = abs(diff) / radius
+
+    # 5. 곡선 가중치 적용
+    weight = t ** degree
+
+    # 6. center 위치로 당겨주는 보간 수행 후, 원본 부호 복원
+    smoothed_abs = (1.0 - weight) * center + (weight * abs_val)
+
+    return sign * smoothed_abs
 
 def hyundai_crc8(data: bytes) -> int:
   poly = 0x2F
@@ -1285,32 +1295,16 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           ff_lead = lf_lead = rf_lead = None
           ff_yRel = lf_yRel = rf_yRel = 0
           ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
-          min_front_lead_speed = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [40, 100], [0, 20])
+          min_front_lead_speed = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [30, 40, 100], [-50, 0, 20])
           min_side_lead_speed = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [30, 100], [5, 20])
 
           # 레이더 정보 갱신
           if CS.radar_state:
 
-            l_line_prob = md.laneLineProbs[0]
-            r_line_prob = md.laneLineProbs[3]
-
-            l_line_edge = md.laneLines[0].y[0] - 0.5
-            r_line_edge = md.laneLines[3].y[0] + 0.5
             # 상단에서 계산된 계기판 표시용 curvature 변수 활용 (UnboundLocalError 방지)
             current_curvature = create_ccnc_messages.lane_curv.value
 
             lane_bound = np.interp(abs(current_curvature), [0, 15], [1.5, 2.5])
-
-            # Helper function for vision lead matching
-            def _is_vision_lead_match(lead, vision_lead):
-              if vision_lead is None:
-                return False
-              vision_dRel = vision_lead.x[0]
-              vision_yRel = vision_lead.y[0]
-              # vision lead와 현재 lead의 dRel, yRel을 비교하여 일치 여부 판단
-              return abs(lead.dRel - vision_dRel) < 10.0 and abs(lead.yRel - vision_yRel) < 2.0
-
-            vision_lead = md.leadsV3[0] if len(md.leadsV3) > 0 else None
 
             valid_leads = (
               l for l in itertools.chain(CS.radar_state.leadsLeft,
@@ -1319,38 +1313,44 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               if l.dRel > 1
             )
 
+            _selected_lane_line = md.laneLines[1] if md.laneLineProbs[1] > md.laneLineProbs[2] else md.laneLines[2]
+
             for lead in valid_leads:
               dRel = lead.dRel
               yRel = lead.yRel
 
-              # 1. 상단에서 계산한 curvature(계기판 표시용 곡률)을 횡방향 물리 오프셋으로 역산
-              # 곡률(kappa) = -curvature / 1800.0 (curvature가 음수일 때 좌측 커브)
-              # 오프셋 = 0.5 * kappa * dRel^2 = -curvature * (dRel ** 2) / 3600.0
-              curve_offset_y = -current_curvature * (dRel ** 2) / 4000.0
+              # 직선 물리 좌표 yRel에서 곡선 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
+              road_aligned_yRel = yRel - np.interp(dRel, _selected_lane_line.x, _selected_lane_line.y) - _selected_lane_line.y[0]
+              dist_score = dRel + abs(road_aligned_yRel)
 
-              # 2. 직선 물리 좌표 yRel에서 곡률 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
-              corrected_yRel = yRel + curve_offset_y
-              dist_score = dRel + abs(corrected_yRel)
+              # # 1. 상단에서 계산한 curvature(계기판 표시용 곡률)을 횡방향 물리 오프셋으로 역산
+              # # 곡률(kappa) = -curvature / 1800.0 (curvature가 음수일 때 좌측 커브)
+              # # 오프셋 = 0.5 * kappa * dRel^2 = -curvature * (dRel ** 2) / 3600.0
+              # curve_offset_y = -current_curvature * (dRel ** 2) / 4000.0
+
+              # # 2. 직선 물리 좌표 yRel에서 곡률 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
+              # road_aligned_yRel = yRel + curve_offset_y
+              # dist_score = dRel + abs(road_aligned_yRel)
 
               # 전방 차량
-              if -1.5 <= corrected_yRel <= 1.5: # 전방 좁은 영역
+              if -1.5 <= road_aligned_yRel <= 1.5: # 전방 좁은 영역
                 if dist_score < ff_min_dist and dRel > 0.2 and (lead.vLeadK * CV.MS_TO_KPH > min_front_lead_speed):
-                  ff_min_dist, ff_lead, ff_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 100], [1.0, 0.6]) # yRel 보간
+                  ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 0.6]) # yRel 보간
 
               # 왼쪽 차선 차량
-              elif lane_bound < corrected_yRel < 4.5 and dRel < 90:
+              elif lane_bound < road_aligned_yRel < 4.5 and dRel < 90:
                 if dist_score < lf_min_dist and lead.vLeadK * CV.MS_TO_KPH > min_side_lead_speed:
-                    lf_min_dist, lf_lead, lf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
+                    lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
               # 오른쪽 차선 차량
-              elif -4.5 < corrected_yRel < -lane_bound and dRel < 90:
+              elif -4.5 < road_aligned_yRel < -lane_bound and dRel < 90:
                 if dist_score < rf_min_dist and lead.vLeadK * CV.MS_TO_KPH > min_side_lead_speed:
-                  rf_min_dist, rf_lead, rf_yRel = dist_score, lead, corrected_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
+                  rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel) * 0.8
-            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_curved_deadband(-ff_yRel, 0, 0.4, 1))
+            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_curved_deadband(-ff_yRel, 0, 0.7, 1))
             values["FF_DETECT"] = 2 if ff_lead.vLead < 3 else create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
           else:
             values["FF_DETECT"] = 0 # 순정 디텍션 제거
