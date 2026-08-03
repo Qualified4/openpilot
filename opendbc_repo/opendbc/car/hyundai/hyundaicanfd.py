@@ -1320,7 +1320,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               yRel = lead.yRel
 
               # 직선 물리 좌표 yRel에서 곡선 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
-              road_aligned_yRel = yRel - (np.interp(dRel, _selected_lane_line.x, _selected_lane_line.y) - _selected_lane_line.y[0])
+              road_aligned_yRel = yRel - (np.interp(dRel, _selected_lane_line.x, _selected_lane_line.y) - _selected_lane_line.y[0]) / 2
               dist_score = dRel + abs(road_aligned_yRel)
 
               # # 1. 상단에서 계산한 curvature(계기판 표시용 곡률)을 횡방향 물리 오프셋으로 역산
