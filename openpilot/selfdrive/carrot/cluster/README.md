@@ -285,9 +285,9 @@ are fixed at startup. Set `CLUSTER_AUTORUN_FPS` only for fixed test overrides;
 rendering only while openpilot is onroad, and `1`, `2`, and `3` keep the
 always-on debug behavior after power-up. In live input only, `2` also keeps the
 top UI icons visible when source data is missing, and `3` also shows the navi
-debug UI before navi data has arrived. When output is gated off,
-`cluster_autorun` sends TURZX brightness `0` so a stale HUD frame does not
-remain visible.
+debug UI before navi data has arrived. Normal mode checks the onroad gate every
+100 ms; when output is gated off, `cluster_autorun` sends TURZX brightness `0`
+so a stale HUD frame does not remain visible.
 The autorun watcher normalizes locale before this dim-only USB path too, so
 vendor USB initialization does not fail before the renderer is launched.
 Manager autostart always configures the cluster process through openpilot's
@@ -456,7 +456,10 @@ display for either 3D camera view, suppresses information panels, and balances
 the clock, side gauges, TPMS, traffic image, turn signals, and status footer
 across the full width. In road-camera view it behaves exactly like mode `0`.
 Mode `0` is the default mode that switches between navigation and the driving
-report, `1` shows the live debug panel with grouped `LIVE DELAY`, `LIVE TORQUE`,
+report. While onroad, shifting into park (`P`) temporarily gives the completed
+driving report priority over active navigation; leaving park restores navigation
+immediately. Explicit modes such as report mode `5` and navigation mode `6`
+remain fixed. Mode `1` shows the live debug panel with grouped `LIVE DELAY`, `LIVE TORQUE`,
 `STEERING`, and `LATERAL PLAN` rows, `2` is the system-debug slot rendering commit
 `c0a6773f794a5e4e86aeca8e14515232abc26b1b`'s mode-0 default system screen,
 `3` shows a large debug graph selected by `ShowPlotMode` with the driving scene
@@ -469,7 +472,11 @@ swapped, while TPMS remains with the driving view.
 report uses a large trip/event summary card and a separate system-load card
 with four 2-by-2 circular gauges. A lower target plots stored calibration pitch
 vertically and yaw horizontally around the calibrated center while retaining
-the numeric angles. The same mode can be validated with
+the numeric angles. In managed live input, trip statistics remain stopped until
+`deviceState.started` is true, reset and start on that transition, freeze
+immediately when it becomes false, and reset again at the next onroad start.
+Replay and direct parser inputs retain their existing accumulation behavior.
+The same mode can be validated with
 `cluster_replay_usb.py ROUTE --trip-report`.
 `ClusterHudPanelLayout=0` keeps the driving view on the left and the current
 information panel on the right. Value `1` swaps the two regions without

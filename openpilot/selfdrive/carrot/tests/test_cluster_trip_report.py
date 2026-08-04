@@ -18,6 +18,7 @@ from cluster_config import (
   CLUSTER_SCREEN_MODE_DEBUG_GRAPH_RIGHT,
   CLUSTER_SCREEN_MODE_DEBUG_SYSTEM,
   CLUSTER_SCREEN_MODE_FULLSCREEN_3D,
+  CLUSTER_SCREEN_MODE_NAVI,
   CLUSTER_SCREEN_MODE_TRIP_REPORT,
   normalize_cluster_screen_mode,
 )
@@ -61,6 +62,35 @@ def test_trip_tracker_counts_events_once_and_accumulates_summary():
   assert 45.0 <= state.auto_ratio_percent <= 55.0
   assert state.distance_m > 38_000.0
 
+
+def test_trip_tracker_starts_only_onroad_stops_immediately_and_resets_next_trip():
+  tracker = TripReportTracker()
+  tracker.set_onroad(False)
+
+  before_onroad = tracker.update(0.0, 10.0, 3.0, 120.0, True, 2.7, 15.0)
+  assert before_onroad.distance_m == 0.0
+  assert before_onroad.duration_s == 0.0
+  assert before_onroad.hard_accel_count == 0
+
+  tracker.set_onroad(True)
+  tracker.update(0.0, 10.0, 0.0, 0.0, False, 2.7, 15.0)
+  onroad = tracker.update(0.5, 10.0, 3.0, 120.0, True, 2.7, 15.0)
+  assert onroad.distance_m == 5.0
+  assert onroad.duration_s == 0.5
+
+  stopped = tracker.set_onroad(False)
+  after_offroad_sample = tracker.update(10.0, 30.0, -4.0, 120.0, True, 2.7, 15.0)
+  assert stopped == onroad
+  assert after_offroad_sample == onroad
+
+  restarted = tracker.set_onroad(True)
+  first_sample = tracker.update(20.0, 20.0, 0.0, 0.0, True, 2.7, 15.0)
+  second_sample = tracker.update(20.5, 20.0, 0.0, 0.0, True, 2.7, 15.0)
+  assert restarted.distance_m == 0.0
+  assert restarted.duration_s == 0.0
+  assert first_sample == restarted
+  assert second_sample.distance_m == 10.0
+  assert second_sample.duration_s == 0.5
 
 def test_route_parser_carries_report_into_cluster_state():
   parser = RouteLogParser(recompute_cutins=False)
@@ -129,6 +159,29 @@ def test_default_screen_uses_trip_report_until_navigation_is_received():
     navi_dashboard=None,
   )
   assert renderer._effective_screen_mode(external_navigation) == CLUSTER_SCREEN_MODE_DEFAULT
+
+
+def test_default_screen_shows_trip_report_in_park_and_restores_navigation_in_drive():
+  renderer = object.__new__(ClusterUiRenderer)
+  renderer.width = 1920
+  renderer.screen_mode = CLUSTER_SCREEN_MODE_DEFAULT
+  state = SimpleNamespace(
+    camera_view_mode=0,
+    onroad=True,
+    gear_text="P",
+    external_nav_active=True,
+    navi_live=None,
+    navi_dashboard=SimpleNamespace(connected=True),
+  )
+
+  assert renderer._effective_screen_mode(state) == CLUSTER_SCREEN_MODE_TRIP_REPORT
+
+  state.gear_text = "D"
+  assert renderer._effective_screen_mode(state) == CLUSTER_SCREEN_MODE_DEFAULT
+
+  renderer.screen_mode = CLUSTER_SCREEN_MODE_NAVI
+  state.gear_text = "P"
+  assert renderer._effective_screen_mode(state) == CLUSTER_SCREEN_MODE_NAVI
 
 
 def test_mode_two_preserves_the_reference_default_system_screen_contract():

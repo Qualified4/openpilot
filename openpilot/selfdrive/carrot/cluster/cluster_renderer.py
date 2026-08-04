@@ -1980,20 +1980,14 @@ class ClusterUiRenderer:
         screen = self._camera_overlay_screen_xy(camera_point, projection, scene_shift_x_m)
         if screen is None:
             return
-        radius = max(3.0, min(10.0, 80.0 / max(6.0, point.longitudinal_m)))
+        radius = max(2.5, min(5.0, 40.0 / max(6.0, abs(point.longitudinal_m))))
         marker = rl.Rectangle(
             screen[0] - radius,
             screen[1] - radius,
             radius * 2.0,
             radius * 2.0,
         )
-        rl.draw_rectangle_rounded_lines_ex(
-            marker,
-            0.25,
-            CAMERA_OVERLAY_FRAME_ROUND_SEGMENTS,
-            1.8,
-            rl_color(point.color, 245),
-        )
+        rl.draw_rectangle_rec(marker, rl_color(point.color, 225))
         if not radar_info_shows_radar_points(radar_info_mode):
             return
         label_parts = []
@@ -3820,6 +3814,11 @@ class ClusterUiRenderer:
             return CLUSTER_SCREEN_MODE_DEFAULT
         if requested_screen_mode != CLUSTER_SCREEN_MODE_DEFAULT:
             return requested_screen_mode
+        gear_text = str(getattr(state, "gear_text", "") or "").strip().upper()
+        if getattr(state, "onroad", False) and gear_text == "P":
+            # Surface the completed trip as soon as the driver parks, even
+            # when an active navigation session would otherwise own the panel.
+            return CLUSTER_SCREEN_MODE_TRIP_REPORT
         dashboard = getattr(state, "navi_dashboard", None)
         dashboard_connected = bool(
             dashboard is not None and dashboard.connected
