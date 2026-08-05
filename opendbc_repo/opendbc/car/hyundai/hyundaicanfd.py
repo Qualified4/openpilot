@@ -1342,13 +1342,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 0.6]) # yRel 보간
 
               # 왼쪽 차선 차량
-              elif 1.5 < road_aligned_yRel < _left_line:
-                if dist_score < lf_min_dist and (lead.vLead * CV.MS_TO_KPH > min_side_lead_speed or _left_line_prob > 0.3):
+              elif 1.5 < road_aligned_yRel < 4.5:
+                if dist_score < lf_min_dist and (lead.vLead * CV.MS_TO_KPH > min_side_lead_speed or _left_line_prob > 0.2):
                   lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 1.1])
 
               # 오른쪽 차선 차량
-              elif _right_line < road_aligned_yRel < -1.5:
-                if dist_score < rf_min_dist and (lead.vLead * CV.MS_TO_KPH > min_side_lead_speed or _right_line_prob > 0.3):
+              elif -4.5 < road_aligned_yRel < -1.5:
+                if dist_score < rf_min_dist and (lead.vLead * CV.MS_TO_KPH > min_side_lead_speed or _right_line_prob > 0.2):
                   rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 1.1])
 
           # 전방(FF) 차량 정보 업데이트
