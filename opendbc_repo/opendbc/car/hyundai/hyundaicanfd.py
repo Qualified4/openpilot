@@ -1296,7 +1296,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           ff_yRel = lf_yRel = rf_yRel = 0
           ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
           min_front_lead_speed = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [30, 40, 100], [-50, 0, 20])
-          min_side_lead_speed = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [30, 100], [5, 20])
+          min_side_lead_speed = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [0, 30, 100], [2, 10, 20])
 
           # 레이더 정보 갱신
           if CS.radar_state:
@@ -1304,7 +1304,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             # 상단에서 계산된 계기판 표시용 curvature 변수 활용 (UnboundLocalError 방지)
             current_curvature = create_ccnc_messages.lane_curv.value
 
-            lane_bound = np.interp(abs(current_curvature), [0, 15], [1.5, 2.5])
+            # lane_bound = np.interp(abs(current_curvature), [0, 15], [1.5, 2.5])
 
             valid_leads = (
               l for l in itertools.chain(CS.radar_state.leadsLeft,
@@ -1338,22 +1338,22 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 0.6]) # yRel 보간
 
               # 왼쪽 차선 차량
-              elif lane_bound < road_aligned_yRel < 4.5 and dRel < 90:
+              elif 1.5 < road_aligned_yRel < 4.5 and dRel < 90:
                 if dist_score < lf_min_dist and lead.vLeadK * CV.MS_TO_KPH > min_side_lead_speed:
-                    lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
+                    lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 1.1])
 
               # 오른쪽 차선 차량
-              elif -4.5 < road_aligned_yRel < -lane_bound and dRel < 90:
+              elif -4.5 < road_aligned_yRel < -1.5 and dRel < 90:
                 if dist_score < rf_min_dist and lead.vLeadK * CV.MS_TO_KPH > min_side_lead_speed:
-                  rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 90], [1.0, 1.1])
+                  rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 1.1])
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel) * 0.8
             values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_curved_deadband(-ff_yRel, 0, 0.7, 1))
             values["FF_DETECT"] = 2 if ff_lead.vLead < 3 else create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
-          else:
-            values["FF_DETECT"] = 0 # 순정 디텍션 제거
+          # else:
+            # values["FF_DETECT"] = 0 # 순정 디텍션 제거
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
             if lf_lead.dRel < 5.0:
