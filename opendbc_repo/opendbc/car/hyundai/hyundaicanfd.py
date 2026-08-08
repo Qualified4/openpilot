@@ -1321,12 +1321,15 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             _left_lane_valid = _left_line_prob > 0.1 and _left_line - np.interp(10, md.laneLines[1].x, md.laneLines[1].y) >= 2
             _right_lane_valid = _right_line_prob > 0.1 and _right_line - np.interp(10, md.laneLines[2].x, md.laneLines[2].y) <= -2
 
+            _left_bound = _left_line if _left_line_prob > 0.15 else 4.5
+            _right_bound = _right_line if _right_line_prob > 0.15 else -4.5
+
             for lead in valid_leads:
               dRel = lead.dRel
               yRel = lead.yRel
 
               # 직선 물리 좌표 yRel에서 곡선 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
-              road_aligned_yRel = yRel + (np.interp(dRel, _selected_lane_line.x, _selected_lane_line.y) - _selected_lane_line.y[0]) * 2
+              road_aligned_yRel = yRel - (np.interp(dRel, _selected_lane_line.x, _selected_lane_line.y) - _selected_lane_line.y[0]) * 1.5
               dist_score = dRel + abs(road_aligned_yRel)
 
               # # 1. 상단에서 계산한 curvature(계기판 표시용 곡률)을 횡방향 물리 오프셋으로 역산
@@ -1344,12 +1347,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 0.6]) # yRel 보간
 
               # 왼쪽 차선 차량
-              elif 1.5 < road_aligned_yRel < 4.5:
+              elif 1.5 < road_aligned_yRel < _left_bound:
                 if dist_score < lf_min_dist and (lead.vLead * CV.MS_TO_KPH > min_side_lead_speed or (_left_lane_valid and lead.vLead > -1 and road_aligned_yRel < _left_line - 0.5)):
                   lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 1.1])
 
               # 오른쪽 차선 차량
-              elif -4.5 < road_aligned_yRel < -1.5:
+              elif _right_bound < road_aligned_yRel < -1.5:
                 if dist_score < rf_min_dist and (lead.vLead * CV.MS_TO_KPH > min_side_lead_speed or (_right_lane_valid and lead.vLead > -1 and road_aligned_yRel > _right_line + 0.5)):
                   rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 1.1])
 
