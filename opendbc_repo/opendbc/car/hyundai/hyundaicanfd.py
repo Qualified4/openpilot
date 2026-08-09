@@ -1317,10 +1317,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             _left_outer_line_prob = md.laneLineProbs[0]
             _right_outer_line_prob = md.laneLineProbs[3]
-            _left_outer_line = md.laneLines[0].y[0]
-            _right_outer_line = md.laneLines[3].y[0]
-            _left_adjacent_lane_exists = _left_outer_line_prob > 0.1 and _left_outer_line - md.laneLines[1].y[0] >= 2
-            _right_adjacent_lane_exists = _right_outer_line_prob > 0.1 and _right_outer_line - md.laneLines[2].y[0] <= -2
+            _left_outer_line = -md.laneLines[0].y[0]
+            _right_outer_line = -md.laneLines[3].y[0]
+            _left_adjacent_lane_exists = _left_outer_line_prob > 0.1 and _left_outer_line + md.laneLines[1].y[0] >= 2
+            _right_adjacent_lane_exists = _right_outer_line_prob > 0.1 and _right_outer_line + md.laneLines[2].y[0] <= -2
 
             _left_detection_bound = _left_outer_line if _left_outer_line_prob > 0.2 else 4.5
             _right_detection_bound = _right_outer_line if _right_outer_line_prob > 0.2 else -4.5
@@ -1330,7 +1330,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               yRel = lead.yRel
 
               # 직선 물리 좌표 yRel에서 곡선 오프셋을 빼주어 현재 차선 중앙 기준의 횡방향 거리 산출
-              road_aligned_yRel = yRel - (np.interp(dRel, _selected_lane_line.x, _selected_lane_line.y) - _selected_lane_line.y[0]) * 1.5
+              road_aligned_yRel = yRel + (np.interp(dRel, _selected_lane_line.x, _selected_lane_line.y) - _selected_lane_line.y[0]) * 1.5
               dist_score = dRel + abs(road_aligned_yRel)
 
               # # 1. 상단에서 계산한 curvature(계기판 표시용 곡률)을 횡방향 물리 오프셋으로 역산
