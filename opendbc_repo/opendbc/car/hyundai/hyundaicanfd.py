@@ -1322,8 +1322,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             _left_adjacent_lane_exists = _left_outer_line_prob > 0.1 and _left_outer_line + md.laneLines[1].y[0] >= 2
             _right_adjacent_lane_exists = _right_outer_line_prob > 0.1 and _right_outer_line + md.laneLines[2].y[0] <= -2
 
-            _left_detection_bound = _left_outer_line if _left_outer_line_prob > 0.2 else 4.5
-            _right_detection_bound = _right_outer_line if _right_outer_line_prob > 0.2 else -4.5
+            _left_detection_bound = _left_outer_line + 0.3 if _left_outer_line_prob > 0.3 else 4.5
+            _right_detection_bound = _right_outer_line + 0.3 if _right_outer_line_prob > 0.3 else -4.5
 
             for lead in valid_leads:
               dRel = lead.dRel
