@@ -1315,14 +1315,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             _left_line_prob = md.laneLineProbs[1]
             _right_line_prob = md.laneLineProbs[2]
-            _left_line = np.interp(10, md.laneLines[0].x, md.laneLines[0].y)
-            _right_line = np.interp(10, md.laneLines[3].x, md.laneLines[3].y)
+            _left_line_edge = md.laneLines[0].y[0]
+            _right_line_edge = md.laneLines[3].y[0]
             _selected_lane_line = md.laneLines[1] if _left_line_prob > _right_line_prob else md.laneLines[2]
-            _left_lane_valid = _left_line_prob > 0.1 and _left_line - np.interp(10, md.laneLines[1].x, md.laneLines[1].y) >= 2
-            _right_lane_valid = _right_line_prob > 0.1 and _right_line - np.interp(10, md.laneLines[2].x, md.laneLines[2].y) <= -2
+            _left_lane_valid = _left_line_prob > 0.1 and _left_line_edge - md.laneLines[1].y[0] >= 2
+            _right_lane_valid = _right_line_prob > 0.1 and _right_line_edge - md.laneLines[2].y[0] <= -2
 
-            _left_bound = _left_line if _left_line_prob > 0.15 else 4.5
-            _right_bound = _right_line if _right_line_prob > 0.15 else -4.5
+            _left_bound = _left_line_edge if _left_line_prob > 0.1 else 4.5
+            _right_bound = _right_line_edge if _right_line_prob > 0.1 else -4.5
 
             for lead in valid_leads:
               dRel = lead.dRel
@@ -1348,12 +1348,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 왼쪽 차선 차량
               elif 1.5 < road_aligned_yRel < _left_bound:
-                if dist_score < lf_min_dist and (lead.vLead * CV.MS_TO_KPH > min_side_lead_speed or (_left_lane_valid and lead.vLead > -1 and road_aligned_yRel < _left_line - 0.5)):
+                if dist_score < lf_min_dist and (lead.vLead * CV.MS_TO_KPH > min_side_lead_speed or (_left_lane_valid and lead.vLead > -1 and road_aligned_yRel < _left_line_edge)):
                   lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 1.1])
 
               # 오른쪽 차선 차량
               elif _right_bound < road_aligned_yRel < -1.5:
-                if dist_score < rf_min_dist and (lead.vLead * CV.MS_TO_KPH > min_side_lead_speed or (_right_lane_valid and lead.vLead > -1 and road_aligned_yRel > _right_line + 0.5)):
+                if dist_score < rf_min_dist and (lead.vLead * CV.MS_TO_KPH > min_side_lead_speed or (_right_lane_valid and lead.vLead > -1 and road_aligned_yRel > _right_line_edge)):
                   rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 1.1])
 
           # 전방(FF) 차량 정보 업데이트
