@@ -1092,7 +1092,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             peak_idx = start_search_idx = 0
             start_found = not is_currently_lane_changing
 
-            min_curvature_calc_distance = 30 if is_currently_lane_changing else 0
+            min_curvature_calc_distance = 20 if is_currently_lane_changing else 0
 
             for i in range(1, len(md.position.x)):
               x = md.position.x[i]
