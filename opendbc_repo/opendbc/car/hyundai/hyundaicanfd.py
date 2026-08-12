@@ -1310,12 +1310,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           # 레이더 정보 갱신
           if CS.radar_state:
-
-            # 상단에서 계산된 계기판 표시용 curvature 변수 활용 (UnboundLocalError 방지)
-            current_curvature = create_ccnc_messages.lane_curv.value
-
-            # lane_bound = np.interp(abs(current_curvature), [0, 15], [1.5, 2.5])
-
             valid_leads = (
               l for l in itertools.chain(CS.radar_state.leadsLeft,
                                         CS.radar_state.leadsRight,
@@ -1329,8 +1323,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             _right_outer_line_prob = md.laneLineProbs[3]
             _left_outer_line = -md.laneLines[0].y[0]
             _right_outer_line = -md.laneLines[3].y[0]
-            _left_adjacent_lane_exists = _left_outer_line_prob > 0.05 and _left_outer_line + md.laneLines[1].y[0] > 2
-            _right_adjacent_lane_exists = _right_outer_line_prob > 0.05 and _right_outer_line + md.laneLines[2].y[0] < -2
+            _left_adjacent_lane_exists = _left_outer_line_prob > 0.05 and _left_outer_line + md.laneLines[1].y[0] > 1.8
+            _right_adjacent_lane_exists = _right_outer_line_prob > 0.05 and _right_outer_line + md.laneLines[2].y[0] < -1.8
 
             _left_detection_bound = _left_outer_line if _left_outer_line_prob > 0.2 else 4.5
             _right_detection_bound = _right_outer_line if _right_outer_line_prob > 0.2 else -4.5
@@ -1344,19 +1338,19 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               dist_score = dRel + abs(road_aligned_yRel)
 
               # 전방 차량
-              if -1.5 <= road_aligned_yRel <= 1.5: # 전방 좁은 영역
+              if -1.5 <= road_aligned_yRel <= 1.5:
                 if dist_score < ff_min_dist and velocity > min_front_lead_speed:
-                  ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 0.6]) # yRel 보간
+                  ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel
 
               # 왼쪽 차선 차량
               elif 1.5 < road_aligned_yRel < _left_detection_bound:
                 if dist_score < lf_min_dist and (velocity > min_side_lead_speed or (_left_adjacent_lane_exists and velocity > lowspeed_side_lead_speed and road_aligned_yRel < _left_outer_line)):
-                  lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 1.1])
+                  lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
 
               # 오른쪽 차선 차량
               elif _right_detection_bound < road_aligned_yRel < -1.5:
                 if dist_score < rf_min_dist and (velocity > min_side_lead_speed or (_right_adjacent_lane_exists and velocity > lowspeed_side_lead_speed and road_aligned_yRel > _right_outer_line)):
-                  rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel * np.interp(dRel, [70, 100], [1.0, 1.1])
+                  rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
