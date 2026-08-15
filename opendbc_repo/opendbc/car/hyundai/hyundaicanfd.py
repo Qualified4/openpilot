@@ -19,19 +19,19 @@ class LaneHighlightStateMachine:
   def __init__(self):
     self.state = 0  # 현재 하이라이트 상태
 
-  def update(self, accel, drive_mode, v_ego):
+  def update(self, accel_kph, drive_mode, v_ego_kph):
     # 상태별 전이 로직
     if self.state == 4:
-      if accel < -0.3 and v_ego > 0.2:
+      if accel_kph < -1.0 and v_ego_kph > 1.0:
         return self.state # 상태 유지
     elif self.state == 5:
-      if drive_mode != 4 and accel > 1:
+      if drive_mode != 4 and accel_kph > 5.0:
         return self.state # 상태 유지
 
     # 진입 로직 (우선순위 순서)
-    if accel < -2.7:
+    if accel_kph < -10.0:
       self.state = 4  # 급제동 (최우선)
-    elif drive_mode == 4 or accel > 2.5:
+    elif drive_mode == 4 or accel_kph > 10.0:
       self.state = 5  # 급가속/고속
     elif drive_mode < 3:
       self.state = 3  # 연비/안전
@@ -300,7 +300,7 @@ def create_steering_messages_camera_scc(frame, packer, CP, CAN, CC, lat_active, 
 
   ret = []
   if CS.mdps is not None:
-    values = copy.copy(CS.mdps)
+    values = CS.mdps.copy()
     #rx_counter = values.pop("COUNTER", None)
     if angle_control:
       if CS.lfa_alt is not None:
@@ -316,7 +316,7 @@ def create_steering_messages_camera_scc(frame, packer, CP, CAN, CC, lat_active, 
 
   if frame % 10 == 0:
     if CS.steer_touch_2af is not None:
-      values = copy.copy(CS.steer_touch_2af)
+      values = CS.steer_touch_2af.copy()
       if frame % 1000 < 40:
         values["TOUCH_DETECT"] = 3
         values["TOUCH1"] = 50
@@ -329,7 +329,7 @@ def create_steering_messages_camera_scc(frame, packer, CP, CAN, CC, lat_active, 
 
   if angle_control:
     if CS.lfa_alt is not None:
-      values = copy.copy(CS.lfa_alt)
+      values = CS.lfa_alt.copy()
       rx_counter = values.pop("COUNTER", None)
       if emergency_steering:
         pass
@@ -341,7 +341,7 @@ def create_steering_messages_camera_scc(frame, packer, CP, CAN, CC, lat_active, 
       ret.append(packer.make_can_msg("LFA_ALT", CAN.ECAN, values, rx_counter = rx_counter))
 
     if CS.lfa is not None:
-      values = copy.copy(CS.lfa)
+      values = CS.lfa.copy()
       rx_counter = values.pop("COUNTER", None)
       if not emergency_steering:
         values["LKA_MODE"] = 0
@@ -490,7 +490,7 @@ def create_lfahda_cluster(packer, CS, CAN, long_active, lat_active):
 
 
   if CS.lfahda_cluster is not None:
-    values = copy.copy(CS.lfahda_cluster)
+    values = CS.lfahda_cluster.copy()
     rx_counter = values.pop("COUNTER", None)
   else:
     return []
@@ -505,7 +505,7 @@ def create_lfahda_cluster(packer, CS, CAN, long_active, lat_active):
 def create_lfa_icon_non_camera_scc(packer, CS, CAN, CC):
   ret = []
   if CS.adrv_0x161 is not None:
-    values = copy.copy(CS.adrv_0x161)
+    values = CS.adrv_0x161.copy()
     rx_counter = values.pop("COUNTER", None)
 
     lat_active = CC.latActive
@@ -898,13 +898,15 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                          enable_corner_radar, stopping, canfd_debug):
   ret = []
 
-  md = CS.modelV2
   if not hasattr(create_ccnc_messages, '_lane_line_check') or frame % 100 == 0:
     create_ccnc_messages._lane_line_check = Params().get_int("LaneLineCheck")
   lane_line_check = create_ccnc_messages._lane_line_check
-  desire, lane_changing = _get_desire_and_lane_changing(md)
 
   if CP.flags & HyundaiFlags.CAMERA_SCC.value:
+    md = CS.modelV2
+    v_ego_kph = CS.out.vEgo * CV.MS_TO_KPH
+    a_ego_kph = CS.out.aEgo * CV.MS_TO_KPH
+    desire, lane_changing = _get_desire_and_lane_changing(md)
     HDA_CntrlModSta = 0
     HDA_LFA_SymSta = 0
     if CS.lfahda_cluster is not None:
@@ -926,17 +928,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         if CC.enabled:
           if not CS.MainMode_ACC:
-            if 10 < frame % 200 <= 16 and CS.out.vEgo > 3.:
+            if 10 < frame % 200 <= 16 and v_ego_kph > 10.:
               values["ADAPTIVE_CRUISE_MAIN_BTN"] = 1
           elif CS.ACCMode in [0, 4]:
-            if 10 < frame % 200 <= 16 and CS.out.vEgo > 3.:
+            if 10 < frame % 200 <= 16 and v_ego_kph > 10.:
               values["CRUISE_BUTTONS"] = 2
           elif CS.scc_control is not None and CS.scc_control["InfoDisplay"] == 4:
             if 10 < frame % 30 <= 16 and not stopping:
               values["CRUISE_BUTTONS"] = 2
           else:
             if CS.adrv_0x1ea is not None and CS.adrv_0x1ea["HDA_MODE2"] == 0: # if corner radar is disabled, send main btn
-              if 10 < frame % 1000 <= 16 and CS.out.vEgo > 3:
+              if 10 < frame % 1000 <= 16 and v_ego_kph > 10.:
                 values["ADAPTIVE_CRUISE_MAIN_BTN"] = 1
 
         ret.append(packer.make_can_msg(CS.cruise_btns_msg_canfd, CAN.CAM, values))
@@ -952,7 +954,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         nav_active = hud_control.activeCarrot > 1
 
         # hdpuse carrot
-        hdp_use = int(Params().get("HDPuse"))
+        hdp_use = Params().get_int("HDPuse")
         hdp_active = False
         if hdp_use == 1:
           hdp_active = cruise_enabled and nav_active
@@ -960,7 +962,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           hdp_active = cruise_enabled
         # hdpuse carrot
 
-        values = copy.copy(CS.adrv_0x161)
+        values = CS.adrv_0x161.copy()
         rx_counter = values.pop("COUNTER", None)
         values["SETSPEED"] = (6 if hdp_active else 3 if cruise_enabled else 1) if main_enabled else 0
         values["SETSPEED_HUD"] = (5 if hdp_active else 3 if cruise_enabled else 1) if main_enabled else 0
@@ -999,6 +1001,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["TARGET_DISTANCE"] = int(hud_control.leadDistance)
 
         values["BACKGROUND"] = 1 if cruise_enabled else 3 if lat_active else 7
+        if a_ego_kph < -10.0:
+          values["BACKGROUND"] = 6
         if (left_lane_warning and not CS.out.leftBlinker) or (right_lane_warning and not CS.out.rightBlinker):
           values["BACKGROUND"] = 4
         values["CENTERLINE"] = 1 if HDA_CntrlModSta > 0 or lat_enabled else 0
@@ -1006,8 +1010,25 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         # values["NAV_ICON"] = 2 if nav_active and cruise_enabled else 1 if main_enabled and nav_active else 0
         values["HDA_ICON"] = 5 if hdp_active else 2 if cruise_enabled else 1 if main_enabled else 0
-        values["LFA_ICON"] = 5 if hdp_active else 2 if lat_active else 1 if lat_enabled else 0
-        values["LKA_ICON"] = 4 if lat_active else 3 if lat_enabled else 0
+        # ==============================================================================
+        # 계기판 LFA 아이콘 상태 제어
+        # [LFA_ICON] 0: HIDDEN, 1: GRAY, 2: GREEN, 3: WHITE, 5: CYAN
+        # [LKA_ICON] 할당 생략 (순정 값 유지)
+        # ==============================================================================
+        if lat_enabled:
+          if lat_active:
+            if CS.out.steeringPressed:
+              # 횡컨 활성 중 운전자 조향 개입
+              values["LFA_ICON"] = 3  # WHITE
+            else:
+              # 능동 제어 중 (HDP: 청색, 일반: 녹색)
+              values["LFA_ICON"] = 5 if hdp_active else 2
+          else:
+            # 횡컨 켜짐 + 모델 미제어 (대기 상태)
+            values["LFA_ICON"] = 1  # GRAY
+        else:
+          # 횡컨 OFF -> 아이콘 숨김
+          values["LFA_ICON"] = 0
         values["FCA_ALT_ICON"] = 0
 
         if values["ALERTS_2"] in [1, 2, 5, 6, 10, 21, 22]:
@@ -1075,8 +1096,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             drive_mode = 3  # 기본값 (Normal)
 
           # 속도에 비례해 하이라이트 길이 동적으로 조절
-          values["LANE_HIGHLIGHT_DISTANCE"] = int(ease_in_interp(CS.out.vEgo * CV.MS_TO_KPH, [0, 80], [3, 60], power=1.5))
-          values["LANE_HIGHLIGHT"] = create_ccnc_messages.drive_lane_color.update(CS.out.aEgo, drive_mode, CS.out.vEgo)
+          values["LANE_HIGHLIGHT_DISTANCE"] = int(ease_in_interp(v_ego_kph, [0, 80], [3, 60], power=1.5))
+          values["LANE_HIGHLIGHT"] = create_ccnc_messages.drive_lane_color.update(a_ego_kph, drive_mode, v_ego_kph)
         elif CS.out.gearShifter == structs.CarState.GearShifter.reverse:
           values["LANE_HIGHLIGHT"] = 5
         elif CS.out.gearShifter == structs.CarState.GearShifter.neutral:
@@ -1085,58 +1106,55 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if not CS.out.parkingBrake:
             values["LANE_HIGHLIGHT"] = 2
 
+        # 차선 변경 판단
         is_auto_lane_changing = desire in (3, 4)
         is_blinking = CS.out.leftBlinker != CS.out.rightBlinker
-        is_currently_lane_changing = is_auto_lane_changing or (is_blinking and CS.out.vEgo > 6)
+        is_currently_lane_changing = is_auto_lane_changing or (is_blinking and v_ego_kph > 20.0)
 
-        # 차선 곡률 표시 (주행 경로의 시작과 끝 y 좌표 차이 이용)
         try:
           if lat_enabled:
-            max_lookahead_x = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [20, 100], [30, 80])
+            # 스칼라 np.interp 오버헤드 제거 (선형 보간 수식 직접 계산: 20~100 kph -> 30~80 m)
+            max_lookahead_x = 30.0 + min(max((v_ego_kph - 20.0) / 80.0, 0.0), 1.0) * 50.0
 
-            # --- 차량 주행 경로 기반 ---
-            # Peak Search: 경로 중 횡방향 변위(절대값)가 가장 큰 지점을 탐색
+            # 객체 속성 접근 오버헤드 캐싱 (루프 내 다중 점근 방지)
+            pos = md.position
+            pos_x, pos_y, pos_y_std = pos.x, pos.y, pos.yStd
+
             trust_threshold = 0.8
             max_y_abs = 0.0
-            peak_idx = start_search_idx = 0
+            peak_idx = 0
+            start_search_idx = 0
             start_found = not is_currently_lane_changing
+            min_calc_dist = 20.0 if is_currently_lane_changing else 0.0
 
-            min_curvature_calc_distance = 20 if is_currently_lane_changing else 0
+            for i in range(1, len(pos_x)):
+              x = pos_x[i]
 
-            for i in range(1, len(md.position.x)):
-              x = md.position.x[i]
-
-              if not start_found and x >= min_curvature_calc_distance:
+              if not start_found and x >= min_calc_dist:
                 start_search_idx = i
                 start_found = True
 
-              if md.position.yStd[i] > trust_threshold or x > max_lookahead_x:
+              if pos_y_std[i] > trust_threshold or x > max_lookahead_x:
                 break
 
-              y_abs = abs(md.position.y[i])
+              y_abs = abs(pos_y[i])
               if y_abs > max_y_abs:
                 max_y_abs = y_abs
                 peak_idx = i
 
-            if start_search_idx != peak_idx and md.position.x[peak_idx] >= (20.0 + min_curvature_calc_distance):
-              x_dist = md.position.x[peak_idx]
-              y_diff = md.position.y[peak_idx] - md.position.y[start_search_idx]
-
-              # 물리 곡률 공식 (2y / x^2) 적용
-              # 상수 2000.0 설명:
-              # - 물리적 곡률(Kappa = 1/R)은 보통 0.0001~0.01 사이의 아주 작은 값임.
-              # - 이를 ccNC 계기판 표시 범위인 0~15 사이의 직관적인 수치로 증폭하는 Gain 역할.
-              # - 시뮬레이션 결과: R=500m(일반코너)에서 약 8단계, R=150m(급코너)에서 약 15단계 수준임.
-              # - 튜닝 팁: 계기판 게이지가 너무 민감하게 차오르면 1500으로 낮추고, 너무 둔하면 2500으로 높여 조절.
-              max_curve_val = (2.0 * y_diff) / (x_dist ** 2) * 1800
+            if start_search_idx != peak_idx and pos_x[peak_idx] >= (20.0 + min_calc_dist):
+              x_dist = pos_x[peak_idx]
+              y_diff = pos_y[peak_idx] - pos_y[start_search_idx]
+              # 곡률 공식: (2y / x^2) * 1800 -> (3600 * y) / x^2
+              max_curve_val = (3600.0 * y_diff) / (x_dist * x_dist)
             else:
               max_curve_val = 0.0
 
-            curvature = round(create_ccnc_messages.lane_curv.apply(-max_curve_val)) # 디스플레이 곡률은 음수 반전해야 정상 방향이 나옴
+            curvature = round(create_ccnc_messages.lane_curv.apply(-max_curve_val))
           else:
-            # 횡컨 아니면 핸들 각도 기반 조향
             curvature = round(CS.out.steeringAngleDeg / 3)
-        except:
+
+        except Exception:
           # 모델 데이터 예외 발생 시 핸들 각도 기반 백업
           curvature = round(CS.out.steeringAngleDeg / 3)
           values["LFA_ICON"] = 5
@@ -1270,13 +1288,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         ret.append(packer.make_can_msg("ADRV_0x161", CAN.ECAN, values, rx_counter = rx_counter))
 
       if CS.adrv_0x200 is not None:
-        values = copy.copy(CS.adrv_0x200)
+        values = CS.adrv_0x200.copy()
         rx_counter = values.pop("COUNTER", None)
         values["TauGapSet"] = hud_control.leadDistanceBars
         ret.append(packer.make_can_msg("ADRV_0x200", CAN.ECAN, values, rx_counter = rx_counter))
 
       if CS.adrv_0x1ea is not None:
-        values = copy.copy(CS.adrv_0x1ea)
+        values = CS.adrv_0x1ea.copy()
         rx_counter = values.pop("COUNTER", None)
         # blinker hold
         values['LEFT_BLINK_HOLD'] = 1 if lane_changing == 3 else 0
@@ -1296,7 +1314,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         ret.append(packer.make_can_msg("ADRV_0x1ea", CAN.ECAN, values, rx_counter = rx_counter))
 
       if CS.ccnc_0x162 is not None:
-        values = copy.copy(CS.ccnc_0x162)
+        values = CS.ccnc_0x162.copy()
 
         # --- radarState를 이용한 전방 차량 감지 ---
         # 2024 쏘나타는 차량 인식 두부(1, 2)만 출력 가능
@@ -1304,9 +1322,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           ff_lead = lf_lead = rf_lead = None
           ff_yRel = lf_yRel = rf_yRel = 0
           ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
-          min_front_lead_speed = -100 if CS.out.aEgo < -1 else np.interp(CS.out.vEgo * CV.MS_TO_KPH, [30, 40, 100], [-100, 0, 20])
-          min_side_lead_speed = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [0, 30, 100], [2, 10, 20])
-          lowspeed_side_lead_speed = np.interp(CS.out.vEgo * CV.MS_TO_KPH, [20, 50], [-1, 10])
+          min_front_lead_speed = -100 if a_ego_kph < -3 else np.interp(v_ego_kph, [30, 40, 100], [-100, 0, 20])
+          min_side_lead_speed = np.interp(v_ego_kph, [0, 30, 100], [2, 10, 20])
+          lowspeed_side_lead_speed = np.interp(v_ego_kph, [20, 50], [-1, 10])
 
           # 레이더 정보 갱신
           if CS.radar_state:
@@ -1427,7 +1445,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LR_DETECT"] = 1
 
           if CS.out.rightBlindspot:
-            values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(8)
+            values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(8) # 8m
             values["RR_DETECT_LATERAL"] = BSD_LATERAL_FIXED + center_lane_offset
             values["RR_DETECT"] = 2
           elif create_ccnc_messages.rr_distance.value < 15:
@@ -1436,7 +1454,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["RR_DETECT"] = 1
 
         except:
-          values = copy.copy(CS.ccnc_0x162)
+          values = CS.ccnc_0x162.copy()
           values["FF_DISTANCE"] = 24
           values["FF_DETECT"] = 2
           values["LF_DETECT_DISTANCE"] = 12
@@ -1493,7 +1511,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
       if False:  # canfd_debug > 1 and frame % 20 == 0:
         if CS.hda_info_4a3 is not None:
-          values = copy.copy(CS.hda_info_4a3)
+          values = CS.hda_info_4a3.copy()
           values["LinkClass"] = 1
           values["SPEED_LIMIT"] = 100
           ret.append(packer.make_can_msg("HDA_INFO_4A3", CAN.CAM, values))
@@ -1501,7 +1519,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   return ret
 
 # 곡률 노이즈 필터
-create_ccnc_messages.lane_curv = NoiseFilter(3, 0, alpha_range=0.5)
+create_ccnc_messages.lane_curv = NoiseFilter(3, 0, alpha_range=0.5) # 3-frame median, 0 initial, 0.5 alpha
 
 # 차선 변경 상태 플래그
 create_ccnc_messages._is_lane_change_active = False
@@ -1512,17 +1530,17 @@ create_ccnc_messages.hold_lane_escape_count = 0
 create_ccnc_messages.lane_phase_min = 10.0
 
 # 차선 노이즈 필터
-create_ccnc_messages.last_known_lane_width = 3.0
-create_ccnc_messages.l_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2)
-create_ccnc_messages.r_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2)
+create_ccnc_messages.last_known_lane_width = 3.0 # Default lane width
+create_ccnc_messages.l_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2) # 3-frame median, 1.5 initial, 0.2 alpha
+create_ccnc_messages.r_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2) # 3-frame median, 1.5 initial, 0.2 alpha
 
 # 차량 거리 필터
-create_ccnc_messages.ff_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
-create_ccnc_messages.lf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
-create_ccnc_messages.rf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0])
-create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=0.3, error_range=0.6)
-create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.6)
-create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.6)
+create_ccnc_messages.ff_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0]) # 3-frame median, 0 initial, adaptive alpha
+create_ccnc_messages.lf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0]) # 3-frame median, 0 initial, adaptive alpha
+create_ccnc_messages.rf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0]) # 3-frame median, 0 initial, adaptive alpha
+create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=0.3, error_range=0.6) # 3-frame median, 0 initial, adaptive alpha
+create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.6) # 3-frame median, 3 initial, adaptive alpha
+create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.6) # 3-frame median, 3 initial, adaptive alpha
 create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(2, -1), states=(1, 2))
 create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(2, -1), states=(1, 2))
 create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(2, -1), states=(1, 2))
