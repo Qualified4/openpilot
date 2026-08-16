@@ -1324,7 +1324,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
           min_front_lead_speed = -100 if a_ego_kph < -3 else np.interp(v_ego_kph, [30, 40, 100], [-100, 0, 20])
           min_side_lead_speed = np.interp(v_ego_kph, [0, 30, 100], [2, 10, 20])
-          lowspeed_side_lead_speed = np.interp(v_ego_kph, [20, 50], [-1, 10])
+          lowspeed_side_lead_speed = np.interp(v_ego_kph, [15, 40], [-1, 10])
 
           # 레이더 정보 갱신
           if CS.radar_state:
@@ -1344,8 +1344,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             left_road_edge_x, left_road_edge_y = road_edges[0].x, road_edges[0].y
             right_road_edge_x, right_road_edge_y = road_edges[1].x, road_edges[1].y
             selected_lane_is_left = md.laneLineProbs[1] > md.laneLineProbs[2]
-            selected_lane_x, selected_lane_y = (
-              (left_inner_x, left_inner_y) if selected_lane_is_left else (right_inner_x, right_inner_y)
+            selected_lane_x, selected_lane_y, selected_lane_stds = (
+              (left_inner_x, left_inner_y, md.laneLineStds[1]) if selected_lane_is_left else (right_inner_x, right_inner_y, md.laneLineStds[2])
             )
             selected_lane_y0 = selected_lane_y[0]
             interp = np.interp
@@ -1353,22 +1353,52 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             # 루프 외부 또는 함수 시작 지점에 상수 캐싱 권장
             ms_to_kph = CV.MS_TO_KPH
 
+            # --- 1. 프레임당 1회 계산 (루프 바깥) ---
+            # 근거리(0~40m) 기준 안정적인 도로 기하학 2차 다항식 계수 추출
+            mask = (selected_lane_x >= 0.0) & (selected_lane_x <= 40.0)
+            if np.sum(mask) >= 3:
+                poly_coeff = np.polyfit(selected_lane_x[mask], selected_lane_y[mask], 2)
+            else:
+                poly_coeff = np.polyfit(selected_lane_x, selected_lane_y, 2)
+            # 계수 직접 언패킹 (순수 파이썬 연산용)
+            poly_a, poly_b, poly_c = poly_coeff
+
+            # 표준편차 임계 구간 설정 (단위: m)
+            # - STD_MIN 이하: 원본 차선(interp) 100% 신뢰
+            # - STD_MAX 이상: 다항식 모델(polyval) 100% 사용
+            STD_MIN = 0.3
+            STD_MAX = 0.6
+            INV_STD_RANGE = 1.0 / (STD_MAX - STD_MIN)
+
             for lead in valid_leads:
               dRel = lead.dRel
 
-              # 1. 내 차선 곡률 보정 및 내부 경계선 계산 (필수 1~2회 interp)
-              selected_lane_y_at_drel = interp(dRel, selected_lane_x, selected_lane_y)
-              lane_curve_offset = selected_lane_y_at_drel - selected_lane_y0
-              road_aligned_yRel = lead.yRel + lane_curve_offset * 1.5
+              # 해당 거리에서의 표준편차 및 원본 차선 y값 보간
+              lane_std = interp(dRel, selected_lane_x, selected_lane_stds)
+              raw_y = interp(dRel, selected_lane_x, selected_lane_y)
+
+              # 2차 다항식 외삽 y값 계산
+              # 순수 파이썬 다항식 연산 (np.polyval 대체)
+              poly_y = (poly_a * dRel + poly_b) * dRel + poly_c
+
+              # 순수 파이썬 클램핑 & 곱셈 연산 (np.clip 대체)
+              raw_weight = (STD_MAX - lane_std) * INV_STD_RANGE
+              weight = 0.0 if raw_weight < 0.0 else (1.0 if raw_weight > 1.0 else raw_weight)
+
+              # 소프트 블렌딩
+              lane_y_at_drel = weight * raw_y + (1.0 - weight) * poly_y
+              # 최종 곡률 오프셋 및 횡방향 위치 계산
+              lane_curve_offset = lane_y_at_drel - selected_lane_y0
+              road_aligned_yRel = lead.yRel + lane_curve_offset
 
               if selected_lane_is_left:
-                left_inner_bound = max(-selected_lane_y_at_drel, 1.4)
+                left_inner_bound = max(-lane_y_at_drel, 1.4)
                 right_inner_bound = min(-interp(dRel, right_inner_x, right_inner_y), -1.4)
               else:
                 left_inner_bound = max(-interp(dRel, left_inner_x, left_inner_y), 1.4)
-                right_inner_bound = min(-selected_lane_y_at_drel, -1.4)
+                right_inner_bound = min(-lane_y_at_drel, -1.4)
 
-              dist_score = dRel + abs(road_aligned_yRel)
+              dist_score = dRel # + abs(road_aligned_yRel)
 
               # 2. [전방 주행 차선] - 외곽선/도로경계선 interp 4회 전부 생략
               if right_inner_bound <= road_aligned_yRel <= left_inner_bound:
