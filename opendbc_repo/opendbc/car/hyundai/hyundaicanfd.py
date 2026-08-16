@@ -1359,14 +1359,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # 1. 내 차선 곡률 보정 및 내부 경계선 계산 (필수 1~2회 interp)
               selected_lane_y_at_drel = interp(dRel, selected_lane_x, selected_lane_y)
               lane_curve_offset = selected_lane_y_at_drel - selected_lane_y0
-              road_aligned_yRel = lead.yRel + lane_curve_offset
+              road_aligned_yRel = lead.yRel + lane_curve_offset * 1.5
 
               if selected_lane_is_left:
-                left_inner_bound = -selected_lane_y_at_drel
-                right_inner_bound = -interp(dRel, right_inner_x, right_inner_y)
+                left_inner_bound = max(-selected_lane_y_at_drel, 1.4)
+                right_inner_bound = min(-interp(dRel, right_inner_x, right_inner_y), -1.4)
               else:
-                left_inner_bound = -interp(dRel, left_inner_x, left_inner_y)
-                right_inner_bound = -selected_lane_y_at_drel
+                left_inner_bound = max(-interp(dRel, left_inner_x, left_inner_y), 1.4)
+                right_inner_bound = min(-selected_lane_y_at_drel, -1.4)
 
               dist_score = dRel + abs(road_aligned_yRel)
 
