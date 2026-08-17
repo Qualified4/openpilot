@@ -1344,8 +1344,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             left_road_edge_x, left_road_edge_y = road_edges[0].x, road_edges[0].y
             right_road_edge_x, right_road_edge_y = road_edges[1].x, road_edges[1].y
             selected_lane_is_left = md.laneLineProbs[1] > md.laneLineProbs[2]
-            selected_lane_x, selected_lane_y, selected_lane_stds = (
-              (left_inner_x, left_inner_y, md.laneLineStds[1]) if selected_lane_is_left else (right_inner_x, right_inner_y, md.laneLineStds[2])
+            selected_lane_x, selected_lane_y, selected_lane_prob = (
+              (left_inner_x, left_inner_y, md.laneLineProbs[1]) if selected_lane_is_left else (right_inner_x, right_inner_y, md.laneLineProbs[2])
             )
             selected_lane_y0 = selected_lane_y[0]
             interp = np.interp
@@ -1363,29 +1363,28 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             # 계수 직접 언패킹 (순수 파이썬 연산용)
             poly_a, poly_b, poly_c = poly_coeff
 
-            # 표준편차 임계 구간 설정 (단위: m)
-            # - STD_MIN 이하: 원본 차선(interp) 100% 신뢰
-            # - STD_MAX 이상: 다항식 모델(polyval) 100% 사용
-            STD_MIN = 0.3
-            STD_MAX = 0.6
-            INV_STD_RANGE = 1.0 / (STD_MAX - STD_MIN)
-
+            # 거리 감쇄 구간: 40m까지는 raw_y 100% 신뢰 -> 70m 이상은 poly_y 100% 외삽
+            DREL_START = 40.0
+            DREL_END = 70.0
+            INV_DREL_RANGE = 1.0 / (DREL_END - DREL_START)
             for lead in valid_leads:
               dRel = lead.dRel
 
               # 해당 거리에서의 표준편차 및 원본 차선 y값 보간
-              lane_std = interp(dRel, selected_lane_x, selected_lane_stds)
               raw_y = interp(dRel, selected_lane_x, selected_lane_y)
 
               # 2차 다항식 외삽 y값 계산
               # 순수 파이썬 다항식 연산 (np.polyval 대체)
               poly_y = (poly_a * dRel + poly_b) * dRel + poly_c
 
-              # 순수 파이썬 클램핑 & 곱셈 연산 (np.clip 대체)
-              raw_weight = (STD_MAX - lane_std) * INV_STD_RANGE
-              weight = 0.0 if raw_weight < 0.0 else (1.0 if raw_weight > 1.0 else raw_weight)
+              # [수정] 거리에 따른 가중치 (dRel <= 40m: 1.0 / dRel >= 70m: 0.0)
+              raw_dist_weight = (DREL_END - dRel) * INV_DREL_RANGE
+              dist_weight = 0.0 if raw_dist_weight < 0.0 else (1.0 if raw_dist_weight > 1.0 else raw_dist_weight)
 
-              # 소프트 블렌딩
+              # 차선 확률(prob)이 높고 근거리일 때만 raw_y를 신뢰
+              weight = selected_lane_prob * dist_weight
+
+              # 소프트 블렌딩 (80m 원거리에서는 dist_weight=0이 되어 poly_y 100% 적용)
               lane_y_at_drel = weight * raw_y + (1.0 - weight) * poly_y
               # 최종 곡률 오프셋 및 횡방향 위치 계산
               lane_curve_offset = lane_y_at_drel - selected_lane_y0
