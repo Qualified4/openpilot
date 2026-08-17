@@ -1410,34 +1410,48 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               # 3. [왼쪽 차선 차량] - 좌측 외곽/도로경계선만 지연 계산 (우측 2회 interp 생략)
               elif left_inner_bound < road_aligned_yRel:
                 if dist_score < lf_min_dist:
-                  left_outer_bound = -interp(dRel, left_outer_x, left_outer_y)
-                  left_road_edge_bound = -interp(dRel, left_road_edge_x, left_road_edge_y)
-                  left_effective_bound = min(left_outer_bound, left_road_edge_bound)
+                  velocity = lead.vLead * ms_to_kph
 
-                  # 도로 경계/외곽선 중 더 좁은 안쪽 경계 내에 있는지 검사
-                  if road_aligned_yRel < left_effective_bound:
-                    velocity = lead.vLead * ms_to_kph
-                    # 실제 가드레일/도로폭까지 고려한 실질 유효 폭(Effective Width) 검사
-                    if velocity > min_side_lead_speed or (
-                      velocity > lowspeed_side_lead_speed and (left_effective_bound - left_inner_bound > 1.8)
-                    ):
-                      lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
+                  # Case A. 충분히 빠른 주행 차량: 차선 경계 검사 없이 즉시 선택
+                  if velocity > min_side_lead_speed:
+                    lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
+
+                  # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
+                  elif velocity > lowspeed_side_lead_speed:
+                    valid_left_bounds = []
+                    if md.laneLineProbs[0] > 0.1:
+                      valid_left_bounds.append(-interp(dRel, left_outer_x, left_outer_y))
+                    if md.roadEdgeStds[0] < 1.0:
+                      valid_left_bounds.append(-interp(dRel, left_road_edge_x, left_road_edge_y))
+
+                    if valid_left_bounds:
+                      left_effective_bound = min(valid_left_bounds)
+                      # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
+                      if road_aligned_yRel < left_effective_bound and (left_effective_bound - left_inner_bound > 1.8):
+                        lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
 
               # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
               elif road_aligned_yRel < right_inner_bound:
                 if dist_score < rf_min_dist:
-                  right_outer_bound = -interp(dRel, right_outer_x, right_outer_y)
-                  right_road_edge_bound = -interp(dRel, right_road_edge_x, right_road_edge_y)
-                  right_effective_bound = max(right_outer_bound, right_road_edge_bound)
+                  velocity = lead.vLead * ms_to_kph
 
-                  # 도로 경계/외곽선 중 더 좁은 안쪽 경계 내에 있는지 검사
-                  if road_aligned_yRel > right_effective_bound:
-                    velocity = lead.vLead * ms_to_kph
-                    # 실제 가드레일/도로폭까지 고려한 실질 유효 폭(Effective Width) 검사
-                    if velocity > min_side_lead_speed or (
-                      velocity > lowspeed_side_lead_speed and (right_inner_bound - right_effective_bound > 1.8)
-                    ):
-                      rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
+                  # Case A. 충분히 빠른 주행 차량: 차선 경계 검사 없이 즉시 선택
+                  if velocity > min_side_lead_speed:
+                    rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
+
+                  # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
+                  elif velocity > lowspeed_side_lead_speed:
+                    valid_right_bounds = []
+                    if md.laneLineProbs[3] > 0.1:
+                      valid_right_bounds.append(-interp(dRel, right_outer_x, right_outer_y))
+                    if md.roadEdgeStds[1] < 1.0:
+                      valid_right_bounds.append(-interp(dRel, right_road_edge_x, right_road_edge_y))
+
+                    if valid_right_bounds:
+                      right_effective_bound = max(valid_right_bounds)
+                      # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
+                      if road_aligned_yRel > right_effective_bound and (right_inner_bound - right_effective_bound > 1.8):
+                        rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
