@@ -1,5 +1,6 @@
 import time
 import math
+import bisect
 import copy
 import itertools
 import numpy as np
@@ -1353,15 +1354,67 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             # 루프 외부 또는 함수 시작 지점에 상수 캐싱 권장
             ms_to_kph = CV.MS_TO_KPH
 
-            # --- 1. 프레임당 1회 계산 (루프 바깥) ---
-            # 근거리(0~40m) 기준 안정적인 도로 기하학 2차 다항식 계수 추출
-            mask = (selected_lane_x >= 0.0) & (selected_lane_x <= 40.0)
-            if np.sum(mask) >= 3:
-                poly_coeff = np.polyfit(selected_lane_x[mask], selected_lane_y[mask], 2)
+            # --- 1. 0~40m 구간 3점으로 2차식 근사 ---
+            cut_idx = bisect.bisect_right(selected_lane_x, 40.0)
+
+            if cut_idx >= 3:
+              i0 = 0
+              i1 = cut_idx >> 1
+              i2 = cut_idx - 1
+            elif len(selected_lane_x) >= 3:
+              n = len(selected_lane_x)
+              i0 = 0
+              i1 = n >> 1
+              i2 = n - 1
             else:
-                poly_coeff = np.polyfit(selected_lane_x, selected_lane_y, 2)
-            # 계수 직접 언패킹 (순수 파이썬 연산용)
-            poly_a, poly_b, poly_c = poly_coeff
+              i0 = i1 = i2 = -1
+
+            if i0 >= 0:
+              x0, y0 = selected_lane_x[i0], selected_lane_y[i0]
+              x1, y1 = selected_lane_x[i1], selected_lane_y[i1]
+              x2, y2 = selected_lane_x[i2], selected_lane_y[i2]
+
+              # 3점 quadratic interpolation
+              denom = (x0 - x1) * (x0 - x2) * (x1 - x2)
+
+              if abs(denom) > 1e-5:
+                x0_sq = x0 * x0
+                x1_sq = x1 * x1
+                x2_sq = x2 * x2
+
+                poly_a = (
+                  x2 * (y1 - y0) +
+                  x1 * (y0 - y2) +
+                  x0 * (y2 - y1)
+                ) / denom
+
+                poly_b = (
+                  x2_sq * (y0 - y1) +
+                  x1_sq * (y2 - y0) +
+                  x0_sq * (y1 - y2)
+                ) / denom
+
+                poly_c = (
+                  x1 * x2 * (x1 - x2) * y0 +
+                  x2 * x0 * (x2 - x0) * y1 +
+                  x0 * x1 * (x0 - x1) * y2
+                ) / denom
+
+                # polynomial의 x=selected_lane_x[0] 위치를
+                # 실제 lane_y[0]에 맞추기 위한 기준값
+                poly_y0 = (
+                  (poly_a * x0 + poly_b) * x0 + poly_c
+                )
+              else:
+                poly_a = 0.0
+                poly_b = 0.0
+                poly_c = float(selected_lane_y0)
+                poly_y0 = selected_lane_y0
+            else:
+              poly_a = 0.0
+              poly_b = 0.0
+              poly_c = float(selected_lane_y0)
+              poly_y0 = selected_lane_y0
 
             # 거리 감쇄 구간: 40m까지는 raw_y 100% 신뢰 -> 70m 이상은 poly_y 100% 외삽
             DREL_START = 40.0
@@ -1370,23 +1423,31 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             for lead in valid_leads:
               dRel = lead.dRel
 
-              # 해당 거리에서의 표준편차 및 원본 차선 y값 보간
+              # 해당 거리에서의 원본 차선 y값
               raw_y = interp(dRel, selected_lane_x, selected_lane_y)
 
-              # 2차 다항식 외삽 y값 계산
-              # 순수 파이썬 다항식 연산 (np.polyval 대체)
+              # 2차식으로 계산한 차선 y값
               poly_y = (poly_a * dRel + poly_b) * dRel + poly_c
 
-              # [수정] 거리에 따른 가중치 (dRel <= 40m: 1.0 / dRel >= 70m: 0.0)
-              raw_dist_weight = (DREL_END - dRel) * INV_DREL_RANGE
-              dist_weight = 0.0 if raw_dist_weight < 0.0 else (1.0 if raw_dist_weight > 1.0 else raw_dist_weight)
+              # 첫 차선점을 기준으로 정규화
+              poly_y += selected_lane_y0 - poly_y0
 
-              # 차선 확률(prob)이 높고 근거리일 때만 raw_y를 신뢰
+              # 거리 가중치
+              raw_dist_weight = (DREL_END - dRel) * INV_DREL_RANGE
+              dist_weight = (
+                  0.0 if raw_dist_weight < 0.0
+                  else 1.0 if raw_dist_weight > 1.0
+                  else raw_dist_weight
+              )
+
+              # 차선 확률 + 거리 기반 블렌딩
               weight = selected_lane_prob * dist_weight
 
-              # 소프트 블렌딩 (80m 원거리에서는 dist_weight=0이 되어 poly_y 100% 적용)
-              lane_y_at_drel = weight * raw_y + (1.0 - weight) * poly_y
-              # 최종 곡률 오프셋 및 횡방향 위치 계산
+              lane_y_at_drel = (
+                  weight * raw_y +
+                  (1.0 - weight) * poly_y
+              )
+
               lane_curve_offset = lane_y_at_drel - selected_lane_y0
               road_aligned_yRel = lead.yRel + lane_curve_offset
 
@@ -1418,7 +1479,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
                   elif velocity > lowspeed_side_lead_speed:
                     valid_left_bounds = []
-                    if md.laneLineProbs[0] > 0.1:
+                    if md.laneLineProbs[1] > 0.1:
                       valid_left_bounds.append(-interp(dRel, left_outer_x, left_outer_y))
                     if md.roadEdgeStds[0] < 1.0:
                       valid_left_bounds.append(-interp(dRel, left_road_edge_x, left_road_edge_y))
@@ -1441,7 +1502,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
                   elif velocity > lowspeed_side_lead_speed:
                     valid_right_bounds = []
-                    if md.laneLineProbs[3] > 0.1:
+                    if md.laneLineProbs[2] > 0.1:
                       valid_right_bounds.append(-interp(dRel, right_outer_x, right_outer_y))
                     if md.roadEdgeStds[1] < 1.0:
                       valid_right_bounds.append(-interp(dRel, right_road_edge_x, right_road_edge_y))
