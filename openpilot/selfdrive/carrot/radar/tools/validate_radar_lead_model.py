@@ -42,6 +42,14 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--expected", choices=("detect", "clear", "stationary"))
   parser.add_argument("--front-only", action="store_true")
   parser.add_argument(
+    "--shadow-only",
+    action="store_true",
+    help=(
+      "skip the expensive existing-radard CUT-IN replay and validate only "
+      + "the physical dPath implementation"
+    ),
+  )
+  parser.add_argument(
     "--cases-only",
     action="store_true",
     help="skip radar_trajectory_labels.json; full validation uses both sources",
@@ -56,6 +64,14 @@ def parse_args() -> argparse.Namespace:
     "--strict-shadow",
     action="store_true",
     help="return nonzero when a physical dPath shadow expectation fails",
+  )
+  parser.add_argument(
+    "--strict-predecel",
+    action="store_true",
+    help=(
+      "return nonzero when a maintained clear window emits corner "
+      + "pre-deceleration risk or a required pre-deceleration case is missed"
+    ),
   )
   return parser.parse_args()
 
@@ -100,7 +116,9 @@ def _first_event(
     value = getattr(selector.select(frame, index), attribute)
     candidates = (
       () if value is None
-      else (value,) if attribute in ("lead_one", "lead_two")
+      else (value,) if attribute in (
+        "lead_one", "lead_two", "cutin_predecel_candidate",
+      )
       else tuple(value)
     )
     matches = [
@@ -209,6 +227,8 @@ def _print_metrics(title: str, values: dict[str, float | int]) -> None:
 
 def main() -> int:
   args = parse_args()
+  if args.shadow_only and args.strict_radard:
+    raise SystemExit("--shadow-only conflicts with --strict-radard")
   filters = tuple(value.lower() for value in args.case)
   entries = [
     entry for entry in _entries(args.cases, args.labels, args.cases_only)
@@ -251,13 +271,19 @@ def main() -> int:
         for entry in log_entries
       }))
     )
-    cutin_ids = current_cutin_track_ids(path, frames, sources)
-    radard = CurrentRadardSelector(frames, cutin_ids)
+    radard = None
+    if not args.shadow_only:
+      cutin_ids = current_cutin_track_ids(path, frames, sources)
+      radard = CurrentRadardSelector(frames, cutin_ids)
     shadow = RadarMotionShadowSelector(frames)
     for entry in log_entries:
       expected = str(entry["expected"])
+      validation_stage = str(entry.get("validation_stage", "output"))
       if expected == "stationary":
-        radard_event = _stationary_event(radard, frames, entry)
+        radard_event = (
+          _stationary_event(radard, frames, entry)
+          if radard is not None else None
+        )
         shadow_event = _stationary_event(
           shadow,
           frames,
@@ -265,15 +291,16 @@ def main() -> int:
           require_target_ids=False,
           maximum_abs_v_lead=STATIONARY_MAX_ABS_VLEAD_MPS,
         )
-        radard_pass = radard_event is not None
+        radard_pass = radard is None or radard_event is not None
       else:
-        validation_stage = str(entry.get("validation_stage", "output"))
         validation_attribute = {
           "lead_one": "lead_one",
           "lead_two": "lead_two",
+          "predecel": "cutin_predecel_candidate",
         }.get(validation_stage, "active_cutin_candidates")
-        radard_event = _first_event(
-          radard, frames, entry, validation_attribute,
+        radard_event = (
+          _first_event(radard, frames, entry, validation_attribute)
+          if radard is not None else None
         )
         entry_source = str(entry.get("source", "front+corner"))
         shadow_applicable = (
@@ -287,20 +314,52 @@ def main() -> int:
             entry,
             (
               validation_attribute
-              if validation_attribute in ("lead_one", "lead_two")
+              if validation_attribute in (
+                "lead_one", "lead_two", "cutin_predecel_candidate",
+              )
               else "decision_cutin_candidates"
             ),
           )
           if shadow_applicable
           else None
         )
-        radard_pass = (radard_event is not None) == (expected == "detect")
+        radard_pass = (
+          radard is None
+          or (radard_event is not None) == (expected == "detect")
+        )
       if expected == "stationary":
         shadow_applicable = True
       shadow_pass = (
         not shadow_applicable
         or (shadow_event is not None) == (expected in ("detect", "stationary"))
       )
+      entry_source = str(entry.get("source", "front+corner"))
+      predecel_applicable = (
+        shadow.motion_sensor == "corner"
+        and entry_source in ("corner", "front+corner")
+        and expected in ("detect", "clear")
+      )
+      predecel_event = (
+        _first_event(
+          shadow,
+          frames,
+          entry,
+          "cutin_predecel_candidate",
+        )
+        if predecel_applicable
+        else None
+      )
+      predecel_required = validation_stage == "predecel"
+      predecel_pass = (
+        not predecel_applicable
+        or (
+          predecel_event is None
+          if expected == "clear"
+          else predecel_event is not None or not predecel_required
+        )
+      )
+      if expected == "clear" or predecel_required:
+        shadow_pass = shadow_pass and predecel_pass
       deadline = entry.get("latest_detection_s")
       if (
         radard_pass
@@ -316,8 +375,17 @@ def main() -> int:
         and expected == "detect"
       ):
         shadow_pass = shadow_event[0] <= float(deadline)
-      radard_continuous = _lead_one_continuous(
-        radard, frames, entry,
+      if (
+        predecel_pass
+        and deadline is not None
+        and predecel_event is not None
+        and predecel_required
+      ):
+        predecel_pass = predecel_event[0] <= float(deadline)
+        shadow_pass = shadow_pass and predecel_pass
+      radard_continuous = (
+        _lead_one_continuous(radard, frames, entry)
+        if radard is not None else None
       )
       shadow_continuous = _lead_one_continuous(
         shadow, frames, entry,
@@ -333,17 +401,22 @@ def main() -> int:
         "expected": expected,
         "radard_event": radard_event,
         "shadow_event": shadow_event,
+        "predecel_event": predecel_event,
         "shadow_applicable": shadow_applicable,
         "shadow_sensor": shadow.motion_sensor,
         "radard_pass": radard_pass,
         "shadow_pass": shadow_pass,
+        "predecel_pass": predecel_pass,
         "radard_continuous": radard_continuous,
         "shadow_continuous": shadow_continuous,
       }
       rows.append(row)
       print(
         f"  {entry['id']} expected={expected} "
-        + f"radard={'PASS' if radard_pass else 'FAIL'}:{_event_text(radard_event)} "
+        + (
+          f"radard={'PASS' if radard_pass else 'FAIL'}:{_event_text(radard_event)} "
+          if radard is not None else "radard=SKIP "
+        )
         + (
           f"shadow={'PASS' if shadow_pass else 'FAIL'}:{_event_text(shadow_event)}"
           if shadow_applicable
@@ -355,6 +428,13 @@ def main() -> int:
           + f"/shadow:{'PASS' if shadow_continuous else 'FAIL'}"
           if radard_continuous is not None
           and shadow_continuous is not None
+          else ""
+        )
+        + (
+          f" predecel={'PASS' if predecel_pass else 'FAIL'}:"
+          + _event_text(predecel_event)
+          if predecel_applicable
+          and (expected == "clear" or predecel_required)
           else ""
         ),
         flush=True,
@@ -368,14 +448,34 @@ def main() -> int:
     if not subset:
       continue
     print(f"[{validation_set}]")
-    _print_metrics("existing radard", _metrics(subset, "radard_event"))
+    if not args.shadow_only:
+      _print_metrics("existing radard", _metrics(subset, "radard_event"))
     _print_metrics("physical dPath shadow", _metrics(subset, "shadow_event"))
-  radard_failures = sum(not row["radard_pass"] for row in rows)
+    predecel_subset = [
+      row for row in subset
+      if row["expected"] == "clear" or row["predecel_event"] is not None
+    ]
+    if predecel_subset:
+      _print_metrics(
+        "corner pre-deceleration safeguards",
+        _metrics(predecel_subset, "predecel_event"),
+      )
+  radard_failures = (
+    0
+    if args.shadow_only
+    else sum(not row["radard_pass"] for row in rows)
+  )
   shadow_failures = sum(not row["shadow_pass"] for row in rows)
+  predecel_failures = sum(not row["predecel_pass"] for row in rows)
   print(
     f"\nprocessed={len(rows)} missing={missing} "
-    + f"existing-radard expectation failures={radard_failures} "
+    + (
+      "existing-radard=SKIP "
+      if args.shadow_only
+      else f"existing-radard expectation failures={radard_failures} "
+    )
     + f"physical-dpath expectation failures={shadow_failures}"
+    + f" pre-deceleration expectation failures={predecel_failures}"
   )
 
   if args.report is not None:
@@ -384,11 +484,16 @@ def main() -> int:
       "description": "existing radard control versus physical dPath shadow; manual labels validation-only",
       "rows": rows,
       "summary": {
-        "existing_radard": _metrics(rows, "radard_event"),
+        "existing_radard": (
+          None
+          if args.shadow_only
+          else _metrics(rows, "radard_event")
+        ),
         "physical_dpath_shadow": _metrics(rows, "shadow_event"),
         "missing": missing,
         "radard_expectation_failures": radard_failures,
         "physical_dpath_expectation_failures": shadow_failures,
+        "predeceleration_expectation_failures": predecel_failures,
       },
     }
     args.report.write_text(
@@ -400,6 +505,7 @@ def main() -> int:
     missing > 0
     or (args.strict_radard and radard_failures > 0)
     or (args.strict_shadow and shadow_failures > 0)
+    or (args.strict_predecel and predecel_failures > 0)
   )
 
 
