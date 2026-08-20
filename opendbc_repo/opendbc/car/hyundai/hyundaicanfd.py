@@ -1419,7 +1419,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
             min_front_lead_speed = -100 if a_ego_kph < -3 else interp(v_ego_kph, [30, 40, 100], [-100, 0, 20])
             min_side_lead_speed = interp(v_ego_kph, [0, 30, 100], [2, 10, 20])
-            lowspeed_side_lead_speed = interp(v_ego_kph, [15, 40], [-1, 15])
+            lowspeed_side_lead_speed = interp(v_ego_kph, [10, 40], [-1, 10])
 
             lead_groups = (
                 (CS.radar_state.leadsCenter, True),
@@ -1464,7 +1464,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                       ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel
 
                 # 3. [왼쪽 차선 차량] - 좌측 외곽/도로경계선만 지연 계산 (우측 2회 interp 생략)
-                elif not is_center and left_inner_bound < road_aligned_yRel:
+                elif left_inner_bound < road_aligned_yRel:
                   if dist_score < lf_min_dist:
                     velocity = lead.vLead * ms_to_kph
 
@@ -1475,19 +1475,19 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
                     elif velocity > lowspeed_side_lead_speed:
                       valid_left_bounds = []
-                      if md.laneLineProbs[1] > 0.05:
+                      if has_left_outer:
                         valid_left_bounds.append(-interp(dRel, left_outer_x, left_outer_y))
-                      if md.roadEdgeStds[0] < 1.0:
+                      if has_left_edge:
                         valid_left_bounds.append(-interp(dRel, left_road_edge_x, left_road_edge_y))
 
                       if valid_left_bounds:
-                        left_effective_bound = min(valid_left_bounds) - 0.3
+                        left_effective_bound = min(valid_left_bounds) - 0.2
                         # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
                         if road_aligned_yRel < left_effective_bound and (left_effective_bound - left_inner_bound > 1.8):
                           lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
 
                 # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
-                elif not is_center and road_aligned_yRel < right_inner_bound:
+                elif road_aligned_yRel < right_inner_bound:
                   if dist_score < rf_min_dist:
                     velocity = lead.vLead * ms_to_kph
 
@@ -1498,13 +1498,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
                     elif velocity > lowspeed_side_lead_speed:
                       valid_right_bounds = []
-                      if md.laneLineProbs[2] > 0.05:
+                      if has_right_outer:
                         valid_right_bounds.append(-interp(dRel, right_outer_x, right_outer_y))
-                      if md.roadEdgeStds[1] < 1.0:
+                      if has_right_edge:
                         valid_right_bounds.append(-interp(dRel, right_road_edge_x, right_road_edge_y))
 
                       if valid_right_bounds:
-                        right_effective_bound = max(valid_right_bounds) + 0.3
+                        right_effective_bound = max(valid_right_bounds) + 0.2
                         # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
                         if road_aligned_yRel > right_effective_bound and (right_inner_bound - right_effective_bound > 1.8):
                           rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
@@ -1518,14 +1518,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["FF_DETECT"] = 0 # 순정 디텍션 제거
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
-            if ff_lead.vLead < 5.0:
+            if lf_lead.vLead * ms_to_kph < 5.0:
               lf_yRel = max(lf_yRel, 2.5)
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel) * 0.8
             values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_curved_deadband(min(4, lf_yRel), 3, 0.9, 2))
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
-            if ff_lead.vLead < 5.0:
+            if rf_lead.vLead * ms_to_kph < 5.0:
               rf_yRel = min(rf_yRel, -2.5)
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel) * 0.8
             values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_curved_deadband(max(-4, -rf_yRel), 3, 0.9, 2))
