@@ -1322,20 +1322,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         try:
           ff_lead = lf_lead = rf_lead = None
           ff_yRel = lf_yRel = rf_yRel = 0
-          ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
-          min_front_lead_speed = -100 if a_ego_kph < -3 else np.interp(v_ego_kph, [30, 40, 100], [-100, 0, 20])
-          min_side_lead_speed = np.interp(v_ego_kph, [0, 30, 100], [2, 10, 20])
-          lowspeed_side_lead_speed = np.interp(v_ego_kph, [15, 40], [-1, 10])
 
           # 레이더 정보 갱신
           if CS.radar_state:
-            valid_leads = (
-              l for l in itertools.chain(CS.radar_state.leadsLeft,
-                                        CS.radar_state.leadsRight,
-                                        CS.radar_state.leadsCenter)
-              if l.dRel > 1 and l.radar
-            )
-
             lane_lines = md.laneLines
             road_edges = md.roadEdges
             left_inner_x, left_inner_y = lane_lines[1].x, lane_lines[1].y
@@ -1349,10 +1338,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               (left_inner_x, left_inner_y, md.laneLineProbs[1]) if selected_lane_is_left else (right_inner_x, right_inner_y, md.laneLineProbs[2])
             )
             selected_lane_y0 = selected_lane_y[0]
-            interp = np.interp
-
-            # 루프 외부 또는 함수 시작 지점에 상수 캐싱 권장
-            ms_to_kph = CV.MS_TO_KPH
 
             # --- 1. 0~40m 구간 3점으로 2차식 근사 ---
             cut_idx = bisect.bisect_right(selected_lane_x, 40.0)
@@ -1416,102 +1401,113 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               poly_c = float(selected_lane_y0)
               poly_y0 = selected_lane_y0
 
+            poly_offset = selected_lane_y0 - poly_y0
+
+            # 루프 외부 또는 함수 시작 지점에 상수 캐싱 권장
+            interp = np.interp
+            ms_to_kph = CV.MS_TO_KPH
             # 거리 감쇄 구간: 40m까지는 raw_y 100% 신뢰 -> 70m 이상은 poly_y 100% 외삽
             DREL_START = 40.0
             DREL_END = 70.0
             INV_DREL_RANGE = 1.0 / (DREL_END - DREL_START)
-            for lead in valid_leads:
-              dRel = lead.dRel
 
-              # 해당 거리에서의 원본 차선 y값
-              raw_y = interp(dRel, selected_lane_x, selected_lane_y)
+            has_left_outer = md.laneLineProbs[1] > 0.05
+            has_left_edge = md.roadEdgeStds[0] < 1.0
+            has_right_outer = md.laneLineProbs[2] > 0.05
+            has_right_edge = md.roadEdgeStds[1] < 1.0
 
-              # 2차식으로 계산한 차선 y값
-              poly_y = (poly_a * dRel + poly_b) * dRel + poly_c
+            ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
+            min_front_lead_speed = -100 if a_ego_kph < -3 else interp(v_ego_kph, [30, 40, 100], [-100, 0, 20])
+            min_side_lead_speed = interp(v_ego_kph, [0, 30, 100], [2, 10, 20])
+            lowspeed_side_lead_speed = interp(v_ego_kph, [15, 40], [-1, 15])
 
-              # 첫 차선점을 기준으로 정규화
-              poly_y += selected_lane_y0 - poly_y0
+            lead_groups = (
+                (CS.radar_state.leadsCenter, True),
+                (CS.radar_state.leadsLeft, False),
+                (CS.radar_state.leadsRight, False),
+            )
+            for leads, is_center in lead_groups:
+              for lead in leads:
+                dRel = lead.dRel
+                if dRel < 1 or not lead.radar:
+                    continue
 
-              # 거리 가중치
-              raw_dist_weight = (DREL_END - dRel) * INV_DREL_RANGE
-              dist_weight = (
-                  0.0 if raw_dist_weight < 0.0
-                  else 1.0 if raw_dist_weight > 1.0
-                  else raw_dist_weight
-              )
+                # 해당 거리에서의 원본 차선 y값
+                raw_y = interp(dRel, selected_lane_x, selected_lane_y)
+                # 2차식으로 계산한 차선 y값
+                poly_y = (poly_a * dRel + poly_b) * dRel + poly_c + poly_offset
 
-              # 차선 확률 + 거리 기반 블렌딩
-              weight = selected_lane_prob * dist_weight
+                # 거리 가중치
+                raw_dist_weight = (DREL_END - dRel) * INV_DREL_RANGE
+                dist_weight = 0.0 if raw_dist_weight < 0.0 else (1.0 if raw_dist_weight > 1.0 else raw_dist_weight)
 
-              lane_y_at_drel = (
-                  weight * raw_y +
-                  (1.0 - weight) * poly_y
-              )
+                # 차선 확률 + 거리 기반 블렌딩
+                weight = selected_lane_prob * dist_weight
 
-              lane_curve_offset = lane_y_at_drel - selected_lane_y0
-              road_aligned_yRel = lead.yRel + lane_curve_offset
+                lane_y_at_drel = weight * raw_y + (1.0 - weight) * poly_y
+                road_aligned_yRel = lead.yRel + (lane_y_at_drel - selected_lane_y0)
 
-              if selected_lane_is_left:
-                left_inner_bound = max(-lane_y_at_drel, 1.4)
-                right_inner_bound = min(-interp(dRel, right_inner_x, right_inner_y), -1.4)
-              else:
-                left_inner_bound = max(-interp(dRel, left_inner_x, left_inner_y), 1.4)
-                right_inner_bound = min(-lane_y_at_drel, -1.4)
+                if selected_lane_is_left:
+                  left_inner_bound = max(-lane_y_at_drel, 1.4)
+                  right_inner_bound = min(-interp(dRel, right_inner_x, right_inner_y), -1.4)
+                else:
+                  left_inner_bound = max(-interp(dRel, left_inner_x, left_inner_y), 1.4)
+                  right_inner_bound = min(-lane_y_at_drel, -1.4)
 
-              dist_score = dRel # + abs(road_aligned_yRel)
+                dist_score = dRel # + abs(road_aligned_yRel)
 
-              # 2. [전방 주행 차선] - 외곽선/도로경계선 interp 4회 전부 생략
-              if right_inner_bound <= road_aligned_yRel <= left_inner_bound:
-                if dist_score < ff_min_dist:
-                  velocity = lead.vLead * ms_to_kph
-                  if velocity > min_front_lead_speed:
-                    ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel
+                # 2. [전방 주행 차선] - 외곽선/도로경계선 interp 4회 전부 생략
+                if right_inner_bound <= road_aligned_yRel <= left_inner_bound:
+                  if dist_score < ff_min_dist:
+                    velocity = lead.vLead * ms_to_kph
+                    if velocity > min_front_lead_speed:
+                      ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel
 
-              # 3. [왼쪽 차선 차량] - 좌측 외곽/도로경계선만 지연 계산 (우측 2회 interp 생략)
-              elif left_inner_bound < road_aligned_yRel:
-                if dist_score < lf_min_dist:
-                  velocity = lead.vLead * ms_to_kph
+                # 3. [왼쪽 차선 차량] - 좌측 외곽/도로경계선만 지연 계산 (우측 2회 interp 생략)
+                elif not is_center and left_inner_bound < road_aligned_yRel:
+                  if dist_score < lf_min_dist:
+                    velocity = lead.vLead * ms_to_kph
 
-                  # Case A. 충분히 빠른 주행 차량: 차선 경계 검사 없이 즉시 선택
-                  if velocity > min_side_lead_speed:
-                    lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
+                    # Case A. 충분히 빠른 주행 차량: 차선 경계 검사 없이 즉시 선택
+                    if velocity > min_side_lead_speed:
+                      lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
 
-                  # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
-                  elif velocity > lowspeed_side_lead_speed:
-                    valid_left_bounds = []
-                    if md.laneLineProbs[1] > 0.1:
-                      valid_left_bounds.append(-interp(dRel, left_outer_x, left_outer_y))
-                    if md.roadEdgeStds[0] < 1.0:
-                      valid_left_bounds.append(-interp(dRel, left_road_edge_x, left_road_edge_y))
+                    # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
+                    elif velocity > lowspeed_side_lead_speed:
+                      valid_left_bounds = []
+                      if md.laneLineProbs[1] > 0.05:
+                        valid_left_bounds.append(-interp(dRel, left_outer_x, left_outer_y))
+                      if md.roadEdgeStds[0] < 1.0:
+                        valid_left_bounds.append(-interp(dRel, left_road_edge_x, left_road_edge_y))
 
-                    if valid_left_bounds:
-                      left_effective_bound = min(valid_left_bounds)
-                      # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
-                      if road_aligned_yRel < left_effective_bound and (left_effective_bound - left_inner_bound > 1.8):
-                        lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
+                      if valid_left_bounds:
+                        left_effective_bound = min(valid_left_bounds) - 0.3
+                        # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
+                        if road_aligned_yRel < left_effective_bound and (left_effective_bound - left_inner_bound > 1.8):
+                          lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
 
-              # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
-              elif road_aligned_yRel < right_inner_bound:
-                if dist_score < rf_min_dist:
-                  velocity = lead.vLead * ms_to_kph
+                # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
+                elif not is_center and road_aligned_yRel < right_inner_bound:
+                  if dist_score < rf_min_dist:
+                    velocity = lead.vLead * ms_to_kph
 
-                  # Case A. 충분히 빠른 주행 차량: 차선 경계 검사 없이 즉시 선택
-                  if velocity > min_side_lead_speed:
-                    rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
+                    # Case A. 충분히 빠른 주행 차량: 차선 경계 검사 없이 즉시 선택
+                    if velocity > min_side_lead_speed:
+                      rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
 
-                  # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
-                  elif velocity > lowspeed_side_lead_speed:
-                    valid_right_bounds = []
-                    if md.laneLineProbs[2] > 0.1:
-                      valid_right_bounds.append(-interp(dRel, right_outer_x, right_outer_y))
-                    if md.roadEdgeStds[1] < 1.0:
-                      valid_right_bounds.append(-interp(dRel, right_road_edge_x, right_road_edge_y))
+                    # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
+                    elif velocity > lowspeed_side_lead_speed:
+                      valid_right_bounds = []
+                      if md.laneLineProbs[2] > 0.05:
+                        valid_right_bounds.append(-interp(dRel, right_outer_x, right_outer_y))
+                      if md.roadEdgeStds[1] < 1.0:
+                        valid_right_bounds.append(-interp(dRel, right_road_edge_x, right_road_edge_y))
 
-                    if valid_right_bounds:
-                      right_effective_bound = max(valid_right_bounds)
-                      # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
-                      if road_aligned_yRel > right_effective_bound and (right_inner_bound - right_effective_bound > 1.8):
-                        rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
+                      if valid_right_bounds:
+                        right_effective_bound = max(valid_right_bounds) + 0.3
+                        # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
+                        if road_aligned_yRel > right_effective_bound and (right_inner_bound - right_effective_bound > 1.8):
+                          rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
 
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
@@ -1522,14 +1518,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["FF_DETECT"] = 0 # 순정 디텍션 제거
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
-            if lf_lead.dRel < 5.0:
+            if ff_lead.vLead < 5.0:
               lf_yRel = max(lf_yRel, 2.5)
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel) * 0.8
             values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_curved_deadband(min(4, lf_yRel), 3, 0.9, 2))
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
-            if rf_lead.dRel < 5.0:
+            if ff_lead.vLead < 5.0:
               rf_yRel = min(rf_yRel, -2.5)
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel) * 0.8
             values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_curved_deadband(max(-4, -rf_yRel), 3, 0.9, 2))
