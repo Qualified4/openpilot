@@ -1472,7 +1472,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                       ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel
 
                 # 3. [왼쪽 차선 차량] - 좌측 외곽/도로경계선만 지연 계산 (우측 2회 interp 생략)
-                elif left_inner_bound < road_aligned_yRel:
+                elif not is_center and left_inner_bound < road_aligned_yRel:
                   if dist_score < lf_min_dist:
                     velocity = lead.vLead * ms_to_kph
 
@@ -1489,13 +1489,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                         valid_left_bounds.append(-interp(dRel, left_road_edge_x, left_road_edge_y))
 
                       if valid_left_bounds:
-                        left_effective_bound = min(valid_left_bounds) - 0.2
+                        left_effective_bound = min(valid_left_bounds) - 0.25
                         # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
                         if road_aligned_yRel < left_effective_bound and (left_effective_bound - left_inner_bound > 1.8):
                           lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
 
                 # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
-                elif road_aligned_yRel < right_inner_bound:
+                elif not is_center and road_aligned_yRel < right_inner_bound:
                   if dist_score < rf_min_dist:
                     velocity = lead.vLead * ms_to_kph
 
@@ -1512,7 +1512,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                         valid_right_bounds.append(-interp(dRel, right_road_edge_x, right_road_edge_y))
 
                       if valid_right_bounds:
-                        right_effective_bound = max(valid_right_bounds) + 0.2
+                        right_effective_bound = max(valid_right_bounds) + 0.25
                         # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
                         if road_aligned_yRel > right_effective_bound and (right_inner_bound - right_effective_bound > 1.8):
                           rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
