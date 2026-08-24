@@ -99,9 +99,10 @@ def check_helpers_hook() -> str | None:
         from openpilot.selfdrive.modeld.helpers import modeld_pkl_path
         got = Path(modeld_pkl_path(False))
         big = Path(modeld_pkl_path(True))
-        if got.parent != Path(probe):
-            return f"MODELD_MODELS_DIR ignored — hook lost (got {got})"
-        if got.name != "driving_tinygrad.pkl" or big.name != "big_driving_tinygrad.pkl":
+        if got.parent != Path(probe) or big.parent != Path(probe):
+            return f"MODELD_MODELS_DIR ignored — hook lost (got {got}, big {big})"
+        big_ok = big.name.startswith("big_driving_") and big.name.endswith("_tinygrad.pkl")
+        if got.name != "driving_tinygrad.pkl" or not big_ok:
             return f"pkl naming changed: {got.name}, {big.name}"
         return None
     finally:
@@ -130,8 +131,10 @@ def check_pkl_format_pair() -> str | None:
     modeld_src = (MODELD_DIR / "modeld.py").read_text()
     if "dump_oob" not in compile_src:
         return "compile_modeld.py no longer writes with dump_oob"
-    if not re.search(r"load_oob\(open_file_chunked\(modeld_pkl_path", modeld_src):
-        return "modeld.py loader changed (expected load_oob(open_file_chunked(modeld_pkl_path(...))))"
+    # upstream may pass an explicit override first (pkl_path or modeld_pkl_path(...)),
+    # so allow anything up to the modeld_pkl_path fallback inside the same call.
+    if not re.search(r"load_oob\(open_file_chunked\([^)]*modeld_pkl_path", modeld_src):
+        return "modeld.py loader changed (expected load_oob(open_file_chunked(... modeld_pkl_path(...))))"
     return None
 
 

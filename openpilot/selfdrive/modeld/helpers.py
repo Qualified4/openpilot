@@ -9,11 +9,12 @@ from collections.abc import Collection
 from pathlib import Path
 from typing import TypeVar
 
+from openpilot.common.file_chunker import get_manifest_path
+from openpilot.selfdrive.modeld.big_model import active_manifest, read_state
+
 MODELS_DIR = Path(__file__).resolve().parent / 'models'
 TG_INPUT_DEVICES_PATH = MODELS_DIR / 'tg_input_devices.json'
-USBGPU_VID = 0xADD1
-USBGPU_PID = 0x0001
-USBGPU_ENABLE_ENV_VARS = ("USE_USBGPU", "ENABLE_USBGPU")
+USBGPU_USB_IDS = ((0xADD1, 0x0001), (0x3801, 0x0001))
 VisionStreamT = TypeVar("VisionStreamT")
 
 
@@ -48,11 +49,15 @@ def get_tg_input_devices(process_name: str, usbgpu: bool):
   except FileNotFoundError:
     return _default_tg_input_devices(process_name, usbgpu)
 
-def modeld_pkl_path(usbgpu: bool):
-  prefix = 'big_' if usbgpu else ''
+def modeld_pkl_path(usbgpu: bool, model_sha256: str | None = None):
   # carrot model selector: load a custom-compiled model dir instead of the built-in one
   models_dir = Path(override) if (override := os.getenv('MODELD_MODELS_DIR')) else MODELS_DIR
-  return models_dir / f'{prefix}driving_tinygrad.pkl'
+  if not usbgpu:
+    return models_dir / 'driving_tinygrad.pkl'
+  if model_sha256 is None:
+    model = active_manifest()
+    model_sha256 = model.sha256 if model is not None else 'unavailable'
+  return models_dir / f'big_driving_{model_sha256[:16]}_tinygrad.pkl'
 
 def dump_oob(obj, f):
   with tempfile.TemporaryFile(dir=".") as tmp:
@@ -78,15 +83,26 @@ def load_oob(f):
       yield pb
   return pickle.load(io.BytesIO(opcodes), buffers=buffers())
 
-def usbgpu_enabled() -> bool:
-  return any(os.getenv(name) == "1" for name in USBGPU_ENABLE_ENV_VARS)
-
 def usbgpu_present() -> bool:
   for d in Path("/sys/bus/usb/devices").glob("*"):
     try:
-      if int((d / "idVendor").read_text(), 16) == USBGPU_VID and \
-          int((d / "idProduct").read_text(), 16) == USBGPU_PID:
+      usb_id = (int((d / "idVendor").read_text(), 16), int((d / "idProduct").read_text(), 16))
+      if usb_id in USBGPU_USB_IDS:
         return True
     except Exception:
       pass
   return False
+
+def usbgpu_compiled_path() -> Path | None:
+  state = read_state()
+  for model in (state['active'], state['previous']):
+    if model is None:
+      continue
+    path = modeld_pkl_path(usbgpu=True, model_sha256=model.sha256)
+    if Path(get_manifest_path(path)).is_file():
+      return path
+  return None
+
+
+def usbgpu_compiled() -> bool:
+  return usbgpu_compiled_path() is not None
