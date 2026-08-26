@@ -22,7 +22,7 @@ ACC_CONTROL_DT = 1.0 / 50.0
 # [차량 모델 선택 (ccNC DBC 규격)]
 # 0: 순정(1), 1: 승용차(3), 2: 트럭(5), 3: 보행자(7), 4: 자전거(9), 5: 오토바이(11), 6: 라바콘(13)
 # ══════════════════════════════════════════════════════════════════════════════
-CAR_MODEL_TYPE = 1
+CAR_MODEL_TYPE = 0
 
 _MODEL_ID_MAP = {0: 1, 1: 3, 2: 5, 3: 7, 4: 9, 5: 11, 6: 13}
 CAR_MODEL_ID = _MODEL_ID_MAP.get(CAR_MODEL_TYPE, 1)
@@ -1546,7 +1546,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if ff_lead:
             values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel) * 0.8
             values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_curved_deadband(-ff_yRel, 0, 0.7, 1))
-            values["FF_DETECT"] = 2 if ff_lead.vLead < 3 else create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
+            values["FF_DETECT"] = CAR_MODEL_ID + 1 if ff_lead.vLead < 3 else create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
           else:
             values["FF_DETECT"] = 0 # 순정 디텍션 제거
           # 전방 좌측(LF) 차량 정보 업데이트
@@ -1571,20 +1571,20 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if CS.out.leftBlindspot:
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(8)
             values["LR_DETECT_LATERAL"] = BSD_LATERAL_FIXED - center_lane_offset
-            values["LR_DETECT"] = 2
+            values["LR_DETECT"] = CAR_MODEL_ID + 1
           elif create_ccnc_messages.lr_distance.value < 15:
             values["LR_DETECT_DISTANCE"] = create_ccnc_messages.lr_distance.apply(16)
             values["LR_DETECT_LATERAL"] = BSD_LATERAL_FIXED - center_lane_offset
-            values["LR_DETECT"] = 1
+            values["LR_DETECT"] = CAR_MODEL_ID
 
           if CS.out.rightBlindspot:
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(8) # 8m
             values["RR_DETECT_LATERAL"] = BSD_LATERAL_FIXED + center_lane_offset
-            values["RR_DETECT"] = 2
+            values["RR_DETECT"] = CAR_MODEL_ID + 1
           elif create_ccnc_messages.rr_distance.value < 15:
             values["RR_DETECT_DISTANCE"] = create_ccnc_messages.rr_distance.apply(16)
             values["RR_DETECT_LATERAL"] = BSD_LATERAL_FIXED + center_lane_offset
-            values["RR_DETECT"] = 1
+            values["RR_DETECT"] = CAR_MODEL_ID
 
         except:
           values = CS.ccnc_0x162.copy()
@@ -1674,9 +1674,9 @@ create_ccnc_messages.rf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], err
 create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=0.3, error_range=0.6) # 3-frame median, 0 initial, adaptive alpha
 create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.6) # 3-frame median, 3 initial, adaptive alpha
 create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.6) # 3-frame median, 3 initial, adaptive alpha
-create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(2, -1), states=(1, 2))
-create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(2, -1), states=(1, 2))
-create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(2, -1), states=(1, 2))
+create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(2, -1), states=(CAR_MODEL_ID, CAR_MODEL_ID + 1))
+create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(2, -1), states=(CAR_MODEL_ID, CAR_MODEL_ID + 1))
+create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(2, -1), states=(CAR_MODEL_ID, CAR_MODEL_ID + 1))
 
 create_ccnc_messages.lr_distance = NoiseFilter(1, 15, alpha_range=0.05)
 create_ccnc_messages.rr_distance = NoiseFilter(1, 15, alpha_range=0.05)
