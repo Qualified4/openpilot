@@ -13,6 +13,7 @@ from openpilot.selfdrive.carrot.radar_motion.predictor import (
   RadarMotionHistorySample,
   RadarMotionPrediction,
   RadarMotionPredictor,
+  corner_cutin_predecel_score,
   cutin_probability_at,
   model_path_point_at_s,
   model_path_y,
@@ -2938,6 +2939,81 @@ def test_controller_publishes_strong_corner_cutin_predecel_before_lead_two() -> 
   assert output.lead_cutin_risk["vRel"] == pytest.approx(-6.5)
 
 
+def test_close_low_speed_cutin_predecel_uses_moving_cross_sensor_target() -> None:
+  prediction = SimpleNamespace(
+    sensor="corner",
+    source="corner180",
+    current_path_occupancy=False,
+    history_count=40,
+    d_path=-2.40,
+    d_path_rate_short=0.36,
+    d_path_rate_long=0.41,
+    reported_normal_speed=0.26,
+    directional_inward_displacement_m=0.34,
+    directional_consistency=0.96,
+    directional_inward_sample_ratio=0.75,
+    motion_consistency=0.83,
+    recent_motion_support=0.87,
+  )
+
+  score = corner_cutin_predecel_score(
+    prediction,
+    3.10,
+    -2.00,
+    v_ego=7.69,
+    cross_sensor_confirmed=True,
+  )
+
+  assert score >= 0.20
+  assert corner_cutin_predecel_score(
+    prediction,
+    3.10,
+    -2.00,
+    v_ego=7.69,
+    cross_sensor_confirmed=False,
+  ) == 0.0
+
+
+@pytest.mark.parametrize(
+  ("v_ego", "v_rel", "prediction_overrides"),
+  (
+    (15.0, -2.0, {}),
+    (7.69, -7.69, {}),
+    (7.69, -2.0, {"reported_normal_speed": 0.0}),
+    (7.69, -2.0, {"directional_consistency": 0.70}),
+  ),
+)
+def test_close_low_speed_cutin_predecel_rejects_unsafe_shortcuts(
+  v_ego: float,
+  v_rel: float,
+  prediction_overrides: dict[str, float],
+) -> None:
+  values = {
+    "sensor": "corner",
+    "source": "corner180",
+    "current_path_occupancy": False,
+    "history_count": 40,
+    "d_path": -2.40,
+    "d_path_rate_short": 0.36,
+    "d_path_rate_long": 0.41,
+    "reported_normal_speed": 0.26,
+    "directional_inward_displacement_m": 0.34,
+    "directional_consistency": 0.96,
+    "directional_inward_sample_ratio": 0.75,
+    "motion_consistency": 0.83,
+    "recent_motion_support": 0.87,
+  }
+  values.update(prediction_overrides)
+
+  assert corner_cutin_predecel_score(
+    SimpleNamespace(**values),
+    3.10,
+    v_rel,
+    v_ego=v_ego,
+    cross_sensor_confirmed=True,
+  ) == 0.0
+
+
 def test_controller_selects_cross_sensor_slow_close_cutin() -> None:
   controller = DPathRadarController(prefer_corner_radar=True)
   output = None
@@ -3141,6 +3217,95 @@ def test_stationary_front_hands_off_to_persistent_closer_vision_match() -> None:
   assert selected_ids[:5] == [59] * 5
   assert selected_ids[-1] == 46
   assert matcher.stationary_identity == ("frontRadar", 46)
+
+
+def test_stationary_front_hands_off_to_offset_closer_vision_range() -> None:
+  matcher = VisionRadarMatcher()
+  match = None
+  for index in range(7):
+    time_s = index * 0.05
+    held = snapshot_radar_points(
+      (Point(55, 4.55, -0.30, v_rel=0.0),),
+      v_ego=0.0,
+    )[0]
+    match = matcher.match(
+      model_with_lead(4.55, -0.30, 0.0, probability=1.0),
+      (held,),
+      STRAIGHT_PATH,
+      time_s=time_s,
+      stationary_points=(held,),
+      prefer_primary_stationary=True,
+    )
+
+  assert match is not None
+  assert match.point.track_id == 55
+
+  selected_ids = []
+  for index in range(7, 14):
+    time_s = index * 0.05
+    points = snapshot_radar_points((
+      Point(55, 4.55, -0.30, v_rel=0.0),
+      Point(35, 2.40, 0.75, v_rel=0.0),
+    ), v_ego=0.0)
+    model = model_with_lead(2.80, 0.0, 0.0, probability=1.0)
+    model.leadsV3[0].xStd = (0.44,)
+    model.leadsV3[0].yStd = (0.22,)
+    model.leadsV3[0].vStd = (0.07,)
+    match = matcher.match(
+      model,
+      points,
+      STRAIGHT_PATH,
+      time_s=time_s,
+      stationary_points=points,
+      prefer_primary_stationary=True,
+    )
+    assert match is not None
+    selected_ids.append(match.point.track_id)
+
+  assert selected_ids[:5] == [55] * 5
+  assert selected_ids[-1] == 35
+  assert matcher.stationary_identity == ("frontRadar", 35)
+
+
+def test_stationary_front_rejects_offset_challenger_without_range_gain() -> None:
+  matcher = VisionRadarMatcher()
+  match = None
+  for index in range(7):
+    time_s = index * 0.05
+    held = snapshot_radar_points(
+      (Point(55, 4.55, -0.30, v_rel=0.0),),
+      v_ego=0.0,
+    )[0]
+    match = matcher.match(
+      model_with_lead(4.55, -0.30, 0.0, probability=1.0),
+      (held,),
+      STRAIGHT_PATH,
+      time_s=time_s,
+      stationary_points=(held,),
+      prefer_primary_stationary=True,
+    )
+
+  assert match is not None
+  assert match.point.track_id == 55
+
+  for index in range(7, 15):
+    time_s = index * 0.05
+    points = snapshot_radar_points((
+      Point(55, 4.55, -0.30, v_rel=0.0),
+      Point(35, 2.40, 0.75, v_rel=0.0),
+    ), v_ego=0.0)
+    match = matcher.match(
+      model_with_lead(4.10, 0.0, 0.0, probability=1.0),
+      points,
+      STRAIGHT_PATH,
+      time_s=time_s,
+      stationary_points=points,
+      prefer_primary_stationary=True,
+    )
+    assert match is not None
+    assert match.point.track_id == 55
+
+  assert matcher.stationary_identity == ("frontRadar", 55)
 
 
 def test_stationary_front_ignores_transient_closer_vision_match() -> None:
