@@ -990,6 +990,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         cruise_enabled = CC.enabled
         lat_enabled = CS.out.latEnabled
         nav_active = hud_control.activeCarrot > 1
+        vehicle_navi_available = CS.out.vehicleNaviAvailable
+        nav_icon_available = nav_active or vehicle_navi_available
 
         # hdpuse carrot
         hdp_use = Params().get_int("HDPuse")
@@ -1046,7 +1048,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["CENTERLINE"] = 1 if HDA_CntrlModSta > 0 or lat_enabled else 0
         values["CAR_CIRCLE"] = 2 if hdp_active or CS.softHoldActive else 1 if cruise_enabled else 0
 
-        # values["NAV_ICON"] = 2 if nav_active and cruise_enabled else 1 if main_enabled and nav_active else 0
+        values["NAV_ICON"] = 2 if nav_icon_available and cruise_enabled else 1 if main_enabled and nav_icon_available else 0
         values["HDA_ICON"] = 5 if hdp_active else 2 if cruise_enabled else 1 if main_enabled else 0
         # ==============================================================================
         # 계기판 LFA 아이콘 상태 제어
