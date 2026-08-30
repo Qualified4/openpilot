@@ -731,7 +731,7 @@ class VCruiseCarrot:
     self.nRoadLimitSpeed_last = self.nRoadLimitSpeed
     return v_cruise_kph
 
-  def _cruise_control(self, enable, cancel_timer, reason):
+  def _cruise_control(self, enable, cancel_timer, reason, allow_cancel_state=False):
     if enable > 0 and not self._cruise_available:
       self._activate_cruise = 0
       self._add_log(reason + " > Cruise unavailable")
@@ -744,7 +744,7 @@ class VCruiseCarrot:
       self._activate_cruise = 0
       self._add_log(reason + " > Brake hold interlock active")
       return
-    if self._cruise_cancel_state: # and self._soft_hold_active != 2:
+    if self._cruise_cancel_state and not allow_cancel_state:
       self._add_log(reason + " > Cancel state")
     elif enable > 0 and self._cancel_timer > 0 and cancel_timer >= 0:
       enable = 0
@@ -778,9 +778,7 @@ class VCruiseCarrot:
 
   def _engage_soft_hold(self):
     self._soft_hold_active = 2
-    if self.soft_hold_on_cancel:
-      self._cruise_cancel_state = False
-    self._cruise_control(1, -1, "Cruise on (soft hold)")
+    self._cruise_control(1, -1, "Cruise on (soft hold)", allow_cancel_state=self.soft_hold_on_cancel)
 
   def _update_cruise_state(self, CS, CC, v_cruise_kph):
     if not CC.enabled:
@@ -889,15 +887,18 @@ class VCruiseCarrot:
   def _prepare_brake_gas(self, CS, CC):
     if CS.gasPressed:
       gas_pressed_start = self._gas_pressed_count <= 0
+      cancel_soft_hold = gas_pressed_start and self._soft_hold_active > 0 and self._cruise_cancel_state
       self._paddle_decel_active = False
       self._gas_pressed_count = max(1, self._gas_pressed_count + 1)
       self._gas_pressed_count_last = self._gas_pressed_count
       self._gas_pressed_value = max(CS.gas, self._gas_pressed_value) if self._gas_pressed_count > 1 else CS.gas
       self._gas_tok = False
-      #if self._cruise_cancel_state and self._soft_hold_active == 2:
-      #  self._cruise_control(-1, -1, "Cruise off,softhold mode (gasPressed)")
       self._soft_hold_active = 0
-      if gas_pressed_start and self.disengage_on_accelerator:
+      if cancel_soft_hold:
+        self._cruise_ready = False
+        self.carrot_cruise_active = False
+        self._cruise_control(-1, -1, "Cruise off (cancel soft hold released)", allow_cancel_state=True)
+      elif gas_pressed_start and self.disengage_on_accelerator:
         self._cruise_ready = False
         self.carrot_cruise_active = False
         self._cruise_control(-1, 0, "Cruise off (gas pressed)")

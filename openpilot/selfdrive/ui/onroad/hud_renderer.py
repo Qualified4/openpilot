@@ -699,6 +699,7 @@ class HudRenderer(Widget):
         align="center_bottom",
       )
 
+
   def _update_cruise_speed_animation(self, cruise_text: str) -> None:
     if self._cruise_speed_text_last != cruise_text:
       self._cruise_speed_text_last = cruise_text
