@@ -1601,19 +1601,19 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         except:
           values = CS.ccnc_0x162.copy()
           values["FF_DISTANCE"] = 24
-          values["FF_DETECT"] = 2
+          values["FF_DETECT"] = 7
           values["LF_DETECT_DISTANCE"] = 12
           values["LF_DETECT_LATERAL"] = 1.5
-          values["LF_DETECT"] = 1
+          values["LF_DETECT"] = 4
           values["RF_DETECT_DISTANCE"] = 12
           values["RF_DETECT_LATERAL"] = 1.5
-          values["RF_DETECT"] = 1
+          values["RF_DETECT"] = 9
           values["LR_DETECT_DISTANCE"] = 1
           values["LR_DETECT_LATERAL"] = 3
-          values["LR_DETECT"] = 2
+          values["LR_DETECT"] = 6
           values["RR_DETECT_DISTANCE"] = 1
           values["RR_DETECT_LATERAL"] = 3
-          values["RR_DETECT"] = 2
+          values["RR_DETECT"] = 11
 
         if (left_lane_warning and not CS.out.leftBlinker) or (right_lane_warning and not CS.out.rightBlinker):
           values["VIBRATE"] = 1
