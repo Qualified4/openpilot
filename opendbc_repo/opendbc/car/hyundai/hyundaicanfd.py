@@ -1102,7 +1102,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           values["LANELINE_LEFT"] = 2 if hud_control.leftLaneVisible else 0
           values["LANELINE_RIGHT"] = 2 if hud_control.rightLaneVisible else 0
         else:
-          lane_color = 6 if md is not None and md.meta.laneChangeAvailableLeft else 2
+          if lat_active:
+            lane_color = 6 if md is not None and md.meta.laneChangeAvailableLeft else 2
+          else:
+            lane_color = 0
           if lane_line_check >= 1:
             lane_line_warn_left = CS.out.leftLaneLine % 10 not in (0, 5)
           else:
@@ -1113,7 +1116,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           else:
             values["LANELINE_LEFT"] = lane_color if hud_control.leftLaneVisible else 0
 
-          lane_color = 6 if md is not None and md.meta.laneChangeAvailableRight else 2
+          if lat_active:
+            lane_color = 6 if md is not None and md.meta.laneChangeAvailableRight else 2
+          else:
+            lane_color = 0
           if lane_line_check >= 1:
             lane_line_warn_right = CS.out.rightLaneLine % 10 not in (0, 5)
           else:
