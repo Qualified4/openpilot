@@ -42,7 +42,30 @@ CUTIN_MAX_DREL_M = 45.0
 FRONT_NEW_CUTIN_MIN_DREL_M = 2.0
 FRONT_CLOSE_BORN_MIN_DREL_M = 5.0
 CROSS_SENSOR_SLOT_HANDOFF_MAX_DREL_M = 12.0
+CROSS_SENSOR_ALIAS_HOLD_S = 0.35
 MIN_MOVING_VLEAD_MPS = 0.5
+
+FRONT_CURVE_ALIAS_MIN_ABS_YAW_RATE_RAD_S = 0.025
+CORNER_CURVE_ALIAS_MIN_ABS_YAW_RATE_RAD_S = 0.040
+CORNER_CURVE_ALIAS_MIN_ABS_YREL_M = 4.0
+CORNER_CURVE_ALIAS_MIN_OFFSET_DISCREPANCY_M = 2.0
+CORNER_CURVE_MAX_REPORTED_INWARD_MPS = 3.0
+CORNER_CURVE_MIN_RATE_DISAGREEMENT_MPS = 1.5
+PAIRED_OUTER_BODY_MIN_REPORTED_INWARD_MPS = 0.15
+PAIRED_OUTER_BODY_MAX_VREL_MPS = 1.0
+PAIRED_OUTER_BODY_MAX_ABS_YAW_RATE_RAD_S = 0.040
+PAIRED_OUTER_BODY_MIN_INWARD_PROGRESS_M = 0.15
+PAIRED_FAST_PASS_MIN_CLOSING_SPEED_MPS = 5.0
+PAIRED_FAST_PASS_MAX_TTC_S = 0.80
+PAIRED_FAST_PASS_MIN_HISTORY_S = 0.35
+PAIRED_REAR_PASS_MAX_INITIAL_DREL_M = 1.50
+PAIRED_REAR_PASS_MIN_PULL_AWAY_MPS = 0.50
+PAIRED_REAR_PASS_MAX_INWARD_PROGRESS_M = 0.35
+PAIRED_REAR_PASS_MAX_REPORTED_INWARD_MPS = 0.30
+PAIRED_PARALLEL_MIN_HISTORY_S = 0.75
+PAIRED_PARALLEL_MAX_ABS_VREL_MPS = 0.50
+PAIRED_PARALLEL_MAX_INWARD_PROGRESS_M = 0.25
+PAIRED_PARALLEL_MAX_REPORTED_INWARD_MPS = 0.20
 
 CUTIN_CONFIRMATION_S = 0.10
 CUTIN_CURRENT_OVERLAP_CONFIRMATION_S = 0.05
@@ -106,6 +129,8 @@ class TrajectoryCutInEstimate:
   predecel_risk: bool
   jittering: bool
   unstable_fast_motion: bool
+  rear_pass: bool
+  parallel_drift: bool
   front_history_supported: bool
   close_front_supported: bool
   curve_alias: bool
@@ -132,6 +157,7 @@ class _Observation:
 class _TrackState:
   continuity_id: int
   observations: deque[_Observation] = field(default_factory=deque)
+  minimum_d_rel: float = math.inf
   last_seen_s: float = -math.inf
   cutin_since_s: float | None = None
   cutin_until_s: float = -math.inf
@@ -141,6 +167,7 @@ class _TrackState:
   def reset(self, continuity_id: int) -> None:
     self.continuity_id = continuity_id
     self.observations.clear()
+    self.minimum_d_rel = math.inf
     self.cutin_since_s = None
     self.cutin_until_s = -math.inf
     self.risk_since_s = None
@@ -294,6 +321,9 @@ class TrajectoryCutInDetector:
   def __init__(self, sensitivity: int = 3) -> None:
     self.sensitivity = max(0, min(5, int(sensitivity)))
     self._tracks: dict[tuple[str, int], _TrackState] = {}
+    self._corner_front_aliases: dict[
+      tuple[str, int], tuple[tuple[str, int], float]
+    ] = {}
     self._next_continuity_id = 1
     self._last_time_s: float | None = None
     self._last_v_ego = 0.0
@@ -302,6 +332,7 @@ class TrajectoryCutInDetector:
 
   def reset(self) -> None:
     self._tracks.clear()
+    self._corner_front_aliases.clear()
     self._last_time_s = None
     self._last_v_ego = 0.0
     self._ego_distance = 0.0
@@ -394,14 +425,26 @@ class TrajectoryCutInDetector:
       # physical ID for motion history so a slot handoff does not erase the
       # measured inward trajectory. Fall back to the raw slot if an invalid
       # many-to-one match appears in the same frame.
-      key = (
+      stable_cross_key = (
         (f"{point.source}:front", cross_sensor_point.track_id)
         if point.source.startswith("corner")
         and cross_sensor_point is not None
         and cross_sensor_point.source == "frontRadar"
         and point.d_rel <= CROSS_SENSOR_SLOT_HANDOFF_MAX_DREL_M
-        else raw_key
+        else None
       )
+      if stable_cross_key is not None:
+        self._corner_front_aliases[raw_key] = stable_cross_key, time_s
+      else:
+        prior_alias = self._corner_front_aliases.get(raw_key)
+        if (
+          prior_alias is not None
+          and point.source.startswith("corner")
+          and point.d_rel <= CROSS_SENSOR_SLOT_HANDOFF_MAX_DREL_M
+          and time_s - prior_alias[1] <= CROSS_SENSOR_ALIAS_HOLD_S
+        ):
+          stable_cross_key = prior_alias[0]
+      key = stable_cross_key or raw_key
       if key in seen:
         key = raw_key
       seen.add(key)
@@ -422,6 +465,7 @@ class TrajectoryCutInDetector:
         global_path_s=self._ego_distance + projection.path_s,
         d_path=projection.d_path,
       ))
+      state.minimum_d_rel = min(state.minimum_d_rel, point.d_rel)
       while (
         state.observations
         and time_s - state.observations[0].time_s > MAX_HISTORY_S
@@ -527,8 +571,13 @@ class TrajectoryCutInDetector:
           or (
             abs(cross_sensor_point.y_rel)
             <= PAIRED_CLOSE_BODY_HALF_WIDTH_M
-            and reported_inward >= 0.08
-            and point.v_rel <= 0.5
+            and reported_inward
+            >= PAIRED_OUTER_BODY_MIN_REPORTED_INWARD_MPS
+            and point.v_rel <= PAIRED_OUTER_BODY_MAX_VREL_MPS
+            and recent_abs_yaw_max
+            < PAIRED_OUTER_BODY_MAX_ABS_YAW_RATE_RAD_S
+            and inward_progress
+            >= PAIRED_OUTER_BODY_MIN_INWARD_PROGRESS_M
           )
         )
       )
@@ -544,6 +593,27 @@ class TrajectoryCutInDetector:
         for value in state.observations
       )
       current_overlap = abs(projection.d_path) <= PATH_OVERLAP_HALF_WIDTH_M
+      close_born_rear_pass = (
+        point.source.startswith("corner")
+        and cross_sensor_supported
+        and not vision_supported
+        and not current_overlap
+        and state.minimum_d_rel <= PAIRED_REAR_PASS_MAX_INITIAL_DREL_M
+        and point.v_rel >= PAIRED_REAR_PASS_MIN_PULL_AWAY_MPS
+        and inward_progress < PAIRED_REAR_PASS_MAX_INWARD_PROGRESS_M
+        and reported_inward < PAIRED_REAR_PASS_MAX_REPORTED_INWARD_MPS
+      )
+      paired_parallel_drift = (
+        point.source.startswith("corner")
+        and cross_sensor_supported
+        and not vision_supported
+        and not current_overlap
+        and history_s >= PAIRED_PARALLEL_MIN_HISTORY_S
+        and abs(point.v_rel) <= PAIRED_PARALLEL_MAX_ABS_VREL_MPS
+        and inward_progress < PAIRED_PARALLEL_MAX_INWARD_PROGRESS_M
+        and reported_inward < PAIRED_PARALLEL_MAX_REPORTED_INWARD_MPS
+      )
+      non_cutin_side_motion = close_born_rear_pass or paired_parallel_drift
       front_overlap_half_width = (
         2.15 if point.d_rel <= 20.0 else PATH_OVERLAP_HALF_WIDTH_M
       )
@@ -608,6 +678,13 @@ class TrajectoryCutInDetector:
         )
       )
       motion_reliable = not jittering or jitter_override
+      paired_fast_pass = (
+        point.source.startswith("corner")
+        and -point.v_rel >= PAIRED_FAST_PASS_MIN_CLOSING_SPEED_MPS
+        and point.d_rel / max(-point.v_rel, 0.1)
+        <= PAIRED_FAST_PASS_MAX_TTC_S
+        and history_s < PAIRED_FAST_PASS_MIN_HISTORY_S
+      )
       paired_close_entry = (
         point.source.startswith("corner")
         and cross_sensor_supported
@@ -617,12 +694,54 @@ class TrajectoryCutInDetector:
         and inward_progress >= 0.06
         and supported_inward_rate >= 0.15
         and direction_consistency >= 0.75
+        and not paired_fast_pass
       )
-      curve_alias = not turning_corner_path_entry_allowed(
-        point.source,
-        point.y_rel,
-        projection.d_path,
-        yaw_rate_rad_s,
+      close_direct_entry = (
+        point.source.startswith("corner")
+        and point.d_rel <= 8.0
+        and abs(projection.d_path) <= 2.85
+        and history_s >= 0.50
+        and inward_progress >= 0.20
+        and supported_inward_rate >= 0.25
+        and reported_inward >= 0.20
+        and direction_consistency >= 0.85
+        and predicted_overlap
+        and not paired_fast_pass
+      )
+      curve_alias = (
+        not turning_corner_path_entry_allowed(
+          point.source,
+          point.y_rel,
+          projection.d_path,
+          yaw_rate_rad_s,
+        )
+        or (
+          point.source.startswith("corner")
+          and recent_abs_yaw_max
+          >= CORNER_CURVE_ALIAS_MIN_ABS_YAW_RATE_RAD_S
+          and abs(point.y_rel) >= CORNER_CURVE_ALIAS_MIN_ABS_YREL_M
+          and abs(point.y_rel) - abs(projection.d_path)
+          >= CORNER_CURVE_ALIAS_MIN_OFFSET_DISCREPANCY_M
+          and not vision_supported
+          and reported_inward
+          < PAIRED_OUTER_BODY_MIN_REPORTED_INWARD_MPS
+        )
+        or (
+          point.source.startswith("corner")
+          and recent_abs_yaw_max
+          >= CORNER_CURVE_ALIAS_MIN_ABS_YAW_RATE_RAD_S
+          and reported_inward
+          > CORNER_CURVE_MAX_REPORTED_INWARD_MPS
+          and reported_inward - inward_rate
+          >= CORNER_CURVE_MIN_RATE_DISAGREEMENT_MPS
+        )
+      )
+      front_curve_motion_supported = (
+        point.source != "frontRadar"
+        or recent_abs_yaw_max < FRONT_CURVE_ALIAS_MIN_ABS_YAW_RATE_RAD_S
+        or vision_supported
+        or cross_sensor_supported
+        or reported_inward >= PAIRED_OUTER_BODY_MIN_REPORTED_INWARD_MPS
       )
       turning_corner = (
         point.source.startswith("corner")
@@ -704,6 +823,8 @@ class TrajectoryCutInDetector:
         and MIN_MOVING_VLEAD_MPS < point.v_lead
         and 0.8 < point.d_rel <= CUTIN_MAX_DREL_M
         and motion_reliable
+        and front_curve_motion_supported
+        and not curve_alias
         and curve_motion_supported
         and slot_motion_supported
         and corner_motion_plausible
@@ -779,10 +900,10 @@ class TrajectoryCutInDetector:
           )
         )
       )
-      raw_cutin = common_ok and (
+      raw_cutin = common_ok and not non_cutin_side_motion and (
         front_entry
         if point.source == "frontRadar"
-        else corner_entry or paired_close_entry
+        else corner_entry or paired_close_entry or close_direct_entry
       )
       cutin_confirmation_s = (
         0.0
@@ -813,7 +934,12 @@ class TrajectoryCutInDetector:
         and not vision_supported
         and not cross_sensor_supported
       )
-      if trajectory_reversed:
+      if (
+        trajectory_reversed
+        or non_cutin_side_motion
+        or curve_alias
+        or not front_curve_motion_supported
+      ):
         # A hold bridges brief radar jitter, but must not resurrect a candidate
         # whose recent physical motion has clearly stopped or reversed.
         state.cutin_until_s = -math.inf
@@ -854,6 +980,7 @@ class TrajectoryCutInDetector:
           else (
             current_overlap
             or paired_close_entry
+            or close_direct_entry
             or (
               time_to_overlap_s is not None
               and time_to_overlap_s <= 1.90
@@ -865,6 +992,7 @@ class TrajectoryCutInDetector:
 
       raw_risk = (
         common_ok
+        and not non_cutin_side_motion
         and 2.0 < point.d_rel <= 45.0
         and point.v_rel <= -0.5
         and time_to_overlap_s is not None
@@ -892,7 +1020,10 @@ class TrajectoryCutInDetector:
         hold_s=RISK_HOLD_S,
       )
       if predecel_risk and (
-        point.v_rel >= -0.1 or time_to_overlap_s is None
+        point.v_rel >= -0.1
+        or time_to_overlap_s is None
+        or curve_alias
+        or not front_curve_motion_supported
       ):
         # The planner independently rejects a non-closing risk. Clear it here
         # as well so the validator and published radarState describe the same
@@ -920,6 +1051,8 @@ class TrajectoryCutInDetector:
       reason = (
         "confirmed trajectory CUT-IN" if confirmed_cutin
         else "trajectory pre-deceleration" if predecel_risk
+        else "close-born rear pass" if close_born_rear_pass
+        else "parallel side drift" if paired_parallel_drift
         else "uncorroborated close front" if not close_front_supported
         else "corner lateral jitter" if jittering
         else "current path" if current_path
@@ -960,6 +1093,8 @@ class TrajectoryCutInDetector:
         predecel_risk=predecel_risk,
         jittering=jittering,
         unstable_fast_motion=unstable_fast_lateral_motion,
+        rear_pass=close_born_rear_pass,
+        parallel_drift=paired_parallel_drift,
         front_history_supported=front_history_supported,
         close_front_supported=close_front_supported,
         curve_alias=curve_alias,
@@ -969,6 +1104,11 @@ class TrajectoryCutInDetector:
     for key, state in tuple(self._tracks.items()):
       if key not in seen and time_s - state.last_seen_s > MAX_OBSERVATION_GAP_S:
         del self._tracks[key]
+    self._corner_front_aliases = {
+      key: value
+      for key, value in self._corner_front_aliases.items()
+      if time_s - value[1] <= CROSS_SENSOR_ALIAS_HOLD_S
+    }
     self.last_estimates = tuple(estimates)
     return self.last_estimates
 
