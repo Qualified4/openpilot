@@ -319,11 +319,8 @@ class MyTrack:
         self.yRel = self.yRel_avg.update(radar_point.yRel)
         self.yvRel = self.yvRel_avg.update(radar_point.yvRel)
 
-      if True: #math.isnan(radar_point.aRel): #
-        v_lead_filtered = self.vLead_avg.update(self.vLead)
-        pseudo_stop = abs(v_lead_filtered) < 0.3 and abs(self.vLead - v_lead_filtered) < 0.05
-        a_raw = (v_lead_filtered - self.v_lead_filtered_last) / self.dt
-        self.v_lead_filtered_last = v_lead_filtered
+      v_lead_filtered = self.vLead_avg.update(self.vLead)
+      pseudo_stop = abs(v_lead_filtered) < 0.3 and abs(self.vLead - v_lead_filtered) < 0.05
 
       self.aLead_v_history.append(self.vLead)
       if len(self.aLead_v_history) == RADAR_ACCEL_HISTORY_SAMPLES:
