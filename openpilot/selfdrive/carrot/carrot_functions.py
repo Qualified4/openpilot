@@ -119,6 +119,7 @@ class CarrotPlanner:
     self.tFollowGap4 = 1.6
 
     self.dynamicTFollow = 0.0
+    self.leadAccelResponse = 0
     self.dynamicTFollowLC = 1.0
     self.enableSpeedTF = 0
     self.tFollowDecelBoost = 0.0
@@ -141,7 +142,7 @@ class CarrotPlanner:
 
     self.eco_over_speed = 2
     self.eco_target_speed = 0
-    
+
     self.autoNaviSpeedDecelRate = 1.5
 
     self.desireState = 0.0
@@ -165,7 +166,7 @@ class CarrotPlanner:
       if myDrivingMode != self.myDrivingMode_last:
         self.myDrivingMode_disable_auto = True
       self.myDrivingMode_last = myDrivingMode
-      
+
       self.myDrivingModeAuto = self.params.get_int("MyDrivingModeAuto")
       if self.myDrivingModeAuto > 0 and not self.myDrivingMode_disable_auto:
         self.myDrivingMode = self.drivingModeDetector.get_mode(self.myDrivingModeAuto)
@@ -181,6 +182,7 @@ class CarrotPlanner:
       self.tFollowGap3 = self.params.get_float("TFollowGap3") / 100.
       self.tFollowGap4 = self.params.get_float("TFollowGap4") / 100.
       self.dynamicTFollow = self.params.get_float("DynamicTFollow") / 100.
+      self.leadAccelResponse = int(np.clip(self.params.get_int("LeadAccelResponse"), 0, 5))
       self.dynamicTFollowLC = self.params.get_float("DynamicTFollowLC") / 100.
       self.enableSpeedTF = self.params.get_int("EnableSpeedTF")
       self.tFollowDecelBoost = self.params.get_float("TFollowDecelBoost") / 100.
@@ -497,7 +499,7 @@ class CarrotPlanner:
 
     v_cruise_kph = self.cruise_eco_control(v_ego_cluster_kph, v_cruise_kph)
     v_cruise_kph, atc_active = self._update_carrot_man(sm, v_ego_kph, v_cruise_kph)
-    
+
     #if atc_active and not self.atc_active and self.xState not in [XState.e2eStop, XState.e2eStopped, XState.lead]:
     #  if self.atcType in ["turn left", "turn right", "atc left", "atc right"]:
     #    self.xState = XState.e2ePrepare
@@ -689,7 +691,7 @@ class DrivingModeDetector:
 
       # ---- 디바운스 로직 ----
       if enter:
-        self.counter += 1  
+        self.counter += 1
       elif exit_:
         self.counter -= 1
 

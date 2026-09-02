@@ -65,6 +65,16 @@ def test_longitudinal_comfort_settings_use_driver_facing_language(params):
   assert lead_response["display_unit"] == "percent"
   assert "0%는 사용 안 함" in lead_response["descr"]
 
+  lead_accel_response = by_name["LeadAccelResponse"]
+  assert (lead_accel_response["min"], lead_accel_response["max"], lead_accel_response["default"]) == (0, 5, 0)
+  assert lead_accel_response["control"] == "select"
+  assert "차간거리 1단계" in lead_accel_response["descr"]
+  assert "모든 주행모드" in lead_accel_response["descr"]
+  assert lead_accel_response["options"]["ko"][-1] == "5 즉각(시험)"
+
+  params_keys = PARAMS_KEYS_PATH.read_text(encoding="utf-8")
+  assert '{"LeadAccelResponse", {PERSISTENT, INT, "0"}}' in params_keys
+
   lane_change = by_name["DynamicTFollowLC"]
   assert lane_change["default"] == 100
   assert "100%는 변화 없음" in lane_change["descr"]
@@ -113,6 +123,8 @@ def test_vehicle_navi_can_control_is_opt_in(settings, params):
   assert (control["min"], control["max"], control["default"]) == (0, 1, 0)
   assert control["control"] == "toggle"
   assert control["risk"] == "high"
+  assert "PV5에서는 일반 과속카메라와 방지턱만 지원" in control["descr"]
+  assert "average-speed zones are not yet supported" in control["edescr"]
 
   driving = next(category for category in settings["menu"] if category["id"] == "DRIVING")
   speed = next(group for group in driving["groups"] if group["id"] == "SPEED")
@@ -129,6 +141,8 @@ def test_vehicle_navi_school_zone_control_is_opt_in(settings, params):
   assert (control["min"], control["max"], control["default"]) == (0, 1, 0)
   assert control["control"] == "toggle"
   assert control["risk"] == "high"
+  assert "PV5에서는 아직 동작하지 않습니다" in control["descr"]
+  assert "not yet supported on the PV5" in control["edescr"]
 
   driving = next(category for category in settings["menu"] if category["id"] == "DRIVING")
   speed = next(group for group in driving["groups"] if group["id"] == "SPEED")
