@@ -329,7 +329,7 @@ class HudRenderer(Widget):
       "not_compiled": rl.Color(255, 165, 0, 230),
       "ready": rl.Color(255, 255, 255, 210),
     }[state]
-    rl.draw_rectangle_rounded(badge, 0.35, 8, rl.Color(0, 0, 0, 150))
+    rl.draw_rectangle_rounded(badge, 0.35, 8, rl.Color(0, 0, 0, 100))
     rl.draw_rectangle_rounded_lines_ex(badge, 0.35, 8, 2, color)
     rl.draw_text_ex(
       self._font_semi_bold,
@@ -678,7 +678,7 @@ class HudRenderer(Widget):
 
     info_lines = (cpu_text, ld_text, sr_text, af_text, fr_text)
     for line_index, info_text in enumerate(info_lines):
-      draw_text_ui_style(info_text, pos_x, 5 + LINE_HEIGHT * 2 + line_index * LINE_HEIGHT, FONT_SIZE, rl.Color(230, 230, 230, 255), font=self._font_display, border_width=2.0, shadow_offset=0, align="right_top", y_offset=0.0)
+      draw_text_ui_style(info_text, pos_x, 15 + LINE_HEIGHT * 2 + line_index * LINE_HEIGHT, FONT_SIZE, rl.Color(230, 230, 230, 255), font=self._font_display, border_width=2.0, shadow_offset=0, align="right_top", y_offset=0.0)
 
   def _get_gear_text(self) -> str:
     sm = ui_state.sm
