@@ -9,7 +9,7 @@ from openpilot.common.swaglog import cloudlog
 # WARNING: imports outside of constants will not trigger a rebuild
 from openpilot.selfdrive.modeld.constants import index_function
 from openpilot.selfdrive.controls.radar_constants import LEAD_ACCEL_TAU
-from openpilot.selfdrive.carrot.traffic_stop import get_traffic_stop_obstacle_distance
+from openpilot.selfdrive.carrot.traffic_stop import get_traffic_stop_distance_adjust, get_traffic_stop_obstacle_distance
 
 if __name__ == '__main__':  # generating code
   from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
@@ -377,8 +377,23 @@ class LongitudinalMpc:
   def update(self, carrot, reset_state, radarstate, v_cruise, x, v, a, j, personality=log.LongitudinalPersonality.standard):
     v_ego = self.x0[1]
     a_ego = self.x0[2]
-    t_follow = carrot.get_T_FOLLOW(personality, v_ego, a_ego)
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
+    # Use the previous cycle's controlling radar lead for the level-5 TF1
+    # exception. Requiring an already-opening gap avoids shrinking TF while
+    # the ego vehicle is still closing on the lead.
+    tf_lead = radarstate.leadOne if self.source == 'lead0' else radarstate.leadTwo if self.source == 'lead1' else None
+    tf_lead_valid = (
+      tf_lead is not None
+      and tf_lead.status
+      and tf_lead.radar
+      and tf_lead.radarTrackId >= 0
+      and tf_lead.vRel >= 0.0
+    )
+    t_follow = carrot.get_T_FOLLOW(
+      personality, v_ego, a_ego,
+      lead_status=tf_lead_valid,
+      lead_accel=tf_lead.aLeadK if tf_lead_valid else 0.0,
+    )
 
     lead_xv_0, lead_v_0 = self.process_lead(radarstate.leadOne)
     lead_xv_1, lead_v_1 = self.process_lead(radarstate.leadTwo)
@@ -423,7 +438,11 @@ class LongitudinalMpc:
                                  v_upper)
       cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow, comfort_brake, stop_distance)
 
-      adjust_dist = carrot.trafficStopDistanceAdjust if v_ego > 0.1 else -2.0
+      adjust_dist = get_traffic_stop_distance_adjust(
+        carrot.trafficStopDistanceAdjust,
+        v_ego,
+        getattr(carrot, "trafficStopModelLeadOffset", 0.0),
+      )
       traffic_stop_obstacle = get_traffic_stop_obstacle_distance(stop_x, cruise_obstacle[0], adjust_dist)
       x2 = traffic_stop_obstacle * np.ones(N+1)
 

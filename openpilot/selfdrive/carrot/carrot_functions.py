@@ -8,7 +8,9 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import MyMovingAverage
 from openpilot.selfdrive.carrot.t_follow import get_t_follow_mode_factor, get_t_follow_mode_max, ramp_t_follow
-from openpilot.selfdrive.carrot.traffic_stop import is_traffic_stop_entry_allowed
+from openpilot.selfdrive.carrot.traffic_stop import TrafficStopModelLeadMatcher, is_traffic_stop_entry_allowed
+from openpilot.selfdrive.controls.radar_constants import RADAR_TO_CAMERA
+from openpilot.selfdrive.controls.lib.longitudinal_preview import LEAD_ACCEL_DEADBAND, LEAD_ACCEL_RESPONSE_MAX
 from openpilot.selfdrive.selfdrived.events import Events
 
 EventName = log.OnroadEvent.EventName
@@ -156,6 +158,8 @@ class CarrotPlanner:
     self.atc_active = False
 
     self._stop_x_rl = None
+    self._traffic_stop_model_lead_matcher = TrafficStopModelLeadMatcher()
+    self.trafficStopModelLeadOffset = 0.0
     self.last_event_time = 0.0
 
   def _params_update(self):
@@ -300,13 +304,28 @@ class CarrotPlanner:
     tf_max = get_t_follow_mode_max(tf_max, self.myTFollowFactor, self._tf_decel_extra)
     return float(np.clip(t_follow, max(0.3, tf_min), tf_max))
 
-  def get_T_FOLLOW(self, personality=log.LongitudinalPersonality.standard, v_ego=0.0, a_ego=0.0):
-    tf_base = self._get_base_t_follow(personality, v_ego)
-    tf_target = self._apply_speed_t_follow_scale(tf_base, v_ego)
-    # Keep the target, deceleration hold state and applied state in the same
-    # mode-scaled domain. Applying the mode factor after the hold compounded
-    # Safe's 1.2 factor every cycle while decelerating.
-    tf_mode_target = float(tf_target * self.myTFollowFactor)
+  def get_T_FOLLOW(self, personality=log.LongitudinalPersonality.standard, v_ego=0.0, a_ego=0.0,
+                   lead_status=False, lead_accel=0.0):
+    force_tf1_target = (
+      lead_status
+      and np.isfinite(lead_accel)
+      and lead_accel > LEAD_ACCEL_DEADBAND
+      and personality == log.LongitudinalPersonality.aggressive
+      and self.leadAccelResponse == LEAD_ACCEL_RESPONSE_MAX
+    )
+    if force_tf1_target:
+      # Level 5 is the explicit close-following test mode. Keep the driver's
+      # selected Gap 1 target authoritative only while the controlling lead
+      # is positively accelerating. A neutral/decelerating lead immediately
+      # returns to the normal speed-table and drive-mode target.
+      tf_mode_target = float(self.tFollowGap1)
+    else:
+      tf_base = self._get_base_t_follow(personality, v_ego)
+      tf_target = self._apply_speed_t_follow_scale(tf_base, v_ego)
+      # Keep the target, deceleration hold state and applied state in the same
+      # mode-scaled domain. Applying the mode factor after the hold compounded
+      # Safe's 1.2 factor every cycle while decelerating.
+      tf_mode_target = float(tf_target * self.myTFollowFactor)
     tf_adjusted = self._apply_decel_hold_and_boost_t_follow(tf_mode_target, a_ego)
     tf_final = self._clip_t_follow(tf_adjusted)
     self._tf_applied = float(tf_final)
@@ -639,7 +658,26 @@ class CarrotPlanner:
     stop_dist =  stop_model_x + self.actual_stop_distance
     stop_dist = max(stop_dist, 0.0)
 
-    stopping_active = (self.xState in [XState.e2eStop, XState.e2eStopped])
+    stopping_active = self.xState in [XState.e2eStop, XState.e2eStopped]
+    model_lead = model.leadsV3[0] if stopping_active and not lead_detected and len(model.leadsV3) > 0 else None
+    model_lead_x = float(model_lead.x[0]) - RADAR_TO_CAMERA if model_lead is not None and len(model_lead.x) > 0 else np.nan
+    model_lead_v = float(model_lead.v[0]) if model_lead is not None and len(model_lead.v) > 0 else np.nan
+    model_lead_x_std = float(model_lead.xStd[0]) if model_lead is not None and len(model_lead.xStd) > 0 else np.nan
+    model_lead_y_std = float(model_lead.yStd[0]) if model_lead is not None and len(model_lead.yStd) > 0 else np.nan
+    model_lead_v_std = float(model_lead.vStd[0]) if model_lead is not None and len(model_lead.vStd) > 0 else np.nan
+    self.trafficStopModelLeadOffset = self._traffic_stop_model_lead_matcher.update(
+      stop_active=stopping_active and stop_dist < 300.0,
+      allow_confirmation=self.trafficState == TrafficState.red and v_ego > 0.3,
+      active_lead=lead_detected,
+      stop_distance=stop_dist,
+      lead_probability=float(model_lead.prob) if model_lead is not None else np.nan,
+      lead_distance=model_lead_x,
+      lead_velocity=model_lead_v,
+      lead_x_std=model_lead_x_std,
+      lead_y_std=model_lead_y_std,
+      lead_v_std=model_lead_v_std,
+    )
+
     if stopping_active and stop_dist < 300.0:
       stop_dist_soft = max(stop_dist - 1.0, 0.0)
       v_soft = float(np.sqrt(max(0.0, 2.0 * self.comfort_brake * stop_dist_soft)))
