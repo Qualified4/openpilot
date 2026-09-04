@@ -1514,7 +1514,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                       ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel
 
                 # 3. [왼쪽 차선 차량] - 좌측 외곽/도로경계선만 지연 계산 (우측 2회 interp 생략)
-                elif not is_center and left_inner_bound < road_aligned_yRel:
+                elif left_inner_bound < road_aligned_yRel:
                   if dist_score < lf_min_dist:
                     velocity = lead.vLead * ms_to_kph
 
@@ -1537,7 +1537,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                           lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
 
                 # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
-                elif not is_center and road_aligned_yRel < right_inner_bound:
+                elif road_aligned_yRel < right_inner_bound:
                   if dist_score < rf_min_dist:
                     velocity = lead.vLead * ms_to_kph
 
