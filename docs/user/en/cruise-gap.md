@@ -128,6 +128,9 @@ Range 0–200, step 10, catalog default 10. Zero permits the quickest accelerati
 <a id="longitudinal-tuning"></a>
 ## 4. Longitudinal tuning
 
+> [!IMPORTANT]
+> Hyundai, Kia, and Genesis vehicles are fixed at `Kp=1.0`, `Ki=0`, and `Kf=1.0` to preserve safe acceleration and braking tracking. These three gain settings are hidden on those vehicles, and previously stored values are ignored by control. `LongActuatorDelay` remains visible and effective.
+
 | Setting | Default | Stored range (step) | Actual scale | Role |
 |---|---:|---:|---:|---|
 | `LongTuningKpV` | 100 | 0–200 (5) | ×0.01 | Immediate proportional response |
@@ -138,14 +141,14 @@ Range 0–200, step 10, catalog default 10. Zero permits the quickest accelerati
 > [!IMPORTANT]
 > The displayed `LongTuningKiV` title says `×0.01`, but `longcontrol.py` currently applies **×0.001**. Stored `100` is Ki `0.100`, not `1.00`.
 
-The Kp/Ki/Kf overrides apply only when the vehicle's base longitudinal tune has a single Kp point and a single Ki point. Multi-point vehicle tunes retain their defaults. These gains are also not the primary controller when stock SCC controls acceleration and braking.
+Hyundai, Kia, and Genesis do not read the stored `LongTuningKpV`, `LongTuningKiV`, or `LongTuningKf` values. On other brands, the overrides apply only when the vehicle's base longitudinal tune has a single Kp point and a single Ki point. Multi-point vehicle tunes retain their defaults. These gains are also not the primary controller when stock SCC controls acceleration and braking.
 
 - Raising Kp corrects present speed error more strongly; too much can oscillate.
 - Raising Ki removes persistent error faster; too much can accumulate into overshoot.
 - Raising Kf commands more for the same target acceleration in both acceleration and braking directions.
 - Raising delay uses a more future plan point and acts earlier; too much can lead the real car and surge.
 
-Tune delay first only if acceleration and braking are both consistently late, in 0.05-second steps. Then consider Kf, Kp, and finally Ki. Restore the saved profile immediately if oscillation appears.
+On other brands, tune delay first only if acceleration and braking are both consistently late, in 0.05-second steps. Then consider Kf, Kp, and finally Ki. Restore the saved profile immediately if oscillation appears.
 
 <a id="following-gap"></a>
 ## 5. Following gap
@@ -227,28 +230,30 @@ For a clean baseline, use `EnableSpeedTF=0`, `DynamicTFollow=0`, `DynamicTFollow
 
 ### `LeadAccelResponse`
 
-When the lead starts or accelerates and the gap begins to open, this setting samples a slightly later point in the MPC trajectory to raise the acceleration target. It operates **only with following-distance level 1 (aggressive/TF1)**. On openpilot-longitudinal vehicles that cannot report `pcmCruiseGap`, it uses the selected level-1 personality instead. Levels 3–5 continue responding when a stable radar lead remains present but MPC changes its source to `cruise`, progressively applying the speed-based `CruiseMaxVals` envelope to the acceleration target. The final command remains bounded by each mode's acceleration envelope, curve limit, cut-in pre-deceleration limit, and vehicle safety limits.
+When the lead starts or accelerates and the gap begins to open, this setting reduces MPC's acceleration-change and jerk costs by level so it can select a faster new acceleration trajectory. It operates **only with following-distance level 1 (aggressive/TF1)**. On openpilot-longitudinal vehicles that cannot report `pcmCruiseGap`, it uses the selected level-1 personality instead. Levels 3–5 also operate when a stable radar lead remains but the current MPC source changes to `cruise`.
 
-| Value | UI meaning | Maximum preview | Maximum increase over base | Final acceleration envelope available with `cruise` source | Allowance inside target distance |
-|---:|---|---:|---:|---:|---:|
-| `0` | Disabled | None | None | None | None |
-| `1` | Gentle | 0.08 s | 0.08 m/s² | Disabled | 0 m |
-| `2` | Smooth | 0.15 s | 0.18 m/s² | Disabled | 0.75 m |
-| `3` | Balanced (recommended) | 0.28 s | 0.45 m/s² | Up to 55% | 2.0 m |
-| `4` | Strong gap control | 0.45 s | 0.65 m/s² | Up to 80% | 3.0 m |
-| `5` | Acceleration tracking (test) | 0.70 s | 0.80 m/s² | Up to 100% | Uses the prediction gates below instead |
+| Value | UI meaning | Active `aChangeCost` | Additional multiplier on existing jerk cost | Strong response ends |
+|---:|---|---:|---:|---:|
+| `0` | Disabled | `200` | `100%` | Not applicable |
+| `1` | Weak | `170` | `95%` | Configured TF reached |
+| `2` | Mild | `130` | `80%` | Configured TF reached |
+| `3` | Brisk (recommended) | `80` | `60%` | Configured TF reached |
+| `4` | Urgent follow | `36` | `35%` | Configured TF reached |
+| `5` | Maximum follow (test) | `10` | `15%` | Configured TF reached |
 
-Levels 1–2 retain the gentle response. Level 3 is the everyday balance and may use up to 55% of the final `CruiseMaxVals` envelope with a `cruise` source. Level 4 prioritizes target-gap recovery, may use up to 80%, and uses the configured `TFollowGap1` as its base target; level 5 may use up to 100% and also raises up to `0.50 m/s²` of direct boost quickly. When this special response raises the base target, it uses the lower of measured lead acceleration plus `0.10/0.15/0.20 m/s²` and the base target plus `0.45/0.65/0.80 m/s²`, respectively, as an upper bound. These percentages are available ceilings, not fixed acceleration commands; speed error and every other gate can request less.
+Lower `aChangeCost` releases the solution from the previous MPC acceleration plan, while lower jerk cost permits a steeper transition to the new acceleration. Level 3 is the brisk everyday choice, level 4 is for an urgent driver, and level 5 is the maximum test level intended to feel distinctly strong. These values reduce the active-driving base cost of `200`; they do not change `AChangeCostStarting` or velocity-PID gains.
+
+No positive acceleration is added after MPC. `vTargetNow` and `aTarget` therefore come from the same MPC velocity and acceleration trajectory. `CruiseMaxVals` remains MPC's hard acceleration ceiling, while curve, cut-in pre-deceleration, lead-obstacle, and danger-distance limits remain intact.
 
 A nonzero value responds only when all of these common gates pass:
 
 - The normal ACC planner is active, no stop is requested, and the driver is not pressing the accelerator.
 - The same radar track has been observed for at least three consecutive updates. Levels 1–2 require a radar-lead MPC source; levels 3–5 may also operate with a `cruise` source.
-- With a radar-lead source, levels 1–4 require relative lead acceleration above the `0.1 m/s²` deadband. Levels 3–5 with a `cruise` source, and level 5 with any source, require measured lead acceleration above `0.1 m/s²`.
+- Every level requires measured lead acceleration above `0.1 m/s²`. With a radar-lead source, levels 1–4 additionally require relative lead acceleration above the `0.1 m/s²` deadband.
 - Current relative speed plus predicted lead acceleration shows the lead pulling away while respecting the level-specific relative-speed floor.
-- A direct `cruise`-source target requires set speed to exceed current speed by more than `1 km/h`, and falls immediately as that speed error closes.
+- With a `cruise` source, set speed exceeds current speed by more than `1 km/h`.
 
-Levels 1–4 also require the per-level distance allowance in the table and no current ego or base-MPC deceleration. With a radar-lead MPC source, levels 1–4 additionally require a preview target no lower than the base target. With a `cruise` source, levels 3–4 may use the direct target above instead so they can overcome a slow MPC acceleration ramp. Level 5 relaxes those three gates, but current relative speed must be at least `-0.2 m/s` and the gap must be predicted to open within 0.5 seconds. If measured lead acceleration falls to `0.1 m/s²` or below, the gap is predicted to close, or set-speed headroom disappears, the direct `cruise` target is removed immediately and normal MPC control resumes.
+Every level uses the strong cost reduction only while actual distance exceeds the configured TF target. At or inside that target, the reduction is removed immediately, the default `aChangeCost=200` and normal jerk cost return, and ordinary MPC safely maintains the gap. Level 5 still requires relative speed of at least `-0.2 m/s` and a gap predicted to open within 0.5 seconds. If the lead reaches zero acceleration or begins decelerating, the existing MPC lead prediction and deceleration preview continue unchanged.
 
 Levels 1–3 do not change the target time gap. The level 4–5 exception that prioritizes the configured `TFollowGap1` as the base target applies only during positive lead acceleration; `DynamicTFollow` and lane-change corrections may still apply afterward. Lead-braking response and stopping behavior retain normal control at every level. Every level remains inactive with the experimental blended planner, a vision-only lead, and following-distance levels 2–4. Use level 5 only when you can verify that short-gap starts do not cause unwanted acceleration.
 

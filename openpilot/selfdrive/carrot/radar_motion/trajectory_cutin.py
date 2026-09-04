@@ -472,22 +472,34 @@ class TrajectoryCutInDetector:
         and point.d_rel <= CROSS_SENSOR_SLOT_HANDOFF_MAX_DREL_M
         else None
       )
+      prior_alias = self._corner_front_aliases.get(raw_key)
       if stable_cross_key is not None:
         self._corner_front_aliases[raw_key] = stable_cross_key, time_s
-      else:
-        prior_alias = self._corner_front_aliases.get(raw_key)
-        if (
-          prior_alias is not None
-          and point.source.startswith("corner")
-          and point.d_rel <= CROSS_SENSOR_SLOT_HANDOFF_MAX_DREL_M
-          and time_s - prior_alias[1] <= CROSS_SENSOR_ALIAS_HOLD_S
-        ):
-          stable_cross_key = prior_alias[0]
+      elif (
+        prior_alias is not None
+        and point.source.startswith("corner")
+        and point.d_rel <= CROSS_SENSOR_SLOT_HANDOFF_MAX_DREL_M
+        and time_s - prior_alias[1] <= CROSS_SENSOR_ALIAS_HOLD_S
+      ):
+        stable_cross_key = prior_alias[0]
       key = stable_cross_key or raw_key
       if key in seen:
         key = raw_key
       seen.add(key)
       state = self._tracks.get(key)
+      if state is None and key != raw_key:
+        # The corner point can acquire its first front-radar association only
+        # after it has already built useful OUT-to-IN history. Transfer that
+        # physically continuous raw/prior-alias state to the stable identity;
+        # otherwise the association itself erases the boundary crossing.
+        history_key = prior_alias[0] if prior_alias is not None else raw_key
+        history_state = self._tracks.get(history_key)
+        if (
+          history_state is not None
+          and self._continuous(history_state, point, time_s)
+        ):
+          state = self._tracks.pop(history_key)
+          self._tracks[key] = state
       if state is None:
         state = _TrackState(self._new_continuity_id())
         self._tracks[key] = state
@@ -653,8 +665,21 @@ class TrajectoryCutInDetector:
         and reported_inward < PAIRED_PARALLEL_MAX_REPORTED_INWARD_MPS
       )
       non_cutin_side_motion = close_born_rear_pass or paired_parallel_drift
+      uncorroborated_close_front = (
+        point.source == "frontRadar"
+        and point.d_rel <= 8.0
+        and not vision_supported
+        and not cross_sensor_supported
+      )
+      # Close legacy front-radar body returns can drift just inside the wider
+      # 2.15 m near-field allowance while the vehicle remains in its adjacent
+      # lane. Without independent vision/corner support, require the measured
+      # center to reach the actual body-overlap corridor before leadTwo.
       front_overlap_half_width = (
-        2.15 if point.d_rel <= 20.0 else PATH_OVERLAP_HALF_WIDTH_M
+        PATH_OVERLAP_HALF_WIDTH_M
+        if uncorroborated_close_front
+        else 2.15 if point.d_rel <= 20.0
+        else PATH_OVERLAP_HALF_WIDTH_M
       )
       raw_body_overlap = abs(point.y_rel) <= front_overlap_half_width
       ahead_at_overlap = (
