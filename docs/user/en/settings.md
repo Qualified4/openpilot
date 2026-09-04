@@ -155,17 +155,19 @@ The default `SteerRatioRate` of `100%` applies the learned steering ratio withou
 
 `LateralTorqueCustom` and `CustomSteer*` are advanced settings that can affect the vehicle tune and safety limits. Do not alter them without a vehicle-specific validated baseline and a recovery path.
 
-### Speed and deceleration — 20 settings
+### Speed and deceleration — 22 settings
 
 | Section | Parameters | Purpose |
 |---|---|---|
-| [Speed cameras](speed-deceleration.md#speed-camera) | `AutoNaviSpeedCtrlMode`, `AutoNaviSpeedCtrlEnd`, `AutoNaviSpeedDecelRate`, `AutoNaviSpeedSafetyFactor`, `AutoNaviCountDownMode`, `VehicleNaviCanControl`, `VehicleNaviSchoolZoneControl` | Event types, stock-navigation CAN, deceleration start, and target speed |
+| [Speed cameras](speed-deceleration.md#speed-camera) | `AutoNaviSpeedCtrlMode`, `AutoNaviSpeedCtrlEnd`, `AutoNaviSpeedDecelRate`, `AutoNaviSpeedSafetyFactor`, `AutoNaviCountDownMode`, `VehicleNaviCanControl`, `VehicleNaviSchoolZoneControl`, `VehicleSpeedCameraControlMode`, `VehicleSpeedCameraDistanceTime` | Event types, stock-navigation CAN, deceleration start, and target speed |
 | [Road speed limit](speed-deceleration.md#road-speed-limit) | `AutoRoadSpeedLimitOffset`, `AutoRoadSpeedAdjust`, `AutoSpeedUptoRoadSpeedLimit` | Desired-speed adjustment from the road limit |
 | [Speed bumps](speed-deceleration.md#speed-bump) | `AutoNaviSpeedBumpTime`, `AutoNaviSpeedBumpSpeed` | Completion time and crossing speed |
 | [Curves and turns](speed-deceleration.md#curve-turn) | `AutoCurveSpeedFactor`, `AutoCurveSpeedLowerLimit`, `TurnSpeedControlMode`, `MapTurnSpeedFactor`, `ModelTurnSpeedFactor`, `ApplyModelSpeed` | Curve speed from model curvature and route data |
 | [Traffic lights](speed-deceleration.md#traffic-light) | `TrafficLightDetectMode`, `TrafficStopDistanceAdjust` | Stop/go detection, stop-position adjustment, and automatic stopped-vehicle alignment |
 
 `AutoNaviSpeedCtrlMode` is `0` off, `1` fixed speed cameras, `2` cameras plus speed bumps, or `3` those events plus mobile-camera events.
+
+`VehicleSpeedCameraControlMode=2` treats a new accelerator press after vehicle-received camera deceleration has actually begun as a request to ignore the current event. It keeps the highest speed reached while accelerating as the floor until the event ends; an accelerator held from before deceleration began does not start the override.
 
 A lower `AutoNaviSpeedDecelRate` begins slowing farther away. `AutoNaviSpeedSafetyFactor` applies a percentage of the event limit as the target. Before tuning either value, confirm that the event type, limit, and remaining distance are being received correctly.
 
@@ -187,7 +189,7 @@ A lower `AutoNaviSpeedDecelRate` begins slowing farther away. `AutoNaviSpeedSafe
 
 `TFollowGap1` through `TFollowGap4` are stored in hundredths of a second. Lower values reduce the time gap. Establish a stable fixed-gap baseline before enabling `DynamicTFollow` features.
 
-`LeadAccelResponse` adjusts how quickly the vehicle follows a lead starting or accelerating at following-distance level 1. Levels 1–2 are gentle, 3 is the everyday balance, and 4 strongly maintains distance without direct overshoot. Test level 5 prioritizes `TFollowGap1` only during positive lead acceleration, permits up to `0.2 m/s²` acceleration overshoot, and immediately returns to normal control when lead acceleration ends. See [Lead-vehicle response](cruise-gap.md#lead-response) for its activation gates and per-level limits.
+`LeadAccelResponse` adjusts how quickly the vehicle follows a lead starting or accelerating at following-distance level 1. Levels 1–2 are gentle. When a stable radar lead accelerates but MPC changes to a `cruise` source, level 3 is the everyday balance and may use up to 55% of the final `CruiseMaxVals` envelope; level 4 provides strong gap control with up to 80% and uses configured `TFollowGap1` as its base target; test level 5 may use up to 100% with bounded acceleration overshoot. Normal control resumes immediately when lead acceleration or set-speed headroom ends. See [Lead-vehicle response](cruise-gap.md#lead-response) for its activation gates and per-level limits.
 
 `LongTuning*`, `LongActuatorDelay`, and `StoppingAccel` are advanced settings that directly affect vehicles using openpilot longitudinal control. Some have no effect when stock ACC remains responsible for acceleration and braking.
 
@@ -209,6 +211,8 @@ These 16 settings describe the car, harness, and device hardware configuration. 
 > Incorrect `HyundaiCameraSCC`, `CanfdHDA2`, `EnableRadarTracks`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity`, or `SpeedFromPCM` values can change vehicle identification, SCC, radar, or longitudinal behavior. Confirm the vehicle, model year, HDA generation, harness location, and whether stock ACC is retained.
 
 See [Radar tracks and corner radar](radar.md) before changing radar modes.
+
+For dPath RadarD, `EnableRadarTracks=-2` is the vision-only experiment; `-1` always uses SCC without vision matching; `0` matches SCC to vision; `1` matches front radar without SCC; `2` matches front radar plus low-speed SCC; and `3` uses SCC unconditionally after front-radar/vision matching fails. Matching modes use central vision at probability `0.40` or higher when matching fails. Modes `-1` and `3` use vision only when SCC is absent, and ignore the lateral coordinate of an SCC selected unconditionally. Legacy Mando radar variants with 32 or 64 slots are handled automatically.
 
 `CarrotRadarMode` continuously tracks vehicles with the front and corner radars to detect cut-ins, then matches camera and radar information in a new way to select the vehicle ahead. On vehicles with neither corner-radar nor radar-track support, it behaves the same as the existing mode. It can change acceleration and braking, so enable it only on the same vehicle after completing validation. The value is latched when the next OnRoad session starts, so end the current drive and restart the vehicle or reboot the device after changing it. The previous `RadarMotionMode` value is migrated to the new name once on the first startup after updating.
 

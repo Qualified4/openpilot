@@ -63,6 +63,19 @@ STATIONARY_HELD_CORNER_MAX_ABS_VLEAD_MPS = 8.0
 STATIONARY_MEASUREMENT_DROPOUT_HOLD_S = 0.10
 STATIONARY_MAX_VISION_SPEED_DELTA_MPS = 12.0
 STATIONARY_TRUSTED_MAX_VISION_SPEED_DELTA_MPS = 20.0
+# Some long-range models identify the correct stopped vehicle but keep its
+# velocity close to traffic speed for another second.  Permit that single
+# contradictory signal only after a confirmed front-radar return has stayed
+# tightly locked to the visual position on a straight road.
+STATIONARY_FRONT_POSITION_LOCK_MIN_DREL_M = 60.0
+STATIONARY_FRONT_POSITION_LOCK_MIN_OBSERVED_S = 0.50
+STATIONARY_FRONT_POSITION_LOCK_MIN_TRACK_STATE = 2
+STATIONARY_FRONT_POSITION_LOCK_MAX_ABS_VLEAD_MPS = 1.5
+STATIONARY_FRONT_POSITION_LOCK_MAX_VISION_SPEED_DELTA_MPS = 18.0
+STATIONARY_FRONT_POSITION_LOCK_MAX_DISTANCE_ERROR_M = 5.0
+STATIONARY_FRONT_POSITION_LOCK_MAX_YREL_ERROR_M = 1.25
+STATIONARY_FRONT_POSITION_LOCK_MAX_DPATH_M = 1.0
+STATIONARY_FRONT_POSITION_LOCK_MAX_ABS_YAW_RATE_RAD_S = 0.02
 STATIONARY_TURN_FRONT_MIN_ABS_YAW_RATE_RAD_S = 0.02
 STATIONARY_TURN_FRONT_FAST_VISION_SPEED_DELTA_MPS = 6.0
 STATIONARY_TURN_FRONT_FAST_VISION_MAX_YREL_ERROR_M = 1.25
@@ -653,6 +666,13 @@ def select_dpath_primary_radar_points(
   enable_radar_tracks: int,
 ) -> tuple[RadarPointSnapshot, ...]:
   """Apply the configured front/SCC primary-source policy."""
+  if enable_radar_tracks == 3:
+    # Mode 3 first tries only the front-radar/vision association. The
+    # controller uses SCC unconditionally if that association fails.
+    return tuple(
+      point for point in points
+      if point.source == "frontRadar" and point.d_rel > 0.2
+    )
   return select_primary_radar_points(
     points, enable_radar_tracks,
   )
@@ -688,6 +708,28 @@ def vision_only_lead_allowed(
 ) -> bool:
   """Allow blue leadOne only when radar tracks are disabled."""
   return enable_radar_tracks <= VISION_ONLY_RADAR_TRACK_MODE
+
+
+def unconditional_scc_match(
+  points: Iterable[RadarPointSnapshot],
+) -> VisionRadarMatch | None:
+  """Return the nearest valid SCC object without vision or lateral matching."""
+  point = min(
+    (
+      point for point in points
+      if point.source == "scc" and point.measured and point.d_rel > 0.2
+    ),
+    key=lambda candidate: candidate.d_rel,
+    default=None,
+  )
+  if point is None:
+    return None
+  return VisionRadarMatch(
+    point=replace(point, y_rel=0.0, yv_rel=0.0),
+    probability=0.0,
+    score=1.0,
+    d_path=0.0,
+  )
 
 
 def vision_lead_from_model(model: Any) -> VisionLead | None:
@@ -1397,6 +1439,50 @@ class VisionRadarMatcher:
       + lateral_error / lateral_gate
     )
 
+  def _stationary_front_position_lock_cost(
+    self,
+    vision: VisionLead | None,
+    point: RadarPointSnapshot,
+    d_path: float,
+    time_s: float,
+    yaw_rate_rad_s: float,
+  ) -> float | None:
+    """Recover a far stopped lead when only model velocity is contradictory."""
+    observed_since_s = self._observed_since_s.get(self._identity(point))
+    if (
+      vision is None
+      or vision.probability < STATIONARY_VISION_MIN_PROB
+      or point.source != "frontRadar"
+      or not point.measured
+      or point.radar_track_state
+      < STATIONARY_FRONT_POSITION_LOCK_MIN_TRACK_STATE
+      or point.d_rel < STATIONARY_FRONT_POSITION_LOCK_MIN_DREL_M
+      or abs(point.v_lead)
+      > STATIONARY_FRONT_POSITION_LOCK_MAX_ABS_VLEAD_MPS
+      or abs(point.v_lead - vision.velocity)
+      > STATIONARY_FRONT_POSITION_LOCK_MAX_VISION_SPEED_DELTA_MPS
+      or abs(point.d_rel - vision.d_rel)
+      > STATIONARY_FRONT_POSITION_LOCK_MAX_DISTANCE_ERROR_M
+      or abs(point.y_rel - vision.y_rel)
+      > STATIONARY_FRONT_POSITION_LOCK_MAX_YREL_ERROR_M
+      or abs(d_path) > STATIONARY_FRONT_POSITION_LOCK_MAX_DPATH_M
+      or abs(yaw_rate_rad_s)
+      >= STATIONARY_FRONT_POSITION_LOCK_MAX_ABS_YAW_RATE_RAD_S
+      or observed_since_s is None
+      or time_s - observed_since_s
+      < STATIONARY_FRONT_POSITION_LOCK_MIN_OBSERVED_S
+    ):
+      return None
+    return (
+      abs(point.d_rel - vision.d_rel)
+      / STATIONARY_FRONT_POSITION_LOCK_MAX_DISTANCE_ERROR_M
+      + abs(point.y_rel - vision.y_rel)
+      / STATIONARY_FRONT_POSITION_LOCK_MAX_YREL_ERROR_M
+      + 0.15
+      * abs(d_path)
+      / STATIONARY_FRONT_POSITION_LOCK_MAX_DPATH_M
+    )
+
   @staticmethod
   def _stationary_radar_only_support(
     candidates: Sequence[
@@ -1904,6 +1990,14 @@ class VisionRadarMatcher:
           vision, point, d_path, prefer_corner,
         )
         if cost is None:
+          cost = self._stationary_front_position_lock_cost(
+            vision,
+            point,
+            d_path,
+            time_s,
+            yaw_rate_rad_s,
+          )
+        if cost is None:
           held_position_cost = held_corner_vision_position_cost.get(
             identity,
           )
@@ -2337,10 +2431,15 @@ class VisionRadarMatcher:
       self._radar_only_moving_challenger_since_s = time_s
     self._radar_only_moving_challenger_last_point = challenger[0]
     self._radar_only_moving_challenger_last_time_s = time_s
+    confirmation_s = (
+      RADAR_ONLY_MOVING_TENTATIVE_CONFIRMATION_S
+      if challenger[0].radar_track_state == 1
+      else RADAR_ONLY_MOVING_CONFIRMATION_S
+    )
     if (
       self._radar_only_moving_challenger_since_s is None
       or time_s - self._radar_only_moving_challenger_since_s
-      < RADAR_ONLY_MOVING_CONFIRMATION_S
+      < confirmation_s
     ):
       return None
     return challenger
@@ -3240,7 +3339,7 @@ def match_dpath_primary_lead(
       if enable_radar_tracks <= 0
       else (
         PRIMARY_RADAR_SOURCES
-        if enable_radar_tracks >= 2
+        if enable_radar_tracks == 2
         else frozenset(("frontRadar",))
       )
     )
