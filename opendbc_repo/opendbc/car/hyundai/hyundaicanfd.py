@@ -1011,33 +1011,31 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         values = CS.adrv_0x161.copy()
         rx_counter = values.pop("COUNTER", None)
-        values["SETSPEED"] = (6 if hdp_active else 3 if cruise_enabled else 1) if main_enabled else 0
-        values["SETSPEED_HUD"] = (5 if hdp_active else 3 if cruise_enabled else 1) if main_enabled else 0
+        if cruise_enabled:
+          values["SETSPEED"] = (6 if hdp_active else 3 if cruise_enabled else 1) if main_enabled else 0
+          values["SETSPEED_HUD"] = (5 if hdp_active else 3 if cruise_enabled else 1) if main_enabled else 0
 
-        set_speed_in_units = hud_control.setSpeed * (CV.MS_TO_KPH if CS.is_metric else CV.MS_TO_MPH)
-        values["vSetDis"] = int(set_speed_in_units + 0.5)
-        try:
-          if cruise_enabled:
-            if CS.out.vCruiseCluster > values["vSetDis"]:
-              if create_ccnc_messages.sla_active_time < 1:
-                create_ccnc_messages.sla_active_time = time.monotonic()
-              values["SETSPEED"] = 2
-              values["SETSPEED_HUD"] = 2
-              elapsed = time.monotonic() - create_ccnc_messages.sla_active_time
-              values["SLA_ICON"] = 2 if (elapsed % 3.5) < 2.0 else 0
-            else:
-              create_ccnc_messages.sla_active_time = 0
-              if CS.ccnc_0x162 is not None and values["SLA_ICON"] > 0:
-                if CS.ccnc_0x162["SPEEDLIMIT"] > CS.out.vCruiseCluster:
-                  values["SLA_ICON"] = 3
-                elif CS.ccnc_0x162["SPEEDLIMIT"] < CS.out.vCruiseCluster:
-                  values["SLA_ICON"] = 4
-                else:
-                  values["SLA_ICON"] = 0
+          set_speed_in_units = hud_control.setSpeed * (CV.MS_TO_KPH if CS.is_metric else CV.MS_TO_MPH)
+          values["vSetDis"] = int(set_speed_in_units + 0.5)
+
+          if CS.out.vCruiseCluster > values["vSetDis"]:
+            if create_ccnc_messages.sla_active_time < 1:
+              create_ccnc_messages.sla_active_time = time.monotonic()
+            values["SETSPEED"] = 2
+            values["SETSPEED_HUD"] = 2
+            elapsed = time.monotonic() - create_ccnc_messages.sla_active_time
+            values["SLA_ICON"] = 2 if (elapsed % 3.5) < 2.0 else 0
           else:
             create_ccnc_messages.sla_active_time = 0
-        except:
-          values["SLA_ICON"] = 1 if (frame % 40) < 20 else 4
+            if CS.ccnc_0x162 is not None and values["SLA_ICON"] > 0:
+              if CS.ccnc_0x162["SPEEDLIMIT"] > CS.out.vCruiseCluster:
+                values["SLA_ICON"] = 3
+              elif CS.ccnc_0x162["SPEEDLIMIT"] < CS.out.vCruiseCluster:
+                values["SLA_ICON"] = 4
+              else:
+                values["SLA_ICON"] = 0
+        else:
+          create_ccnc_messages.sla_active_time = 0
 
         values["DISTANCE"] = 4 if hdp_active else hud_control.leadDistanceBars
         values["DISTANCE_LEAD"] = 2 if cruise_enabled and hud_control.leadVisible else 1 if main_enabled and hud_control.leadVisible else 0
@@ -1092,8 +1090,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         if values["ALERTS_5"] in [1, 2, 3, 4, 5]:
           values["ALERTS_5"] = 0
 
-        if values["ALERTS_5"] in [11] and CS.softHoldActive == 0:
-          values["ALERTS_5"] = 0
+        # if values["ALERTS_5"] in [11] and CS.softHoldActive == 0:
+        #   values["ALERTS_5"] = 0
 
         # curvature 표시(0x161쪽 기존 로직 유지)
         _suppress_trailer_mode_warning(values, CS)
