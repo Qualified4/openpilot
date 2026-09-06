@@ -1011,13 +1011,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         values = CS.adrv_0x161.copy()
         rx_counter = values.pop("COUNTER", None)
+        values["SETSPEED"] = (6 if hdp_active else 3 if cruise_enabled else 1) if main_enabled else 0
+        values["SETSPEED_HUD"] = (5 if hdp_active else 3 if cruise_enabled else 1) if main_enabled else 0
+
+        set_speed_in_units = hud_control.setSpeed * (CV.MS_TO_KPH if CS.is_metric else CV.MS_TO_MPH)
+        values["vSetDis"] = int(set_speed_in_units + 0.5)
+
         if cruise_enabled:
-          values["SETSPEED"] = (6 if hdp_active else 3 if cruise_enabled else 1) if main_enabled else 0
-          values["SETSPEED_HUD"] = (5 if hdp_active else 3 if cruise_enabled else 1) if main_enabled else 0
-
-          set_speed_in_units = hud_control.setSpeed * (CV.MS_TO_KPH if CS.is_metric else CV.MS_TO_MPH)
-          values["vSetDis"] = int(set_speed_in_units + 0.5)
-
           if CS.out.vCruiseCluster > values["vSetDis"]:
             if create_ccnc_messages.sla_active_time < 1:
               create_ccnc_messages.sla_active_time = time.monotonic()
@@ -1460,9 +1460,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             INV_DREL_RANGE = 1.0 / (DREL_END - DREL_START)
 
             has_left_outer = md.laneLineProbs[1] > 0.05
-            has_left_edge = md.roadEdgeStds[0] < 1.0
+            has_left_edge = md.roadEdgeStds[0] < 2.0
             has_right_outer = md.laneLineProbs[2] > 0.05
-            has_right_edge = md.roadEdgeStds[1] < 1.0
+            has_right_edge = md.roadEdgeStds[1] < 2.0
 
             ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
             min_front_lead_speed = -100 if a_ego_kph < -3 else interp(v_ego_kph, [30, 40, 100], [-100, 0, 20])
