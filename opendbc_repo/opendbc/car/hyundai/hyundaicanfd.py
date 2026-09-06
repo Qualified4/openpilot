@@ -1203,7 +1203,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           else:
             curvature = round(CS.out.steeringAngleDeg / 3)
 
-        except Exception:
+        except:
           # 모델 데이터 예외 발생 시 핸들 각도 기반 백업
           curvature = round(CS.out.steeringAngleDeg / 3)
           values["LFA_ICON"] = 5
@@ -1328,7 +1328,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         except:
           values["LANELINE_LEFT_POSITION"] = 30
           values["LANELINE_RIGHT_POSITION"] = 30
-          values["LANE_HIGHLIGHT"] = 1
+          values["LANE_HIGHLIGHT"] = 3
           values["LANE_HIGHLIGHT_DISTANCE"] = 60
           values["LANE_LEFT"] = 1
           values["LANE_RIGHT"] = 1
