@@ -1326,13 +1326,19 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LCA_LEFT_ICON"] = 1 if CS.out.leftBlindspot else 4 if CS.out.rightBlinker or not md.meta.laneChangeAvailableLeft else 2
             values["LCA_RIGHT_ICON"] = 1 if CS.out.rightBlindspot else 4 if CS.out.leftBlinker or not md.meta.laneChangeAvailableRight else 2
         except:
-          values["LANELINE_LEFT_POSITION"] = 30
-          values["LANELINE_RIGHT_POSITION"] = 30
-          values["LANE_HIGHLIGHT"] = 3
-          values["LANE_HIGHLIGHT_DISTANCE"] = 60
-          values["LANE_LEFT"] = 1
-          values["LANE_RIGHT"] = 1
-          values["LKA_ICON"] = 1
+          # Only show startup status while the required model lane data is absent.
+          # Calculation errors with populated lane data keep the original alert.
+          if (md is None or len(md.laneLineProbs) < 3 or len(md.laneLines) < 3 or
+              len(md.laneLines[1].y) == 0 or len(md.laneLines[2].y) == 0):
+            values["ALERTS_5"] = 19  # ACTIVATING_HIGHWAY_DRIVING_PILOT_SYSTEM
+          else:
+            values["LANELINE_LEFT_POSITION"] = 30
+            values["LANELINE_RIGHT_POSITION"] = 30
+            values["LANE_HIGHLIGHT"] = 3
+            values["LANE_HIGHLIGHT_DISTANCE"] = 60
+            values["LANE_LEFT"] = 1
+            values["LANE_RIGHT"] = 1
+            values["LKA_ICON"] = 1
 
         ret.append(packer.make_can_msg("ADRV_0x161", CAN.ECAN, values, rx_counter = rx_counter))
 
@@ -1459,9 +1465,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             DREL_END = 70.0
             INV_DREL_RANGE = 1.0 / (DREL_END - DREL_START)
 
-            has_left_outer = md.laneLineProbs[1] > 0.05
+            has_left_outer = md.laneLineProbs[1] > 0.1
             has_left_edge = md.roadEdgeStds[0] < 2.0
-            has_right_outer = md.laneLineProbs[2] > 0.05
+            has_right_outer = md.laneLineProbs[2] > 0.1
             has_right_edge = md.roadEdgeStds[1] < 2.0
 
             ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
