@@ -2,6 +2,73 @@
   "sensitivity": 50,
   "cases": [
     {
+      "id": "stationary-audit-azera-cf-3-moving-vision-reflection-46",
+      "vehicle_folder": "HYUNDAI_AZERA_7TH_GEN f3a537501c7197ec",
+      "log": "000000cf--04b9851018--3/rlog.zst",
+      "source": "front+corner",
+      "window": [26.0, 27.2],
+      "expected": "clear",
+      "validation_stage": "lead_one",
+      "target_track_ids": [46],
+      "forbidden_lead_one_ids": [46],
+      "forbidden_lead_two_ids": [46],
+      "scene": "Agent-reviewed qcamera and full-log A/B audit: moving visual vehicle and front 40 coexist with stationary reflection 46. Repeated range crossings cannot override a precise moving visual speed estimate"
+    },
+    {
+      "id": "stationary-audit-azera-cf-3-moving-vision-reflection-56",
+      "vehicle_folder": "HYUNDAI_AZERA_7TH_GEN f3a537501c7197ec",
+      "log": "000000cf--04b9851018--3/rlog.zst",
+      "source": "front+corner",
+      "window": [32.5, 33.7],
+      "expected": "clear",
+      "validation_stage": "lead_one",
+      "target_track_ids": [56],
+      "forbidden_lead_one_ids": [56],
+      "forbidden_lead_two_ids": [56],
+      "scene": "Agent-reviewed signal approach: moving traffic is visible ahead while front 56 reports a stationary return. Position agreement alone must not replace the moving visual/front vehicle with this reflection"
+    },
+    {
+      "id": "stationary-audit-ioniq5-cb5-3-bridge-reflection-33",
+      "vehicle_folder": "HYUNDAI_IONIQ_5_PE 8b06424f3adf2bd3",
+      "log": "00000cb5--cf3e24bc3d--3/rlog.zst",
+      "source": "front+corner",
+      "window": [33.0, 34.6],
+      "expected": "clear",
+      "validation_stage": "lead_one",
+      "target_track_ids": [33],
+      "forbidden_lead_one_ids": [33],
+      "forbidden_lead_two_ids": [33],
+      "scene": "Agent-reviewed green signal and bridge approach: no stopped vehicle occupies the lane at front 33. The visual hypothesis is moving, and a tight position crossing cannot justify stationary admission when visual speed uncertainty remains small"
+    },
+    {
+      "id": "stationary-audit-ioniq9-1b9-26-late-tunnel-reflection-48",
+      "vehicle_folder": "HYUNDAI_IONIQ_9 c92fab3f15c0dbfb",
+      "log": "000001b9--a2a8fbc84b--26/rlog.zst",
+      "source": "front+corner",
+      "window": [10.5, 13.1],
+      "expected": "clear",
+      "validation_stage": "lead_one",
+      "target_track_ids": [48],
+      "forbidden_lead_one_ids": [48],
+      "forbidden_lead_two_ids": [48],
+      "scene": "Agent-reviewed tunnel exit outside the older 0-6 s ghost window: traffic is moving and no stopped vehicle corresponds to front 48. A new far-position exception must not produce braking for this reflection"
+    },
+    {
+      "id": "ioniq9-1d5-41-stopped-front-early-continuous",
+      "vehicle_folder": "HYUNDAI_IONIQ_9 7a9a8e68022c1881",
+      "log": "000001d5--5f166832a3--41/rlog.zst",
+      "source": "front+corner",
+      "window": [12.8, 20.5],
+      "expected": "detect",
+      "human_verified": true,
+      "validation_stage": "lead_one",
+      "target_track_ids": [53, 42, 40, 54, 52, 35],
+      "required_lead_one_ids": [53, 42, 40, 54, 52, 35],
+      "lead_one_continuous_window": [12.85, 20.5],
+      "latest_detection_s": 12.90,
+      "scene": "User-reviewed stopped pickup/queue on a gentle right curve. At 12.85 s front 53 is 96.4 m away while model velocity is still moving and model range wavers. Require a measured front by 12.90 s (95 m), followed by continuous physical front tracking through the listed same-vehicle return handoffs. Noisy moving corner samples must not erase repeated tight visual position anchors; all existing tunnel and traffic-light reflection exclusions remain required. Recorded-model replay does not demonstrate closed-loop stopping distance"
+    },
+    {
       "id": "carnival-178-62-interrupted-vision-stationary-reflections-36-56",
       "vehicle_folder": "KIA_CARNIVAL_4TH_GEN c4dcf95545dafe68",
       "log": "00000178--52f7f496c5--62/rlog.zst",
@@ -1860,6 +1927,44 @@
       "human_verified": true,
       "forbidden_lead_one_ids": [35],
       "scene": "A centered stationary road reflection becomes a tentative moving front-radar track near the bumper and must not replace the far vision-matched leadOne through the closer-challenger path"
+    },
+    {
+      "id": "carnival-182-59-left-parallel-body-7856",
+      "vehicle_folder": "KIA_CARNIVAL_4TH_GEN c4dcf95545dafe68",
+      "log": "00000182--5deb296c85--59/rlog.zst",
+      "source": "front+corner",
+      "window": [48.0, 53.5],
+      "expected": "clear",
+      "human_verified": true,
+      "target_track_ids": [7856, 34],
+      "forbidden_lead_one_ids": [7856, 34],
+      "forbidden_lead_two_ids": [7856, 34],
+      "scene": "User-reported 50.06s false L2/predeceleration: the left silver sedan stays in its lane while ego passes. Corner 7856 and front 34 return different longitudinal body positions. Check the entire pass, including the 52s recurrence, for CUT-IN, predeceleration and lead-role promotion."
+    },
+    {
+      "id": "gv80-218-2-user-white-suv-1355",
+      "vehicle_folder": "GENESIS_GV80 4857b2d26ed4648e",
+      "log": "00000218--6aa147e461--2/rlog.zst",
+      "source": "front+corner",
+      "window": [12.8, 14.5],
+      "expected": "detect",
+      "human_verified": true,
+      "target_track_ids": [1079, 48],
+      "latest_detection_s": 13.55,
+      "scene": "Saved user review scene 01: the white SUV C1079/F48 is already cutting in and must be detected by 13.55s. Video and calibrated bearing distinguish it from the separate primary F38/C1069. This requested deadline remains an open regression; the legacy target ID and user memo are preserved separately."
+    },
+    {
+      "id": "ioniq5-cd0-1-user-lead-gap-1675",
+      "vehicle_folder": "HYUNDAI_IONIQ_5_PE 8b06424f3adf2bd3",
+      "log": "00000cd0--3956077d94--1/rlog.zst",
+      "source": "front+corner",
+      "window": [16.5, 17.95],
+      "expected": "detect",
+      "human_verified": true,
+      "validation_stage": "lead_one",
+      "target_track_ids": [1013],
+      "latest_detection_s": 16.75,
+      "scene": "Saved user review scene 09: the uphill white SUV at corner C1013 must be tracked by 16.75s. Camera frames were corrected using qRoadEncodeIdx timestamps. Front F40 has a different bearing and is not assigned as the same target. The requested radar lead deadline remains an open regression."
     }
   ]
 }
