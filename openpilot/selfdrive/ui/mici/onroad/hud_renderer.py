@@ -397,23 +397,23 @@ class HudRenderer(Widget):
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
 
-    # pos (TOP-left)
     margin_x = 18
     margin_y = 18
-    # 시간, 디버그는 왼쪽 끝 좌표
-    info_pos_x = int(rect.x + margin_x)
-    # 핸들 아이콘 오른쪽 끝으로 보내기. 마지막 -2는 레인모드 아이콘 공간때문에 살짝 더 뺌. 전체 마진을 빼기는 싫어서 마진 영역까지 그리도록
-    wheel_pos_x = int(rect.x + rect.width - margin_x - wheel_txt.width / 2 - 2)
-    # 핸들 아이콘 아래 끝으로 보내기.
-    wheel_pos_y = int(rect.y + rect.height - margin_y - wheel_txt.height / 2)
-    # 온도, SR, LD 정보 상단 출력 좌표
-    extra_info_pos_x = int(rect.x + rect.width - margin_x)
-
     pos_y = int(rect.y + margin_y + wheel_txt.height / 2)
+    time_x = int(rect.x + margin_x)
+
+    if ui_state.share_data:
+      wheel_pos_x = int(rect.x + margin_x + wheel_txt.width / 2)
+      wheel_pos_y = pos_y
+      time_x = wheel_pos_x + wheel_txt.width / 2 + 15
+    else:
+      # Keep the lane-mode icon inside the right margin.
+      wheel_pos_x = int(rect.x + rect.width - margin_x - wheel_txt.width / 2 - 2)
+      wheel_pos_y = int(rect.y + rect.height - margin_y - wheel_txt.height / 2)
 
     self._draw_steering_wheel_icon(wheel_txt, wheel_pos_x, wheel_pos_y)
-    self._draw_wheel_side_info(wheel_txt, info_pos_x, pos_y)
-    self._draw_infos(extra_info_pos_x)
+    self._draw_wheel_side_info(wheel_txt, time_x, pos_y, rect)
+
 
   def _draw_steering_wheel_icon(self, wheel_txt, pos_x: int, pos_y: int) -> None:
     rotation = -ui_state.sm['carState'].steeringAngleDeg
@@ -478,7 +478,7 @@ class HudRenderer(Widget):
     return "--"
 
 
-  def _draw_wheel_side_info(self, wheel_txt, pos_x: int, pos_y: int) -> None:
+  def _draw_wheel_side_info(self, wheel_txt, time_x: float, pos_y: int, rect: rl.Rectangle) -> None:
     now = datetime.now()
 
     try:
@@ -490,12 +490,6 @@ class HudRenderer(Widget):
       show_debug_ui = int(ui_state.show_debug_ui)
     except Exception:
       show_debug_ui = 0
-
-    time_font = int(wheel_txt.height * 1.1)
-    small_dt_font = max(18, int(time_font * 0.62))   # date+time 2줄용
-    side_font = max(18, int(time_font * 0.33))
-
-    time_x = pos_x # + wheel_txt.width / 2 + 15
 
     # --------------------------------------------------------------------------
     # Date / Time
@@ -558,7 +552,7 @@ class HudRenderer(Widget):
         time_text = now.strftime("%H:%M:%S")
         text_font = int(wheel_txt.height * 0.72)
         time_size = measure_text_cached(self._font_display, time_text, text_font)
-        time_y = 9 # pos_y - time_size.y / 2
+        time_y = pos_y - time_size.y / 2
 
         draw_text_ui_style(
           time_text, time_x, time_y, text_font,
@@ -606,47 +600,9 @@ class HudRenderer(Widget):
     if show_debug_ui == 0:
       return
 
-    info_x = time_block_right + 25
+    self._draw_infos(int(rect.x + rect.width - 18), rect.y)
 
-    cpu_text = self._get_cpu_temp_text()
-
-    try:
-      steer_ratio = float(ui_state.sm['liveParameters'].steerRatio)
-      sr_text = f"SR: {steer_ratio:.1f}"
-    except Exception:
-      sr_text = "SR: --.-"
-
-    try:
-      road_name = ui_state.sm['carrotMan'].szPosRoadName
-      if not road_name:
-        road_name = ""
-    except Exception:
-      road_name = ""
-
-    cpu_size = measure_text_cached(self._font_medium, cpu_text, side_font)
-    sr_size = measure_text_cached(self._font_medium, sr_text, side_font)
-    road_size = measure_text_cached(self._font_medium, road_name, side_font) if road_name else rl.Vector2(0, 0)
-
-    line_gap = max(4, int(side_font * 0.15))
-
-    total_h = cpu_size.y + line_gap + sr_size.y
-    if road_name:
-      total_h += line_gap + road_size.y
-
-    base_y = pos_y - total_h / 2
-
-    cpu_y = base_y
-    sr_y = cpu_y + cpu_size.y + line_gap
-    road_y = sr_y + sr_size.y + line_gap
-
-    draw_text_ui_style(cpu_text, info_x, cpu_y, side_font, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, shadow_offset=0, align="left_top", y_offset=0.0)
-
-    draw_text_ui_style(sr_text, info_x, sr_y, side_font, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, shadow_offset=0, align="left_top", y_offset=0.0)
-
-    if road_name:
-      draw_text_ui_style(road_name, info_x, road_y, side_font, rl.Color(255, 255, 255, 210), font=self._font_display, border_width=1.0, shadow_offset=0, align="left_top", y_offset=0.0)
-
-  def _draw_infos(self, pos_x: int):
+  def _draw_infos(self, pos_x: int, top_y: float):
     FONT_SIZE = 18
     LINE_HEIGHT = FONT_SIZE + 4
 
@@ -678,7 +634,7 @@ class HudRenderer(Widget):
 
     info_lines = (cpu_text, ld_text, sr_text, af_text, fr_text)
     for line_index, info_text in enumerate(info_lines):
-      draw_text_ui_style(info_text, pos_x, 15 + LINE_HEIGHT * 2 + line_index * LINE_HEIGHT, FONT_SIZE, rl.Color(230, 230, 230, 255), font=self._font_display, border_width=2.0, shadow_offset=0, align="right_top", y_offset=0.0)
+      draw_text_ui_style(info_text, pos_x, top_y + 15 + LINE_HEIGHT * 2 + line_index * LINE_HEIGHT, FONT_SIZE, rl.Color(230, 230, 230, 255), font=self._font_display, border_width=2.0, shadow_offset=0, align="right_top", y_offset=0.0)
 
   def _get_gear_text(self) -> str:
     sm = ui_state.sm
