@@ -608,14 +608,10 @@ def create_acc_control_scc2(packer, CAN, enabled, accel_value_last, accel, stopp
   #values["ACC_ObjLatPos"] = - hud_control.leadDPath
   values["DriveMode"] = 0 # 0: Default, 1: Comfort Mode, 2:Normal mode, 3:Dynamic mode, reserved
 
-  hud_lead_info = 0
-  if hud_control.leadVisible:
-    hud_lead_info = 1 if values["ACC_ObjRelSpd"] > 0 else 2
-  values["HUD_LEAD_INFO"] = hud_lead_info  #1: in-path object detected(uncontrollable), 2: controllable long, 3: controllable long & lat, ... reserved
+  # Preserve the received HUD_LEAD_INFO and TARGET_DISTANCE for cluster flicker testing.
 
   values["DriverAlert"] = 0   # 1: SCC Disengaged, 2: No SCC Engage condition, 3: SCC Disenganed when the vehicle stops
 
-  # values["TARGET_DISTANCE"] = CS.out.vEgo * 1.0 + 4.0
 
   soft_hold_info = 1 if soft_hold_active and CS.softHoldActive > 1 and enabled else 0
 
@@ -1042,8 +1038,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["DISTANCE_CAR"] = 3 if hdp_active else 2 if cruise_enabled else 1 if main_enabled else 0
         values["DISTANCE_SPACING"] = 5 if hdp_active else 1 if cruise_enabled else 0
 
-        # values["TARGET"] = 1 if hud_control.leadVisible and cruise_enabled else 0
-        # values["TARGET_DISTANCE"] = int(hud_control.leadDistance)
+        # Preserve the received TARGET and TARGET_DISTANCE for cluster flicker testing.
 
         values["BACKGROUND"] = _select_cluster_background(
           cruise_enabled, lat_active, CS.paddle_button_prev > 0, paddle_mode,
