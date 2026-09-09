@@ -1153,6 +1153,18 @@ def test_cutin_must_still_be_ahead_of_primary_at_path_entry_time() -> None:
   )
 
 
+def test_current_overlap_does_not_make_a_farther_target_compete_with_primary() -> None:
+  primary = {"status": True, "dRel": 12.0, "vRel": -1.0}
+  assert not cutin_can_compete_with_primary(
+    {"status": True, "dRel": 21.0, "vRel": -2.0}, primary,
+    projected_path_entry=True, entry_horizon_s=0.0,
+  )
+  assert cutin_can_compete_with_primary(
+    {"status": True, "dRel": 6.0, "vRel": -2.0}, primary,
+    projected_path_entry=True, entry_horizon_s=0.0,
+  )
+
+
 def test_controller_filters_same_row_proximity_without_projected_entry() -> None:
   controller = DPathRadarController(prefer_corner_radar=True)
   trajectory_detected = False
@@ -3175,6 +3187,42 @@ def test_controller_trajectory_cutin_adds_early_risk_and_lead_two() -> None:
   assert first_lead_two_s <= 1.46
   assert output.lead_two is not None
   assert output.lead_two["radarTrackId"] == 3504
+
+
+def test_controller_releases_paired_cutin_that_will_pass_before_entry(monkeypatch) -> None:
+  controller = DPathRadarController(prefer_corner_radar=True)
+  selected = False
+  rejected = False
+  estimates = []
+  update = controller.trajectory_cutin.update
+
+  def observe(*args, **kwargs):
+    estimates[:] = update(*args, **kwargs)
+    return tuple(estimates)
+
+  monkeypatch.setattr(controller.trajectory_cutin, "update", observe)
+  for index in range(21):
+    time_s = index * 0.05
+    distance = 3.5 - time_s
+    output = controller.update(
+      time_s, 11.7,
+      (
+        Point(50, 24.0, 0.0, v_rel=0.0, v_lead=11.7),
+        Point(36, distance + 0.5, 2.1, v_rel=-1.0, v_lead=10.7),
+        Point(3103, distance, 2.9 - 0.5 * min(time_s, 0.5),
+              v_rel=-1.0, v_lead=10.7, yv_rel=-0.5 if index <= 10 else 0.0,
+              source="corner235", trackState=2),
+      ),
+      model_with_lead(24.0, 0.0, 11.7),
+    )
+    if any(value.point.track_id == 3103 and value.passing_before_overlap for value in estimates):
+      assert selected
+      rejected = True
+      assert output.lead_two is None
+      assert not output.leads_cutin
+    selected |= output.lead_two is not None
+
+  assert selected and rejected
 
 
 def test_corner_cutin_predecel_requires_continuous_confirmation() -> None:
