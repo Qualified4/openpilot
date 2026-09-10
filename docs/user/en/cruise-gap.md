@@ -43,26 +43,28 @@ Catalog defaults and initial Params values currently differ for `CruiseMaxVals1`
 
 | Value | Mode | Max acceleration | `comfort_brake` | Time-gap term | Additional behavior |
 |---:|---|---:|---:|---:|---|
-| `1` | Eco | ×0.9 | ×0.9 | ×0.9, then clamped | Traffic-light detection retained |
-| `2` | Safe | ×0.8 | ×0.8 | ×0.8, then clamped | Congestion state used by auto mode |
+| `1` | Eco | ×0.9 | ×1.0 | ×1.1, then clamped | Traffic-light detection retained |
+| `2` | Safe | ×0.8 | ×0.9 | ×1.2, then clamped | Congestion state used by auto mode |
 | `3` | Normal | ×1.0 | ×1.0 | ×1.0 | Baseline |
 | `4` | High speed | ×1.2 | ×1.0 | ×1.0 | Traffic stop/go detection forced off |
 
-A smaller `comfort_brake` increases the distance term calculated for stopping, while `t_follow` is reduced by 10% in Eco and 20% in Safe mode. “Safe” therefore does not simply mean a longer time gap; final distance depends on ego and lead speeds.
+A smaller `comfort_brake` increases the stopping-distance term. Baseline time-gap factors are 1.1 in Eco and 1.2 in Safe; speed scaling, clamps, deceleration allowance and selected-TF priority at levels 4–5 determine the final gap.
 
 > [!WARNING]
 > High-speed mode raises the acceleration ceiling by 20% and ignores traffic-light control.
 
+In Safe mode, levels 4–5 retain existing launch response and boost entry. Only when ego out-accelerates the lead while catching the target gap does the future positive-acceleration ceiling taper. Renewed lead acceleration or sufficient opening gap removes the extra restriction. This Safe acceleration limiter itself adds no gap allowance; existing Safe acceleration limits, TF processing and braking limits remain active.
+
 ### `MyDrivingModeAuto`
 
-`0` uses the stored mode. `1` switches only between Safe and Normal according to traffic conditions; it never automatically selects Eco or High-speed mode.
+`0` uses the stored mode. `1` switches only between Safe and Normal according to traffic conditions; `2` switches between Safe and Eco. High-speed mode is never selected automatically.
 
 The current code enters congestion after repeated observations of either:
 
 - Lead distance at most 12 m and lead speed at most 2 km/h; or
 - Lead speed below 5 km/h, lead acceleration below 0.2 m/s², ego speed above 1 km/h, and lead distance below 200 m.
 
-It exits when lead acceleration exceeds 1.5 m/s², ego speed exceeds 35 km/h, or no lead is present within 200 m. The running code uses **35 km/h**, despite the setting description saying 20 km/h.
+It exits when lead acceleration exceeds 1.5 m/s², ego speed exceeds 35 km/h, or no lead is present within 200 m. The speed-based congestion exit threshold is **35 km/h**.
 
 Changing the stored `MyDrivingMode` during a drive can suspend automatic switching until the planner process restarts. For a stable comparison, use `MyDrivingMode=3` and `MyDrivingModeAuto=0`.
 
@@ -224,11 +226,7 @@ For a clean baseline, use `EnableSpeedTF=0`, `DynamicTFollowLC=100`, `MyDrivingM
 <a id="lead-response"></a>
 ## 6. Lead-vehicle response
 
-| Setting | Range/scale | Role |
-|---|---|---|
-| `LeadAccelResponse` | 0–5, default 0 | Driver response preference for a lead starting or accelerating at every following-distance level |
-| `RadarReactionFactor` | 0–200%, default 100% | How long measured lead acceleration persists into the future |
-| `JLeadFactor3` | 0–100, ×0.01 | How much lead acceleration change enters future trajectory prediction |
+Use `LeadAccelResponse` to adjust response to a lead starting, accelerating or being approached. Its range is 0–5; the default 0 disables acceleration boost and recovers extra TF most slowly.
 
 ### `LeadAccelResponse`
 
@@ -236,7 +234,7 @@ Sets lead-start and acceleration response at every following-distance level. Lev
 
 | Level | `aChangeCost` at full boost | Multiplier on existing jerk cost |
 |---|---:|---:|
-| 0 Disabled | 200 | 100% |
+| 0 Relaxed recovery | 200 | 100% |
 | 1 Most gradual | 190 | 95% |
 | 2 Gentle follow | 170 | 85% |
 | 3 Balanced follow | 130 | 70% |
@@ -245,25 +243,45 @@ Sets lead-start and acceleration response at every following-distance level. Lev
 
 With sufficient input, levels 1–4 ramp boost entry over 0.80/0.60/0.40/0.15 seconds. Boost scales down when distance margin is below 2.0/1.5/1.0/0.5 metres respectively, or the acceleration signal is small. The table gives full-boost costs; small changes stay closer to baseline costs. Level 5 has neither fade nor entry delay. Vehicles previously using DynamicTFollow may feel different because its additional TF reduction and jerk boost are removed.
 
-Every level requires normal ACC, no accelerator override or stop request, and a stable radar lead. Levels 1–2 use lead0/lead1 sources; levels 3–5 also support cruise. Cruise requires more than 1 km/h of set-speed headroom. Lead acceleration must exceed 0.1 m/s²; levels 1–4 with a lead source also require relative acceleration above the 0.1 m/s² deadband. Existing relative-speed and level-specific prediction gates remain active.
+Acceleration boost at every level requires normal ACC, no accelerator override or stop request, and a stable radar lead. Levels 1–2 use lead0/lead1 sources; levels 3–5 also support cruise. Cruise requires more than 1 km/h of set-speed headroom. Lead acceleration must exceed 0.1 m/s²; levels 1–4 with a lead source also require relative acceleration above the 0.1 m/s² deadband. Existing relative-speed and level-specific prediction gates remain active.
 
 Boost ends immediately at the TF target distance, when lead acceleration ends, or when closing-speed conditions fail. A changed lead restarts gradual entry at levels 1–4. Level 5 retains the −0.2 m/s relative-speed floor and 0.5-second prediction condition. All levels disable boost during lane-change starting/finishing, blended mode, and vision-only lead tracking.
 
 Levels 4–5 prioritize the selected `TFollowGap1`–`TFollowGap4` while a stable lead accelerates and the gap opens. Levels 1–3 retain normal speed/mode TF processing. `CruiseMaxVals`, curve, cut-in, lead-distance and danger-distance limits, and deceleration preview remain active. No acceleration is added after MPC. This setting does not change `AChangeCostStarting` or PID gains. Lower levels do not delay braking required by an urgent approach.
 
-### `RadarReactionFactor`
+Levels 0–4 capture half of the excess over the base following distance when acquiring a radar lead or while the measured following gap opens. Base TF plus extra TF is capped at 2.5 seconds without reducing a larger base TF. A first-order filter recovers the extra TF even while the gap opens, most slowly at level 0. A large gap alone does not repeatedly refill it. A stopped lead retains it; a slow lead recovers it more slowly. Level 5 adds no extra TF. This replaces the previous relative-closing-speed distance allowance rather than stacking with it.
 
-Radar acceleration and jerk form `aLeadTau`, used by MPC to predict how long the lead's current acceleration or deceleration will continue.
+Headroom applies to a stable radar lead in normal ACC. Accelerator override, disengagement, forced deceleration and lane changes disable it. Unlike acceleration boost, it also applies at level 0 and during stopping. Target loss/replacement or a level change does not transfer the old allowance.
 
-- Lower values assume the measured change persists longer and respond more quickly.
-- Higher values let it decay sooner and may respond more smoothly but later.
-- Too low can react to radar noise; too high can respond slowly to real lead braking.
+Acquisition allowance ramps in over 0.8 seconds. Afterward, a larger candidate is accepted when measured relative speed, filtered with a 0.3-second time constant, exceeds 0.2m/s; further increases are limited to 0.5 TF seconds per second. A brief lead-acceleration lull does not end capture while the gap keeps opening, and renewed opening can capture more headroom.
 
-### `JLeadFactor3`
+Stored extra TF continues recovering during capture. A constant or closing gap does not refill it. A newly acquired slower or stopped lead can receive initial headroom without an opening gap. The stopped-lead hold rule is described below.
 
-The code smooths `jLead` as 10% new and 90% previous, multiplies by this percentage, clamps to -1 through +1, and inserts it into the future lead trajectory. Zero excludes jerk; 50 uses half; 100 uses the full allowed value.
+| Level | Base recovery time constant | Extra TF |
+|---|---:|---|
+| 0 | 5 seconds | Active |
+| 1 | 4 seconds | Active |
+| 2 | 3 seconds | Active |
+| 3 | 2 seconds | Active |
+| 4 | 1 second | Active |
+| 5 | — | None |
 
-For a baseline, set `LeadAccelResponse=0`, `JLeadFactor3=0`, and `RadarReactionFactor=100`. If response to a lead starting or accelerating is late at your selected gap, raise `LeadAccelResponse` from level 1 one step at a time. Change only one setting at once, and restore immediately if surging or unintended acceleration appears.
+Lead speed at or below 0.3m/s holds extra TF. From 0.3 to 5m/s, recovery strength increases linearly with lead speed; at 5m/s and above the table applies. A five-second time constant leaves roughly 37% after five seconds rather than completing recovery. For a stopped lead, the extra-TF distance term shrinks with ego speed toward normal stopping clearance.
+
+Capture uses actual distance minus the base target distance, with a 1m/s minimum divisor at low ego speed. Without excess over the base target including braking-distance terms, there is no new extra TF. Only the MPC comfort reference changes; physical lead positions, base TF, danger constraints and braking limits stay unchanged. Temporary TF does not guarantee a particular braking onset or ride quality. Ego-deceleration `TFollowDecelBoost` remains separate existing TF processing.
+
+In Safe mode, levels 4–5 retain existing launch response and boost entry. Only when ego out-accelerates the lead while catching the target gap does the future positive-acceleration ceiling taper. Renewed lead acceleration or sufficient opening gap removes the extra restriction. This Safe acceleration limiter itself adds no gap allowance; existing Safe acceleration limits, TF processing and braking limits remain active.
+
+Current target-distance headroom, relative speed and lead acceleration estimate the approach over about two seconds. Settling is considered only when ego acceleration exceeds the lead’s positive acceleration by more than 0.1 m/s². The future ceiling descends from current acceleration at 0.8 m/s² per second of prediction time; this is not a fixed vehicle jerk limit and never blocks negative acceleration.
+
+Safe entry and exit blend the correction over 0.8 seconds. Target change/loss and existing boost inhibits such as accelerator override or lane change clear the state. Steady operation in Normal and levels 0–3 receive no settling correction. Configured TF is not increased, and existing selected-TF priority conditions for levels 4–5 during lead acceleration remain. Prompt launches still respect the existing Safe acceleration ceiling and do not guarantee prevention of cut-ins.
+
+### Adjustment sequence
+
+1. Keep driving mode and time gap fixed, and use `LeadAccelResponse=0` to check gradual gap recovery without acceleration boost.
+2. Adjust `LeadAccelResponse` one level at a time to change response to a lead starting or accelerating at the selected gap.
+3. Compare launch response, acceleration settling during approach and deceleration in the same driving mode at similar speeds and lead conditions.
+4. Restore the previous value if surging or unintended acceleration appears.
 
 <a id="carrot-cruise"></a>
 ## 7. Carrot cruise

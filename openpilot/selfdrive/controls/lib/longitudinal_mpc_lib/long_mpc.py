@@ -12,6 +12,8 @@ from openpilot.selfdrive.controls.radar_constants import LEAD_ACCEL_TAU
 from openpilot.selfdrive.carrot.traffic_stop import get_traffic_stop_distance_adjust, get_traffic_stop_obstacle_distance
 from openpilot.selfdrive.controls.lib.longitudinal_preview import LEAD_ACCEL_MIN_TRACK_FRAMES, LeadAccelResponseState, get_lead_accel_mpc_request
 from openpilot.selfdrive.controls.lib.longitudinal_cutout import cutout_obstacle_relief
+from openpilot.selfdrive.controls.lib.longitudinal_gap_recovery import LeadGapState, gap_reference
+from openpilot.selfdrive.controls.lib.longitudinal_safe_follow import SafeFollowState
 from openpilot.selfdrive.carrot.radar_motion.lane_change_gap import LaneChangeGapPlan
 
 if __name__ == '__main__':  # generating code
@@ -288,6 +290,9 @@ class LongitudinalMpc:
     self.lead_accel_response_level = 0
     # timers
     self.lead_response_state = LeadAccelResponseState()
+    self.safe_follow_state = SafeFollowState()
+    self.lead_gap_states = (LeadGapState(), LeadGapState())
+    self.lead_gap_margins = np.zeros((N+1, 2))
     self.solve_time = 0.0
     self.time_qp_solution = 0.0
     self.time_linearization = 0.0
@@ -395,6 +400,7 @@ class LongitudinalMpc:
              jerk_factor=1.0,
              a_change_cost_starting=A_CHANGE_COST_STARTING,
              lead_accel_response_enabled=False,
+             lead_gap_enabled=False,
              lead_track_frames=(0, 0),
              measured_a_ego=0.0,
              cutout_relief_enabled=False):
@@ -545,6 +551,16 @@ class LongitudinalMpc:
     response_request = self.lead_response_state.update(response_request, self.dt, response_lead.radarTrackId)
     self.lead_accel_response_active = response_request.active
     self.lead_accel_response_level = response_request.level if response_request.active else 0
+    self.params[:,1] = self.safe_follow_state.acceleration_limits(
+      self.params[:,1], T_IDXS,
+      level=carrot.leadAccelResponse, driving_mode=carrot.myDrivingMode,
+      enabled=(mode == 'acc' and lead_accel_response_enabled and not reset_state
+               and not getattr(carrot, 'lane_change_active', False) and response_track_stable
+               and response_lead.status and response_lead.radar),
+      track_id=response_lead.radarTrackId, gap_margin=response_gap_margin,
+      v_rel=response_lead.vRel, a_lead=response_lead.aLeadK,
+      a_ego=max(a_ego, measured_a_ego), dt=self.dt,
+    )
     self.set_weights(
       prev_accel_constraint,
       personality=personality,
@@ -554,6 +570,24 @@ class LongitudinalMpc:
       jerk_cost_factor=response_request.jerk_cost_factor,
     )
 
+    # Extra TF is a comfort preference, not a change to physical lead obstacles,
+    # base TF, cruise/map targets or braking constraints. Level 5 adds no margin.
+    gap_v = np.maximum(0.0, self.x_sol[:,1] + v_ego - self.x_sol[0,1])
+    self.lead_gap_margins[:] = 0.0
+    for lead_index, (lead, lead_xv) in enumerate(((radarstate.leadOne, lead_xv_0), (radarstate.leadTwo, lead_xv_1))):
+      eligible = (
+        mode == 'acc' and lead_gap_enabled and not reset_state
+        and not getattr(carrot, 'lane_change_active', False)
+        and len(lead_track_frames) > lead_index and lead_track_frames[lead_index] >= LEAD_ACCEL_MIN_TRACK_FRAMES
+        and lead.status and lead.radar
+      )
+      state = self.lead_gap_states[lead_index]
+      state.update(level=carrot.leadAccelResponse, track_id=lead.radarTrackId, enabled=eligible, dt=self.dt,
+                   ego_speed=v_ego, lead_speed=lead.vLead if eligible else 0.0, relative_speed=lead.vRel if eligible else 0.0,
+                   distance=lead.dRel if eligible else 0.0, desired_distance=self.base_desired_distances[lead_index], base_tf=t_follow)
+      self.lead_gap_margins[:,lead_index] = state.margins(
+        level=carrot.leadAccelResponse, times=T_IDXS, ego_speeds=gap_v, lead_speeds=lead_xv[:,1], base_tf=t_follow)
+    self.yref[:,0] = gap_reference(x_obstacles, self.lead_gap_margins, gap_v)
     self.yref[:,1] = x
     self.yref[:,2] = v
     self.yref[:,3] = a
