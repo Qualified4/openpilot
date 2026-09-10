@@ -1521,7 +1521,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                       lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
 
                     # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
-                    elif dRel < 40 and velocity > lowspeed_side_lead_speed:
+                    elif dRel < 30 and velocity > lowspeed_side_lead_speed:
                       valid_left_bounds = []
                       if has_left_outer:
                         valid_left_bounds.append(-interp(dRel, left_outer_x, left_outer_y))
@@ -1544,7 +1544,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                       rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
 
                     # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
-                    elif dRel < 40 and velocity > lowspeed_side_lead_speed:
+                    elif dRel < 30 and velocity > lowspeed_side_lead_speed:
                       valid_right_bounds = []
                       if has_right_outer:
                         valid_right_bounds.append(-interp(dRel, right_outer_x, right_outer_y))
