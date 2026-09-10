@@ -796,6 +796,8 @@ def create_adrv_messages(CP, packer, CAN, frame):
 def alt_cruise_buttons(packer, CP, CAN, buttons, cruise_btns_msg, cnt):
   cruise_btns_msg["CRUISE_BUTTONS"] = buttons
   cruise_btns_msg["COUNTER"] = (cruise_btns_msg["COUNTER"] + 1 + cnt) % 256
+  cruise_btns_msg["BYTE9"] = 0
+  cruise_btns_msg["BYTE10"] = cruise_btns_msg["BYTE11"]
   bus = CAN.ECAN if CP.flags & HyundaiFlags.CANFD_HDA2 else CAN.CAM
   return packer.make_can_msg("CRUISE_BUTTONS_ALT", bus, cruise_btns_msg)
 
