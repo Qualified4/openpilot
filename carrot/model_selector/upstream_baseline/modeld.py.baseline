@@ -285,7 +285,16 @@ def main(demo=False):
       nonlocal usbgpu_model
       for attempt in range(1, USBGPU_INIT_ATTEMPTS + 1):
         try:
-          usbgpu_model = ModelState(vipc_client_main.width, vipc_client_main.height, True, usbgpu_pkl_path)
+          if usbgpu_pkl_path.name == 'model.pkl' and (usbgpu_pkl_path.parent / 'installed.json').is_file():
+            from openpilot.selfdrive.modeld.precompiled_runner import PrecompiledModelState
+            from openpilot.selfdrive.modeld.precompiled_model import reject
+            try:
+              usbgpu_model = PrecompiledModelState(vipc_client_main.width, vipc_client_main.height, usbgpu_pkl_path)
+            except Exception:
+              reject(usbgpu_pkl_path)
+              raise
+          else:
+            usbgpu_model = ModelState(vipc_client_main.width, vipc_client_main.height, True, usbgpu_pkl_path)
           return
         except Exception as exc:
           if usbgpu_pcie_not_ready(exc) and attempt < USBGPU_INIT_ATTEMPTS:
@@ -529,7 +538,8 @@ def main(demo=False):
       modelv2_send.modelV2.meta.distanceToRoadEdgeRight = float(DH.right.dist_to_edge)
       modelv2_send.modelV2.meta.desire = DH.desire
       modelv2_send.modelV2.meta.laneChangeProb = DH.lane_change_ll_prob
-      modelv2_send.modelV2.meta.modelTurnSpeed = float(DH.model_turn_speed)
+      # Retain the wire field for older log/replay readers; this limiter is retired.
+      modelv2_send.modelV2.meta.modelTurnSpeed = 200.0
       modelv2_send.modelV2.meta.laneChangeAvailableLeft = DH.lane_change_available_left
       modelv2_send.modelV2.meta.laneChangeAvailableRight = DH.lane_change_available_right
       mt3 = time.perf_counter()
