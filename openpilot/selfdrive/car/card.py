@@ -87,6 +87,8 @@ class Car:
     self.cruise_main_toggle = CruiseMainOpenpilotToggle(ButtonType.mainCruise)
 
     self.last_actuators_output = structs.CarControl.Actuators()
+    self.live_tracks = None
+    self.live_tracks_time = 0
 
     self.params = Params()
 
@@ -307,6 +309,8 @@ class Car:
     if RD is not None:
       tracks_msg = messaging.new_message('liveTracks')
       tracks_msg.valid = not any(RD.errors.to_dict().values())
+      self.live_tracks = RD if tracks_msg.valid else None
+      self.live_tracks_time = self.can_log_mono_time if REPLAY else time.monotonic_ns()
       tracks_msg.liveTracks = RD
       self.pm.send('liveTracks', tracks_msg)
 
@@ -326,7 +330,8 @@ class Car:
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
       model_v2 = self.sm['modelV2'] if self.sm.valid['modelV2'] and self.sm.alive['modelV2'] else None
       radar_state = self.sm['radarState'] if self.sm.valid['radarState'] else None
-      self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, model_v2, radar_state)
+      live_tracks = self.live_tracks if 0 <= now_nanos - self.live_tracks_time < 150_000_000 else None
+      self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, model_v2, radar_state, live_tracks)
       apply_done_ns = time.monotonic_ns()
       self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
       sendcan_done_ns = time.monotonic_ns()
