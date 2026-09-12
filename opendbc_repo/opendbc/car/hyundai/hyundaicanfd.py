@@ -28,11 +28,10 @@ CAR_MODEL_ID = _MODEL_ID_MAP.get(CAR_MODEL_TYPE, 1)
 
 
 def _ccnc_valid_boundary(x, y):
-  # Confidence can fluctuate while the boundary geometry remains useful for display.
-  return (len(x) >= 2 and len(x) == len(y)
-          and all(math.isfinite(v) for v in x)
-          and all(math.isfinite(v) for v in y)
-          and all(x[i - 1] < x[i] for i in range(1, len(x))))
+  if len(x) < 2 or len(x) != len(y):
+    return False
+  xs, ys = np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
+  return bool(np.isfinite(xs).all() and np.isfinite(ys).all() and (xs[1:] > xs[:-1]).all())
 
 
 class _CcncRadarDisplayTracker:
@@ -41,9 +40,72 @@ class _CcncRadarDisplayTracker:
     self.live = None
     self.last_frame = -1
     self.tracks = {}
+    self._points = ()
     self.selected = (None, None, None)
     self.positions = {}
+    self.recent_selected = {}
+    self.recent_front = {}
     self.lane_ready = True
+    self._model = None
+    self._model_stamp = None
+    self._inner_data = None
+    self._lane_probs = None
+    self._lane_data = None
+    self._projection_live = None
+    self._projection = None
+    self._path_data = None
+    self._path_live = self._path_points = None
+
+  def _update_model(self, md):
+    # SubMaster model readers are immutable between publications; retain the reader itself.
+    stamp = getattr(md, "timestampEof", None) if md is not None else None
+    if md is self._model and stamp is not None and stamp == self._model_stamp:
+      return
+    self._model, self._model_stamp = md, stamp
+    self._inner_data = self._lane_probs = self._lane_data = self._projection = self._path_data = None
+    self._projection_live = None
+    self._path_live = self._path_points = None
+
+  def lane_probabilities(self, md):
+    self._update_model(md)
+    if self._lane_probs is None:
+      left = right = 0.0
+      if md is not None and len(md.laneLineProbs) >= 3 and len(md.laneLines) >= 3:
+        self._inner_data = tuple((np.asarray(line.x, dtype=np.float64), np.asarray(line.y, dtype=np.float64))
+                                 for line in (md.laneLines[1], md.laneLines[2]))
+        if _ccnc_valid_boundary(*self._inner_data[0]):
+          left = md.laneLineProbs[1]
+        if _ccnc_valid_boundary(*self._inner_data[1]):
+          right = md.laneLineProbs[2]
+      self._lane_probs = left, right
+    return self._lane_probs
+
+  def lane_projection(self, live):
+    if self._projection is not None and live is self._projection_live:
+      return self._projection
+    if self._lane_data is None:
+      md = self._model
+      lines, edges = md.laneLines, md.roadEdges
+      data = list(self._inner_data)
+      for valid, line in ((md.laneLineProbs[0] > 0.1, lines[0]), (md.laneLineProbs[3] > 0.1, lines[3]),
+                          (True, edges[0]), (True, edges[1])):
+        data.append((np.asarray(line.x, dtype=np.float64), np.asarray(line.y, dtype=np.float64)) if valid else None)
+      flags = tuple(item is not None and _ccnc_valid_boundary(*item) for item in data[2:])
+      self._lane_data = data, flags
+    data, flags = self._lane_data
+    distances = np.fromiter((p[1] for p in self._points), dtype=np.float64, count=len(self._points))
+    projected = [np.interp(distances, *data[0]), np.interp(distances, *data[1])]
+    for valid, curve in zip(flags, data[2:]):
+      if valid:
+        xs, ys = curve
+        vals = np.interp(distances, xs, ys)
+        vals[(distances < xs[0]) | (distances > xs[-1])] = np.nan
+        projected.append(vals)
+      else:
+        projected.append(np.full(len(distances), np.nan))
+    self._projection_live = live
+    self._projection = float(data[0][1][0]), float(data[1][1][0]), tuple(zip(*(values.tolist() for values in projected)))
+    return self._projection
 
   def observe(self, live, frame):
     if frame < self.last_frame or frame - self.last_frame > 15:
@@ -51,18 +113,25 @@ class _CcncRadarDisplayTracker:
       self.lane_ready = True
     if frame < self.last_frame or frame - self.last_frame > 15 or live is None:
       self.tracks.clear()
+      self._points = ()
       self.selected = (None, None, None)
       self.positions.clear()
+      self.recent_selected.clear()
+      self.recent_front.clear()
     self.last_frame = frame
     if live is self.live:
       return
     self.live = live  # card keeps the same RadarData object until the next radar update.
+    self._path_points = self._projection = None
     current = {}
+    points = []
     if live is not None:
       for p in live.points:
-        if (str(p.radarSource) != "frontRadar" or p.dRel < 1
-            or not all(math.isfinite(v) for v in (p.dRel, p.yRel, p.vRel, p.vLead))):
+        dRel, yRel, vRel, vLead = p.dRel, p.yRel, p.vRel, p.vLead
+        if (str(p.radarSource) != "frontRadar" or dRel < 1
+            or not (math.isfinite(dRel) and math.isfinite(yRel) and math.isfinite(vRel) and math.isfinite(vLead))):
           continue
+        points.append((p, dRel, yRel, vRel, vLead))
         start, count = frame, 1
         previous = self.tracks.get(p.trackId)
         if previous is not None:
@@ -74,12 +143,28 @@ class _CcncRadarDisplayTracker:
             start, count = first, n + 1
         current[p.trackId] = (start, frame, count, p, (p.dRel, p.yRel, p.vRel))
     self.tracks = current
+    self._points = tuple(points)  # Snapshot values before point objects are reused by the next RadarData.
+    for history in (self.recent_selected, self.recent_front):
+      for key, (birth, selected_frame) in list(history.items()):
+        if key not in current or current[key][0] != birth or frame - selected_frame > 30:
+          del history[key]
     self.positions = {key: value for key, value in self.positions.items()
                       if key in current and value[0] == current[key][0]}
 
   def stable(self, track_id, frames=15):
     entry = self.tracks.get(track_id)
     return entry is not None and entry[2] >= 3 and entry[1] - entry[0] >= frames
+
+  @staticmethod
+  def speed_thresholds(v, a):
+    if v != v:
+      return (-100 if a < -3 else v), v, v
+    front = (-100 if a < -3 or v <= 30 else 10.0 * (v - 30.0) - 100.0 if v < 40
+             else (20.0 / 60.0) * (v - 40.0) if v < 100 else 20.0)
+    side = (2.0 if v <= 0 else (8.0 / 30.0) * v + 2.0 if v < 30
+            else (10.0 / 70.0) * (v - 30.0) + 10.0 if v < 100 else 20.0)
+    low = -1.0 if v <= 10 else (11.0 / 30.0) * (v - 10.0) - 1.0 if v < 40 else 10.0
+    return front, side, low
 
   def lane_available(self, probability, frame):
     if probability < 0.1:
@@ -89,43 +174,72 @@ class _CcncRadarDisplayTracker:
       self.lane_ready = True
     return self.lane_ready
 
-  def path_lead(self, md, minimum_speed):
+  def recently_selected(self, track_id, front_only=False):
+    history = self.recent_front if front_only else self.recent_selected
+    previous = history.get(track_id)
+    current = self.tracks.get(track_id)
+    return (previous is not None and current is not None and previous[0] == current[0]
+            and 0 <= self.last_frame - previous[1] <= 30)
+
+  def path_lead(self, md, minimum_speed, require_vision=False, front_only=False):
     if md is None:
       return None, 0.0
-    xs = np.asarray(md.position.x, dtype=np.float64)
-    ys = np.asarray(md.position.y, dtype=np.float64)
-    if len(xs) != len(ys):
+    self._update_model(md)
+    if self._path_data is None:
+      xs = np.asarray(md.position.x, dtype=np.float64)
+      ys = np.asarray(md.position.y, dtype=np.float64)
+      self._path_data = False
+      if len(xs) == len(ys):
+        stop = next((i for i in range(1, len(xs)) if xs[i] <= xs[i - 1]), len(xs))
+        xs, ys = xs[:stop], ys[:stop]
+        if _ccnc_valid_boundary(xs, ys):
+          vision = None
+          if len(md.leadsV3):
+            lead = md.leadsV3[0]
+            if len(lead.x) and len(lead.y) and len(lead.v):
+              x, y, v = lead.x[0], lead.y[0], lead.v[0]
+              if math.isfinite(x) and math.isfinite(y) and math.isfinite(v):
+                vision = lead.prob, x - 1.52, y, v
+          self._path_data = xs, ys, max(1.0, xs[0]), min(80.0, xs[-1]), vision
+    if self._path_data is False:
       return None, 0.0
-    # A turning path can double back in x further ahead; use its forward-only prefix.
-    stop = next((i for i in range(1, len(xs)) if xs[i] <= xs[i - 1]), len(xs))
-    xs, ys = xs[:stop], ys[:stop]
-    if not _ccnc_valid_boundary(xs, ys):
-      return None, 0.0
+    xs, ys, minimum_distance, maximum_distance, vision = self._path_data
+    if self._path_points is None or self._path_live is not self.live:
+      entries = tuple(self.tracks.items())
+      distances = np.fromiter((entry[3].dRel for _, entry in entries), dtype=np.float64, count=len(entries))
+      aligned_values = np.interp(distances, xs, ys) - ys[0]
+      self._path_points = tuple((track_id, entry, float(entry[3].yRel + aligned))
+                                for (track_id, entry), aligned in zip(entries, aligned_values))
+      self._path_live = self.live
     best, best_y, score = None, 0.0, math.inf
-    for track_id, (_, _, _, p, _) in self.tracks.items():
-      if not self.stable(track_id) or p.vLead * CV.MS_TO_KPH <= minimum_speed:
+    recent = self.recently_selected
+    for track_id, entry, aligned in self._path_points:
+      first, last, count, p, _ = entry
+      if count < 3 or last - first < 15:
         continue
-      # Do not extrapolate a short/invalid model path to distant radar reflections.
-      if not max(1.0, xs[0]) <= p.dRel <= min(80.0, xs[-1]):
+      dRel, yRel = p.dRel, p.yRel
+      if not minimum_distance <= dRel <= maximum_distance or p.vLead * CV.MS_TO_KPH <= minimum_speed:
         continue
-      aligned = p.yRel + float(np.interp(p.dRel, xs, ys) - ys[0])
-      retained = track_id in self.selected
-      # Vision is model-frame (right positive); radar is left positive.
-      # The camera/radar longitudinal origin offset is 1.52m.
-      vision_match = any(
-        lead.prob >= (0.3 if retained else 0.5) and len(lead.x) and len(lead.y) and len(lead.v)
-        and all(math.isfinite(v) for v in (lead.x[0], lead.y[0], lead.v[0]))
-        and abs(p.dRel - (lead.x[0] - 1.52)) <= max(8.0 if retained else 6.0, p.dRel * 0.2)
-        and abs(p.yRel + lead.y[0]) <= 1.5
-        and abs(p.vLead - lead.v[0]) <= 5.0
-        for lead in (md.leadsV3[i] for i in range(min(1, len(md.leadsV3)))))
-      corridor = 1.8 if retained else 1.2
+      distance = dRel * dRel + yRel * yRel
+      if distance >= score or (front_only and not recent(track_id, front_only=True)):
+        continue
+      retained = recent(track_id)
+      vision_match = strong_vision_match = False
+      if vision is not None:
+        prob, vx, vy, vv = vision
+        dx, dy, dv = abs(dRel - vx), abs(yRel + vy), abs(p.vLead - vv)
+        vision_match = (prob >= (0.3 if retained else 0.5)
+                        and dx <= max(8.0 if retained else 6.0, dRel * 0.2) and dy <= 1.5 and dv <= 5.0)
+        strong_vision_match = (prob >= 0.8 and dRel <= 30.0
+                               and dx <= max(3.0, dRel * 0.2) and dy <= 2.0 and dv <= 3.0)
+        vision_match = vision_match or strong_vision_match
+      if require_vision and not vision_match:
+        continue
+      corridor = 2.0 if strong_vision_match else 1.8 if retained else 1.2
       if not ((abs(aligned) <= corridor and (retained or vision_match))
               or (retained and vision_match and abs(aligned) <= 4.5)):
         continue
-      distance = p.dRel * p.dRel + p.yRel * p.yRel
-      if distance < score:
-        best, best_y, score = p, aligned, distance
+      best, best_y, score = p, aligned, distance
     return best, best_y
 
   def filter_position(self, point, aligned_y, reference, frame):
@@ -135,24 +249,31 @@ class _CcncRadarDisplayTracker:
     birth = observation[0] if observation is not None else frame
     previous = self.positions.get(track_id)
     if previous is None or previous[0] != birth or not 0 <= frame - previous[1] <= 15:
-      distance = NoiseFilter(3, point.dRel, [0.3, 0.9], [1.0, 4.0])
-      lateral = NoiseFilter(3, aligned_y, 0.3, 0.6)
+      distance = _CcncRadarPositionFilter(point.dRel, True)
+      lateral = _CcncRadarPositionFilter(aligned_y, False)
       bias = 0.0
     else:
       _, last, old_reference, old_raw, old_input, bias, distance, lateral = previous
       if reference != old_reference:
         # Cancel the reference change, while retaining the radar's actual lateral motion.
         bias = old_input + (point.yRel - old_raw) - aligned_y
-      step = (frame - last) * 0.03
-      bias = math.copysign(max(0.0, abs(bias) - step), bias)
+      if bias:
+        step = (frame - last) * 0.03
+        bias = math.copysign(max(0.0, abs(bias) - step), bias)
     filtered_input = aligned_y + bias
     self.positions[track_id] = (birth, frame, reference, point.yRel, filtered_input, bias, distance, lateral)
     return distance.apply(point.dRel), lateral.apply(filtered_input)
 
   def finish(self, ff, lf, rf, ff_y, lane_mode, frame):
-    ids = tuple(p.trackId if p is not None else None for p in (ff, lf, rf))
-    changed = tuple(a != b for a, b in zip(ids, self.selected))
+    ids = (ff.trackId if ff is not None else None, lf.trackId if lf is not None else None, rf.trackId if rf is not None else None)
+    old = self.selected
+    changed = ids[0] != old[0], ids[1] != old[1], ids[2] != old[2]
     self.selected = ids
+    for p in (ff, lf, rf):
+      if p is not None and p.trackId in self.tracks:
+        self.recent_selected[p.trackId] = (self.tracks[p.trackId][0], frame)
+    if ff is not None and ff.trackId in self.tracks:
+      self.recent_front[ff.trackId] = (self.tracks[ff.trackId][0], frame)
     return ff_y, changed
 
 
@@ -365,6 +486,27 @@ class NoiseFilter:
   @property
   def value(self):
     return self._filtered_value
+
+class _CcncRadarPositionFilter(NoiseFilter):
+  def __init__(self, value, distance):
+    self._default_value = self._filtered_value = value
+    self._buffer = deque((value, value, value), maxlen=3)
+    self._a_min = 0.3
+    self._a_max = 0.9 if distance else 0.3
+    self._err_min = 1.0 if distance else 0.6
+    self._err_max = 4.0 if distance else 0.6
+    self.apply = self._apply_adaptive if distance else self._apply_step
+
+  def _apply_adaptive(self, target):
+    if self._check_hard_reset(target):
+      return self._filtered_value
+    self._buffer.append(target)
+    med = self._get_median()
+    error = abs(med - self._filtered_value)
+    alpha = 0.3 if error <= 1.0 else 0.9 if error >= 4.0 else ((0.9 - 0.3) / 3.0) * (error - 1.0) + 0.3
+    self._filtered_value = alpha * med + (1.0 - alpha) * self._filtered_value
+    return self._filtered_value
+
 
 def ease_in_interp(x, x_range, y_range, power=2):
   # x를 0~1 사이 비율로 변환
@@ -1536,93 +1678,38 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           display_tracker = create_ccnc_messages.radar_display_tracker
           display_tracker.observe(CS.live_tracks, frame)
-          left_prob = right_prob = 0.0
-          if md is not None and len(md.laneLineProbs) >= 3 and len(md.laneLines) >= 3:
-            if _ccnc_valid_boundary(md.laneLines[1].x, md.laneLines[1].y):
-              left_prob = md.laneLineProbs[1]
-            if _ccnc_valid_boundary(md.laneLines[2].x, md.laneLines[2].y):
-              right_prob = md.laneLineProbs[2]
+          left_prob, right_prob = display_tracker.lane_probabilities(md)
           selected_lane_is_left = create_ccnc_messages.radar_lane_selector.update(left_prob, right_prob, frame)
           selected_lane_prob = left_prob if selected_lane_is_left else right_prob
 
           # 차선이 유효하면 기존 분류를 사용하고, FF는 차선 소실 시 경로/영상으로 보완합니다.
           lane_mode = selected_lane_prob >= 0.1
           ff_lane_mode = display_tracker.lane_available(selected_lane_prob, frame)
+          ff_uses_lane = True
+          min_front_lead_speed, min_side_lead_speed, lowspeed_side_lead_speed = display_tracker.speed_thresholds(v_ego_kph, a_ego_kph)
           if CS.live_tracks is not None and lane_mode:
-            lane_lines = md.laneLines
-            road_edges = md.roadEdges
-            # Cap’n Proto 목록을 보간 호출마다 변환하지 않도록 한 번만 배열로 만듭니다.
-            left_inner_x = np.asarray(lane_lines[1].x, dtype=np.float64)
-            left_inner_y = np.asarray(lane_lines[1].y, dtype=np.float64)
-            right_inner_x = np.asarray(lane_lines[2].x, dtype=np.float64)
-            right_inner_y = np.asarray(lane_lines[2].y, dtype=np.float64)
-            left_outer_x, left_outer_y = lane_lines[0].x, lane_lines[0].y
-            right_outer_x, right_outer_y = lane_lines[3].x, lane_lines[3].y
-            left_road_edge_x, left_road_edge_y = road_edges[0].x, road_edges[0].y
-            right_road_edge_x, right_road_edge_y = road_edges[1].x, road_edges[1].y
-            selected_lane_x, selected_lane_y = (
-              (left_inner_x, left_inner_y) if selected_lane_is_left else (right_inner_x, right_inner_y)
-            )
-            selected_lane_y0 = selected_lane_y[0]
-
+            left_y0, right_y0, projected = display_tracker.lane_projection(CS.live_tracks)
+            selected_lane_y0 = left_y0 if selected_lane_is_left else right_y0
             interp = np.interp
             ms_to_kph = CV.MS_TO_KPH
-
-            has_left_outer = md.laneLineProbs[0] > 0.1 and _ccnc_valid_boundary(left_outer_x, left_outer_y)
-            has_right_outer = md.laneLineProbs[3] > 0.1 and _ccnc_valid_boundary(right_outer_x, right_outer_y)
-            # HUD와 같이 roadEdgeStds로 경계를 버리지 않고 실제 좌표를 사용합니다.
-            has_left_edge = _ccnc_valid_boundary(left_road_edge_x, left_road_edge_y)
-            has_right_edge = _ccnc_valid_boundary(right_road_edge_x, right_road_edge_y)
-
-            if has_left_outer:
-              left_outer_x = np.asarray(left_outer_x, dtype=np.float64)
-              left_outer_y = np.asarray(left_outer_y, dtype=np.float64)
-            if has_right_outer:
-              right_outer_x = np.asarray(right_outer_x, dtype=np.float64)
-              right_outer_y = np.asarray(right_outer_y, dtype=np.float64)
-            if has_left_edge:
-              left_road_edge_x = np.asarray(left_road_edge_x, dtype=np.float64)
-              left_road_edge_y = np.asarray(left_road_edge_y, dtype=np.float64)
-            if has_right_edge:
-              right_road_edge_x = np.asarray(right_road_edge_x, dtype=np.float64)
-              right_road_edge_y = np.asarray(right_road_edge_y, dtype=np.float64)
-
             # 여러 차로의 후보를 허용하되, 보정 후 횡거리 5.4m 밖의 측면 점은 선택하지 않습니다.
             max_side_lateral = 5.4
+            max_side_distance = 80.0
             ff_min_dist = lf_min_dist = rf_min_dist = math.inf
-            min_front_lead_speed = -100 if a_ego_kph < -3 else interp(v_ego_kph, [30, 40, 100], [-100, 0, 20])
-            min_side_lead_speed = interp(v_ego_kph, [0, 30, 100], [2, 10, 20])
-            lowspeed_side_lead_speed = interp(v_ego_kph, [10, 40], [-1, 10])
 
-            for lead in CS.live_tracks.points:
-              dRel = lead.dRel
-              yRel, vRel, vLead = lead.yRel, lead.vRel, lead.vLead
-              # 순정 SCC 선행차는 횡위치가 없으므로 개별 전방 레이더 점만 표시합니다.
-              if (str(lead.radarSource) != "frontRadar" or dRel < 1
-                  or not all(math.isfinite(v) for v in (dRel, yRel, vRel, vLead))):
-                continue
-
+            for (lead, dRel, yRel, vRel, vLead), (left_y, right_y, outer_left_y, outer_right_y, edge_left_y, edge_right_y) in zip(display_tracker._points, projected):
               velocity = vLead * ms_to_kph
               # FF와 저속 측면 예외까지 모두 탈락하는 점은 보간 전에 제외합니다.
               if not (velocity > min_front_lead_speed or velocity > min_side_lead_speed
                       or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
                 continue
 
-              # Only stable moving tracks may use the additional outer-lane allowance.
-              allow_lane_margin = (velocity > min_side_lead_speed
-                                   and display_tracker.stable(lead.trackId, 30))
-
               # 차선 보간값과 시작점의 차이로 도로의 휘어짐만 보정합니다.
-              lane_y_at_drel = interp(dRel, selected_lane_x, selected_lane_y)
+              lane_y_at_drel = left_y if selected_lane_is_left else right_y
               road_aligned_yRel = yRel + (lane_y_at_drel - selected_lane_y0)
 
               # 분류는 원본 레이더 좌표(좌측+)와 같은 좌표계의 차선 경계로 판단합니다.
-              if selected_lane_is_left:
-                left_inner_bound = -lane_y_at_drel
-                right_inner_bound = -interp(dRel, right_inner_x, right_inner_y)
-              else:
-                left_inner_bound = -interp(dRel, left_inner_x, left_inner_y)
-                right_inner_bound = -lane_y_at_drel
+              left_inner_bound, right_inner_bound = -left_y, -right_y
               if (not math.isfinite(left_inner_bound) or not math.isfinite(right_inner_bound)
                   or right_inner_bound >= left_inner_bound):
                 continue
@@ -1638,65 +1725,78 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 3. [왼쪽 차선 차량] - 좌측 외곽/도로경계선만 지연 계산 (우측 2회 interp 생략)
               elif left_inner_bound < yRel:
-                if (display_tracker.stable(lead.trackId)
+                if (dRel <= max_side_distance and display_tracker.stable(lead.trackId)
                     and abs(road_aligned_yRel) <= max_side_lateral and dist_score < lf_min_dist):
 
                   # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
                   if (velocity > min_side_lead_speed
                       or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
                     # Expand the outer lane for moving candidates, keeping road-edge clearance.
-                    lane_margin = 0.75 if allow_lane_margin else -0.25
+                    lane_margin = 0.75 if velocity > min_side_lead_speed and display_tracker.stable(lead.trackId, 30) else -0.25
                     if lead.trackId == display_tracker.selected[1]:
                       lane_margin += 0.3
-                    valid_left_bounds = []
+                    left_width_bound = math.inf
                     left_effective_bound = math.inf
-                    if has_left_outer and left_outer_x[0] <= dRel <= left_outer_x[-1]:
-                      outer_bound = -interp(dRel, left_outer_x, left_outer_y)
-                      valid_left_bounds.append(outer_bound)
+                    if math.isfinite(outer_left_y):
+                      outer_bound = -outer_left_y
+                      left_width_bound = outer_bound
                       left_effective_bound = outer_bound + lane_margin
-                    if has_left_edge and left_road_edge_x[0] <= dRel <= left_road_edge_x[-1]:
-                      edge_bound = -interp(dRel, left_road_edge_x, left_road_edge_y)
-                      valid_left_bounds.append(edge_bound)
+                    if math.isfinite(edge_left_y):
+                      edge_bound = -edge_left_y
+                      left_width_bound = min(left_width_bound, edge_bound)
                       left_effective_bound = min(left_effective_bound, edge_bound - 0.25)
 
-                    if valid_left_bounds:
+                    if left_width_bound != math.inf:
                       # Preserve the original width check before expanding candidate acceptance.
-                      left_width_bound = min(valid_left_bounds) - 0.25
+                      left_width_bound = left_width_bound - 0.25
                       if yRel < left_effective_bound and (left_width_bound - left_inner_bound > 1.8):
                         lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
 
               # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
               elif yRel < right_inner_bound:
-                if (display_tracker.stable(lead.trackId)
+                if (dRel <= max_side_distance and display_tracker.stable(lead.trackId)
                     and abs(road_aligned_yRel) <= max_side_lateral and dist_score < rf_min_dist):
 
                   # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
                   if (velocity > min_side_lead_speed
                       or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
                     # Expand the outer lane for moving candidates, keeping road-edge clearance.
-                    lane_margin = 0.75 if allow_lane_margin else -0.25
+                    lane_margin = 0.75 if velocity > min_side_lead_speed and display_tracker.stable(lead.trackId, 30) else -0.25
                     if lead.trackId == display_tracker.selected[2]:
                       lane_margin += 0.3
-                    valid_right_bounds = []
+                    right_width_bound = -math.inf
                     right_effective_bound = -math.inf
-                    if has_right_outer and right_outer_x[0] <= dRel <= right_outer_x[-1]:
-                      outer_bound = -interp(dRel, right_outer_x, right_outer_y)
-                      valid_right_bounds.append(outer_bound)
+                    if math.isfinite(outer_right_y):
+                      outer_bound = -outer_right_y
+                      right_width_bound = outer_bound
                       right_effective_bound = outer_bound - lane_margin
-                    if has_right_edge and right_road_edge_x[0] <= dRel <= right_road_edge_x[-1]:
-                      edge_bound = -interp(dRel, right_road_edge_x, right_road_edge_y)
-                      valid_right_bounds.append(edge_bound)
+                    if math.isfinite(edge_right_y):
+                      edge_bound = -edge_right_y
+                      right_width_bound = max(right_width_bound, edge_bound)
                       right_effective_bound = max(right_effective_bound, edge_bound + 0.25)
 
-                    if valid_right_bounds:
+                    if right_width_bound != -math.inf:
                       # Preserve the original width check before expanding candidate acceptance.
-                      right_width_bound = max(valid_right_bounds) + 0.25
+                      right_width_bound = right_width_bound + 0.25
                       if yRel > right_effective_bound and (right_inner_bound - right_width_bound > 1.8):
                         rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
 
-          if CS.live_tracks is not None and not ff_lane_mode:
-            minimum_speed = -100 if a_ego_kph < -3 else np.interp(v_ego_kph, [30, 40, 100], [-100, 0, 20])
-            ff_lead, ff_yRel = display_tracker.path_lead(md, minimum_speed)
+          if CS.live_tracks is not None and (not ff_lane_mode or selected_lane_prob < 0.5):
+            minimum_speed = min_front_lead_speed
+            # During uncertain lane recovery, only a vision-matched recent FF may
+            # displace a lane candidate. A failed fallback preserves a recently displayed lane candidate.
+            fallback_lead, fallback_y = display_tracker.path_lead(
+              md, minimum_speed, require_vision=ff_lane_mode,
+              front_only=ff_lane_mode and ff_lead is not None)
+            if fallback_lead is not None and (
+                ff_lead is None or not ff_lane_mode
+                or fallback_lead.dRel ** 2 + fallback_lead.yRel ** 2 <= ff_lead.dRel ** 2 + ff_lead.yRel ** 2):
+              ff_lead, ff_yRel = fallback_lead, fallback_y
+              ff_uses_lane = False
+            elif (not ff_lane_mode and ff_lead is not None
+                  and not display_tracker.recently_selected(ff_lead.trackId, front_only=True)):
+              # Weak lanes alone must not introduce a new unconfirmed front target.
+              ff_lead = None
 
           # A retained FF must not also occupy a side slot during lane recovery.
           if ff_lead is not None:
@@ -1706,14 +1806,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
               rf_lead = None
           # Shared physical coordinates and filter history follow the ID across LF/FF/RF.
           filtered_positions = []
-          for point, aligned, is_lane in ((ff_lead, ff_yRel, ff_lane_mode),
+          for point, aligned, is_lane in ((ff_lead, ff_yRel, ff_uses_lane),
                                           (lf_lead, lf_yRel, True), (rf_lead, rf_yRel, True)):
             reference = ("lane", selected_lane_is_left) if is_lane else ("path", False)
             filtered_positions.append(display_tracker.filter_position(point, aligned, reference, frame)
                                       if point is not None else (0.0, 0.0))
           ff_yRel = filtered_positions[0][1]
-          lf_yRel = float(np.clip(filtered_positions[1][1], -5.4, 5.4))
-          rf_yRel = float(np.clip(filtered_positions[2][1], -5.4, 5.4))
+          lf_yRel = min(max(float(filtered_positions[1][1]), -5.4), 5.4)
+          rf_yRel = min(max(float(filtered_positions[2][1]), -5.4), 5.4)
           ff_yRel, changed_tracks = display_tracker.finish(ff_lead, lf_lead, rf_lead, ff_yRel, ff_lane_mode, frame)
 
           # 전방(FF) 차량 정보 업데이트
@@ -1727,14 +1827,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
             values["LF_DETECT_DISTANCE"] = filtered_positions[1][0] * 0.8
-            values["LF_DETECT_LATERAL"] = float(np.clip(apply_curved_deadband(lf_yRel, 3, 0.9, 2), 0.0, 12.7))
+            values["LF_DETECT_LATERAL"] = min(max(float(apply_curved_deadband(lf_yRel, 3, 0.9, 2)), 0.0), 12.7)
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           else:
             values["LF_DETECT"] = 0
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
             values["RF_DETECT_DISTANCE"] = filtered_positions[2][0] * 0.8
-            values["RF_DETECT_LATERAL"] = float(np.clip(apply_curved_deadband(-rf_yRel, 3, 0.9, 2), 0.0, 12.7))
+            values["RF_DETECT_LATERAL"] = min(max(float(apply_curved_deadband(-rf_yRel, 3, 0.9, 2)), 0.0), 12.7)
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
           else:
             values["RF_DETECT"] = 0
