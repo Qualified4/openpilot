@@ -12,7 +12,7 @@ import pytest
 
 def load_helpers():
   path = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[1] / 'hyundaicanfd.py'))
-  names = {'_ccnc_valid_boundary', '_CcncRadarDisplayTracker', '_CcncRadarPositionFilter', 'NoiseFilter'}
+  names = {'_ccnc_valid_boundary', '_CcncRadarDisplayTracker', '_CcncRadarPositionFilter', 'NoiseFilter', 'apply_curved_deadband'}
   nodes = [n for n in ast.parse(path.read_text(encoding='utf8')).body
            if isinstance(n, (ast.ClassDef, ast.FunctionDef)) and n.name in names]
   env = dict(math=math, np=np, deque=deque, CV=N(MS_TO_KPH=3.6))
@@ -270,7 +270,7 @@ def test_wider_turn_match_requires_strict_range_speed_and_probability(distance, 
 def test_fallback_failure_keeps_lane_selected_front():
   source = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[1] / 'hyundaicanfd.py')).read_text(encoding='utf8')
   start = source.index('          if CS.live_tracks is not None and (not ff_lane_mode')
-  end = source.index('          # A retained FF', start)
+  end = source.index('          # Only bridge an empty slot', start)
   import textwrap
   candidate = point()
   tracker = N(path_lead=lambda *args, **kwargs: (None, 0.), recently_selected=lambda *args, **kwargs: True)
@@ -285,7 +285,7 @@ def test_fallback_failure_keeps_lane_selected_front():
 def test_failed_fallback_does_not_introduce_new_target_from_weak_lanes():
   source = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[1] / 'hyundaicanfd.py')).read_text(encoding='utf8')
   start = source.index('          if CS.live_tracks is not None and (not ff_lane_mode')
-  end = source.index('          # A retained FF', start)
+  end = source.index('          # Only bridge an empty slot', start)
   import textwrap
   env = dict(CS=N(live_tracks=object()), ff_lane_mode=False, selected_lane_prob=.15,
              a_ego_kph=0., v_ego_kph=20., min_front_lead_speed=-100., np=np, md=model(), ff_lead=point(), ff_yRel=1.,
@@ -361,3 +361,73 @@ def test_cached_path_cannot_reuse_maturity_after_control_gap():
   t.observe(None, 51)
   assert not t._points
   assert t.path_lead(md, 0.)[0] is None
+
+
+@pytest.mark.parametrize('selected', [False, True])
+def test_small_lateral_jump_grace_only_for_selected_side(selected):
+  t = Tracker()
+  observe(t, [point(y=3.3)])
+  if selected:
+    t.finish(None, point(y=3.3), None, 0., True, 20)
+  t.observe(N(points=[point(y=2.45)]), 26)
+  assert t.stable(1) == selected
+  if selected:
+    # A second discontinuity inside the cooldown must still reset maturity.
+    t.observe(N(points=[point(y=3.3)]), 32)
+    assert not t.stable(1)
+
+
+@pytest.mark.parametrize('x,y,vr', [(15., 2.45, 0.), (10., 1.8, 0.), (10., 2.45, 2.)])
+def test_lateral_grace_does_not_hide_other_discontinuities(x, y, vr):
+  t = Tracker()
+  observe(t, [point(y=3.3)])
+  t.finish(None, point(y=3.3), None, 0., True, 20)
+  p = point(x=x, y=y)
+  p.vRel = vr
+  t.observe(N(points=[p]), 26)
+  assert not t.stable(1)
+
+
+def display_step_for_test():
+  import textwrap
+  path = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[1] / 'hyundaicanfd.py'))
+  source = path.read_text(encoding='utf8')
+  env = dict(H, CAR_MODEL_ID=3)
+  selector = next(n for n in ast.parse(source).body if isinstance(n, ast.ClassDef) and n.name == '_CcncRadarLaneSelector')
+  exec(compile(ast.Module(body=[selector], type_ignores=[]), str(path), 'exec'), env)
+  control = N(radar_display_tracker=Tracker(), radar_lane_selector=env['_CcncRadarLaneSelector']())
+  for side in ('ff', 'lf', 'rf'):
+    setattr(control, side + '_detect', N(apply=lambda v: 1))
+  env['create_ccnc_messages'] = control
+  start = source.index('          ff_lead = lf_lead = rf_lead = None')
+  end = source.index('          center_lane_offset =', start)
+  body = 'def step(md, CS, frame, v_ego_kph, a_ego_kph):\n  values = {}\n'
+  body += textwrap.indent(textwrap.dedent(source[start:end]), '  ')
+  body += '\n  return ff_lead, lf_lead, rf_lead\n'
+  exec(body, env)
+  return env['step']
+
+
+@pytest.mark.parametrize('edge,other,expected', [(3.4, False, (1, None, None)),
+                                                (6., False, (None, None, 1)),
+                                                (3.4, True, (2, None, None))])
+def test_front_boundary_bridge_yields_to_side_or_new_front(edge, other, expected):
+  step = display_step_for_test()
+  curve = lambda y: N(x=[0., 100.], y=[y, y])
+  md = model()
+  md.timestampEof = 1
+  md.laneLineProbs = [0., .9, .9, 0.]
+  md.laneLines = [curve(-5.), curve(-1.8), curve(1.8), curve(5.)]
+  md.roadEdges = [curve(-6.), curve(edge)]
+  for frame in range(0, 26, 5):
+    step(md, N(live_tracks=N(points=[point(y=-1.7)])), frame, 0., 0.)
+  points = [point(y=-2.)]
+  if other:
+    points.append(point(2, x=8., y=0.))
+  selected = step(md, N(live_tracks=N(points=points)), 30, 0., 0.)
+  assert tuple(p.trackId if p else None for p in selected) == expected
+  # Crossing farther than the bridge or losing the observation must not hold FF.
+  selected = step(md, N(live_tracks=N(points=[point(y=-2.3)])), 35, 0., 0.)
+  if edge == 3.4:
+    assert selected[0] is None
+  assert step(md, N(live_tracks=N(points=[])), 40, 0., 0.) == (None, None, None)

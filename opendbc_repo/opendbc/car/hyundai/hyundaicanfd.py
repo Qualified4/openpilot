@@ -43,6 +43,7 @@ class _CcncRadarDisplayTracker:
     self._points = ()
     self.selected = (None, None, None)
     self.positions = {}
+    self.lateral_grace = {}
     self.recent_selected = {}
     self.recent_front = {}
     self.lane_ready = True
@@ -116,6 +117,7 @@ class _CcncRadarDisplayTracker:
       self._points = ()
       self.selected = (None, None, None)
       self.positions.clear()
+      self.lateral_grace.clear()
       self.recent_selected.clear()
       self.recent_front.clear()
     self.last_frame = frame
@@ -138,10 +140,21 @@ class _CcncRadarDisplayTracker:
           first, last, n, _, (old_d, old_y, old_v) = previous
           dt = (frame - last) * 0.01
           if (0 < frame - last <= 15
-              and abs(p.dRel - old_d - old_v * dt) <= 1.0 + 2.0 * dt
-              and abs(p.yRel - old_y) <= 0.5 + 5.0 * dt):
-            start, count = first, n + 1
+              and abs(p.dRel - old_d - old_v * dt) <= 1.0 + 2.0 * dt):
+            dy = abs(yRel - old_y)
+            if dy <= 0.5 + 5.0 * dt:
+              start, count = first, n + 1
+            elif (p.trackId in self.selected[1:] and n >= 3 and last - first >= 15
+                  and dy <= 0.75 + 5.0 * dt and abs(vRel - old_v) <= 1.0
+                  and frame - self.lateral_grace.get(p.trackId, -1000) >= 30):
+              # One small lateral discontinuity may keep an established side target.
+              # Reset coordinate smoothing, not its selection eligibility.
+              start, count = first, n + 1
+              self.lateral_grace[p.trackId] = frame
+              self.positions.pop(p.trackId, None)
         current[p.trackId] = (start, frame, count, p, (p.dRel, p.yRel, p.vRel))
+    self.lateral_grace = {key: stamp for key, stamp in self.lateral_grace.items()
+                          if key in current and current[key][0] <= stamp}
     self.tracks = current
     self._points = tuple(points)  # Snapshot values before point objects are reused by the next RadarData.
     for history in (self.recent_selected, self.recent_front):
@@ -1675,6 +1688,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         try:
           ff_lead = lf_lead = rf_lead = None
           ff_yRel = lf_yRel = rf_yRel = 0
+          boundary_front = None
+          boundary_front_y = 0.0
 
           display_tracker = create_ccnc_messages.radar_display_tracker
           display_tracker.observe(CS.live_tracks, frame)
@@ -1716,6 +1731,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 거리 순위만 필요하므로 원본 좌표의 제곱거리로 비교합니다.
               dist_score = dRel * dRel + yRel * yRel
+
+              if (lead.trackId == display_tracker.selected[0]
+                  and display_tracker.recently_selected(lead.trackId, front_only=True)
+                  and velocity > min_front_lead_speed
+                  and right_inner_bound - 0.35 <= yRel <= left_inner_bound + 0.35):
+                boundary_front, boundary_front_y = lead, road_aligned_yRel
 
               # 2. [전방 주행 차선] - 외곽선/도로경계선 interp 4회 전부 생략
               if right_inner_bound <= yRel <= left_inner_bound:
@@ -1797,6 +1818,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   and not display_tracker.recently_selected(ff_lead.trackId, front_only=True)):
               # Weak lanes alone must not introduce a new unconfirmed front target.
               ff_lead = None
+
+          # Only bridge an empty slot; a real side transition or new FF wins immediately.
+          if (ff_lead is None and boundary_front is not None
+              and (lf_lead is None or lf_lead.trackId != boundary_front.trackId)
+              and (rf_lead is None or rf_lead.trackId != boundary_front.trackId)):
+            ff_lead, ff_yRel = boundary_front, boundary_front_y
+            ff_uses_lane = True
 
           # A retained FF must not also occupy a side slot during lane recovery.
           if ff_lead is not None:
