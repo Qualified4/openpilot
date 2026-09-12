@@ -1,6 +1,5 @@
 import time
 import math
-import bisect
 import copy
 import itertools
 import numpy as np
@@ -34,6 +33,41 @@ def _ccnc_valid_boundary(x, y):
           and all(math.isfinite(v) for v in x)
           and all(math.isfinite(v) for v in y)
           and all(a < b for a, b in zip(x, x[1:])))
+
+
+class _CcncRadarLaneSelector:
+  """Keep a usable reference lane until the other is clearly better for 0.3s."""
+  def __init__(self):
+    self.is_left = None
+    self.challenger_since = None
+    self.last_frame = None
+
+  def update(self, left_prob, right_prob, frame):
+    # frame is the 100Hz CarController counter, not the model frameId.
+    if self.last_frame is not None and (frame < self.last_frame or frame - self.last_frame > 100):
+      self.is_left = None
+      self.challenger_since = None
+    self.last_frame = frame
+    left_prob = left_prob if math.isfinite(left_prob) else 0.0
+    right_prob = right_prob if math.isfinite(right_prob) else 0.0
+    if max(left_prob, right_prob) < 0.1:
+      self.is_left = None
+      self.challenger_since = None
+      return False
+    preferred_left = left_prob > right_prob
+    current_prob = left_prob if self.is_left else right_prob
+    if self.is_left is None or current_prob < 0.1:
+      self.is_left = preferred_left
+      self.challenger_since = None
+    elif preferred_left != self.is_left and abs(left_prob - right_prob) >= 0.1:
+      if self.challenger_since is None:
+        self.challenger_since = frame
+      elif frame - self.challenger_since >= 30:
+        self.is_left = preferred_left
+        self.challenger_since = None
+    else:
+      self.challenger_since = None
+    return self.is_left
 
 
 def longitudinal_interlock_active(CS) -> bool:
@@ -1379,11 +1413,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           ff_lead = lf_lead = rf_lead = None
           ff_yRel = lf_yRel = rf_yRel = 0
 
-          selected_lane_is_left = False
-          selected_lane_prob = 0.0
-          if md is not None and len(md.laneLineProbs) >= 3:
-            selected_lane_is_left = md.laneLineProbs[1] > md.laneLineProbs[2]
-            selected_lane_prob = md.laneLineProbs[1] if selected_lane_is_left else md.laneLineProbs[2]
+          left_prob = right_prob = 0.0
+          if md is not None and len(md.laneLineProbs) >= 3 and len(md.laneLines) >= 3:
+            if _ccnc_valid_boundary(md.laneLines[1].x, md.laneLines[1].y):
+              left_prob = md.laneLineProbs[1]
+            if _ccnc_valid_boundary(md.laneLines[2].x, md.laneLines[2].y):
+              right_prob = md.laneLineProbs[2]
+          selected_lane_is_left = create_ccnc_messages.radar_lane_selector.update(left_prob, right_prob, frame)
+          selected_lane_prob = left_prob if selected_lane_is_left else right_prob
 
           # 차선 확률이 10% 이상일 때만 레이더 기반 전방 차량 표시를 갱신합니다.
           if CS.live_tracks is not None and selected_lane_prob >= 0.1:
@@ -1400,77 +1437,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             )
             selected_lane_y0 = selected_lane_y[0]
 
-            # --- 1. 0~40m 구간 3점으로 2차식 근사 ---
-            cut_idx = bisect.bisect_right(selected_lane_x, 40.0)
-
-            if cut_idx >= 3:
-              i0 = 0
-              i1 = cut_idx >> 1
-              i2 = cut_idx - 1
-            elif len(selected_lane_x) >= 3:
-              n = len(selected_lane_x)
-              i0 = 0
-              i1 = n >> 1
-              i2 = n - 1
-            else:
-              i0 = i1 = i2 = -1
-
-            if i0 >= 0:
-              x0, y0 = selected_lane_x[i0], selected_lane_y[i0]
-              x1, y1 = selected_lane_x[i1], selected_lane_y[i1]
-              x2, y2 = selected_lane_x[i2], selected_lane_y[i2]
-
-              # 3점 quadratic interpolation
-              denom = (x0 - x1) * (x0 - x2) * (x1 - x2)
-
-              if abs(denom) > 1e-5:
-                x0_sq = x0 * x0
-                x1_sq = x1 * x1
-                x2_sq = x2 * x2
-
-                poly_a = (
-                  x2 * (y1 - y0) +
-                  x1 * (y0 - y2) +
-                  x0 * (y2 - y1)
-                ) / denom
-
-                poly_b = (
-                  x2_sq * (y0 - y1) +
-                  x1_sq * (y2 - y0) +
-                  x0_sq * (y1 - y2)
-                ) / denom
-
-                poly_c = (
-                  x1 * x2 * (x1 - x2) * y0 +
-                  x2 * x0 * (x2 - x0) * y1 +
-                  x0 * x1 * (x0 - x1) * y2
-                ) / denom
-
-                # polynomial의 x=selected_lane_x[0] 위치를
-                # 실제 lane_y[0]에 맞추기 위한 기준값
-                poly_y0 = (
-                  (poly_a * x0 + poly_b) * x0 + poly_c
-                )
-              else:
-                poly_a = 0.0
-                poly_b = 0.0
-                poly_c = float(selected_lane_y0)
-                poly_y0 = selected_lane_y0
-            else:
-              poly_a = 0.0
-              poly_b = 0.0
-              poly_c = float(selected_lane_y0)
-              poly_y0 = selected_lane_y0
-
-            poly_offset = selected_lane_y0 - poly_y0
-
-            # 루프 외부 또는 함수 시작 지점에 상수 캐싱 권장
             interp = np.interp
             ms_to_kph = CV.MS_TO_KPH
-            # 거리 감쇄 구간: 40m까지는 raw_y 100% 신뢰 -> 70m 이상은 poly_y 100% 외삽
-            DREL_START = 40.0
-            DREL_END = 70.0
-            INV_DREL_RANGE = 1.0 / (DREL_END - DREL_START)
 
             has_left_outer = md.laneLineProbs[0] > 0.1 and _ccnc_valid_boundary(left_outer_x, left_outer_y)
             has_right_outer = md.laneLineProbs[3] > 0.1 and _ccnc_valid_boundary(right_outer_x, right_outer_y)
@@ -1478,51 +1446,48 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             has_left_edge = _ccnc_valid_boundary(left_road_edge_x, left_road_edge_y)
             has_right_edge = _ccnc_valid_boundary(right_road_edge_x, right_road_edge_y)
 
-            ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
+            # 여러 차로의 후보를 허용하되, 보정 후 횡거리 5.4m 밖의 측면 점은 선택하지 않습니다.
+            max_side_lateral = 5.4
+            ff_min_dist = lf_min_dist = rf_min_dist = math.inf
             min_front_lead_speed = -100 if a_ego_kph < -3 else interp(v_ego_kph, [30, 40, 100], [-100, 0, 20])
             min_side_lead_speed = interp(v_ego_kph, [0, 30, 100], [2, 10, 20])
             lowspeed_side_lead_speed = interp(v_ego_kph, [10, 40], [-1, 10])
 
             for lead in CS.live_tracks.points:
               dRel = lead.dRel
-              if (str(lead.radarSource) not in ("frontRadar", "scc") or dRel < 1
+              # 순정 SCC 선행차는 횡위치가 없으므로 개별 전방 레이더 점만 표시합니다.
+              if (str(lead.radarSource) != "frontRadar" or dRel < 1
                   or not all(math.isfinite(v) for v in (dRel, lead.yRel, lead.vRel, lead.vLead))):
                 continue
 
-              # 해당 거리에서의 원본 차선 y값
-              raw_y = interp(dRel, selected_lane_x, selected_lane_y)
-              # 2차식으로 계산한 차선 y값
-              poly_y = (poly_a * dRel + poly_b) * dRel + poly_c + poly_offset
-
-              # 거리 가중치
-              raw_dist_weight = (DREL_END - dRel) * INV_DREL_RANGE
-              dist_weight = 0.0 if raw_dist_weight < 0.0 else (1.0 if raw_dist_weight > 1.0 else raw_dist_weight)
-
-              # 차선 확률 + 거리 기반 블렌딩
-              weight = selected_lane_prob * dist_weight
-
-              lane_y_at_drel = weight * raw_y + (1.0 - weight) * poly_y
+              # 차선 보간값과 시작점의 차이로 도로의 휘어짐만 보정합니다.
+              lane_y_at_drel = interp(dRel, selected_lane_x, selected_lane_y)
               road_aligned_yRel = lead.yRel + (lane_y_at_drel - selected_lane_y0)
 
+              # 분류는 원본 레이더 좌표(좌측+)와 같은 좌표계의 차선 경계로 판단합니다.
               if selected_lane_is_left:
-                left_inner_bound = max(-lane_y_at_drel, 1.4)
-                right_inner_bound = min(-interp(dRel, right_inner_x, right_inner_y), -1.4)
+                left_inner_bound = -lane_y_at_drel
+                right_inner_bound = -interp(dRel, right_inner_x, right_inner_y)
               else:
-                left_inner_bound = max(-interp(dRel, left_inner_x, left_inner_y), 1.4)
-                right_inner_bound = min(-lane_y_at_drel, -1.4)
+                left_inner_bound = -interp(dRel, left_inner_x, left_inner_y)
+                right_inner_bound = -lane_y_at_drel
+              if (not math.isfinite(left_inner_bound) or not math.isfinite(right_inner_bound)
+                  or right_inner_bound >= left_inner_bound):
+                continue
 
-              dist_score = dRel # + abs(road_aligned_yRel)
+              # 거리 순위만 필요하므로 원본 좌표의 제곱거리로 비교합니다.
+              dist_score = dRel * dRel + lead.yRel * lead.yRel
 
               # 2. [전방 주행 차선] - 외곽선/도로경계선 interp 4회 전부 생략
-              if right_inner_bound <= road_aligned_yRel <= left_inner_bound:
+              if right_inner_bound <= lead.yRel <= left_inner_bound:
                 if dist_score < ff_min_dist:
                   velocity = lead.vLead * ms_to_kph
                   if velocity > min_front_lead_speed:
                     ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel
 
               # 3. [왼쪽 차선 차량] - 좌측 외곽/도로경계선만 지연 계산 (우측 2회 interp 생략)
-              elif left_inner_bound < road_aligned_yRel:
-                if dist_score < lf_min_dist:
+              elif left_inner_bound < lead.yRel:
+                if abs(road_aligned_yRel) <= max_side_lateral and dist_score < lf_min_dist:
                   velocity = lead.vLead * ms_to_kph
 
                   # Case A. 충분히 빠른 주행 차량: 차선 경계 검사 없이 즉시 선택
@@ -1540,12 +1505,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     if valid_left_bounds:
                       left_effective_bound = min(valid_left_bounds) - 0.25
                       # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
-                      if road_aligned_yRel < left_effective_bound and (left_effective_bound - left_inner_bound > 1.8):
+                      if lead.yRel < left_effective_bound and (left_effective_bound - left_inner_bound > 1.8):
                         lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
 
               # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
-              elif road_aligned_yRel < right_inner_bound:
-                if dist_score < rf_min_dist:
+              elif lead.yRel < right_inner_bound:
+                if abs(road_aligned_yRel) <= max_side_lateral and dist_score < rf_min_dist:
                   velocity = lead.vLead * ms_to_kph
 
                   # Case A. 충분히 빠른 주행 차량: 차선 경계 검사 없이 즉시 선택
@@ -1563,7 +1528,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     if valid_right_bounds:
                       right_effective_bound = max(valid_right_bounds) + 0.25
                       # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
-                      if road_aligned_yRel > right_effective_bound and (right_inner_bound - right_effective_bound > 1.8):
+                      if lead.yRel > right_effective_bound and (right_inner_bound - right_effective_bound > 1.8):
                         rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
 
           # 전방(FF) 차량 정보 업데이트
@@ -1573,12 +1538,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["FF_DETECT"] = CAR_MODEL_ID + 1 if ff_lead.vLead < 3 else create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
           else:
             values["FF_DETECT"] = 0 # 순정 디텍션 제거
+          # LF/RF 횡거리는 4m로 압축하지 않고 CAN 신호 범위(7-bit unsigned, 0.1m)만 제한합니다.
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
             if lf_lead.vLead * ms_to_kph < 5.0:
               lf_yRel = max(lf_yRel, 2.5)
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel) * 0.8
-            values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_curved_deadband(min(4, lf_yRel), 3, 0.9, 2))
+            values["LF_DETECT_LATERAL"] = float(np.clip(create_ccnc_messages.lf_lateral.apply(apply_curved_deadband(lf_yRel, 3, 0.9, 2)), 0.0, 12.7))
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           else:
             values["LF_DETECT"] = 0
@@ -1587,7 +1553,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             if rf_lead.vLead * ms_to_kph < 5.0:
               rf_yRel = min(rf_yRel, -2.5)
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel) * 0.8
-            values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_curved_deadband(min(4, -rf_yRel), 3, 0.9, 2))
+            values["RF_DETECT_LATERAL"] = float(np.clip(create_ccnc_messages.rf_lateral.apply(apply_curved_deadband(-rf_yRel, 3, 0.9, 2)), 0.0, 12.7))
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
           else:
             values["RF_DETECT"] = 0
@@ -1689,6 +1655,9 @@ create_ccnc_messages._is_lane_change_active = False
 create_ccnc_messages.draw_center = False
 create_ccnc_messages.hold_lane_escape_count = 0
 create_ccnc_messages.lane_phase_min = 10.0
+
+# 레이더 곡률 보정용 기준 차선 선택 상태
+create_ccnc_messages.radar_lane_selector = _CcncRadarLaneSelector()
 
 # 차선 노이즈 필터
 create_ccnc_messages.last_known_lane_width = 3.0 # Default lane width

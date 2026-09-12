@@ -203,7 +203,6 @@ class CarState(CarStateBase):
     self.blinkers_alt = None
     self.doors_seatbelts = None
     self.cruise_buttons_alt2 = None
-    self.radar_state = None
     self.live_tracks = None
 
     # On some cars, CLU15->CF_Clu_VehicleSpeed can oscillate faster than the dash updates. Sample at 5 Hz
