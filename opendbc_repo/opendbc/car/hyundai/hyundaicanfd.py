@@ -32,7 +32,7 @@ def _ccnc_valid_boundary(x, y):
   return (len(x) >= 2 and len(x) == len(y)
           and all(math.isfinite(v) for v in x)
           and all(math.isfinite(v) for v in y)
-          and all(a < b for a, b in zip(x, x[1:])))
+          and all(x[i - 1] < x[i] for i in range(1, len(x))))
 
 
 class _CcncRadarLaneSelector:
@@ -1426,8 +1426,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           if CS.live_tracks is not None and selected_lane_prob >= 0.1:
             lane_lines = md.laneLines
             road_edges = md.roadEdges
-            left_inner_x, left_inner_y = lane_lines[1].x, lane_lines[1].y
-            right_inner_x, right_inner_y = lane_lines[2].x, lane_lines[2].y
+            # Cap’n Proto 목록을 보간 호출마다 변환하지 않도록 한 번만 배열로 만듭니다.
+            left_inner_x = np.asarray(lane_lines[1].x, dtype=np.float64)
+            left_inner_y = np.asarray(lane_lines[1].y, dtype=np.float64)
+            right_inner_x = np.asarray(lane_lines[2].x, dtype=np.float64)
+            right_inner_y = np.asarray(lane_lines[2].y, dtype=np.float64)
             left_outer_x, left_outer_y = lane_lines[0].x, lane_lines[0].y
             right_outer_x, right_outer_y = lane_lines[3].x, lane_lines[3].y
             left_road_edge_x, left_road_edge_y = road_edges[0].x, road_edges[0].y
@@ -1446,6 +1449,19 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             has_left_edge = _ccnc_valid_boundary(left_road_edge_x, left_road_edge_y)
             has_right_edge = _ccnc_valid_boundary(right_road_edge_x, right_road_edge_y)
 
+            if has_left_outer:
+              left_outer_x = np.asarray(left_outer_x, dtype=np.float64)
+              left_outer_y = np.asarray(left_outer_y, dtype=np.float64)
+            if has_right_outer:
+              right_outer_x = np.asarray(right_outer_x, dtype=np.float64)
+              right_outer_y = np.asarray(right_outer_y, dtype=np.float64)
+            if has_left_edge:
+              left_road_edge_x = np.asarray(left_road_edge_x, dtype=np.float64)
+              left_road_edge_y = np.asarray(left_road_edge_y, dtype=np.float64)
+            if has_right_edge:
+              right_road_edge_x = np.asarray(right_road_edge_x, dtype=np.float64)
+              right_road_edge_y = np.asarray(right_road_edge_y, dtype=np.float64)
+
             # 여러 차로의 후보를 허용하되, 보정 후 횡거리 5.4m 밖의 측면 점은 선택하지 않습니다.
             max_side_lateral = 5.4
             ff_min_dist = lf_min_dist = rf_min_dist = math.inf
@@ -1455,14 +1471,21 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
             for lead in CS.live_tracks.points:
               dRel = lead.dRel
+              yRel, vRel, vLead = lead.yRel, lead.vRel, lead.vLead
               # 순정 SCC 선행차는 횡위치가 없으므로 개별 전방 레이더 점만 표시합니다.
               if (str(lead.radarSource) != "frontRadar" or dRel < 1
-                  or not all(math.isfinite(v) for v in (dRel, lead.yRel, lead.vRel, lead.vLead))):
+                  or not all(math.isfinite(v) for v in (dRel, yRel, vRel, vLead))):
+                continue
+
+              velocity = vLead * ms_to_kph
+              # FF와 저속 측면 예외까지 모두 탈락하는 점은 보간 전에 제외합니다.
+              if not (velocity > min_front_lead_speed or velocity > min_side_lead_speed
+                      or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
                 continue
 
               # 차선 보간값과 시작점의 차이로 도로의 휘어짐만 보정합니다.
               lane_y_at_drel = interp(dRel, selected_lane_x, selected_lane_y)
-              road_aligned_yRel = lead.yRel + (lane_y_at_drel - selected_lane_y0)
+              road_aligned_yRel = yRel + (lane_y_at_drel - selected_lane_y0)
 
               # 분류는 원본 레이더 좌표(좌측+)와 같은 좌표계의 차선 경계로 판단합니다.
               if selected_lane_is_left:
@@ -1476,26 +1499,21 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                 continue
 
               # 거리 순위만 필요하므로 원본 좌표의 제곱거리로 비교합니다.
-              dist_score = dRel * dRel + lead.yRel * lead.yRel
+              dist_score = dRel * dRel + yRel * yRel
 
               # 2. [전방 주행 차선] - 외곽선/도로경계선 interp 4회 전부 생략
-              if right_inner_bound <= lead.yRel <= left_inner_bound:
+              if right_inner_bound <= yRel <= left_inner_bound:
                 if dist_score < ff_min_dist:
-                  velocity = lead.vLead * ms_to_kph
                   if velocity > min_front_lead_speed:
                     ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel
 
               # 3. [왼쪽 차선 차량] - 좌측 외곽/도로경계선만 지연 계산 (우측 2회 interp 생략)
-              elif left_inner_bound < lead.yRel:
+              elif left_inner_bound < yRel:
                 if abs(road_aligned_yRel) <= max_side_lateral and dist_score < lf_min_dist:
-                  velocity = lead.vLead * ms_to_kph
 
-                  # Case A. 충분히 빠른 주행 차량: 차선 경계 검사 없이 즉시 선택
-                  if velocity > min_side_lead_speed:
-                    lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
-
-                  # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
-                  elif dRel < 30 and velocity > lowspeed_side_lead_speed:
+                  # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
+                  if (velocity > min_side_lead_speed
+                      or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
                     valid_left_bounds = []
                     if has_left_outer and left_outer_x[0] <= dRel <= left_outer_x[-1]:
                       valid_left_bounds.append(-interp(dRel, left_outer_x, left_outer_y))
@@ -1505,20 +1523,16 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     if valid_left_bounds:
                       left_effective_bound = min(valid_left_bounds) - 0.25
                       # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
-                      if lead.yRel < left_effective_bound and (left_effective_bound - left_inner_bound > 1.8):
+                      if yRel < left_effective_bound and (left_effective_bound - left_inner_bound > 1.8):
                         lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
 
               # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
-              elif lead.yRel < right_inner_bound:
+              elif yRel < right_inner_bound:
                 if abs(road_aligned_yRel) <= max_side_lateral and dist_score < rf_min_dist:
-                  velocity = lead.vLead * ms_to_kph
 
-                  # Case A. 충분히 빠른 주행 차량: 차선 경계 검사 없이 즉시 선택
-                  if velocity > min_side_lead_speed:
-                    rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
-
-                  # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
-                  elif dRel < 30 and velocity > lowspeed_side_lead_speed:
+                  # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
+                  if (velocity > min_side_lead_speed
+                      or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
                     valid_right_bounds = []
                     if has_right_outer and right_outer_x[0] <= dRel <= right_outer_x[-1]:
                       valid_right_bounds.append(-interp(dRel, right_outer_x, right_outer_y))
@@ -1528,7 +1542,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     if valid_right_bounds:
                       right_effective_bound = max(valid_right_bounds) + 0.25
                       # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
-                      if lead.yRel > right_effective_bound and (right_inner_bound - right_effective_bound > 1.8):
+                      if yRel > right_effective_bound and (right_inner_bound - right_effective_bound > 1.8):
                         rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
 
           # 전방(FF) 차량 정보 업데이트
