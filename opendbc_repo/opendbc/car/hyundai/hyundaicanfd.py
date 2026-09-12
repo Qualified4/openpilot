@@ -35,31 +35,125 @@ def _ccnc_valid_boundary(x, y):
           and all(x[i - 1] < x[i] for i in range(1, len(x))))
 
 
-class _CcncRadarLaneMarginTracker:
-  """Require 0.3s of continuous motion before extending the outer-lane boundary."""
+class _CcncRadarDisplayTracker:
+  """Observation continuity and lane-free fallback for the CCNC display only."""
   def __init__(self):
-    self.tracks = {}
+    self.live = None
     self.last_frame = -1
-    self.cleanup_frame = -1
+    self.tracks = {}
+    self.selected = (None, None, None)
+    self.positions = {}
+    self.lane_ready = True
 
-  def update(self, track_id, d_rel, y_rel, v_rel, frame):
-    if frame < self.last_frame:
+  def observe(self, live, frame):
+    if frame < self.last_frame or frame - self.last_frame > 15:
+      self.live = None
+      self.lane_ready = True
+    if frame < self.last_frame or frame - self.last_frame > 15 or live is None:
       self.tracks.clear()
-      self.cleanup_frame = frame
-    if frame - self.cleanup_frame >= 100:
-      self.tracks = {key: value for key, value in self.tracks.items() if frame - value[1] <= 10}
-      self.cleanup_frame = frame
+      self.selected = (None, None, None)
+      self.positions.clear()
     self.last_frame = frame
-    previous = self.tracks.get(track_id)
-    start_frame = frame
-    if previous is not None:
-      start, last, old_d, old_y, old_v = previous
-      dt = (frame - last) * 0.01
-      if (0 <= frame - last <= 10 and abs(d_rel - (old_d + old_v * dt)) <= 3.0
-          and abs(y_rel - old_y) <= 3.0):
-        start_frame = start
-    self.tracks[track_id] = (start_frame, frame, d_rel, y_rel, v_rel)
-    return frame - start_frame >= 30
+    if live is self.live:
+      return
+    self.live = live  # card keeps the same RadarData object until the next radar update.
+    current = {}
+    if live is not None:
+      for p in live.points:
+        if (str(p.radarSource) != "frontRadar" or p.dRel < 1
+            or not all(math.isfinite(v) for v in (p.dRel, p.yRel, p.vRel, p.vLead))):
+          continue
+        start, count = frame, 1
+        previous = self.tracks.get(p.trackId)
+        if previous is not None:
+          first, last, n, _, (old_d, old_y, old_v) = previous
+          dt = (frame - last) * 0.01
+          if (0 < frame - last <= 15
+              and abs(p.dRel - old_d - old_v * dt) <= 1.0 + 2.0 * dt
+              and abs(p.yRel - old_y) <= 0.5 + 5.0 * dt):
+            start, count = first, n + 1
+        current[p.trackId] = (start, frame, count, p, (p.dRel, p.yRel, p.vRel))
+    self.tracks = current
+    self.positions = {key: value for key, value in self.positions.items()
+                      if key in current and value[0] == current[key][0]}
+
+  def stable(self, track_id, frames=15):
+    entry = self.tracks.get(track_id)
+    return entry is not None and entry[2] >= 3 and entry[1] - entry[0] >= frames
+
+  def lane_available(self, probability, frame):
+    if probability < 0.1:
+      self.lane_ready = False
+    elif probability >= 0.3:
+      # Reliable geometry decides the slot immediately; smooth only the position.
+      self.lane_ready = True
+    return self.lane_ready
+
+  def path_lead(self, md, minimum_speed):
+    if md is None:
+      return None, 0.0
+    xs = np.asarray(md.position.x, dtype=np.float64)
+    ys = np.asarray(md.position.y, dtype=np.float64)
+    if len(xs) != len(ys):
+      return None, 0.0
+    # A turning path can double back in x further ahead; use its forward-only prefix.
+    stop = next((i for i in range(1, len(xs)) if xs[i] <= xs[i - 1]), len(xs))
+    xs, ys = xs[:stop], ys[:stop]
+    if not _ccnc_valid_boundary(xs, ys):
+      return None, 0.0
+    best, best_y, score = None, 0.0, math.inf
+    for track_id, (_, _, _, p, _) in self.tracks.items():
+      if not self.stable(track_id) or p.vLead * CV.MS_TO_KPH <= minimum_speed:
+        continue
+      # Do not extrapolate a short/invalid model path to distant radar reflections.
+      if not max(1.0, xs[0]) <= p.dRel <= min(80.0, xs[-1]):
+        continue
+      aligned = p.yRel + float(np.interp(p.dRel, xs, ys) - ys[0])
+      retained = track_id in self.selected
+      # Vision is model-frame (right positive); radar is left positive.
+      # The camera/radar longitudinal origin offset is 1.52m.
+      vision_match = any(
+        lead.prob >= (0.3 if retained else 0.5) and len(lead.x) and len(lead.y) and len(lead.v)
+        and all(math.isfinite(v) for v in (lead.x[0], lead.y[0], lead.v[0]))
+        and abs(p.dRel - (lead.x[0] - 1.52)) <= max(8.0 if retained else 6.0, p.dRel * 0.2)
+        and abs(p.yRel + lead.y[0]) <= 1.5
+        and abs(p.vLead - lead.v[0]) <= 5.0
+        for lead in (md.leadsV3[i] for i in range(min(1, len(md.leadsV3)))))
+      corridor = 1.8 if retained else 1.2
+      if not ((abs(aligned) <= corridor and (retained or vision_match))
+              or (retained and vision_match and abs(aligned) <= 4.5)):
+        continue
+      distance = p.dRel * p.dRel + p.yRel * p.yRel
+      if distance < score:
+        best, best_y, score = p, aligned, distance
+    return best, best_y
+
+  def filter_position(self, point, aligned_y, reference, frame):
+    """Keep a physical track's filters across slots, before CAN sign/deadband mapping."""
+    track_id = point.trackId
+    observation = self.tracks.get(track_id)
+    birth = observation[0] if observation is not None else frame
+    previous = self.positions.get(track_id)
+    if previous is None or previous[0] != birth or not 0 <= frame - previous[1] <= 15:
+      distance = NoiseFilter(3, point.dRel, [0.3, 0.9], [1.0, 4.0])
+      lateral = NoiseFilter(3, aligned_y, 0.3, 0.6)
+      bias = 0.0
+    else:
+      _, last, old_reference, old_raw, old_input, bias, distance, lateral = previous
+      if reference != old_reference:
+        # Cancel the reference change, while retaining the radar's actual lateral motion.
+        bias = old_input + (point.yRel - old_raw) - aligned_y
+      step = (frame - last) * 0.03
+      bias = math.copysign(max(0.0, abs(bias) - step), bias)
+    filtered_input = aligned_y + bias
+    self.positions[track_id] = (birth, frame, reference, point.yRel, filtered_input, bias, distance, lateral)
+    return distance.apply(point.dRel), lateral.apply(filtered_input)
+
+  def finish(self, ff, lf, rf, ff_y, lane_mode, frame):
+    ids = tuple(p.trackId if p is not None else None for p in (ff, lf, rf))
+    changed = tuple(a != b for a, b in zip(ids, self.selected))
+    self.selected = ids
+    return ff_y, changed
 
 
 class _CcncRadarLaneSelector:
@@ -1440,6 +1534,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           ff_lead = lf_lead = rf_lead = None
           ff_yRel = lf_yRel = rf_yRel = 0
 
+          display_tracker = create_ccnc_messages.radar_display_tracker
+          display_tracker.observe(CS.live_tracks, frame)
           left_prob = right_prob = 0.0
           if md is not None and len(md.laneLineProbs) >= 3 and len(md.laneLines) >= 3:
             if _ccnc_valid_boundary(md.laneLines[1].x, md.laneLines[1].y):
@@ -1449,8 +1545,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           selected_lane_is_left = create_ccnc_messages.radar_lane_selector.update(left_prob, right_prob, frame)
           selected_lane_prob = left_prob if selected_lane_is_left else right_prob
 
-          # 차선 확률이 10% 이상일 때만 레이더 기반 전방 차량 표시를 갱신합니다.
-          if CS.live_tracks is not None and selected_lane_prob >= 0.1:
+          # 차선이 유효하면 기존 분류를 사용하고, FF는 차선 소실 시 경로/영상으로 보완합니다.
+          lane_mode = selected_lane_prob >= 0.1
+          ff_lane_mode = display_tracker.lane_available(selected_lane_prob, frame)
+          if CS.live_tracks is not None and lane_mode:
             lane_lines = md.laneLines
             road_edges = md.roadEdges
             # Cap’n Proto 목록을 보간 호출마다 변환하지 않도록 한 번만 배열로 만듭니다.
@@ -1512,8 +1610,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # Only stable moving tracks may use the additional outer-lane allowance.
               allow_lane_margin = (velocity > min_side_lead_speed
-                                   and create_ccnc_messages.radar_lane_margin_tracker.update(
-                                     lead.trackId, dRel, yRel, vRel, frame))
+                                   and display_tracker.stable(lead.trackId, 30))
 
               # 차선 보간값과 시작점의 차이로 도로의 휘어짐만 보정합니다.
               lane_y_at_drel = interp(dRel, selected_lane_x, selected_lane_y)
@@ -1541,13 +1638,16 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 3. [왼쪽 차선 차량] - 좌측 외곽/도로경계선만 지연 계산 (우측 2회 interp 생략)
               elif left_inner_bound < yRel:
-                if abs(road_aligned_yRel) <= max_side_lateral and dist_score < lf_min_dist:
+                if (display_tracker.stable(lead.trackId)
+                    and abs(road_aligned_yRel) <= max_side_lateral and dist_score < lf_min_dist):
 
                   # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
                   if (velocity > min_side_lead_speed
                       or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
                     # Expand the outer lane for moving candidates, keeping road-edge clearance.
                     lane_margin = 0.75 if allow_lane_margin else -0.25
+                    if lead.trackId == display_tracker.selected[1]:
+                      lane_margin += 0.3
                     valid_left_bounds = []
                     left_effective_bound = math.inf
                     if has_left_outer and left_outer_x[0] <= dRel <= left_outer_x[-1]:
@@ -1567,13 +1667,16 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
               # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
               elif yRel < right_inner_bound:
-                if abs(road_aligned_yRel) <= max_side_lateral and dist_score < rf_min_dist:
+                if (display_tracker.stable(lead.trackId)
+                    and abs(road_aligned_yRel) <= max_side_lateral and dist_score < rf_min_dist):
 
                   # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
                   if (velocity > min_side_lead_speed
                       or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
                     # Expand the outer lane for moving candidates, keeping road-edge clearance.
                     lane_margin = 0.75 if allow_lane_margin else -0.25
+                    if lead.trackId == display_tracker.selected[2]:
+                      lane_margin += 0.3
                     valid_right_bounds = []
                     right_effective_bound = -math.inf
                     if has_right_outer and right_outer_x[0] <= dRel <= right_outer_x[-1]:
@@ -1591,29 +1694,47 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                       if yRel > right_effective_bound and (right_inner_bound - right_width_bound > 1.8):
                         rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
 
+          if CS.live_tracks is not None and not ff_lane_mode:
+            minimum_speed = -100 if a_ego_kph < -3 else np.interp(v_ego_kph, [30, 40, 100], [-100, 0, 20])
+            ff_lead, ff_yRel = display_tracker.path_lead(md, minimum_speed)
+
+          # A retained FF must not also occupy a side slot during lane recovery.
+          if ff_lead is not None:
+            if lf_lead is not None and lf_lead.trackId == ff_lead.trackId:
+              lf_lead = None
+            if rf_lead is not None and rf_lead.trackId == ff_lead.trackId:
+              rf_lead = None
+          # Shared physical coordinates and filter history follow the ID across LF/FF/RF.
+          filtered_positions = []
+          for point, aligned, is_lane in ((ff_lead, ff_yRel, ff_lane_mode),
+                                          (lf_lead, lf_yRel, True), (rf_lead, rf_yRel, True)):
+            reference = ("lane", selected_lane_is_left) if is_lane else ("path", False)
+            filtered_positions.append(display_tracker.filter_position(point, aligned, reference, frame)
+                                      if point is not None else (0.0, 0.0))
+          ff_yRel = filtered_positions[0][1]
+          lf_yRel = float(np.clip(filtered_positions[1][1], -5.4, 5.4))
+          rf_yRel = float(np.clip(filtered_positions[2][1], -5.4, 5.4))
+          ff_yRel, changed_tracks = display_tracker.finish(ff_lead, lf_lead, rf_lead, ff_yRel, ff_lane_mode, frame)
+
           # 전방(FF) 차량 정보 업데이트
           if ff_lead:
-            values["FF_DISTANCE"] = create_ccnc_messages.ff_distance.apply(ff_lead.dRel) * 0.8
-            values["FF_LATERAL"] = create_ccnc_messages.ff_lateral.apply(apply_curved_deadband(-ff_yRel, 0, 0.7, 1))
+            values["FF_DISTANCE"] = filtered_positions[0][0] * 0.8
+            values["FF_LATERAL"] = apply_curved_deadband(-ff_yRel, 0, 0.7, 1)
             values["FF_DETECT"] = CAR_MODEL_ID + 1 if ff_lead.vLead < 3 else create_ccnc_messages.ff_detect.apply(ff_lead.vRel)
           else:
             values["FF_DETECT"] = 0 # 순정 디텍션 제거
           # LF/RF 횡거리는 4m로 압축하지 않고 CAN 신호 범위(7-bit unsigned, 0.1m)만 제한합니다.
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
-            if lf_lead.vLead * ms_to_kph < 5.0:
-              lf_yRel = max(lf_yRel, 2.5)
-            values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel) * 0.8
-            values["LF_DETECT_LATERAL"] = float(np.clip(create_ccnc_messages.lf_lateral.apply(apply_curved_deadband(lf_yRel, 3, 0.9, 2)), 0.0, 12.7))
+            values["LF_DETECT_DISTANCE"] = filtered_positions[1][0] * 0.8
+            values["LF_DETECT_LATERAL"] = float(np.clip(apply_curved_deadband(lf_yRel, 3, 0.9, 2), 0.0, 12.7))
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           else:
             values["LF_DETECT"] = 0
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
-            if rf_lead.vLead * ms_to_kph < 5.0:
-              rf_yRel = min(rf_yRel, -2.5)
-            values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel) * 0.8
-            values["RF_DETECT_LATERAL"] = float(np.clip(create_ccnc_messages.rf_lateral.apply(apply_curved_deadband(-rf_yRel, 3, 0.9, 2)), 0.0, 12.7))
+            values["RF_DETECT_DISTANCE"] = filtered_positions[2][0] * 0.8
+            values["RF_DETECT_LATERAL"] = float(np.clip(apply_curved_deadband(-rf_yRel, 3, 0.9, 2), 0.0, 12.7))
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
           else:
             values["RF_DETECT"] = 0
@@ -1718,7 +1839,7 @@ create_ccnc_messages.lane_phase_min = 10.0
 
 # 레이더 곡률 보정용 기준 차선 선택 상태
 create_ccnc_messages.radar_lane_selector = _CcncRadarLaneSelector()
-create_ccnc_messages.radar_lane_margin_tracker = _CcncRadarLaneMarginTracker()
+create_ccnc_messages.radar_display_tracker = _CcncRadarDisplayTracker()
 
 # 차선 노이즈 필터
 create_ccnc_messages.last_known_lane_width = 3.0 # Default lane width
@@ -1726,12 +1847,6 @@ create_ccnc_messages.l_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2) # 3-frame m
 create_ccnc_messages.r_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2) # 3-frame median, 1.5 initial, 0.2 alpha
 
 # 차량 거리 필터
-create_ccnc_messages.ff_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0]) # 3-frame median, 0 initial, adaptive alpha
-create_ccnc_messages.lf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0]) # 3-frame median, 0 initial, adaptive alpha
-create_ccnc_messages.rf_distance = NoiseFilter(3, 0, alpha_range=[0.3, 0.9], error_range=[1.0, 4.0]) # 3-frame median, 0 initial, adaptive alpha
-create_ccnc_messages.ff_lateral = NoiseFilter(3, 0, alpha_range=0.3, error_range=0.6) # 3-frame median, 0 initial, adaptive alpha
-create_ccnc_messages.lf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.6) # 3-frame median, 3 initial, adaptive alpha
-create_ccnc_messages.rf_lateral = NoiseFilter(3, 3, alpha_range=0.3, error_range=0.6) # 3-frame median, 3 initial, adaptive alpha
 create_ccnc_messages.ff_detect = ThresholdTracker(bounds=(2, -1), states=(CAR_MODEL_ID, CAR_MODEL_ID + 1))
 create_ccnc_messages.lf_detect = ThresholdTracker(bounds=(2, -1), states=(CAR_MODEL_ID, CAR_MODEL_ID + 1))
 create_ccnc_messages.rf_detect = ThresholdTracker(bounds=(2, -1), states=(CAR_MODEL_ID, CAR_MODEL_ID + 1))
