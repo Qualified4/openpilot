@@ -28,6 +28,14 @@ _MODEL_ID_MAP = {0: 1, 1: 3, 2: 5, 3: 7, 4: 9, 5: 11, 6: 13}
 CAR_MODEL_ID = _MODEL_ID_MAP.get(CAR_MODEL_TYPE, 1)
 
 
+def _ccnc_valid_boundary(x, y):
+  # Confidence can fluctuate while the boundary geometry remains useful for display.
+  return (len(x) >= 2 and len(x) == len(y)
+          and all(math.isfinite(v) for v in x)
+          and all(math.isfinite(v) for v in y)
+          and all(a < b for a, b in zip(x, x[1:])))
+
+
 def longitudinal_interlock_active(CS) -> bool:
   return CS.out.brakeHoldActive or CS.out.parkingBrake
 
@@ -1464,10 +1472,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             DREL_END = 70.0
             INV_DREL_RANGE = 1.0 / (DREL_END - DREL_START)
 
-            has_left_outer = md.laneLineProbs[0] > 0.1
-            has_left_edge = md.roadEdgeStds[0] < 2.0
-            has_right_outer = md.laneLineProbs[3] > 0.1
-            has_right_edge = md.roadEdgeStds[1] < 2.0
+            has_left_outer = md.laneLineProbs[0] > 0.1 and _ccnc_valid_boundary(left_outer_x, left_outer_y)
+            has_right_outer = md.laneLineProbs[3] > 0.1 and _ccnc_valid_boundary(right_outer_x, right_outer_y)
+            # HUD와 같이 roadEdgeStds로 경계를 버리지 않고 실제 좌표를 사용합니다.
+            has_left_edge = _ccnc_valid_boundary(left_road_edge_x, left_road_edge_y)
+            has_right_edge = _ccnc_valid_boundary(right_road_edge_x, right_road_edge_y)
 
             ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
             min_front_lead_speed = -100 if a_ego_kph < -3 else interp(v_ego_kph, [30, 40, 100], [-100, 0, 20])
@@ -1528,9 +1537,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
                     elif dRel < 30 and velocity > lowspeed_side_lead_speed:
                       valid_left_bounds = []
-                      if has_left_outer:
+                      if has_left_outer and left_outer_x[0] <= dRel <= left_outer_x[-1]:
                         valid_left_bounds.append(-interp(dRel, left_outer_x, left_outer_y))
-                      if has_left_edge:
+                      if has_left_edge and left_road_edge_x[0] <= dRel <= left_road_edge_x[-1]:
                         valid_left_bounds.append(-interp(dRel, left_road_edge_x, left_road_edge_y))
 
                       if valid_left_bounds:
@@ -1551,9 +1560,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     # Case B. 저속/정지 차량: 유효 차로폭(> 1.8m) 및 도로 경계선 엄격 검사
                     elif dRel < 30 and velocity > lowspeed_side_lead_speed:
                       valid_right_bounds = []
-                      if has_right_outer:
+                      if has_right_outer and right_outer_x[0] <= dRel <= right_outer_x[-1]:
                         valid_right_bounds.append(-interp(dRel, right_outer_x, right_outer_y))
-                      if has_right_edge:
+                      if has_right_edge and right_road_edge_x[0] <= dRel <= right_road_edge_x[-1]:
                         valid_right_bounds.append(-interp(dRel, right_road_edge_x, right_road_edge_y))
 
                       if valid_right_bounds:
