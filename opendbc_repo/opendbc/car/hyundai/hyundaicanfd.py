@@ -1371,8 +1371,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           ff_lead = lf_lead = rf_lead = None
           ff_yRel = lf_yRel = rf_yRel = 0
 
-          # 레이더 정보 갱신
-          if CS.radar_state:
+          selected_lane_is_left = False
+          selected_lane_prob = 0.0
+          if md is not None and len(md.laneLineProbs) >= 3:
+            selected_lane_is_left = md.laneLineProbs[1] > md.laneLineProbs[2]
+            selected_lane_prob = md.laneLineProbs[1] if selected_lane_is_left else md.laneLineProbs[2]
+
+          # 차선 확률이 10% 이상일 때만 레이더 기반 전방 차량 표시를 갱신합니다.
+          if CS.radar_state and selected_lane_prob >= 0.1:
             lane_lines = md.laneLines
             road_edges = md.roadEdges
             left_inner_x, left_inner_y = lane_lines[1].x, lane_lines[1].y
@@ -1381,9 +1387,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             right_outer_x, right_outer_y = lane_lines[3].x, lane_lines[3].y
             left_road_edge_x, left_road_edge_y = road_edges[0].x, road_edges[0].y
             right_road_edge_x, right_road_edge_y = road_edges[1].x, road_edges[1].y
-            selected_lane_is_left = md.laneLineProbs[1] > md.laneLineProbs[2]
-            selected_lane_x, selected_lane_y, selected_lane_prob = (
-              (left_inner_x, left_inner_y, md.laneLineProbs[1]) if selected_lane_is_left else (right_inner_x, right_inner_y, md.laneLineProbs[2])
+            selected_lane_x, selected_lane_y = (
+              (left_inner_x, left_inner_y) if selected_lane_is_left else (right_inner_x, right_inner_y)
             )
             selected_lane_y0 = selected_lane_y[0]
 
@@ -1459,9 +1464,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             DREL_END = 70.0
             INV_DREL_RANGE = 1.0 / (DREL_END - DREL_START)
 
-            has_left_outer = md.laneLineProbs[1] > 0.1
+            has_left_outer = md.laneLineProbs[0] > 0.1
             has_left_edge = md.roadEdgeStds[0] < 2.0
-            has_right_outer = md.laneLineProbs[2] > 0.1
+            has_right_outer = md.laneLineProbs[3] > 0.1
             has_right_edge = md.roadEdgeStds[1] < 2.0
 
             ff_min_dist = lf_min_dist = rf_min_dist = 1000.0
@@ -1571,6 +1576,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LF_DETECT_DISTANCE"] = create_ccnc_messages.lf_distance.apply(lf_lead.dRel) * 0.8
             values["LF_DETECT_LATERAL"] = create_ccnc_messages.lf_lateral.apply(apply_curved_deadband(min(4, lf_yRel), 3, 0.9, 2))
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
+          else:
+            values["LF_DETECT"] = 0
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
             if rf_lead.vLead * ms_to_kph < 5.0:
@@ -1578,6 +1585,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["RF_DETECT_DISTANCE"] = create_ccnc_messages.rf_distance.apply(rf_lead.dRel) * 0.8
             values["RF_DETECT_LATERAL"] = create_ccnc_messages.rf_lateral.apply(apply_curved_deadband(max(-4, -rf_yRel), 3, 0.9, 2))
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
+          else:
+            values["RF_DETECT"] = 0
 
           center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
 
