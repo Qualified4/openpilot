@@ -1744,7 +1744,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     if math.isfinite(edge_left_y):
                       edge_bound = -edge_left_y
                       left_width_bound = min(left_width_bound, edge_bound)
-                      left_effective_bound = min(left_effective_bound, edge_bound - 0.25)
+                      left_effective_bound = min(left_effective_bound, edge_bound - 0.95)
 
                     if left_width_bound != math.inf:
                       # Preserve the original width check before expanding candidate acceptance.
@@ -1773,7 +1773,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     if math.isfinite(edge_right_y):
                       edge_bound = -edge_right_y
                       right_width_bound = max(right_width_bound, edge_bound)
-                      right_effective_bound = max(right_effective_bound, edge_bound + 0.25)
+                      right_effective_bound = max(right_effective_bound, edge_bound + 0.95)
 
                     if right_width_bound != -math.inf:
                       # Preserve the original width check before expanding candidate acceptance.
