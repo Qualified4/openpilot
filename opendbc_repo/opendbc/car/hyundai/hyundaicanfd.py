@@ -35,6 +35,33 @@ def _ccnc_valid_boundary(x, y):
           and all(x[i - 1] < x[i] for i in range(1, len(x))))
 
 
+class _CcncRadarLaneMarginTracker:
+  """Require 0.3s of continuous motion before extending the outer-lane boundary."""
+  def __init__(self):
+    self.tracks = {}
+    self.last_frame = -1
+    self.cleanup_frame = -1
+
+  def update(self, track_id, d_rel, y_rel, v_rel, frame):
+    if frame < self.last_frame:
+      self.tracks.clear()
+      self.cleanup_frame = frame
+    if frame - self.cleanup_frame >= 100:
+      self.tracks = {key: value for key, value in self.tracks.items() if frame - value[1] <= 10}
+      self.cleanup_frame = frame
+    self.last_frame = frame
+    previous = self.tracks.get(track_id)
+    start_frame = frame
+    if previous is not None:
+      start, last, old_d, old_y, old_v = previous
+      dt = (frame - last) * 0.01
+      if (0 <= frame - last <= 10 and abs(d_rel - (old_d + old_v * dt)) <= 3.0
+          and abs(y_rel - old_y) <= 3.0):
+        start_frame = start
+    self.tracks[track_id] = (start_frame, frame, d_rel, y_rel, v_rel)
+    return frame - start_frame >= 30
+
+
 class _CcncRadarLaneSelector:
   """Keep a usable reference lane until the other is clearly better for 0.3s."""
   def __init__(self):
@@ -1483,6 +1510,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                       or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
                 continue
 
+              # Only stable moving tracks may use the additional outer-lane allowance.
+              allow_lane_margin = (velocity > min_side_lead_speed
+                                   and create_ccnc_messages.radar_lane_margin_tracker.update(
+                                     lead.trackId, dRel, yRel, vRel, frame))
+
               # 차선 보간값과 시작점의 차이로 도로의 휘어짐만 보정합니다.
               lane_y_at_drel = interp(dRel, selected_lane_x, selected_lane_y)
               road_aligned_yRel = yRel + (lane_y_at_drel - selected_lane_y0)
@@ -1514,16 +1546,23 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
                   if (velocity > min_side_lead_speed
                       or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
+                    # Expand the outer lane for moving candidates, keeping road-edge clearance.
+                    lane_margin = 0.75 if allow_lane_margin else -0.25
                     valid_left_bounds = []
+                    left_effective_bound = math.inf
                     if has_left_outer and left_outer_x[0] <= dRel <= left_outer_x[-1]:
-                      valid_left_bounds.append(-interp(dRel, left_outer_x, left_outer_y))
+                      outer_bound = -interp(dRel, left_outer_x, left_outer_y)
+                      valid_left_bounds.append(outer_bound)
+                      left_effective_bound = outer_bound + lane_margin
                     if has_left_edge and left_road_edge_x[0] <= dRel <= left_road_edge_x[-1]:
-                      valid_left_bounds.append(-interp(dRel, left_road_edge_x, left_road_edge_y))
+                      edge_bound = -interp(dRel, left_road_edge_x, left_road_edge_y)
+                      valid_left_bounds.append(edge_bound)
+                      left_effective_bound = min(left_effective_bound, edge_bound - 0.25)
 
                     if valid_left_bounds:
-                      left_effective_bound = min(valid_left_bounds) - 0.25
-                      # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
-                      if yRel < left_effective_bound and (left_effective_bound - left_inner_bound > 1.8):
+                      # Preserve the original width check before expanding candidate acceptance.
+                      left_width_bound = min(valid_left_bounds) - 0.25
+                      if yRel < left_effective_bound and (left_width_bound - left_inner_bound > 1.8):
                         lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
 
               # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
@@ -1533,16 +1572,23 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
                   if (velocity > min_side_lead_speed
                       or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
+                    # Expand the outer lane for moving candidates, keeping road-edge clearance.
+                    lane_margin = 0.75 if allow_lane_margin else -0.25
                     valid_right_bounds = []
+                    right_effective_bound = -math.inf
                     if has_right_outer and right_outer_x[0] <= dRel <= right_outer_x[-1]:
-                      valid_right_bounds.append(-interp(dRel, right_outer_x, right_outer_y))
+                      outer_bound = -interp(dRel, right_outer_x, right_outer_y)
+                      valid_right_bounds.append(outer_bound)
+                      right_effective_bound = outer_bound - lane_margin
                     if has_right_edge and right_road_edge_x[0] <= dRel <= right_road_edge_x[-1]:
-                      valid_right_bounds.append(-interp(dRel, right_road_edge_x, right_road_edge_y))
+                      edge_bound = -interp(dRel, right_road_edge_x, right_road_edge_y)
+                      valid_right_bounds.append(edge_bound)
+                      right_effective_bound = max(right_effective_bound, edge_bound + 0.25)
 
                     if valid_right_bounds:
-                      right_effective_bound = max(valid_right_bounds) + 0.25
-                      # 차선 안쪽에 있고, 실질 차로 폭이 1.8m 이상 확보된 경우만 통과
-                      if yRel > right_effective_bound and (right_inner_bound - right_effective_bound > 1.8):
+                      # Preserve the original width check before expanding candidate acceptance.
+                      right_width_bound = max(valid_right_bounds) + 0.25
+                      if yRel > right_effective_bound and (right_inner_bound - right_width_bound > 1.8):
                         rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
 
           # 전방(FF) 차량 정보 업데이트
@@ -1672,6 +1718,7 @@ create_ccnc_messages.lane_phase_min = 10.0
 
 # 레이더 곡률 보정용 기준 차선 선택 상태
 create_ccnc_messages.radar_lane_selector = _CcncRadarLaneSelector()
+create_ccnc_messages.radar_lane_margin_tracker = _CcncRadarLaneMarginTracker()
 
 # 차선 노이즈 필터
 create_ccnc_messages.last_known_lane_width = 3.0 # Default lane width
