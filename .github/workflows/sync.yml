@@ -1,18 +1,24 @@
-name: Sync Upstream
+name: Sync Upstream Branch
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # 매일 한국 시간 기준 오전 9시에 자동 실행
-  workflow_dispatch:      # 수동 실행 버튼 활성화
+    # 매시 정각(1시간마다) 실행
+    - cron: '0 * * * *'
+  # GitHub Actions 탭에서 수동 실행(Run workflow) 지원
+  workflow_dispatch:
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # 내 저장소에 푸시하기 위한 쓰기 권한
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Sync upstream
-        run: gh repo sync $GITHUB_REPOSITORY --source 원본계정명/저장소명
+      - name: Sync upstream branch
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh repo sync Qualified4/openpilot --source ajouatom/openpilot --branch carrot-wip
