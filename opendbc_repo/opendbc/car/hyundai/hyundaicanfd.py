@@ -1859,14 +1859,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           # 전방 좌측(LF) 차량 정보 업데이트
           if lf_lead:
             values["LF_DETECT_DISTANCE"] = filtered_positions[1][0] * 0.8
-            values["LF_DETECT_LATERAL"] = min(max(lf_yRel, 0.0), 12.7)
+            values["LF_DETECT_LATERAL"] = min(max(float(apply_curved_deadband(lf_yRel, 3, 0.9, 2)), 0.0), 12.7)
             values["LF_DETECT"] = create_ccnc_messages.lf_detect.apply(lf_lead.vRel)
           else:
             values["LF_DETECT"] = 0
           # 전방 우측(RF) 차량 정보 업데이트
           if rf_lead:
             values["RF_DETECT_DISTANCE"] = filtered_positions[2][0] * 0.8
-            values["RF_DETECT_LATERAL"] = min(max(-rf_yRel, 0.0), 12.7)
+            values["RF_DETECT_LATERAL"] = min(max(float(apply_curved_deadband(-rf_yRel, 3, 0.9, 2)), 0.0), 12.7)
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
           else:
             values["RF_DETECT"] = 0
