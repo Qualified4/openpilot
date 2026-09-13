@@ -61,7 +61,7 @@ class RadarInfoItem:
   text: str = ""
   color: Optional[Any] = None
   is_star: bool = False
-  
+
 class ModelRenderer(Widget):
   def __init__(self):
     super().__init__()
@@ -92,7 +92,7 @@ class ModelRenderer(Widget):
     self._car_space_transform = np.zeros((3, 3), dtype=np.float32)
     self._transform_dirty = True
     self._clip_region = None
-    
+
     self._lead_pt_filt = [None, None]
     self._radar_info_items: list[RadarInfoItem] = []
     self._font_display: rl.Font = gui_app.font(FontWeight.DISPLAY)
@@ -154,12 +154,12 @@ class ModelRenderer(Widget):
       self._update_model(lead_one, path_x_array, car_state)
       if render_lead_indicator:
         self._update_leads_carrot(radar_state, path_x_array)
-        
+
       if ui_state.show_radar_info > 0 and radar_state is not None:
         self._update_radar_info(radar_state, path_x_array)
       else:
         self._radar_info_items = []
-        
+
       self._transform_dirty = False
 
     # Draw elements (hide when disengaged)
@@ -174,7 +174,7 @@ class ModelRenderer(Widget):
       self._draw_lead_indicator()
     if ui_state.show_radar_info > 0:
       self._draw_radar_info()
-      
+
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""
     self._path.raw_points = np.array([model.position.x, model.position.y, model.position.z], dtype=np.float32).T
@@ -204,7 +204,7 @@ class ModelRenderer(Widget):
         point = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z)
         if point:
           self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect)
-          
+
   def _update_leads_carrot(self, radar_state, path_x_array):
     """Carrot: draw leadOne as outline rectangle."""
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
@@ -271,7 +271,7 @@ class ModelRenderer(Widget):
         )
       else:
         self._lead_pt_filt[0] = None
-        
+
   def _update_model(self, lead, path_x_array, car_state=None):
     """Update model visualization data based on model message"""
     max_distance = np.clip(path_x_array[-1], MIN_DRAW_DISTANCE, MAX_DRAW_DISTANCE)
@@ -508,7 +508,7 @@ class ModelRenderer(Widget):
       rl.draw_line_ex(pts[1], pts[2], thickness, c)
       rl.draw_line_ex(pts[2], pts[3], thickness, c)
       rl.draw_line_ex(pts[3], pts[0], thickness, c)
-    
+
   @staticmethod
   def _get_path_length_idx(pos_x_array: np.ndarray, path_height: float) -> int:
     """Get the index corresponding to the given path height"""
@@ -734,7 +734,7 @@ class ModelRenderer(Widget):
 
       if item.is_star:
         tw = rl.measure_text(item.text, font_size)
-        draw_text_ui_style(item.text, item.x, item.y, font_size, item.color, font=self._font_display, border_width=1.0, shadow_offset=8.0, align="center", y_offset=0.0)
+        draw_text_ui_style(item.text, item.x, item.y, font_size, item.color, font=self._font_display, border_width=1.0, shadow_offset=0.0, align="center", y_offset=0.0)
         continue
 
       # 박스
@@ -758,5 +758,5 @@ class ModelRenderer(Widget):
       #  rl.WHITE,
       #)
 
-      draw_text_ui_style(item.text, tx, ty, font_size, rl.WHITE, font=self._font_display, border_width=1.0, shadow_offset=8.0, align="left_top", y_offset=0.0)
+      draw_text_ui_style(item.text, tx, ty, font_size, rl.WHITE, font=self._font_display, border_width=1.0, shadow_offset=0.0, align="left_top", y_offset=0.0)
 
