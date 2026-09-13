@@ -119,7 +119,7 @@ These 112 settings can affect vehicle motion. Change one item at a time.
 | Startup | `AlwaysLateral`, `AutoEngage`, `DisableMinSteerSpeed` | Always-on lateral control, automatic engagement, and low-speed steering limits |
 | Auto cruise | `AutoCruiseControl`, `AutoGasTokSpeed`, `AutoGasCancelSpeed`, `AutoGasSyncSpeed`, `CruiseOnDist` | Automatic cruise activation and accelerator-pedal behavior |
 
-- `AlwaysLateral` permits lateral control even when cruise is not engaged.
+- `AlwaysLateral` permits lateral control even when cruise is not engaged. On supported Tesla vehicles it can also steer at true standstill in a forward-driving gear; moving below the minimum steering speed remains restricted. See [Tesla engagement](tesla.md#engagement-and-standstill).
 - `AutoEngage`: `0` off, `1` lateral on, `2` lateral on with cruise ready.
 - `AutoCruiseControl` covers Hyundai/Kia auto-cruise and soft-hold behavior.
 - `DisableMinSteerSpeed` is vehicle-specific and relates to low-speed steering restrictions on SMDPS-equipped cars.
@@ -162,13 +162,15 @@ The default `SteerRatioRate` of `100%` applies the learned steering ratio withou
 
 | Section | Parameters | Purpose |
 |---|---|---|
-| [Speed cameras](speed-deceleration.md#speed-camera) | `AutoNaviSpeedCtrlMode`, `AutoNaviSpeedCtrlEnd`, `AutoNaviSpeedDecelRate`, `AutoNaviSpeedSafetyFactor`, `AutoNaviCountDownMode`, `VehicleNaviCanControl`, `VehicleNaviSchoolZoneControl`, `VehicleSpeedCameraControlMode`, `VehicleSpeedCameraDistanceTime` | Event types, stock-navigation CAN and PV5 section speed caps, deceleration start, and target speed |
+| [Speed cameras](speed-deceleration.md#speed-camera) | `AutoNaviSpeedCtrlMode`, `AutoNaviSpeedCtrlEnd`, `AutoNaviRearCameraHoldDistance`, `AutoNaviSpeedDecelRate`, `AutoNaviSpeedSafetyFactor`, `AutoNaviCountDownMode`, `VehicleNaviCanControl`, `VehicleNaviSchoolZoneControl`, `VehicleSpeedCameraControlMode`, `VehicleSpeedCameraDistanceTime` | Event types, rear-camera post-pass hold, stock camera distance matching and virtual distance, PV5 section speed caps, deceleration start, and target speed |
 | [Road speed limit](speed-deceleration.md#road-speed-limit) | `AutoRoadSpeedLimitOffset`, `AutoRoadSpeedAdjust`, `AutoSpeedUptoRoadSpeedLimit` | Desired-speed adjustment from the road limit |
 | [Speed bumps](speed-deceleration.md#speed-bump) | `AutoNaviSpeedBumpTime`, `AutoNaviSpeedBumpSpeed`, `AutoNaviSpeedBumpEndDistance` | Completion time, crossing speed, and early-release distance |
 | [Curves and turns](speed-deceleration.md#curve-turn) | `AutoCurveSpeedFactor`, `AutoCurveSpeedLowerLimit`, `TurnSpeedControlMode`, `MapTurnSpeedFactor`, `ApplyModelSpeed` | Curve slowing from curvature and remaining distance, plus route-turn speed |
 | [Traffic lights](speed-deceleration.md#traffic-light) | `TrafficLightDetectMode`, `TrafficStopDistanceAdjust` | Stop/go detection, stop-position adjustment, and automatic stopped-vehicle alignment |
 
 `AutoNaviSpeedCtrlMode` is `0` off, `1` fixed speed cameras, `2` cameras plus speed bumps, or `3` those events plus mobile-camera events.
+
+While external navigation is connected, deceleration, countdowns, and navigation speed displays use it exclusively. Stock navigation remains excluded even without an external guidance item and resumes according to its settings after disconnection or receive timeout is detected.
 
 `VehicleSpeedCameraControlMode=2` treats a new accelerator press after vehicle-received camera deceleration has actually begun as a request to ignore the current event. It keeps the highest speed reached while accelerating as the floor until the event ends; an accelerator held from before deceleration began does not start the override.
 
@@ -184,21 +186,28 @@ A lower `AutoNaviSpeedDecelRate` begins slowing farther away. `AutoNaviSpeedSafe
 | [Speed-based acceleration](cruise-gap.md#acceleration-table) | `CruiseMaxVals0` through `CruiseMaxVals6` | Maximum acceleration tendency by speed band |
 | [Stopping and restarting](cruise-gap.md#stop-resume) | `StopDistanceCarrot`, `StoppingAccel`, `VEgoStopping`, `AChangeCostStarting` | Stop position, stop entry, and restart behavior |
 | [Longitudinal tuning](cruise-gap.md#longitudinal-tuning) | `LongTuningKpV`, `LongTuningKiV`, `LongTuningKf`, `LongActuatorDelay` | Hyundai/Kia/Genesis hide fixed `100/0/100` gains; other brands can adjust them |
-| [Following gap](cruise-gap.md#following-gap) | `TFollowGap1` through `TFollowGap4`, `DynamicTFollowLC`, `EnableSpeedTF`, `TFollowDecelBoost` | Gap times, lane-change relief using selected leads, and deceleration margin (default 0%) |
-| [Lead response](cruise-gap.md#lead-response) | `LeadAccelResponse` | Lead-start, acceleration and approach response at every following-distance level |
+| [Following gap](cruise-gap.md#following-gap) | `TFollowGap1` through `TFollowGap4`, `DynamicTFollowLC`, `SpeedTFFactor`, `TFollowDecelBoost` | Gap times, lane-change relief using selected leads, and deceleration margin (default 0%) |
+| [Lead response](cruise-gap.md#lead-response) | `LeadAccelResponse`, `LeadAccelResponseTF1`–`LeadAccelResponseTF4` | Lead-start, acceleration and approach response at every following-distance level |
 | [Carrot cruise](cruise-gap.md#carrot-cruise) | `CruiseEcoControl`, `CarrotCruiseDecel`, `CarrotCruiseAtcDecel` | Economy control and cruise deceleration limits |
 
 `MyDrivingMode` is `1` eco, `2` safe, `3` normal, or `4` high speed. High-speed mode ignores traffic-light control and increases acceleration tendency, so read its behavior before selecting it.
 
+Eco caps lead response at 2 and Safe at 3; Normal and High retain the selected value. Caps follow common/gap-specific selection and never raise lower choices or 0. Eco ×1.1 and Safe ×1.2 TF multipliers remain, with gradual release of mode allowance. Automatic selection uses Safe for stopping approaches and sustained slow following; a brief launch or lead loss does not release it.
+
 `TFollowGap1` through `TFollowGap4` are stored in hundredths of a second. Lower values reduce the time gap. Use `LeadAccelResponse` for acceleration response: levels 1–3 are gradual, 4 is quick, and 5 retains maximum response. Added deceleration margin does not accumulate.
 
 `LeadAccelResponse`: Adjusts how the car follows a lead vehicle as it starts or speeds up. Lower levels close the gap more gradually; higher levels follow more quickly. Level 0 turns off the acceleration boost, and level 5 is the most responsive test setting. See [Lead-vehicle response](cruise-gap.md#lead-response) for details.
+
+`SpeedTFFactor` applies a linear speed multiplier to the selected base TF: 10 is unchanged; 20 doubles it at 100 km/h. `LeadAccelResponseTF1`–`TF4` use the common response at -1 and a gap-specific response at 0–5. Levels 4–5 retain speed TF. The driving-screen bar shows the dynamically adjusted following target in metres.
+
 
 Deceleration preview operates independently of the response level. During active control, remaining correction releases progressively when relative acceleration eases or the lead switches between radar and vision or disappears. Accelerator or brake intervention and longitudinal control exit clear it immediately.
 
 `LongTuning*`, `LongActuatorDelay`, and `StoppingAccel` are advanced settings that directly affect vehicles using openpilot longitudinal control. Hyundai, Kia, and Genesis fix `LongTuningKpV`, `LongTuningKiV`, and `LongTuningKf` at the safe `100/0/100` values and hide them from settings. Some parameters have no effect when stock ACC remains responsible for acceleration and braking.
 
 For Hyundai, Kia, and Genesis, a saved `StoppingAccel=0` is automatically restored to `-50` (-0.50 m/s²) when vehicle control initializes after boot. Existing negative values are preserved, and other brands retain the traditional stop behavior for `0`.
+
+On supported Tesla vehicles with the additional vehicle bus detected, the device's **alpha longitudinal** (`AlphaLongitudinalEnabled`) toggle also enables [automatic cruise set-speed adjustment](tesla.md#automatic-cruise-speed) to the vehicle-reported limit. Turning the right speed wheel pauses it; an opposite-direction wheel gesture within one second or disengaging and re-engaging resumes it. There is no separate Carrot Web setting for this feature.
 
 <a id="vehicle-hardware"></a>
 ## Vehicle and hardware
