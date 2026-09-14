@@ -1861,6 +1861,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           values["RR_DETECT_LATERAL"] = 3
           values["RR_DETECT"] = 11
 
+        _convert_ccnc_boxes_to_cars(values)
+
         if (left_lane_warning and not CS.out.leftBlinker) or (right_lane_warning and not CS.out.rightBlinker):
           values["VIBRATE"] = 1
 
