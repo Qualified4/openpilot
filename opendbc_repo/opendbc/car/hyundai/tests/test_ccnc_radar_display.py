@@ -520,16 +520,18 @@ def test_saved_width_fades_and_expires_after_travel():
   weak = md(0.)
   weak.roadEdges = [curve(-2.), curve(2.)]
   t.lane_probabilities(weak)
-  projection = t.lane_projection(live)[2][0]
-  assert projection[3] == pytest.approx(5.)
-  assert projection[5] == pytest.approx(6.)
+  t.lane_projection(live)
+  projection = t.side_projection(1)[0]
+  assert projection[0] == pytest.approx(5.)
+  assert projection[1] == pytest.approx(6.)
   assert t.side_entry_width(q, 1)
   for frame in range(5, 110, 5):
     t.update_stop(36., frame)
   assert t.saved_widths == [None, None]
   t.update_stop(0., 110)
   t.lane_probabilities(weak)
-  assert t.lane_projection(live)[2][0][5] == pytest.approx(2.)
+  t.lane_projection(live)
+  assert t.side_projection(1)[0][1] == pytest.approx(2.)
 
 
 def test_held_motion_clears_even_when_another_candidate_is_selected():
@@ -628,3 +630,58 @@ def test_approaching_stationary_target_is_qualified_before_loss(side):
   t.stopped_display(out, (None, None), 105)
   assert out[prefix+'_DETECT'] == 1
   assert out[prefix+'_DETECT_DISTANCE'] == pytest.approx(3.95*.8)
+
+
+def test_side_projection_is_lazy_cached_and_refreshed(monkeypatch):
+  t = Tracker()
+  live = N(points=[point(x=10.)])
+  t.observe(live, 0)
+  t.lane_probabilities(lane_model())
+  calls = []
+  interp = np.interp
+
+  def counted(*args, **kwargs):
+    calls.append(1)
+    return interp(*args, **kwargs)
+
+  monkeypatch.setattr(np, "interp", counted)
+  t.lane_projection(live)
+  assert len(calls) == 2  # Inner lanes only.
+  left = t.side_projection(0)
+  assert left == ((-5., -7.),)
+  assert len(calls) == 4
+  assert t.side_projection(0) is left
+  assert t._side_projection[1] is None
+  assert len(calls) == 4
+  t.lane_probabilities(lane_model(2, 1.))
+  t.lane_projection(live)
+  assert t._side_projection == [None, None]
+  assert t.side_projection(0) == ((-4., -6.),)
+  live2 = N(points=[point(x=20.)])
+  t.observe(live2, 5)
+  t.lane_projection(live2)
+  assert t.side_projection(0) == ((-3.5, -5.5),)
+
+
+def test_empty_tracks_still_save_width_without_side_projection():
+  t = Tracker()
+  live = N(points=[])
+  t.observe(live, 0)
+  t.update_stop(0., 0)
+  t.lane_probabilities(lane_model())
+  t.lane_projection(live)
+  assert all(width is not None for width in t.saved_widths)
+  assert t._side_projection == [None, None]
+
+
+def test_side_projection_masks_out_of_range_and_invalid_boundaries():
+  t = Tracker()
+  live = N(points=[point(x=10.), point(2, x=40.)])
+  t.observe(live, 0)
+  md = lane_model()
+  md.laneLineProbs[0] = 0.
+  t.lane_probabilities(md)
+  t.lane_projection(live)
+  left = t.side_projection(0)
+  assert math.isnan(left[0][0]) and left[0][1] == -7.
+  assert math.isnan(left[1][0]) and math.isnan(left[1][1])

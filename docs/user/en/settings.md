@@ -338,7 +338,7 @@ See the Wiki [Tuning introduction](https://github.com/ajouatom/openpilot/wiki/Gu
 
 Under Vehicle and hardware → CAN FD/HDA, three independent options replace `CcncCustomDisplay`. All default to OFF (0). SLA/LFA/LKA and lane display while lateral control is inactive are included in the model-lanes option. With all three options OFF, CCNC messages use the original carrot-wip behavior. Cruise-button speed thresholds and lead-departure alert handling also follow the original behavior.
 
-**CcncLaneColor**: Applies lane highlight color and length from acceleration, driving mode and gear. OFF leaves these fields unchanged. Lane-change highlighting is included in the model-lanes option.
+**CcncLaneColor**: Applies lane highlight color and length from acceleration, driving mode and gear. OFF leaves these fields unchanged. Lane-change highlighting is included in the model-lanes option. Driving mode is read once per second; mode-dependent colors may update up to about one second later. Re-enabling the option reads it immediately.
 
 **CcncModelLanes**: Applies model lane curvature and lateral positions together with lane-change highlights, icons and transition animation. OFF uses the original display for both. Trailer lane-change blocking takes precedence. Radar candidate selection and lateral correction remain independent under the vehicle-display option. Also switches SLA set-speed display, LFA/LKA icon handling and lane hiding while lateral control is inactive; OFF uses original handling. Toggling resets the SLA display timer.
 

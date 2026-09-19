@@ -228,28 +228,40 @@ class _CcncRadarDisplayTracker:
     data, flags = self._lane_data
     distances = np.fromiter((p[1] for p in self._points), dtype=np.float64, count=len(self._points))
     projected = [np.interp(distances, *data[0]), np.interp(distances, *data[1])]
-    for valid, curve in zip(flags, data[2:]):
-      if valid:
+    self._projection_distances = distances
+    self._projection_inner = projected
+    self._side_projection = [None, None]
+    self._projection_live = live
+    self._projection = float(data[0][1][0]), float(data[1][1][0]), tuple(zip(projected[0].tolist(), projected[1].tolist()))
+    return self._projection
+
+  def side_projection(self, side):
+    cached = self._side_projection[side]
+    if cached is not None:
+      return cached
+    data, flags = self._lane_data
+    distances = self._projection_distances
+    saved = self._saved_side[side]
+    projected = []
+    for offset in (0, 2):
+      curve = data[2 + side + offset]
+      saved_curve = saved[2 + offset // 2] if saved is not None else None
+      if saved_curve is not None:
+        inner = saved[1]
+        xs, ys = saved_curve
+        vals = self._projection_inner[side] + np.interp(distances, xs, ys) - np.interp(distances, *inner)
+        vals[(distances < max(xs[0], inner[0][0])) | (distances > min(xs[-1], inner[0][-1]))] = np.nan
+        projected.append(vals.tolist())
+      elif flags[side + offset]:
         xs, ys = curve
         vals = np.interp(distances, xs, ys)
         vals[(distances < xs[0]) | (distances > xs[-1])] = np.nan
-        projected.append(vals)
+        projected.append(vals.tolist())
       else:
-        projected.append(np.full(len(distances), np.nan))
-    # Retain widths, not old absolute coordinates, when stopped and outer lanes fade.
-    for side, saved in enumerate(self._saved_side):
-      if saved is None:
-        continue
-      _, inner, outer, edge = saved
-      for index, curve in ((2 + side, outer), (4 + side, edge)):
-        if curve is not None:
-          xs, ys = curve
-          vals = projected[side] + np.interp(distances, xs, ys) - np.interp(distances, *inner)
-          vals[(distances < max(xs[0], inner[0][0])) | (distances > min(xs[-1], inner[0][-1]))] = np.nan
-          projected[index] = vals
-    self._projection_live = live
-    self._projection = float(data[0][1][0]), float(data[1][1][0]), tuple(zip(*(values.tolist() for values in projected)))
-    return self._projection
+        projected.append([math.nan] * len(distances))
+    cached = tuple(zip(*projected))
+    self._side_projection[side] = cached
+    return cached
 
   def side_entry_width(self, lead, side):
     # Existing continuous targets may stop without becoming new detections.
@@ -771,11 +783,14 @@ def update_lfa_icon(values, CS, lat_enabled, lat_active, hdp_active):
 def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_active, lat_enabled, lane_color=True, model_lanes=True):
   # 주행 기어에서만 가속도·드라이브 모드에 따른 차로 색 변경
   if lane_color and CS.out.gearShifter == structs.CarState.GearShifter.drive:
-    try:
-      # Carrot의 드라이브 모드 파라미터를 가져옵니다 (1: Eco, 2: Safe, 3: Normal, 4: High Speed)
-      drive_mode = Params().get_int("MyDrivingMode")
-    except Exception:
-      drive_mode = 3  # 기본값 (Normal)
+    now = time.monotonic()
+    if now >= state.drive_mode_refresh:
+      try:
+        state.drive_mode = Params().get_int("MyDrivingMode")
+      except Exception:
+        state.drive_mode = 3
+      state.drive_mode_refresh = now + 1.0
+    drive_mode = state.drive_mode
 
     # 속도에 비례해 하이라이트 길이 동적으로 조절
     values["LANE_HIGHLIGHT_DISTANCE"] = int(ease_in_interp(v_ego_kph, [0, 80], [3, 60], power=1.5))
@@ -918,8 +933,8 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_active, lat_e
         prev_l = state.l_lane_f.value
         prev_r = state.r_lane_f.value
         # 실제 값과 이전 값의 차이를 MAX_STEP 이내로 제한 (클리핑)
-        bounded_l = prev_l + np.clip(leftlaneraw - prev_l, -MAX_STEP, MAX_STEP)
-        bounded_r = prev_r + np.clip(rightlaneraw - prev_r, -MAX_STEP, MAX_STEP)
+        bounded_l = prev_l + min(max(leftlaneraw - prev_l, -MAX_STEP), MAX_STEP)
+        bounded_r = prev_r + min(max(rightlaneraw - prev_r, -MAX_STEP), MAX_STEP)
         current_l_target = state.l_lane_f.apply(bounded_l)
         current_r_target = state.r_lane_f.apply(bounded_r)
       else:
@@ -949,8 +964,8 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_active, lat_e
         state.last_known_lane_width = lane_width # 마지막 차선 폭을 기억해둠
 
     if model_lanes:
-      values["LANELINE_LEFT_POSITION"] = int(round(np.interp(current_l_target, [0.0, 3.0], [0, 30])))
-      values["LANELINE_RIGHT_POSITION"] = int(round(np.interp(current_r_target, [0.0, 3.0], [0, 30])))
+      values["LANELINE_LEFT_POSITION"] = int(round(min(max(current_l_target, 0.0), 3.0) * 10.0))
+      values["LANELINE_RIGHT_POSITION"] = int(round(min(max(current_r_target, 0.0), 3.0) * 10.0))
 
     # 차선 변경 아이콘
     if model_lanes and lat_enabled:
@@ -1002,8 +1017,9 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
       max_side_lateral = 5.4
       max_side_distance = 80.0
       ff_min_dist = lf_min_dist = rf_min_dist = math.inf
+      left_projection = right_projection = None
 
-      for (lead, dRel, yRel, vRel, vLead), (left_y, right_y, outer_left_y, outer_right_y, edge_left_y, edge_right_y) in zip(display_tracker._points, projected):
+      for point_index, ((lead, dRel, yRel, vRel, vLead), (left_y, right_y)) in enumerate(zip(display_tracker._points, projected)):
         velocity = vLead * ms_to_kph
         # FF와 저속 측면 예외까지 모두 탈락하는 점은 보간 전에 제외합니다.
         if not (velocity > min_front_lead_speed or velocity > min_side_lead_speed
@@ -1043,6 +1059,9 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
             # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
             if (velocity > min_side_lead_speed
                 or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
+              if left_projection is None:
+                left_projection = display_tracker.side_projection(0)
+              outer_left_y, edge_left_y = left_projection[point_index]
               # Expand the outer lane for moving candidates, keeping road-edge clearance.
               lane_margin = 0.75 if velocity > min_side_lead_speed and display_tracker.stable(lead.trackId, 30) else -0.25
               if lead.trackId == display_tracker.selected[1]:
@@ -1073,6 +1092,9 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
             # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
             if (velocity > min_side_lead_speed
                 or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
+              if right_projection is None:
+                right_projection = display_tracker.side_projection(1)
+              outer_right_y, edge_right_y = right_projection[point_index]
               # Expand the outer lane for moving candidates, keeping road-edge clearance.
               lane_margin = 0.75 if velocity > min_side_lead_speed and display_tracker.stable(lead.trackId, 30) else -0.25
               if lead.trackId == display_tracker.selected[2]:
@@ -1213,6 +1235,8 @@ def configure(lane_color, model_lanes, radar_vehicles):
     return
   if _options is None or lane_color != _options[0]:
     state.drive_lane_color = LaneHighlightStateMachine()
+    state.drive_mode = 3
+    state.drive_mode_refresh = -math.inf
   if _options is None or model_lanes != _options[1]:
     reset_lanes()
   if _options is None or radar_vehicles != _options[2]:

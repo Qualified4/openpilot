@@ -164,3 +164,61 @@ def test_model_toggle_resets_sla_timer(display):
   params["CcncModelLanes"] = False
   send(100)
   assert custom.state.sla_active_time == 0
+
+
+
+def test_driving_mode_cache_refresh_and_reenable(display, monkeypatch):
+  params, cs, send = display
+  params["CcncLaneColor"] = True
+  clock = [10.0]
+  mode = [3]
+  reads = []
+
+  def read_mode(key):
+    reads.append(key)
+    return mode[0]
+
+  monkeypatch.setattr(custom, "time", N(monotonic=lambda: clock[0]))
+  monkeypatch.setattr(custom, "Params", lambda: N(get_int=read_mode))
+  send()
+  mode[0] = 1
+  clock[0] = 10.99
+  send(5)
+  assert custom.state.drive_mode == 3 and len(reads) == 1
+  clock[0] = 11.0
+  send(10)
+  assert custom.state.drive_mode == 1 and len(reads) == 2
+  params["CcncLaneColor"] = False
+  send(100)
+  params["CcncLaneColor"] = True
+  mode[0] = 4
+  send(200)
+  assert custom.state.drive_mode == 4 and len(reads) == 3
+
+
+def test_scalar_lane_math_matches_numpy_at_rounding_boundaries():
+  import ast
+  import inspect
+  import math
+  import numpy as np
+
+  tree = ast.parse(inspect.getsource(custom.update_lanes))
+  assignments = {ast.unparse(n.targets[0]): n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)}
+  position_expr = next(n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                       and ast.unparse(n.targets[0]) == "values['LANELINE_LEFT_POSITION']"
+                       and "current_l_target" in ast.unparse(n.value))
+  position = compile(ast.Expression(position_expr), "lane_position", "eval")
+  step = compile(ast.Expression(assignments["bounded_l"]), "lane_step", "eval")
+  boundaries = [0., 3., -0.15, 0.15] + [(i + .5) / 10 for i in range(30)]
+  samples = [-math.inf, math.inf, math.nan, -10., 10.] + [x for b in boundaries for x in (np.nextafter(b, -math.inf), b, np.nextafter(b, math.inf))]
+  for x in samples:
+    expected = np.interp(x, [0., 3.], [0., 30.])
+    if math.isnan(expected):
+      with pytest.raises(ValueError):
+        eval(position, {"current_l_target": x})
+    else:
+      assert eval(position, {"current_l_target": x}) == int(round(expected))
+    for previous in (0., 1.5, 3.):
+      expected = previous + np.clip(x - previous, -.15, .15)
+      actual = eval(step, {"leftlaneraw": x, "prev_l": previous, "MAX_STEP": .15})
+      assert math.isnan(actual) if math.isnan(expected) else actual == expected
