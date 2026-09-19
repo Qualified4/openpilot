@@ -3,7 +3,7 @@ name: Sync Upstream
 on:
   schedule:
     # 1시간마다 자동 실행
-    - cron: '0 * * * *'
+    - cron: '17 * * * *'
   # Actions 탭에서 수동 실행 버튼 지원
   workflow_dispatch:
 
@@ -16,6 +16,6 @@ jobs:
     steps:
       - name: Sync upstream branch
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
         run: |
-          gh repo sync Qualified4/openpilot --source ajouatom/openpilot --branch carrot-wip
+          gh repo sync Qualified4/openpilot --source ajouatom/openpilot --branch carrot-wip --force
