@@ -16,6 +16,6 @@ jobs:
     steps:
       - name: Sync upstream branch
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
         run: |
           gh repo sync Qualified4/openpilot --source ajouatom/openpilot --branch carrot-wip --force
