@@ -769,25 +769,17 @@ def update_lfa_icon(values, CS, lat_enabled, lat_active, hdp_active):
     values["LFA_ICON"] = 0
 
 def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_active, lat_enabled, lane_color=True, model_lanes=True):
-  if lane_color:
-    # 기어 상태에 따른 차로 색 변경
-    if CS.out.gearShifter == structs.CarState.GearShifter.drive:
-      try:
-        # Carrot의 드라이브 모드 파라미터를 가져옵니다 (1: Eco, 2: Safe, 3: Normal, 4: High Speed)
-        drive_mode = Params().get_int("MyDrivingMode")
-      except Exception:
-        drive_mode = 3  # 기본값 (Normal)
+  # 주행 기어에서만 가속도·드라이브 모드에 따른 차로 색 변경
+  if lane_color and CS.out.gearShifter == structs.CarState.GearShifter.drive:
+    try:
+      # Carrot의 드라이브 모드 파라미터를 가져옵니다 (1: Eco, 2: Safe, 3: Normal, 4: High Speed)
+      drive_mode = Params().get_int("MyDrivingMode")
+    except Exception:
+      drive_mode = 3  # 기본값 (Normal)
 
-      # 속도에 비례해 하이라이트 길이 동적으로 조절
-      values["LANE_HIGHLIGHT_DISTANCE"] = int(ease_in_interp(v_ego_kph, [0, 80], [3, 60], power=1.5))
-      values["LANE_HIGHLIGHT"] = state.drive_lane_color.update(a_ego_kph, drive_mode, v_ego_kph)
-    elif CS.out.gearShifter == structs.CarState.GearShifter.reverse:
-      values["LANE_HIGHLIGHT"] = 5
-    elif CS.out.gearShifter == structs.CarState.GearShifter.neutral:
-      values["LANE_HIGHLIGHT"] = 4
-    elif CS.out.gearShifter == structs.CarState.GearShifter.park:
-      if not CS.out.parkingBrake:
-        values["LANE_HIGHLIGHT"] = 2
+    # 속도에 비례해 하이라이트 길이 동적으로 조절
+    values["LANE_HIGHLIGHT_DISTANCE"] = int(ease_in_interp(v_ego_kph, [0, 80], [3, 60], power=1.5))
+    values["LANE_HIGHLIGHT"] = state.drive_lane_color.update(a_ego_kph, drive_mode, v_ego_kph)
 
   # 차선 변경 판단
   is_auto_lane_changing = desire in (3, 4)
@@ -1229,6 +1221,7 @@ def configure(lane_color, model_lanes, radar_vehicles):
 
 
 def reset_lanes():
+  state.sla_active_time = 0
   state.lane_curv = NoiseFilter(3, 0, alpha_range=0.5)
   state._is_lane_change_active = False
   state.draw_center = state.hold_lane = False

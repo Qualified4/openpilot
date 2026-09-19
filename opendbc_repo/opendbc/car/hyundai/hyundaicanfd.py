@@ -778,7 +778,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         params.get_bool("CcncRadarVehicles"),
       )
     lane_color_enabled, model_lanes, radar_vehicles = create_ccnc_messages._display_options
-    custom_ccnc = True  # Existing SLA/LFA and button behavior is independent of the three display options.
   else:
     lane_color_enabled = model_lanes = radar_vehicles = custom_ccnc
   radar_vehicles = radar_vehicles and not (CP.flags & HyundaiFlags.CANFD_HDA2.value)
@@ -795,7 +794,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   desire, lane_changing = _get_desire_and_lane_changing(md)
 
   if CP.flags & HyundaiFlags.CAMERA_SCC.value:
-    if custom_ccnc:
+    if lane_color_enabled or model_lanes or radar_vehicles:
       v_ego_kph = CS.out.vEgo * CV.MS_TO_KPH
       a_ego_kph = CS.out.aEgo * CV.MS_TO_KPH
     HDA_CntrlModSta = 0
@@ -819,17 +818,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         if CC.enabled and not interlock_active:
           if not CS.MainMode_ACC:
-            if 10 < frame % 200 <= 16 and (v_ego_kph > 10.0 if custom_ccnc else CS.out.vEgo > 3.0):
+            if 10 < frame % 200 <= 16 and CS.out.vEgo > 3.0:
               values["ADAPTIVE_CRUISE_MAIN_BTN"] = 1
           elif CS.ACCMode in [0, 4]:
-            if 10 < frame % 200 <= 16 and (v_ego_kph > 10.0 if custom_ccnc else CS.out.vEgo > 3.0):
+            if 10 < frame % 200 <= 16 and CS.out.vEgo > 3.0:
               values["CRUISE_BUTTONS"] = 2
           elif CS.scc_control is not None and CS.scc_control["InfoDisplay"] == 4:
             if 10 < frame % 30 <= 16 and not stopping:
               values["CRUISE_BUTTONS"] = 2
           else:
             if CS.adrv_0x1ea is not None and CS.adrv_0x1ea["HDA_MODE2"] == 0: # if corner radar is disabled, send main btn
-              if 10 < frame % 1000 <= 16 and (v_ego_kph > 10.0 if custom_ccnc else CS.out.vEgo > 3.0):
+              if 10 < frame % 1000 <= 16 and CS.out.vEgo > 3.0:
                 values["ADAPTIVE_CRUISE_MAIN_BTN"] = 1
 
         ret.append(packer.make_can_msg(CS.cruise_btns_msg_canfd, CAN.CAM, values))
@@ -847,7 +846,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         nav_icon_available = nav_active or vehicle_navi_available
 
         # hdpuse carrot
-        hdp_use = Params().get_int("HDPuse") if custom_ccnc else int(Params().get("HDPuse"))
+        hdp_use = Params().get_int("HDPuse") if model_lanes else int(Params().get("HDPuse"))
         hdp_active = False
         if hdp_use == 1:
           hdp_active = cruise_enabled and nav_active
@@ -863,7 +862,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         set_speed_in_units = hud_control.setSpeed * (CV.MS_TO_KPH if CS.is_metric else CV.MS_TO_MPH)
         values["vSetDis"] = int(set_speed_in_units + 0.5)
 
-        if custom_ccnc:
+        if model_lanes:
           ccnc_custom.update_speed_limit(values, CS, cruise_enabled)
 
         values["DISTANCE"] = 4 if hdp_active else hud_control.leadDistanceBars
@@ -882,7 +881,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         values["NAV_ICON"] = 2 if nav_icon_available and cruise_enabled else 1 if main_enabled and nav_icon_available else 0
         values["HDA_ICON"] = 5 if hdp_active else 2 if cruise_enabled else 1 if main_enabled else 0
-        if custom_ccnc:
+        if model_lanes:
           ccnc_custom.update_lfa_icon(values, CS, lat_enabled, lat_active, hdp_active)
         else:
           values["LFA_ICON"] = 5 if hdp_active else 2 if lat_active else 1 if lat_enabled else 0
@@ -905,7 +904,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         if values["ALERTS_5"] in [1, 2, 3, 4, 5]:
           values["ALERTS_5"] = 0
 
-        if not custom_ccnc and values["ALERTS_5"] in [11] and CS.softHoldActive == 0:
+        if values["ALERTS_5"] in [11] and CS.softHoldActive == 0:
           values["ALERTS_5"] = 0
 
         # curvature 표시(0x161쪽 기존 로직 유지)
@@ -921,7 +920,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           values["LANELINE_RIGHT"] = 2 if hud_control.rightLaneVisible else 0
         else:
           lane_color = 6 if md is not None and md.meta.laneChangeAvailableLeft else 2
-          if custom_ccnc and not lat_active:
+          if model_lanes and not lat_active:
             lane_color = 0
           if lane_line_check >= 1:
             lane_line_warn_left = CS.out.leftLaneLine % 10 not in (0, 5)
@@ -934,7 +933,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LANELINE_LEFT"] = lane_color if hud_control.leftLaneVisible else 0
 
           lane_color = 6 if md is not None and md.meta.laneChangeAvailableRight else 2
-          if custom_ccnc and not lat_active:
+          if model_lanes and not lat_active:
             lane_color = 0
           if lane_line_check >= 1:
             lane_line_warn_right = CS.out.rightLaneLine % 10 not in (0, 5)

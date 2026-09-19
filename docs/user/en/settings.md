@@ -336,11 +336,11 @@ See the Wiki [Tuning introduction](https://github.com/ajouatom/openpilot/wiki/Gu
 
 ### Independent CCNC display options
 
-Under Vehicle and hardware → CAN FD/HDA, three independent options replace `CcncCustomDisplay`. All default to OFF (0). Existing custom SLA/LFA and cruise-button behavior remains independent of these three options.
+Under Vehicle and hardware → CAN FD/HDA, three independent options replace `CcncCustomDisplay`. All default to OFF (0). SLA/LFA/LKA and lane display while lateral control is inactive are included in the model-lanes option. With all three options OFF, CCNC messages use the original carrot-wip behavior. Cruise-button speed thresholds and lead-departure alert handling also follow the original behavior.
 
 **CcncLaneColor**: Applies lane highlight color and length from acceleration, driving mode and gear. OFF leaves these fields unchanged. Lane-change highlighting is included in the model-lanes option.
 
-**CcncModelLanes**: Applies model lane curvature and lateral positions together with lane-change highlights, icons and transition animation. OFF uses the original display for both. Trailer lane-change blocking takes precedence. Radar candidate selection and lateral correction remain independent under the vehicle-display option.
+**CcncModelLanes**: Applies model lane curvature and lateral positions together with lane-change highlights, icons and transition animation. OFF uses the original display for both. Trailer lane-change blocking takes precedence. Radar candidate selection and lateral correction remain independent under the vehicle-display option. Also switches SLA set-speed display, LFA/LKA icon handling and lane hiding while lateral control is inactive; OFF uses original handling. Toggling resets the SLA display timer.
 
 
 **CcncRadarVehicles**: Displays FF/LF/RF vehicles from front liveTracks on HDA1 CCNC, including filtering, curvature correction and stopped-vehicle retention. Does not apply to HDA2. OFF uses the original vehicle display. BSD LR/RR positions are fixed, not measured distances or positions.
