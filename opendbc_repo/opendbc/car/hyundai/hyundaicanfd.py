@@ -988,9 +988,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         if radar_vehicles:
           values = ccnc_custom.update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes)
+        else:
+          _apply_ccnc_lead(values, getattr(CS, "radarState", None), CC.enabled)
 
         _convert_ccnc_boxes_to_cars(values)
-        _apply_ccnc_lead(values, getattr(CS, "radarState", None), CC.enabled)
 
         if (left_lane_warning and not CS.out.leftBlinker) or (right_lane_warning and not CS.out.rightBlinker):
           values["VIBRATE"] = 1

@@ -35,6 +35,7 @@ class _CcncRadarDisplayTracker:
     self.tracks = {}
     self._points = ()
     self.selected = (None, None, None)
+    self.crossing = {}
     self.positions = {}
     self.lateral_grace = {}
     self.recent_selected = {}
@@ -311,6 +312,7 @@ class _CcncRadarDisplayTracker:
       self.live = None
       self.lane_ready = True
     if frame < self.last_frame or frame - self.last_frame > 15 or live is None:
+      self.crossing.clear()
       self.tracks.clear()
       self._points = ()
       self.selected = (None, None, None)
@@ -453,6 +455,52 @@ class _CcncRadarDisplayTracker:
         continue
       best, best_y, score = p, aligned, distance
     return best, best_y
+
+  def bridge_crossing(self, leads, lateral, probability, is_left, frame, thresholds):
+    # Only previously lane-validated side targets may cross a short lane dropout.
+    chosen = {p.trackId for p in leads if p is not None}
+    for track_id, saved in list(self.crossing.items()):
+      birth, stamp, distance, data, reference = saved
+      entry = self.tracks.get(track_id)
+      if (entry is None or entry[0] != birth or not 0 <= frame - stamp <= 200
+          or self.stop_distance - distance > 30.0):
+        del self.crossing[track_id]
+        continue
+      if probability >= 0.3:
+        del self.crossing[track_id]
+        continue
+      if track_id in chosen:
+        continue
+      p = entry[3]
+      if not 1 <= p.dRel <= 80 or not self.stable(track_id):
+        del self.crossing[track_id]
+        continue
+      left, right = (-float(np.interp(p.dRel, *curve)) for curve in data[:2])
+      y = p.yRel
+      slot = 1 if y > left else 2 if y < right else 0
+      curve = data[reference]
+      aligned = y + float(np.interp(p.dRel, *curve)) - curve[1][0]
+      speed = p.vLead * CV.MS_TO_KPH
+      if (right >= left or abs(aligned) > 5.4
+          or not (speed > thresholds[0] if slot == 0 else
+                  speed > thresholds[1] or (p.dRel < 30 and speed > thresholds[2]))):
+        del self.crossing[track_id]
+        continue
+      # Preserve the last validated road-edge clearance, including during FF entry.
+      edge_left, edge_right = (-float(np.interp(p.dRel, *curve)) for curve in data[2:])
+      margin = 0.25 if slot == 0 else 0.95
+      if not edge_right + margin < y < edge_left - margin or leads[slot] is not None:
+        del self.crossing[track_id]
+        continue
+      leads[slot], lateral[slot] = p, aligned
+    if probability >= 0.3 and self._lane_data is not None:
+      data, flags = self._lane_data
+      if flags[2] and flags[3]:
+        for p in leads[1:]:
+          if p is not None and self.stable(p.trackId):
+            self.crossing[p.trackId] = (self.tracks[p.trackId][0], frame, self.stop_distance,
+                                        (data[0], data[1], data[4], data[5]), 0 if is_left else 1)
+    return leads, lateral
 
   def filter_position(self, point, aligned_y, reference, frame):
     """Keep a physical track's filters across slots, before CAN sign/deadband mapping."""
@@ -1139,6 +1187,13 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
         and (lf_lead is None or lf_lead.trackId != boundary_front.trackId)
         and (rf_lead is None or rf_lead.trackId != boundary_front.trackId)):
       ff_lead, ff_yRel = boundary_front, boundary_front_y
+      ff_uses_lane = True
+
+    normal_ff = ff_lead
+    (ff_lead, lf_lead, rf_lead), (ff_yRel, lf_yRel, rf_yRel) = display_tracker.bridge_crossing(
+      [ff_lead, lf_lead, rf_lead], [ff_yRel, lf_yRel, rf_yRel], selected_lane_prob,
+      selected_lane_is_left, frame, (min_front_lead_speed, min_side_lead_speed, lowspeed_side_lead_speed))
+    if ff_lead is not normal_ff:
       ff_uses_lane = True
 
     # A retained FF must not also occupy a side slot during lane recovery.

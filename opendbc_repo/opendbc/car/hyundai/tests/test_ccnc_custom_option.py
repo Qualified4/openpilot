@@ -222,3 +222,14 @@ def test_scalar_lane_math_matches_numpy_at_rounding_boundaries():
       expected = previous + np.clip(x - previous, -.15, .15)
       actual = eval(step, {"leftlaneraw": x, "prev_l": previous, "MAX_STEP": .15})
       assert math.isnan(actual) if math.isnan(expected) else actual == expected
+
+
+@pytest.mark.parametrize("radar", [False, True])
+def test_custom_radar_is_final_vehicle_display_authority(display, monkeypatch, radar):
+  params, cs, send = display
+  params["CcncRadarVehicles"] = radar
+  cs.ccnc_0x162 = dict(SPEEDLIMIT=0, FF_DISTANCE=204.6, FF_LATERAL=0., FF_DETECT=0, LF_DETECT=0, RF_DETECT=0, LR_DETECT=0, RR_DETECT=0)
+  cs.radarState = N(leadOne=N(status=True, dRel=6., yRel=0., vRel=0., radar=False), leadTwo=None)
+  monkeypatch.setattr(custom, "update_vehicles", lambda values, *args: values)
+  values = dict(send())["CCNC_0x162"]
+  assert values["FF_DETECT"] == (0 if radar else 4)

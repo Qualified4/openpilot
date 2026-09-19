@@ -685,3 +685,45 @@ def test_side_projection_masks_out_of_range_and_invalid_boundaries():
   left = t.side_projection(0)
   assert math.isnan(left[0][0]) and left[0][1] == -7.
   assert math.isnan(left[1][0]) and math.isnan(left[1][1])
+
+
+@pytest.mark.parametrize("side", [1, 2])
+def test_crossing_tracks_latest_radar_and_changes_slot(side):
+  t = Tracker()
+  sign = 1 if side == 1 else -1
+  p = point(y=2.5 * sign)
+  observe(t, [p])
+  curve = lambda y: (np.array([0., 80.]), np.array([y, y]))
+  t._lane_data = ([curve(y) for y in (-1.8, 1.8, -5., 5., -6., 6.)], (True,) * 4)
+  leads = [None] * 3
+  leads[side] = p
+  t.bridge_crossing(leads, [0.] * 3, .9, True, 20, (0., 0., 0.))
+  # A weak but still accepted lane must not erase the reliable snapshot.
+  t.bridge_crossing(leads[:], [0.] * 3, .15, True, 25, (0., 0., 0.))
+  for frame, y, slot in [(25, 2.2 * sign, side), (30, 1.6 * sign, 0)]:
+    p = point(y=y)
+    t.observe(N(points=[p]), frame)
+    got, lateral = t.bridge_crossing([None] * 3, [0.] * 3, .05, True, frame, (0., 0., 0.))
+    assert got[slot] is p and sum(x is not None for x in got) == 1
+    assert lateral[slot] == pytest.approx(y)
+
+
+@pytest.mark.parametrize("reason", ["timeout", "distance", "missing", "jump", "occupied", "edge", "slow", "recovery"])
+def test_crossing_cancels_stale_or_invalid_target(reason):
+  t = Tracker()
+  p = point(y=2.5)
+  observe(t, [p])
+  curve = lambda y: (np.array([0., 80.]), np.array([y, y]))
+  t._lane_data = ([curve(y) for y in (-1.8, 1.8, -5., 5., -6., 6.)], (True,) * 4)
+  t.bridge_crossing([None, p, None], [0.] * 3, .9, True, 20, (0., 0., 0.))
+  frame, probability, leads = 25, .05, [None] * 3
+  if reason == "timeout": frame = 225
+  if reason == "distance": t.stop_distance = 30.1
+  if reason == "missing": t.observe(None, frame)
+  if reason == "jump": t.observe(N(points=[point(x=50., y=2.5)]), frame)
+  if reason == "occupied": leads[1] = point(track_id=2, y=2.5)
+  if reason == "edge": p.yRel = 5.1
+  if reason == "slow": p.vLead = -1.
+  if reason == "recovery": probability = .9
+  got, _ = t.bridge_crossing(leads, [0.] * 3, probability, True, frame, (0., 0., 0.))
+  assert all(x is None or x.trackId != 1 for x in got)
