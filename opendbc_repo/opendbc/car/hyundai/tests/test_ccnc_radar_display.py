@@ -431,3 +431,200 @@ def test_front_boundary_bridge_yields_to_side_or_new_front(edge, other, expected
   if edge == 3.4:
     assert selected[0] is None
   assert step(md, N(live_tracks=N(points=[])), 40, 0., 0.) == (None, None, None)
+
+
+@pytest.mark.parametrize('side', [0, 1])
+@pytest.mark.parametrize('near,far,limit,expected', [(4., 4., 100., True),
+                                                  (3., 4., 100., False),
+                                                  (4., 3., 100., False),
+                                                  (4., 4., 40., False)])
+def test_stationary_side_entry_checks_two_extra_widths(side, near, far, limit, expected):
+  t = Tracker()
+  sign = 1. if side else -1.
+  curve = lambda xs, ys: N(x=xs, y=[sign*y for y in ys])
+  inner = curve([0., 100.], [1.5, 1.5])
+  edge = curve([0., 3., 23., 43., 100.], [near, near, 4., far, far])
+  if limit == 40.:
+    edge.x[-2:] = [35., 40.]
+  md = model()
+  md.timestampEof = 1
+  md.laneLineProbs = [0., .9, .9, 0.]
+  md.laneLines = [inner, inner, inner, inner]
+  md.roadEdges = [edge, edge]
+  q = point(x=23., speed=0.)
+  live = N(points=[q])
+  t.observe(live, 0)
+  t.lane_probabilities(md)
+  t.lane_projection(live)
+  assert t.side_entry_width(q, side) == expected
+  assert t.side_entry_width(q, side) == expected  # Cached geometry.
+  t.finish(None, q, None, 0., True, 0)
+  assert t.side_entry_width(q, side)  # Continuous selected target can stop.
+  t.recent_selected.clear()
+  q.vLead = 1.
+  assert t.side_entry_width(q, side)  # Moving candidate keeps existing policy.
+  q.vLead = 0.
+  md.laneLineProbs[3 if side else 0] = .5
+  assert t.side_entry_width(q, side)
+
+
+@pytest.mark.parametrize('exit_kind', ['departure', 'motion', 'sensor_loss', 'other_slot'])
+def test_stationary_display_hold_and_release(exit_kind):
+  t = Tracker()
+  q = point(x=8., y=3., speed=0.)
+  values = {'LF_DETECT': 1, 'LF_DETECT_DISTANCE': 6.4, 'LF_DETECT_LATERAL': 3.}
+  for frame in range(0, 101, 5):
+    t.observe(N(points=[q]), frame)
+    t.update_stop(0., frame)
+    t.finish(None, q, None, 0., True, frame)
+    t.stopped_display(values, (q, None), frame)
+  assert 0 in t.stop_holds
+  for frame in range(105, 301, 5):
+    t.observe(N(points=[]), frame)
+    t.update_stop(0., frame)
+    t.finish(None, None, None, 0., True, frame)
+    out = {'LF_DETECT': 0}
+    t.stopped_display(out, (None, None), frame)
+    assert out['LF_DETECT'] == 1
+    assert out['LF_DETECT_DISTANCE'] == 6.4
+    assert t.selected == (None, None, None)
+    assert not t.recent_selected
+  moving = point(track_id=9, x=8., y=3., speed=2.)
+  t.observe(None if exit_kind == 'sensor_loss' else N(points=[moving] if exit_kind == 'motion' else []), 305)
+  t.update_stop(1. if exit_kind == 'departure' else 0., 305)
+  if exit_kind == 'other_slot':
+    t.observe(N(points=[q]), 306)
+    t.finish(q, None, None, 0., True, 306)
+  out = {'LF_DETECT': 0}
+  t.stopped_display(out, (None, None), 306)
+  assert out['LF_DETECT'] == 0
+  assert not t.stop_holds
+
+
+def test_saved_width_fades_and_expires_after_travel():
+  t = Tracker()
+  curve = lambda y: N(x=[0., 100.], y=[y, y])
+  def md(prob):
+    m = model()
+    m.timestampEof = prob
+    m.laneLineProbs = [prob, .9, .9, prob]
+    m.laneLines = [curve(-5.), curve(-1.5), curve(1.5), curve(5.)]
+    m.roadEdges = [curve(-6.), curve(6.)]
+    return m
+  q = point(x=23., y=-3., speed=0.)
+  live = N(points=[q])
+  t.observe(live, 0)
+  t.update_stop(0., 0)
+  t.lane_probabilities(md(.8));t.lane_projection(live)
+  assert t.saved_widths[1] is not None
+  weak = md(0.)
+  weak.roadEdges = [curve(-2.), curve(2.)]
+  t.lane_probabilities(weak)
+  projection = t.lane_projection(live)[2][0]
+  assert projection[3] == pytest.approx(5.)
+  assert projection[5] == pytest.approx(6.)
+  assert t.side_entry_width(q, 1)
+  for frame in range(5, 110, 5):
+    t.update_stop(36., frame)
+  assert t.saved_widths == [None, None]
+  t.update_stop(0., 110)
+  t.lane_probabilities(weak)
+  assert t.lane_projection(live)[2][0][5] == pytest.approx(2.)
+
+
+def test_held_motion_clears_even_when_another_candidate_is_selected():
+  t = Tracker()
+  held_point = point(1, x=8., y=3., speed=0.)
+  other = point(2, x=30., y=3., speed=2.)
+  for frame in range(0, 101, 5):
+    t.observe(N(points=[held_point]), frame)
+    t.update_stop(0., frame)
+    t.finish(None, held_point, None, 0., True, frame)
+    t.stopped_display({'LF_DETECT': 1, 'LF_DETECT_DISTANCE': 6.4, 'LF_DETECT_LATERAL': 3.}, (held_point, None), frame)
+  assert 0 in t.stop_holds
+  moving = point(9, x=8., y=3., speed=2.)
+  t.observe(N(points=[moving, other]), 105)
+  t.update_stop(0., 105)
+  t.finish(None, other, None, 0., True, 105)
+  out = {'LF_DETECT': 1, 'LF_DETECT_DISTANCE': 24., 'LF_DETECT_LATERAL': 3.}
+  t.stopped_display(out, (other, None), 105)
+  assert not t.stop_holds
+  assert out['LF_DETECT_DISTANCE'] == 24.
+
+
+@pytest.mark.parametrize('x,visible', [(-1.01, False), (-1., True), (-.2, True), (0., True), (1., True)])
+def test_approach_hold_clamps_output_only(x, visible):
+  t = Tracker()
+  t.live = N(points=[])
+  t.approaching = True
+  t.stop_distance = 1.5 - x
+  t.approach_holds[0] = (33, 1.5, 2., (1, 1.2, 2.), 0, 0.)
+  out = {'LF_DETECT': 0}
+  t.stopped_display(out, (None, None), 10)
+  assert bool(out['LF_DETECT']) == visible
+  if visible:
+    assert out['LF_DETECT_DISTANCE'] == pytest.approx(max(0., x)*.8)
+    assert t.approach_holds[0][1] - t.stop_distance == pytest.approx(x)
+
+
+@pytest.mark.parametrize('reason', ['timeout', 'travel', 'acceleration', 'sensor', 'motion'])
+def test_approach_hold_release(reason):
+  t = Tracker()
+  t.observe(N(points=[]), 0)
+  t.update_stop(5., 0, -1.)
+  t.approach_holds[0] = (33, 10., 2., (1, 8., 2.), 0, 0.)
+  if reason == 'travel':
+    t.stop_distance = 5.01
+  elif reason == 'acceleration':
+    t.update_stop(5., 5, 1.)
+  elif reason == 'sensor':
+    t.observe(None, 5)
+    t.update_stop(5., 5, -1.)
+  elif reason == 'motion':
+    t.live = N(points=[point(99, x=10., y=2., speed=2.)])
+  out = {'LF_DETECT': 0}
+  t.stopped_display(out, (None, None), 301 if reason == 'timeout' else 10)
+  assert out['LF_DETECT'] == 0
+  assert not t.approach_holds
+
+
+def test_approach_transfers_negative_distance_to_stop_and_departure_clears():
+  t = Tracker()
+  t.observe(N(points=[]), 0)
+  t.update_stop(5., 0, -1.)
+  t.approach_holds[0] = (33, 1.5, 2., (1, 1.2, 2.), 0, 0.)
+  t.stop_distance = 1.7
+  # Same ID reused far away must not become the remembered vehicle.
+  t.observe(N(points=[point(33, x=50., y=-12.)]), 5)
+  t.update_stop(0., 5, -1.)
+  out = {'LF_DETECT': 0}
+  t.stopped_display(out, (None, None), 5)
+  assert out['LF_DETECT'] == 1 and out['LF_DETECT_DISTANCE'] == 0.
+  assert t.stop_holds[0][1] == pytest.approx(-.2)
+  assert not t.approach_holds
+  t.update_stop(1., 10, 1.)
+  assert not t.stop_holds
+
+
+@pytest.mark.parametrize('side', [0, 1])
+def test_approaching_stationary_target_is_qualified_before_loss(side):
+  t = Tracker()
+  sign = 1. if side == 0 else -1.
+  prefix = 'LF' if side == 0 else 'RF'
+  for frame in range(0, 101, 5):
+    q = point(33, x=5. - frame*.01, y=sign*2.5, speed=0.)
+    q.vRel = -1.
+    t.observe(N(points=[q]), frame)
+    t.update_stop(3.6, frame, -1.)
+    leads = (q, None) if side == 0 else (None, q)
+    t.finish(None, *leads, 0., True, frame)
+    t.stopped_display({prefix+'_DETECT': 1, prefix+'_DETECT_DISTANCE': q.dRel*.8,
+                       prefix+'_DETECT_LATERAL': 2.5}, leads, frame)
+  assert side in t.approach_holds
+  t.observe(N(points=[]), 105)
+  t.update_stop(3.6, 105, -1.)
+  t.finish(None, None, None, 0., True, 105)
+  out = {prefix+'_DETECT': 0}
+  t.stopped_display(out, (None, None), 105)
+  assert out[prefix+'_DETECT'] == 1
+  assert out[prefix+'_DETECT_DISTANCE'] == pytest.approx(3.95*.8)

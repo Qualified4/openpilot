@@ -28,6 +28,16 @@ def _ccnc_valid_boundary(x, y):
 class _CcncRadarDisplayTracker:
   """Observation continuity and lane-free fallback for the CCNC display only."""
   def __init__(self):
+    self.approaching = False
+    self.approach_pending = {}
+    self.approach_holds = {}
+    self.stop_last_frame = None
+    self.stop_distance = 0.0
+    self.saved_widths = [None, None]
+    self.stopped = False
+    self.stop_pending = {}
+    self.stop_holds = {}
+    self._saved_side = [None, None]
     self.live = None
     self.last_frame = -1
     self.tracks = {}
@@ -42,17 +52,149 @@ class _CcncRadarDisplayTracker:
     self._model_stamp = None
     self._inner_data = None
     self._lane_probs = None
+    self._side_width_cache = {}
     self._lane_data = None
     self._projection_live = None
     self._projection = None
     self._path_data = None
     self._path_live = self._path_points = None
 
+  def update_stop(self, speed_kph, frame, acceleration_kph=0.0):
+    previous = self.stop_last_frame
+    gap = previous is None or not 0 <= frame - previous <= 15
+    stopped = math.isfinite(speed_kph) and abs(speed_kph) <= 0.3
+    approaching = (not self.stopped and math.isfinite(speed_kph) and math.isfinite(acceleration_kph)
+                   and 0.3 < speed_kph <= 10.0 and acceleration_kph < -0.1)
+    if gap or self.live is None or not (stopped or approaching):
+      self.approach_pending.clear()
+      self.approach_holds.clear()
+    self.approaching = approaching
+    if gap:
+      self.saved_widths = [None, None]
+      self._lane_data = self._projection = None
+    else:
+      self.stop_distance += abs(speed_kph) / 3.6 * (frame - previous) * 0.01 if math.isfinite(speed_kph) else 10.0
+    for side, saved in enumerate(self.saved_widths):
+      if saved is not None and self.stop_distance - saved[0] >= 10.0:
+        self.saved_widths[side] = None
+        self._lane_data = self._projection = None
+        self._side_width_cache.clear()
+    if gap or not stopped or self.live is None:
+      self.stop_pending.clear()
+      self.stop_holds.clear()
+    if stopped != self.stopped:
+      self._lane_data = self._projection = None
+      self._side_width_cache.clear()
+    self.stopped = stopped
+    self.stop_last_frame = frame
+
+  def approaching_display(self, values, leads, frame):
+    # A stationary target lost just before ego stops is carried in odometry coordinates.
+    for side, lead in enumerate(leads):
+      prefix = 'LF' if side == 0 else 'RF'
+      keys = (prefix + '_DETECT', prefix + '_DETECT_DISTANCE', prefix + '_DETECT_LATERAL')
+      if self.approaching and lead is not None:
+        pending = self.approach_pending.get(side)
+        world_x = lead.dRel + self.stop_distance
+        if abs(lead.vLead) > (3.0 if side in self.approach_holds else 2.0) / 3.6:
+          self.approach_pending.pop(side, None)
+        else:
+          if (pending is None or pending[0] != lead.trackId
+              or abs(world_x - pending[2]) > 1.0 or abs(lead.yRel - pending[3]) > 0.75):
+            pending = (lead.trackId, frame, world_x, lead.yRel)
+            self.approach_pending[side] = pending
+          if frame - pending[1] >= 50 and self.stable(lead.trackId, 50):
+            self.approach_holds[side] = (lead.trackId, world_x, lead.yRel,
+                                        tuple(values[k] for k in keys), frame, self.stop_distance)
+      else:
+        self.approach_pending.pop(side, None)
+      held = self.approach_holds.get(side)
+      if held is None:
+        continue
+      track_id, world_x, y, display, last_seen, last_distance = held
+      x = world_x - self.stop_distance  # Keep negative distance internally.
+      invalid = x < -1.0 or frame - last_seen > 300 or self.stop_distance - last_distance > 5.0
+      for point in self.live.points:
+        if (str(point.radarSource) == 'frontRadar' and math.isfinite(point.dRel)
+            and math.isfinite(point.yRel) and abs(point.dRel - x) <= 2.0 and abs(point.yRel - y) <= 0.8):
+          if (not math.isfinite(point.vLead) or abs(point.vLead) > 3.0 / 3.6
+              or abs(point.dRel - x) > 1.0 or abs(point.yRel - y) > 0.75
+              or point.trackId in (self.selected[0], self.selected[2 - side])):
+            invalid = True
+            break
+      if invalid:
+        self.approach_holds.pop(side, None)
+        continue
+      display = (display[0], max(0.0, x) * 0.8, display[2])
+      if self.stopped:
+        old = self.stop_holds.get(side)
+        if old is None or x < old[1]:
+          self.stop_holds[side] = (track_id, x, y, display)
+        self.approach_holds.pop(side, None)
+      elif lead is None:
+        values.update(zip(keys, display))
+
+  def stopped_display(self, values, leads, frame):
+    # Display memory only: never feed synthetic tracks back into selection/history.
+    if self.live is None:
+      return
+    if self.approaching or self.approach_holds:
+      self.approaching_display(values, leads, frame)
+    if not self.stopped:
+      return
+    for side, lead in enumerate(leads):
+      prefix = 'LF' if side == 0 else 'RF'
+      keys = (prefix + '_DETECT', prefix + '_DETECT_DISTANCE', prefix + '_DETECT_LATERAL')
+      held = self.stop_holds.get(side)
+      if held is not None and lead is not None:
+        for point, px, py, vr, v in self._points:
+          if (abs(px - held[1]) <= 2.0 and abs(py - held[2]) <= 0.8
+              and (abs(v) > 2.0 / 3.6 or abs(vr) > 2.0 / 3.6)):
+            self.stop_holds.pop(side, None)
+            held = None
+            break
+      if lead is not None:
+        # A current selected candidate always supersedes a stale display.
+        pending = self.stop_pending.get(side)
+        stationary = abs(lead.vLead) <= 2.0 / 3.6 and abs(lead.vRel) <= 2.0 / 3.6
+        if not stationary:
+          if held is not None and abs(lead.dRel - held[1]) <= 2.0 and abs(lead.yRel - held[2]) <= 0.8:
+            self.stop_holds.pop(side, None)
+          self.stop_pending.pop(side, None)
+          continue
+        if (pending is None or pending[0] != lead.trackId
+            or abs(lead.dRel - pending[2]) > 1.0 or abs(lead.yRel - pending[3]) > 0.75):
+          pending = (lead.trackId, frame, lead.dRel, lead.yRel)
+          self.stop_pending[side] = pending
+        if (frame - pending[1] >= 50 and self.stable(lead.trackId, 50)
+            and (held is None or lead.dRel <= held[1] + 1.0)):
+          self.stop_holds[side] = (lead.trackId, lead.dRel, lead.yRel, tuple(values[k] for k in keys))
+        continue
+      self.stop_pending.pop(side, None)
+      if held is None:
+        continue
+      track_id, x, y, display = held
+      invalid = False
+      for point, px, py, vr, v in self._points:
+        nearby = abs(px - x) <= 2.0 and abs(py - y) <= 0.8
+        if nearby:
+          # Motion, ID reuse, or a current selection in another slot cancels the ghost.
+          if (abs(v) > 2.0 / 3.6 or abs(vr) > 2.0 / 3.6
+              or abs(px - x) > 1.0 or abs(py - y) > 0.75
+              or point.trackId in self.selected):
+            invalid = True
+            break
+      if invalid:
+        self.stop_holds.pop(side, None)
+      else:
+        values.update(zip(keys, display))
+
   def _update_model(self, md):
     # SubMaster model readers are immutable between publications; retain the reader itself.
     stamp = getattr(md, "timestampEof", None) if md is not None else None
     if md is self._model and stamp is not None and stamp == self._model_stamp:
       return
+    self._side_width_cache.clear()
     self._model, self._model_stamp = md, stamp
     self._inner_data = self._lane_probs = self._lane_data = self._projection = self._path_data = None
     self._projection_live = None
@@ -83,6 +225,13 @@ class _CcncRadarDisplayTracker:
                           (True, edges[0]), (True, edges[1])):
         data.append((np.asarray(line.x, dtype=np.float64), np.asarray(line.y, dtype=np.float64)) if valid else None)
       flags = tuple(item is not None and _ccnc_valid_boundary(*item) for item in data[2:])
+      self._saved_side = [None, None]
+      for side in (0, 1):
+        if flags[side] and self._lane_probs[side] >= 0.1:
+          self.saved_widths[side] = (self.stop_distance, data[side], data[2 + side],
+                                     data[4 + side] if flags[2 + side] else None)
+        elif self.stopped and self.saved_widths[side] is not None:
+          self._saved_side[side] = self.saved_widths[side]
       self._lane_data = data, flags
     data, flags = self._lane_data
     distances = np.fromiter((p[1] for p in self._points), dtype=np.float64, count=len(self._points))
@@ -95,9 +244,63 @@ class _CcncRadarDisplayTracker:
         projected.append(vals)
       else:
         projected.append(np.full(len(distances), np.nan))
+    # Retain widths, not old absolute coordinates, when stopped and outer lanes fade.
+    for side, saved in enumerate(self._saved_side):
+      if saved is None:
+        continue
+      _, inner, outer, edge = saved
+      for index, curve in ((2 + side, outer), (4 + side, edge)):
+        if curve is not None:
+          xs, ys = curve
+          vals = projected[side] + np.interp(distances, xs, ys) - np.interp(distances, *inner)
+          vals[(distances < max(xs[0], inner[0][0])) | (distances > min(xs[-1], inner[0][-1]))] = np.nan
+          projected[index] = vals
     self._projection_live = live
     self._projection = float(data[0][1][0]), float(data[1][1][0]), tuple(zip(*(values.tolist() for values in projected)))
     return self._projection
+
+  def side_entry_width(self, lead, side):
+    # Existing continuous targets may stop without becoming new detections.
+    if (lead.vLead * CV.MS_TO_KPH > 2.0 or self._model.laneLineProbs[3 if side else 0] > 0.1
+        or self.recently_selected(lead.trackId)):
+      return True
+    key = (lead.trackId, side)
+    cached = self._side_width_cache.get(key)
+    if cached is not None:
+      return cached
+    data, flags = self._lane_data
+    saved = self._saved_side[side]
+    if saved is not None:
+      _, inner, outer, edge = saved
+      sign = 1.0 if side else -1.0
+      valid = True
+      for x in (max(0.0, lead.dRel - 20.0), lead.dRel + 20.0):
+        if not inner[0][0] <= x <= inner[0][-1]:
+          valid = False
+          break
+        iy = float(np.interp(x, *inner))
+        for curve in (outer, edge):
+          if curve is not None and (not curve[0][0] <= x <= curve[0][-1]
+              or sign * (float(np.interp(x, *curve)) - iy) - 0.25 <= 1.8):
+            valid = False
+            break
+        if not valid:
+          break
+      self._side_width_cache[key] = valid
+      return valid
+    valid = flags[2 + side]
+    if valid:
+      inner_x, inner_y = data[side]
+      edge_x, edge_y = data[4 + side]
+      sign = 1.0 if side else -1.0
+      # The target-distance width has already passed; inspect only two extra points.
+      for x in (max(0.0, lead.dRel - 20.0), lead.dRel + 20.0):
+        if (not (inner_x[0] <= x <= inner_x[-1] and edge_x[0] <= x <= edge_x[-1])
+            or sign * (float(np.interp(x, edge_x, edge_y)) - float(np.interp(x, inner_x, inner_y))) - 0.25 <= 1.8):
+          valid = False
+          break
+    self._side_width_cache[key] = valid
+    return valid
 
   def observe(self, live, frame):
     if frame < self.last_frame or frame - self.last_frame > 15:
@@ -114,6 +317,7 @@ class _CcncRadarDisplayTracker:
     self.last_frame = frame
     if live is self.live:
       return
+    self._side_width_cache.clear()
     self.live = live  # card keeps the same RadarData object until the next radar update.
     self._path_points = self._projection = None
     current = {}
@@ -1724,6 +1928,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           display_tracker = create_ccnc_messages.radar_display_tracker
           display_tracker.observe(CS.live_tracks, frame)
+          display_tracker.update_stop(v_ego_kph, frame, a_ego_kph)
           left_prob, right_prob = display_tracker.lane_probabilities(md)
           selected_lane_is_left = create_ccnc_messages.radar_lane_selector.update(left_prob, right_prob, frame)
           selected_lane_prob = left_prob if selected_lane_is_left else right_prob
@@ -1801,7 +2006,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     if left_width_bound != math.inf:
                       # Preserve the original width check before expanding candidate acceptance.
                       left_width_bound = left_width_bound - 0.25
-                      if yRel < left_effective_bound and (left_width_bound - left_inner_bound > 1.8):
+                      if (yRel < left_effective_bound and left_width_bound - left_inner_bound > 1.8
+                          and display_tracker.side_entry_width(lead, 0)):
                         lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
 
               # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
@@ -1830,7 +2036,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                     if right_width_bound != -math.inf:
                       # Preserve the original width check before expanding candidate acceptance.
                       right_width_bound = right_width_bound + 0.25
-                      if yRel > right_effective_bound and (right_inner_bound - right_width_bound > 1.8):
+                      if (yRel > right_effective_bound and right_inner_bound - right_width_bound > 1.8
+                          and display_tracker.side_entry_width(lead, 1)):
                         rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
 
           if CS.live_tracks is not None and (not ff_lane_mode or selected_lane_prob < 0.5):
@@ -1897,6 +2104,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["RF_DETECT"] = create_ccnc_messages.rf_detect.apply(rf_lead.vRel)
           else:
             values["RF_DETECT"] = 0
+
+          display_tracker.stopped_display(values, (lf_lead, rf_lead), frame)
 
           center_lane_offset = (create_ccnc_messages.r_lane_f.value - create_ccnc_messages.l_lane_f.value) / 2
 
