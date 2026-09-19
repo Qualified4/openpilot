@@ -11,7 +11,7 @@ import pytest
 
 
 def load_helpers():
-  path = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[1] / 'hyundaicanfd.py'))
+  path = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[1] / 'hyundaicanfd_ccnc.py'))
   names = {'_ccnc_valid_boundary', '_CcncRadarDisplayTracker', '_CcncRadarPositionFilter', 'NoiseFilter', 'apply_curved_deadband'}
   nodes = [n for n in ast.parse(path.read_text(encoding='utf8')).body
            if isinstance(n, (ast.ClassDef, ast.FunctionDef)) and n.name in names]
@@ -268,9 +268,9 @@ def test_wider_turn_match_requires_strict_range_speed_and_probability(distance, 
 
 
 def test_fallback_failure_keeps_lane_selected_front():
-  source = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[1] / 'hyundaicanfd.py')).read_text(encoding='utf8')
-  start = source.index('          if CS.live_tracks is not None and (not ff_lane_mode')
-  end = source.index('          # Only bridge an empty slot', start)
+  source = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[1] / 'hyundaicanfd_ccnc.py')).read_text(encoding='utf8')
+  start = source.index('    if CS.live_tracks is not None and (not ff_lane_mode')
+  end = source.index('    # Only bridge an empty slot', start)
   import textwrap
   candidate = point()
   tracker = N(path_lead=lambda *args, **kwargs: (None, 0.), recently_selected=lambda *args, **kwargs: True)
@@ -283,9 +283,9 @@ def test_fallback_failure_keeps_lane_selected_front():
 
 
 def test_failed_fallback_does_not_introduce_new_target_from_weak_lanes():
-  source = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[1] / 'hyundaicanfd.py')).read_text(encoding='utf8')
-  start = source.index('          if CS.live_tracks is not None and (not ff_lane_mode')
-  end = source.index('          # Only bridge an empty slot', start)
+  source = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[1] / 'hyundaicanfd_ccnc.py')).read_text(encoding='utf8')
+  start = source.index('    if CS.live_tracks is not None and (not ff_lane_mode')
+  end = source.index('    # Only bridge an empty slot', start)
   import textwrap
   env = dict(CS=N(live_tracks=object()), ff_lane_mode=False, selected_lane_prob=.15,
              a_ego_kph=0., v_ego_kph=20., min_front_lead_speed=-100., np=np, md=model(), ff_lead=point(), ff_yRel=1.,
@@ -390,7 +390,7 @@ def test_lateral_grace_does_not_hide_other_discontinuities(x, y, vr):
 
 def display_step_for_test():
   import textwrap
-  path = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[1] / 'hyundaicanfd.py'))
+  path = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[1] / 'hyundaicanfd_ccnc.py'))
   source = path.read_text(encoding='utf8')
   env = dict(H, CAR_MODEL_ID=3)
   selector = next(n for n in ast.parse(source).body if isinstance(n, ast.ClassDef) and n.name == '_CcncRadarLaneSelector')
@@ -398,9 +398,9 @@ def display_step_for_test():
   control = N(radar_display_tracker=Tracker(), radar_lane_selector=env['_CcncRadarLaneSelector']())
   for side in ('ff', 'lf', 'rf'):
     setattr(control, side + '_detect', N(apply=lambda v: 1))
-  env['create_ccnc_messages'] = control
-  start = source.index('          ff_lead = lf_lead = rf_lead = None')
-  end = source.index('          center_lane_offset =', start)
+  env['state'] = control
+  start = source.index('    ff_lead = lf_lead = rf_lead = None')
+  end = source.index('    center_lane_offset =', start)
   body = 'def step(md, CS, frame, v_ego_kph, a_ego_kph):\n  values = {}\n'
   body += textwrap.indent(textwrap.dedent(source[start:end]), '  ')
   body += '\n  return ff_lead, lf_lead, rf_lead\n'

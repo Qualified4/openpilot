@@ -35,7 +35,7 @@ def test_paddle_background_requires_enabled_paddle_mode(
   )),
 ])
 def test_cluster_objects_preserve_received_geometry_and_display_state(monkeypatch, message, distance, detect, expected_detect):
-  monkeypatch.setattr(hyundaicanfd, "Params", lambda: SimpleNamespace(get_int=lambda key: 0))
+  monkeypatch.setattr(hyundaicanfd, "Params", lambda: SimpleNamespace(get_bool=lambda key: False, get_int=lambda key: 0))
   packer = CANPacker("hyundai_canfd_generated")
   definition = packer.dbc.name_to_msg[message]
   source = {key: 0 for key in definition.sigs}
@@ -63,7 +63,7 @@ def test_cluster_objects_preserve_received_geometry_and_display_state(monkeypatc
 
   for frame in (0, 5, 65, 70, 100, 135, 200):
     messages = hyundaicanfd.create_ccnc_messages(cp, packer, can, frame, control, state, hud,
-                                                0, False, False, 0, False, 0, 0)
+                                                0, False, False, 0, False, 0, 0, custom_ccnc=False)
     assert len(messages) == 1
     address, data, bus = messages[0]
     assert (address, bus) == (definition.address, 0)

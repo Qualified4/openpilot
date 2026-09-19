@@ -223,6 +223,9 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 |---|---|---|
 | 현대·기아 | `HyundaiCameraSCC`, `IsLdwsCar`, `HapticFeedbackWhenSpeedCamera` | SCC 연결 방식, LDWS 차량과 카메라 구간 햅틱 |
 | CANFD·HDA | `CanfdHDA2`, `CanfdDebug`, `HDPuse` | HDA2 차량과 CAN FD 디버그·HDP 기능 |
+| CANFD·HDA | `CcncLaneColor` | CCNC 가속·모드 차선 색상 · 기본 OFF(0) |
+| CANFD·HDA | `CcncModelLanes` | CCNC 모델 차선·변경 애니메이션 · 기본 OFF(0) |
+| CANFD·HDA | `CcncRadarVehicles` | CCNC HDA1 레이더 차량 표시 · 기본 OFF(0) |
 | CANFD·HDA | `CanfdStopRetry` | 기본 OFF. ON일 때만 순정형 정지 요청과 움직임 감지 후 한 번의 감속·재요청을 적용합니다. 현대·기아 CANFD 오픈파일럿 종방향 전용이며 주행 중에도 약 0.5초 이내 반영됩니다. [정지 재시도 설명](cruise-gap.md#canfd-정지-재시도-시험--canfdstopretry)을 확인하세요. |
 | 레이더 | `EnableRadarTracks`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC 레이더, 레이더 트랙, 코너 레이더와 당근레이더 처리·컷인 감도 |
 | 운전자 모니터링 | `DisableDM`, `MuteDoor`, `MuteSeatbelt` | 운전자 모니터링과 일부 차량 경고음 처리 |
@@ -365,3 +368,16 @@ Carrot Vision에는 `carrot_settings.json` 카탈로그와 별도로 **AR 표시
 7. 나빠지거나 판단하기 어렵다면 즉시 이전 값 또는 기준 프로필로 복원합니다.
 
 조향과 가감속의 실제 조정 순서는 [튜닝 입문](https://github.com/ajouatom/openpilot/wiki/Guide-Tuning)을 참고하세요.
+
+### CCNC 개별 표시 옵션
+
+차량·하드웨어 → CANFD·HDA에서 세 기능을 독립적으로 설정합니다. 모두 기본 OFF(0)이며, 기존 `CcncCustomDisplay` 통합 옵션을 대체합니다. SLA·LFA 표시 및 크루즈 버튼의 기존 사용자 동작은 이 세 옵션과 별개로 유지됩니다.
+
+**CcncLaneColor**: 가속도·드라이브 모드·기어에 따른 차로 강조 색상과 길이를 적용합니다. 끄면 이 변경을 적용하지 않습니다. 차선 변경 강조는 모델 차선 옵션에 포함됩니다.
+
+**CcncModelLanes**: 모델 차선 곡률·좌우 위치와 차선 변경 강조·아이콘·전환 애니메이션을 함께 적용합니다. 끄면 모두 원본 표시를 사용하며, 트레일러 차선 변경 차단이 우선 적용됩니다. 레이더 차량 판정·횡거리 보정은 차량 표시 옵션에서 독립적으로 유지합니다.
+
+
+**CcncRadarVehicles**: HDA1 CCNC에서 전방 liveTracks로 FF·LF·RF 차량을 표시합니다. 필터링·곡률 보정·정지 차량 유지를 포함하며 HDA2에는 적용하지 않습니다. 끄면 원본 차량 표시를 사용합니다. BSD의 LR·RR은 고정 위치 표시이며 실제 거리·위치가 아닙니다.
+
+변경은 CCNC 처리 중 약 1초 이내 반영됩니다. 색상·차선 옵션 변경은 기억한 레이더 차량을 지우지 않으며, 레이더 차량 표시를 전환할 때만 차량 유지 상태를 초기화합니다. 새 Params 등록 후 재빌드·재시작이 필요합니다.

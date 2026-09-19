@@ -10,7 +10,7 @@ from opendbc.car.hyundai.values import HyundaiFlags
 
 
 def send_ccnc(monkeypatch, radar, *, enabled=True, stock=None, present=True, with_target=False):
-  monkeypatch.setattr(hyundaicanfd, "Params", lambda: SimpleNamespace(get_int=lambda key: 0, get=lambda key: "0"))
+  monkeypatch.setattr(hyundaicanfd, "Params", lambda: SimpleNamespace(get_bool=lambda key: False, get_int=lambda key: 0, get=lambda key: "0"))
   packer = CANPacker("hyundai_canfd_generated")
   source = {key: 0 for key in packer.dbc.name_to_msg["CCNC_0x162"].sigs}
   source.update(FF_DISTANCE=204.6, FF_DETECT_ALT=2, FF_DISTANCE_ALT=31.2, FF_LATERAL_ALT=0.7,
@@ -32,7 +32,7 @@ def send_ccnc(monkeypatch, radar, *, enabled=True, stock=None, present=True, wit
     cs.trailer_connected = False
   messages = hyundaicanfd.create_ccnc_messages(
     SimpleNamespace(flags=HyundaiFlags.CAMERA_SCC), packer, SimpleNamespace(ECAN=0, CAM=2), 5,
-    SimpleNamespace(enabled=enabled, latActive=True), cs, structs.CarControl().hudControl, 0, False, False, 0, False, 0, 0,
+    SimpleNamespace(enabled=enabled, latActive=True), cs, structs.CarControl().hudControl, 0, False, False, 0, False, 0, 0, custom_ccnc=False,
   )
   assert source == original
   if not present:

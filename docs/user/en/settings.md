@@ -219,6 +219,9 @@ These 14 settings describe the car, harness, and device hardware configuration. 
 |---|---|---|
 | Hyundai/Kia | `HyundaiCameraSCC`, `IsLdwsCar`, `HapticFeedbackWhenSpeedCamera` | SCC connection, LDWS behavior, and speed-event haptics |
 | CAN FD/HDA | `CanfdHDA2`, `CanfdDebug`, `HDPuse` | HDA2 selection, CAN FD diagnostics, and HDP |
+| CANFD·HDA | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
+| CANFD·HDA | `CcncModelLanes` | CCNC model lanes and lane-change animation · Default OFF (0) |
+| CANFD·HDA | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Default OFF (0) |
 | CANFD·HDA | `CanfdStopRetry` | Default OFF. Enables stock-like stop requests and one deceleration/reassertion attempt when motion persists. Hyundai/Kia CANFD openpilot longitudinal only; changes apply during driving within about 0.5 seconds. See [stop retry details](cruise-gap.md#canfd-stop-retry-experimental--canfdstopretry). |
 | Radar | `EnableRadarTracks`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC radar, raw tracks, corner radar, and Carrot Radar processing and cut-in sensitivity |
 | Driver monitoring | `DisableDM`, `MuteDoor`, `MuteSeatbelt` | Driver monitoring and selected vehicle alerts |
@@ -330,3 +333,16 @@ Check storage use for recording and network use, heat, and privacy before enabli
 7. Restore the previous value or baseline profile immediately if the result is worse or unclear.
 
 See the Wiki [Tuning introduction](https://github.com/ajouatom/openpilot/wiki/Guide-Tuning) for the recommended steering and longitudinal adjustment order.
+
+### Independent CCNC display options
+
+Under Vehicle and hardware → CAN FD/HDA, three independent options replace `CcncCustomDisplay`. All default to OFF (0). Existing custom SLA/LFA and cruise-button behavior remains independent of these three options.
+
+**CcncLaneColor**: Applies lane highlight color and length from acceleration, driving mode and gear. OFF leaves these fields unchanged. Lane-change highlighting is included in the model-lanes option.
+
+**CcncModelLanes**: Applies model lane curvature and lateral positions together with lane-change highlights, icons and transition animation. OFF uses the original display for both. Trailer lane-change blocking takes precedence. Radar candidate selection and lateral correction remain independent under the vehicle-display option.
+
+
+**CcncRadarVehicles**: Displays FF/LF/RF vehicles from front liveTracks on HDA1 CCNC, including filtering, curvature correction and stopped-vehicle retention. Does not apply to HDA2. OFF uses the original vehicle display. BSD LR/RR positions are fixed, not measured distances or positions.
+
+Changes apply within about one second during CCNC processing. Color/lane changes preserve retained radar vehicles; toggling radar vehicle display clears vehicle retention state. Rebuild and restart after registering the new Params.
