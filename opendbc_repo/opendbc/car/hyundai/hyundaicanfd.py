@@ -860,7 +860,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         nav_icon_available = nav_active or vehicle_navi_available
 
         # hdpuse carrot
-        hdp_use = Params().get_int("HDPuse") if model_lanes else int(Params().get("HDPuse"))
+        hdp_use = Params().get_int("HDPuse")
         hdp_active = False
         if hdp_use == 1:
           hdp_active = cruise_enabled and nav_active
