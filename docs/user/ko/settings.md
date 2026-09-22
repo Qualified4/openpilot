@@ -29,6 +29,10 @@ carrotpilot의 세부 설정은 **Carrot Web에서 모두 확인하고 변경하
 
 접속 문제와 다른 화면의 설명은 [Carrot Web](https://github.com/ajouatom/openpilot/wiki/Guide-Carrot-Web)을 참고하세요.
 
+### 웹 화면 구성 기본값
+
+`도구 > Web Settings > 화면 구성`의 처음 설치 기본값은 가로·세로 모두 **영역 1 전체**이며, 영역 1은 **당근비전**, 영역 2는 **당근네비**입니다. `기본값` 버튼은 두 방향을 모두 **영역 1 전체 + 영역 1 당근비전 + 영역 2 당근네비**로 되돌립니다. 화면별 설명은 [Carrot Web 화면 구성](carrot-web.md#화면-구성)을 참고하세요.
+
 ## 설정 화면 사용법
 
 Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
@@ -136,6 +140,8 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 
 버튼 설정은 순정 SCC 사용 여부와 차량 버튼 메시지에 따라 체감이 크게 다릅니다. 버튼이 예상과 다르게 작동하면 사용자 모드보다 `CruiseButtonMode=0`의 일반 동작에서 먼저 확인하세요.
 
+폭스바겐의 별도 `SET`은 현재 속도 설정, `RES`는 이전 설정속도 복원에 사용하고, `+`·`-`는 버튼 모드·속도 단위·길게 누르기 설정을 따릅니다. 오픈파일럿 종방향 제어의 수동 인게이지 버튼은 기존 물리 `SET`·`RES`로 유지됩니다.
+
 <a id="vehicle-steering"></a>
 ### 차량 조향 — 상위 37개 + ONNX 상세 5개
 
@@ -163,7 +169,7 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 
 | 세부 구역 | 파라미터 | 용도 |
 |---|---|---|
-| [과속카메라](speed-deceleration.md#speed-camera) | `AutoNaviSpeedCtrlMode`, `AutoNaviSpeedCtrlEnd`, `AutoNaviRearCameraHoldDistance`, `AutoNaviSpeedDecelRate`, `AutoNaviSpeedSafetyFactor`, `AutoNaviCountDownMode`, `VehicleNaviCanControl`, `VehicleNaviSchoolZoneControl`, `VehicleSpeedCameraControlMode`, `VehicleSpeedCameraDistanceTime` | 안전운전 이벤트의 대상, 후면단속 통과 후 유지, 순정 카메라 거리 연결·가상거리, PV5 단속 안내 보완·구간단속 제한속도 유지, 감속 시점과 목표 속도 |
+| [과속카메라](speed-deceleration.md#speed-camera) | `AutoNaviSpeedCtrlMode`, `AutoNaviSpeedCtrlEnd`, `AutoNaviRearCameraHoldDistance`, `AutoNaviSpeedDecelRate`, `AutoNaviSpeedSafetyFactor`, `AutoNaviCountDownMode`, `VehicleNaviCanControl`, `VehicleNaviSchoolZoneControl`, `VehicleSpeedCameraControlMode`, `VehicleSpeedCameraDistanceTime` | 안전운전 이벤트의 대상, 후면단속 통과 후 유지, 순정 카메라 거리 연결·가상거리, PV5 단속 상태에 따른 카메라 유지·해제와 구간단속 제한속도 유지, 감속 시점과 목표 속도 |
 | [도로 제한속도](speed-deceleration.md#road-speed-limit) | `AutoRoadSpeedLimitOffset`, `AutoRoadSpeedAdjust`, `AutoSpeedUptoRoadSpeedLimit` | 도로 제한속도에 맞춘 목표 속도 조절 |
 | [과속방지턱](speed-deceleration.md#speed-bump) | `AutoNaviSpeedBumpTime`, `AutoNaviSpeedBumpSpeed`, `AutoNaviSpeedBumpEndDistance` | 방지턱 감속 완료 시점, 통과 속도와 조기 종료 거리 |
 | [커브·턴](speed-deceleration.md#curve-turn) | `AutoCurveSpeedFactor`, `AutoCurveSpeedLowerLimit`, `TurnSpeedControlMode`, `MapTurnSpeedFactor`, `ApplyModelSpeed` | 곡률·남은 거리 기반 감속, 회전 완화 확인 후 빠른 복구와 경로 턴 속도 |

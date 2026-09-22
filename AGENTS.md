@@ -1,5 +1,61 @@
 # Repository memory
 
+- On 2026-09-22, after three parked C4 grouping comparisons, the user approved
+  leaving camerad/camera IRQ on core6, moving card to core5 FIFO53 with radard
+  FIFO51, and moving planner to core4 FIFO51 with radarcan below the unchanged
+  controlsd/selfdrived FIFO53. This supersedes the card/planner placements in
+  earlier entries. Camera/UI remain SCHED_OTHER; model/DM stay on core7.
+  The selected 60-second trial reduced road/wide maximum ages to 36.889/37.335ms
+  but increased planner maximum work from about 8ms to 19ms and radar input
+  maximum age from about 15ms to 25ms. No CAN/pose/model-gap failure occurred.
+  DM was disabled; loaded driving, DM-enabled behavior and C3 are unvalidated.
+  Core6 is reserved by application placement, not free of all kernel/IRQ work.
+  Preserve pose limits and radar semantics. See docs/camera_core5_trial.md.
+
+- On 2026-09-22, parked Ioniq 5 C4 follow-up reproduced a 91.961ms road-camera
+  delay, model input frame gap and invalid odometry/pose inputs with ftrace off;
+  IMU ages stayed below 34ms. Live boot args isolate only cores6..7. Kernel
+  tracing on core5 verified ready-camera scheduling delays behind normal
+  proclogd/kswapd work and FIFO planner/radard. The high-reclaim trace also had
+  diagnostic tmpfs overhead; do not treat its frequency as an unperturbed result.
+  The camera/IRQ core5 trial below is rolled back to core6, retaining UI on
+  cores0..3 and camera/UI SCHED_OTHER. A short 5/6/5 parked comparison reduced
+  core6's observed tail/runqueue wait but added about 3ms mean camera age.
+  A nice=-10 trial did not materially improve mean/p99; keep nice0. Preserve
+  other process placements and pose limits. This is a measured mitigation, not
+  proof of a driving fix, C3 benefit or the cause of earlier SOF/IFE faults.
+  See docs/camera_core5_trial.md for evidence and limitations.
+
+- On 2026-09-22, PV5 follow-up `0000022a--99e06b0cc0--17` disproved
+  interpreting A-CAN 0x380 bit 6 falling as camera passage: roughly 4.7 s
+  notification pulses ended while MapSource=2 and a 30 km/h camera still
+  had 139 m of tracked distance. Do not use that edge or byte value 0x04 as
+  proof of passage. Retain a matched PV5 camera only while fresh messages
+  confirm the same MapSource=2 enforcement limit. End/change/invalidity or
+  more than one second of message loss clears current and queued cameras;
+  cached profiles cannot reinsert them. Queued previews alone never authorize
+  PV5 camera control. Consume a completed camera's unchanged map warning;
+  a new warning without a new matched profile uses a separate virtual distance.
+  PV5 does not decode current-route/position 0x4B9/0x4B4: do not claim that
+  generic route-reset code detects its departure. If stock enforcement remains
+  unchanged after a turn, this cancellation cannot detect that turn independently.
+  Follow-up replay reconstructs initial targets from logged distances because
+  the preceding segment is unavailable; current cancellation drops those old
+  previews and uses the warning's virtual distance at the reported pulse end.
+  Cancellation/recovery/completion tests are synthetic, not vehicle validation.
+  Earlier bit-transition tests did not establish physical passage semantics.
+
+- On 2026-09-21, after Ioniq 5 C4 `00000f90--96d7dcd525--4` reproduced a
+  101 ms wide-camera SOF gap, the user authorized a CPU-placement trial:
+  main UI uses cores0..3 with SCHED_OTHER (core0 bootstrap), camerad and its
+  camera IRQ targets move from core6 to core5. card remains core6 FIFO53;
+  planner/radard remain core5 FIFO51 and camera keeps normal scheduling.
+  Preserve the UI's verified SCHED_OTHER contract and pose validity limits.
+  This supersedes the camera/UI placements described in older observations,
+  not radar isolation or cluster affinity. No C3/C4 vehicle benefit is yet
+  validated; do not claim same-core contention caused the camera fault.
+  See docs/camera_core5_trial.md for scope, trade-offs and validation.
+
 - On 2026-09-21, ID.4 replay showed that adding CP.radarDelay (0.8 s) to
   distance alignment could switch the selected lead to a farther CAN object.
   The user approved zero extra distance projection for VW MEB. Use the shared
