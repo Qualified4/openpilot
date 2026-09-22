@@ -17,6 +17,38 @@ def _ccnc_valid_boundary(x, y):
   xs, ys = np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
   return bool(np.isfinite(xs).all() and np.isfinite(ys).all() and (xs[1:] > xs[:-1]).all())
 
+def _ccnc_side_lane_center(md, side):
+  inner_idx = 1 if side == 0 else 2
+  outer_idx = 0 if side == 0 else 3
+
+  if md is None or len(md.laneLines) < 4 or len(md.laneLineProbs) < 4:
+    return None
+
+  if md.laneLineProbs[outer_idx] < 0.6:
+    return None
+
+  inner = md.laneLines[inner_idx]
+  outer = md.laneLines[outer_idx]
+
+  if len(inner.x) < 2 or len(outer.x) < 2:
+    return None
+
+  x = 20.0
+
+  if not (inner.x[0] <= x <= inner.x[-1]
+          and outer.x[0] <= x <= outer.x[-1]):
+    return None
+
+  inner_y = float(np.interp(x, inner.x, inner.y))
+  outer_y = float(np.interp(x, outer.x, outer.y))
+
+  width = abs(outer_y - inner_y)
+
+  if not 2.3 <= width <= 4.8:
+    return None
+
+  return abs(inner.y[0]) + width * 0.5
+
 class _CcncRadarDisplayTracker:
   """Observation continuity and lane-free fallback for the CCNC display only."""
   def __init__(self):
@@ -1041,6 +1073,8 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
   try:
     ff_lead = lf_lead = rf_lead = None
     ff_yRel = lf_yRel = rf_yRel = 0
+    lf_center_measure = None
+    rf_center_measure = None
     boundary_front = None
     boundary_front_y = 0.0
 
@@ -1050,6 +1084,16 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     left_prob, right_prob = display_tracker.lane_probabilities(md)
     selected_lane_is_left = state.radar_lane_selector.update(left_prob, right_prob, frame)
     selected_lane_prob = left_prob if selected_lane_is_left else right_prob
+
+    # LF/RF deadband 중심은 차량 존재 여부와 무관하게 인접 차선 geometry로 계속 갱신합니다.
+    lf_center = _ccnc_side_lane_center(md, 0)
+    rf_center = _ccnc_side_lane_center(md, 1)
+
+    if lf_center is not None:
+      state.lf_center.apply(lf_center)
+
+    if rf_center is not None:
+      state.rf_center.apply(rf_center)
 
     # 차선이 유효하면 기존 분류를 사용하고, FF는 차선 소실 시 경로/영상으로 보완합니다.
     lane_mode = selected_lane_prob >= 0.1
@@ -1106,7 +1150,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
 
             # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
             if (velocity > min_side_lead_speed
-                or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
+                or (dRel < 30 and velocity > lowspeed_side_lead_speed and display_tracker.stable(lead.trackId, 50))):
               if left_projection is None:
                 left_projection = display_tracker.side_projection(0)
               outer_left_y, edge_left_y = left_projection[point_index]
@@ -1139,7 +1183,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
 
             # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
             if (velocity > min_side_lead_speed
-                or (dRel < 30 and velocity > lowspeed_side_lead_speed)):
+                or (dRel < 30 and velocity > lowspeed_side_lead_speed and display_tracker.stable(lead.trackId, 50))):
               if right_projection is None:
                 right_projection = display_tracker.side_projection(1)
               outer_right_y, edge_right_y = right_projection[point_index]
@@ -1225,14 +1269,14 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     # 전방 좌측(LF) 차량 정보 업데이트
     if lf_lead:
       values["LF_DETECT_DISTANCE"] = filtered_positions[1][0] * 0.8
-      values["LF_DETECT_LATERAL"] = min(max(float(apply_curved_deadband(lf_yRel, 3, 0.9, 2)), 0.0), 12.7)
+      values["LF_DETECT_LATERAL"] = min(max(float(apply_curved_deadband(lf_yRel, state.lf_center.value, 0.9, 2)), 0.0), 12.7)
       values["LF_DETECT"] = state.lf_detect.apply(lf_lead.vRel)
     else:
       values["LF_DETECT"] = 0
     # 전방 우측(RF) 차량 정보 업데이트
     if rf_lead:
       values["RF_DETECT_DISTANCE"] = filtered_positions[2][0] * 0.8
-      values["RF_DETECT_LATERAL"] = min(max(float(apply_curved_deadband(-rf_yRel, 3, 0.9, 2)), 0.0), 12.7)
+      values["RF_DETECT_LATERAL"] = min(max(float(apply_curved_deadband(-rf_yRel, state.rf_center.value, 0.9, 2)), 0.0), 12.7)
       values["RF_DETECT"] = state.rf_detect.apply(rf_lead.vRel)
     else:
       values["RF_DETECT"] = 0
@@ -1309,6 +1353,10 @@ def reset_lanes():
   state.last_known_lane_width = 3.0
   state.l_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2)
   state.r_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2)
+
+  # LF/RF 표시 중심
+  state.lf_center = NoiseFilter(3, 3.0, alpha_range=0.03)
+  state.rf_center = NoiseFilter(3, 3.0, alpha_range=0.03)
 
 
 def reset_vehicles():
