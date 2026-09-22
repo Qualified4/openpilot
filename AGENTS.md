@@ -1,5 +1,24 @@
 # Repository memory
 
+- On 2026-09-22, PV5 follow-up `0000022a--99e06b0cc0--17` disproved
+  interpreting A-CAN 0x380 bit 6 falling as camera passage: roughly 4.7 s
+  notification pulses ended while MapSource=2 and a 30 km/h camera still
+  had 139 m of tracked distance. Do not use that edge or byte value 0x04 as
+  proof of passage. Retain a matched PV5 camera only while fresh messages
+  confirm the same MapSource=2 enforcement limit. End/change/invalidity or
+  more than one second of message loss clears current and queued cameras;
+  cached profiles cannot reinsert them. Queued previews alone never authorize
+  PV5 camera control. Consume a completed camera's unchanged map warning;
+  a new warning without a new matched profile uses a separate virtual distance.
+  PV5 does not decode current-route/position 0x4B9/0x4B4: do not claim that
+  generic route-reset code detects its departure. If stock enforcement remains
+  unchanged after a turn, this cancellation cannot detect that turn independently.
+  Follow-up replay reconstructs initial targets from logged distances because
+  the preceding segment is unavailable; current cancellation drops those old
+  previews and uses the warning's virtual distance at the reported pulse end.
+  Cancellation/recovery/completion tests are synthetic, not vehicle validation.
+  Earlier bit-transition tests did not establish physical passage semantics.
+
 - On 2026-09-21, after Ioniq 5 C4 `00000f90--96d7dcd525--4` reproduced a
   101 ms wide-camera SOF gap, the user authorized a CPU-placement trial:
   main UI uses cores0..3 with SCHED_OTHER (core0 bootstrap), camerad and its
