@@ -1073,8 +1073,6 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
   try:
     ff_lead = lf_lead = rf_lead = None
     ff_yRel = lf_yRel = rf_yRel = 0
-    lf_center_measure = None
-    rf_center_measure = None
     boundary_front = None
     boundary_front_y = 0.0
 
