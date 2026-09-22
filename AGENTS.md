@@ -1,5 +1,31 @@
 # Repository memory
 
+- On 2026-09-22, after three parked C4 grouping comparisons, the user approved
+  leaving camerad/camera IRQ on core6, moving card to core5 FIFO53 with radard
+  FIFO51, and moving planner to core4 FIFO51 with radarcan below the unchanged
+  controlsd/selfdrived FIFO53. This supersedes the card/planner placements in
+  earlier entries. Camera/UI remain SCHED_OTHER; model/DM stay on core7.
+  The selected 60-second trial reduced road/wide maximum ages to 36.889/37.335ms
+  but increased planner maximum work from about 8ms to 19ms and radar input
+  maximum age from about 15ms to 25ms. No CAN/pose/model-gap failure occurred.
+  DM was disabled; loaded driving, DM-enabled behavior and C3 are unvalidated.
+  Core6 is reserved by application placement, not free of all kernel/IRQ work.
+  Preserve pose limits and radar semantics. See docs/camera_core5_trial.md.
+
+- On 2026-09-22, parked Ioniq 5 C4 follow-up reproduced a 91.961ms road-camera
+  delay, model input frame gap and invalid odometry/pose inputs with ftrace off;
+  IMU ages stayed below 34ms. Live boot args isolate only cores6..7. Kernel
+  tracing on core5 verified ready-camera scheduling delays behind normal
+  proclogd/kswapd work and FIFO planner/radard. The high-reclaim trace also had
+  diagnostic tmpfs overhead; do not treat its frequency as an unperturbed result.
+  The camera/IRQ core5 trial below is rolled back to core6, retaining UI on
+  cores0..3 and camera/UI SCHED_OTHER. A short 5/6/5 parked comparison reduced
+  core6's observed tail/runqueue wait but added about 3ms mean camera age.
+  A nice=-10 trial did not materially improve mean/p99; keep nice0. Preserve
+  other process placements and pose limits. This is a measured mitigation, not
+  proof of a driving fix, C3 benefit or the cause of earlier SOF/IFE faults.
+  See docs/camera_core5_trial.md for evidence and limitations.
+
 - On 2026-09-22, PV5 follow-up `0000022a--99e06b0cc0--17` disproved
   interpreting A-CAN 0x380 bit 6 falling as camera passage: roughly 4.7 s
   notification pulses ended while MapSource=2 and a 30 km/h camera still
