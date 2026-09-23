@@ -31,7 +31,7 @@ def apply_accel_jerk_limit(a_raw: float, a_value_last: float, jerk_u: float, jer
   return float(np.clip(a_raw, a_value_last - lower_step, a_value_last + upper_step))
 
 
-def apply_stopping_experiment(values, CS, controller, accel, previous_value, jerk_u, jerk_l):
+def apply_canfd_stopping(values, CS, controller, accel, previous_value, jerk_u, jerk_l):
   """Apply the stopping/re-entry sequence after the normal SCC interlocks."""
   if controller is None:
     return
@@ -458,6 +458,7 @@ def create_acc_control_scc2(packer, CAN, enabled, accel_value_last, accel, stopp
   enabled = acc_control_enabled
 
   acc_mode = 0 if not enabled else (2 if gas_override else 1)
+  previous_value = accel_value_last
 
   if hyundai_jerk.carrot_cruise == 1:
     acc_mode = 4 if enabled else 0
@@ -517,12 +518,12 @@ def create_acc_control_scc2(packer, CAN, enabled, accel_value_last, accel, stopp
   values["AccelLimitBandLower"] = 0.0
 
   values["ZEROS_7"] = 0 if stop_controller is not None else 1
-  apply_stopping_experiment(values, CS, stop_controller, accel, accel_value_last, jerk_u, jerk_l)
+  apply_canfd_stopping(values, CS, stop_controller, accel, previous_value, jerk_u, jerk_l)
 
   return packer.make_can_msg("SCC_CONTROL", CAN.ECAN, values), values["aReqValue"]
 
 def create_acc_control(packer, CAN, enabled, accel_last, accel, stopping, gas_override, set_speed, hud_control, jerk_u, jerk_l, CS,
-                       stop_controller=None):
+                       stop_controller=None, accel_value_last=None):
 
   interlock_active = longitudinal_interlock_active(CS)
   soft_hold_active = CS.softHoldActive > 0 and CS.out.cruiseState.available
@@ -562,8 +563,11 @@ def create_acc_control(packer, CAN, enabled, accel_last, accel, stopping, gas_ov
     "ZEROS_7": 0,
   }
 
-  apply_stopping_experiment(values, CS, stop_controller, accel, accel_last, jerk_u, jerk_l)
-  return packer.make_can_msg("SCC_CONTROL", CAN.ECAN, values)
+  # accel_last is the legacy raw target, not necessarily the previous SCC
+  # output. Keep ordinary packet limiting; anchor stop entry to the returned value.
+  previous_value = accel_last if accel_value_last is None else accel_value_last
+  apply_canfd_stopping(values, CS, stop_controller, accel, previous_value, jerk_u, jerk_l)
+  return packer.make_can_msg("SCC_CONTROL", CAN.ECAN, values), values["aReqValue"]
 
 
 def create_spas_messages(packer, CAN, frame, left_blink, right_blink):
@@ -781,12 +785,18 @@ def _apply_cluster_lane_lines(values, CS, lat_active, desire):
     _apply_lane_desire(values, desire)
 
 
-def _convert_ccnc_boxes_to_cars(values):
-  # Only 0x162 uses 1/2 for gray/white boxes and 3/4 for gray/white cars.
-  # 0x1ea has different display enums; FF_DETECT_ALT has no car enum.
-  for key in ("FF_DETECT", "LF_DETECT", "RF_DETECT", "LR_DETECT", "RR_DETECT"):
-    if values[key] in (1, 2):
-      values[key] += 2
+def _normalize_cluster_corner_objects(values):
+  # Restore the legacy corner display state without blinking or clamping distance.
+  for side in ("LF", "RF", "LR", "RR"):
+    key = f"{side}_DETECT"
+    if values[key] >= 4 and values[f"{side}_DETECT_DISTANCE"] != 0:
+      values[key] = 1
+
+
+def _convert_ccnc_front_box_to_car(values):
+  # Preserve the current front-lead presentation independently of corner objects.
+  if values["FF_DETECT"] in (1, 2):
+    values["FF_DETECT"] += 2
 
 
 def _apply_ccnc_lead(values, radar_state, enabled, model_v2=None, hud_lateral=None):
@@ -1027,6 +1037,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values['RIGHT_BLINK_HOLD'] = 1 if lane_changing == 4 else 0
 
         _apply_cluster_lane_lines(values, CS, lat_active, desire)
+        _normalize_cluster_corner_objects(values)
 
         ret.append(packer.make_can_msg("ADRV_0x1ea", CAN.ECAN, values, rx_counter = rx_counter))
 
@@ -1036,6 +1047,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         if radar_vehicles:
           values = ccnc_custom.update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes)
         else:
+          _normalize_cluster_corner_objects(values)
           _apply_ccnc_lead(values, getattr(CS, "radarState", None), CC.enabled, getattr(CS, "modelV2", None), hud_lateral)
 
         _convert_ccnc_boxes_to_cars(values)

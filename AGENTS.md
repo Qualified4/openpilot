@@ -1,5 +1,42 @@
 # Repository memory
 
+- On 2026-09-23, Ioniq 5 C4 `00000594--abf5912e57--7` on 1fbfe331 reproduced
+  a 102.044 ms wide-camera BOOT_TS gap with consecutive raw-derived frame and
+  request IDs, one skipped model input and about 304 ms invalid pose inputs.
+  BOOT_TS is sampled in kernel SOF handling, not an independent sensor clock;
+  do not claim a physical sensor or UI cause from this log. Separately, startup
+  expected a 25 ms driver offset although bundled Panda still drives all FSIN
+  channels in phase from TIM1. Driver staggered_sof is now false, retaining
+  the strict startup tolerance and all runtime validity/scheduling policies.
+  Passive SOF/receive timing logs are bounded to one per second per camera.
+  The startup fix is not a demonstrated fix for the later driving gap; C3/C4
+  target validation remains required. See docs/camera_sof_gap_20260923.md.
+
+- On 2026-09-23, Group1 video/CAN comparisons showed reversed front lateral
+  coordinates on one Tucson and one Sportage, but normal left/right on a
+  Staria; another Sportage was inconclusive. Do not infer upside-down mounting
+  or automatically invert a whole model/group. The user approved RadarTrackFlip:
+  default normal, manually invert frontRadar yRel/yvRel per vehicle at the next
+  onroad start. Preserve SCC/corner/vision and scheduling. liveTracks records
+  radarTrackFlipped; replay must avoid double inversion and preserve recorded
+  leads. NAS recorded/normal/flipped choices are analysis-only. See
+  docs/radar_track_flip.md for offline verification and vehicle-validation limits.
+
+- On 2026-09-23, the user approved the parked display-placement candidate:
+  onroad main UI core6 and USB cluster core7, both SCHED_OTHER/nice19;
+  offroad both return to cores0..3 before big-core power saving. This supersedes
+  the UI-little placement below. Keep camera/control/model/radar priorities and
+  placement unchanged. Apply the display policy to all workers, including the
+  software encoder child. USB render/encode/controller rate is fixed at10 FPS,
+  or5 while UsbGpuActive; removed ClusterHudLiveFps/ClusterHudCoreMode and legacy
+  FPS/core environment overrides must not restore custom placement/rates.
+  DM-enabled parked UI6/cluster7 measured core2/6/7 means61.7/77.6/85.2%, UI19.77Hz,
+  road/wide max48.73/49.02ms, no camera/model/DM gaps or pose/CAN invalidity.
+  Core7 still briefly reached100%; C3, loaded driving and actual ignition-off
+  hotplug remain unvalidated. Isolated device syscalls verified nice19 and
+  core6/7-to-little restoration for threads and a child under comma credentials.
+  See docs/camera_core5_trial.md for comparisons and limits.
+
 - On 2026-09-22, the user reported near-idle core6 and busy cores4/5 after
   camera reservation and requested balanced placement. Whole-core /proc/stat
   and deviceState, including background work, confirmed core4 about91%.
