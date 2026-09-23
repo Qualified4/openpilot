@@ -61,6 +61,7 @@ class _CcncRadarDisplayTracker:
     self.stopped = False
     self.stop_pending = {}
     self.stop_holds = {}
+    self.stop_motion = {}
     self._saved_side = [None, None]
     self.live = None
     self.last_frame = -1
@@ -114,6 +115,48 @@ class _CcncRadarDisplayTracker:
       self._side_width_cache.clear()
     self.stopped = stopped
     self.stop_last_frame = frame
+    if gap or not stopped or self.live is None:
+      self.stop_motion.clear()
+    if stopped and self.live is not None:
+      self.update_stop_motion()
+
+  def update_stop_motion(self):
+    # Only fresh, continuous radar positions while ego is stopped can prove crossing.
+    self.stop_motion = {key: value for key, value in self.stop_motion.items()
+                        if key in self.tracks and value['birth'] == self.tracks[key][0]}
+    for track_id, (birth, stamp, _, p, _) in self.tracks.items():
+      history = self.stop_motion.get(track_id)
+      if history is None:
+        history = dict(birth=birth, samples=deque(), blocked=False, settled=(stamp, p.dRel, p.yRel))
+        self.stop_motion[track_id] = history
+      samples = history['samples']
+      if samples and samples[-1][0] == stamp:
+        continue
+      samples.append((stamp, p.yRel))
+      while samples and stamp - samples[0][0] > 100:
+        samples.popleft()
+      if len(samples) >= 4 and stamp - samples[0][0] >= 50:
+        steps = [b[1] - a[1] for a, b in zip(samples, list(samples)[1:])]
+        net = samples[-1][1] - samples[0][1]
+        travel = sum(abs(step) for step in steps)
+        directed = sum(step * (1 if net > 0 else -1) >= 0.04 for step in steps)
+        if (abs(net) >= 0.75 and abs(net) >= 0.8 * travel and directed >= 3
+            and max(abs(step) for step in steps) <= 0.6 * abs(net)):
+          history['blocked'] = True
+          history['settled'] = (stamp, p.dRel, p.yRel)
+      start, x, y = history['settled']
+      if (abs(p.dRel - x) > 0.3 or abs(p.yRel - y) > 0.2
+          or abs(p.vLead) > 2.0 / 3.6 or abs(p.vRel) > 2.0 / 3.6):
+        history['settled'] = (stamp, p.dRel, p.yRel)
+      elif history['blocked'] and stamp - start >= 200:
+        history['blocked'] = False
+        samples.clear()
+        samples.append((stamp, p.yRel))
+      if history['blocked']:
+        for saved in (self.stop_holds, self.stop_pending, self.approach_holds, self.approach_pending):
+          for side, entry in list(saved.items()):
+            if entry[0] == track_id and (saved is self.stop_pending or saved is self.approach_pending or entry[-1] == birth):
+              del saved[side]
 
   def approaching_display(self, values, leads, frame):
     # A stationary target lost just before ego stops is carried in odometry coordinates.
@@ -132,16 +175,21 @@ class _CcncRadarDisplayTracker:
             self.approach_pending[side] = pending
           if frame - pending[1] >= 50 and self.stable(lead.trackId, 50):
             self.approach_holds[side] = (lead.trackId, world_x, lead.yRel,
-                                        tuple(values[k] for k in keys), frame, self.stop_distance)
+                                        tuple(values[k] for k in keys), frame, self.stop_distance, self.tracks[lead.trackId][0])
       else:
         self.approach_pending.pop(side, None)
       held = self.approach_holds.get(side)
       if held is None:
         continue
-      track_id, world_x, y, display, last_seen, last_distance = held
+      track_id, world_x, y, display, last_seen, last_distance, birth = held
       x = world_x - self.stop_distance  # Keep negative distance internally.
       invalid = x < -1.0 or frame - last_seen > 300 or self.stop_distance - last_distance > 5.0
       for point in self.live.points:
+        if (point.trackId == track_id and self.tracks.get(track_id, (None,))[0] == birth
+            and str(point.radarSource) == 'frontRadar'
+            and (abs(point.dRel - x) > 1.0 or abs(point.yRel - y) > 0.75
+                 or abs(getattr(point, 'yvRel', 0.0)) > 2.0 / 3.6)):
+          invalid = True
         if (str(point.radarSource) == 'frontRadar' and math.isfinite(point.dRel)
             and math.isfinite(point.yRel) and abs(point.dRel - x) <= 2.0 and abs(point.yRel - y) <= 0.8):
           if (not math.isfinite(point.vLead) or abs(point.vLead) > 3.0 / 3.6
@@ -156,7 +204,7 @@ class _CcncRadarDisplayTracker:
       if self.stopped:
         old = self.stop_holds.get(side)
         if old is None or x < old[1]:
-          self.stop_holds[side] = (track_id, x, y, display)
+          self.stop_holds[side] = (track_id, x, y, display, birth)
         self.approach_holds.pop(side, None)
       elif lead is None:
         values.update(zip(keys, display))
@@ -173,48 +221,43 @@ class _CcncRadarDisplayTracker:
       prefix = 'LF' if side == 0 else 'RF'
       keys = (prefix + '_DETECT', prefix + '_DETECT_DISTANCE', prefix + '_DETECT_LATERAL')
       held = self.stop_holds.get(side)
-      if held is not None and lead is not None:
+      if held is not None:
+        track_id, x, y, display, birth = held
+        invalid = False
         for point, px, py, vr, v in self._points:
-          if (abs(px - held[1]) <= 2.0 and abs(py - held[2]) <= 0.8
-              and (abs(v) > 2.0 / 3.6 or abs(vr) > 2.0 / 3.6)):
-            self.stop_holds.pop(side, None)
-            held = None
+          same = point.trackId == track_id and self.tracks[point.trackId][0] == birth
+          nearby = abs(px - x) <= 2.0 and abs(py - y) <= 0.8
+          if not (same or nearby):
+            continue
+          moving = abs(v) > 2.0 / 3.6 or abs(vr) > 2.0 / 3.6
+          other_slot = point.trackId in (self.selected[0], self.selected[2 - side])
+          if moving or other_slot or (same and abs(px - x) > 1.0):
+            invalid = True
             break
+        if invalid:
+          self.stop_holds.pop(side, None)
+          held = None
       if lead is not None:
-        # A current selected candidate always supersedes a stale display.
         pending = self.stop_pending.get(side)
-        stationary = abs(lead.vLead) <= 2.0 / 3.6 and abs(lead.vRel) <= 2.0 / 3.6
+        stationary = (abs(lead.vLead) <= 2.0 / 3.6 and abs(lead.vRel) <= 2.0 / 3.6
+                      and not self.stop_motion.get(lead.trackId, {}).get('blocked', False))
+        drifted = (pending is not None and pending[0] == lead.trackId
+                   and (abs(lead.dRel - pending[2]) > 1.0 or abs(lead.yRel - pending[3]) > 0.75))
         if not stationary:
-          if held is not None and abs(lead.dRel - held[1]) <= 2.0 and abs(lead.yRel - held[2]) <= 0.8:
-            self.stop_holds.pop(side, None)
           self.stop_pending.pop(side, None)
           continue
-        if (pending is None or pending[0] != lead.trackId
-            or abs(lead.dRel - pending[2]) > 1.0 or abs(lead.yRel - pending[3]) > 0.75):
+        if pending is None or pending[0] != lead.trackId or drifted:
           pending = (lead.trackId, frame, lead.dRel, lead.yRel)
           self.stop_pending[side] = pending
         if (frame - pending[1] >= 50 and self.stable(lead.trackId, 50)
             and (held is None or lead.dRel <= held[1] + 1.0)):
-          self.stop_holds[side] = (lead.trackId, lead.dRel, lead.yRel, tuple(values[k] for k in keys))
-        continue
-      self.stop_pending.pop(side, None)
-      if held is None:
-        continue
-      track_id, x, y, display = held
-      invalid = False
-      for point, px, py, vr, v in self._points:
-        nearby = abs(px - x) <= 2.0 and abs(py - y) <= 0.8
-        if nearby:
-          # Motion, ID reuse, or a current selection in another slot cancels the ghost.
-          if (abs(v) > 2.0 / 3.6 or abs(vr) > 2.0 / 3.6
-              or abs(px - x) > 1.0 or abs(py - y) > 0.75
-              or point.trackId in self.selected):
-            invalid = True
-            break
-      if invalid:
-        self.stop_holds.pop(side, None)
+          birth = self.tracks[lead.trackId][0]
+          self.stop_holds[side] = (lead.trackId, lead.dRel, lead.yRel,
+                                   tuple(values[k] for k in keys), birth)
       else:
-        values.update(zip(keys, display))
+        self.stop_pending.pop(side, None)
+        if held is not None:
+          values.update(zip(keys, held[3]))
 
   def _update_model(self, md):
     # SubMaster model readers are immutable between publications; retain the reader itself.
@@ -401,61 +444,65 @@ class _CcncRadarDisplayTracker:
     self.positions = {key: value for key, value in self.positions.items()
                       if key in current and value[0] == current[key][0]}
 
-  def update_boundary_admission(self, md, yaw_rate=0.0):
-    """Remember stationary boundary starts for display only, across slot/lane changes."""
+  def update_boundary_admission(self, md):
+    """Confirm sustained radar motion before exempting a new detection."""
     self.boundary_admission = {key: value for key, value in self.boundary_admission.items()
                                if key in self.tracks and value['birth'] == self.tracks[key][0]}
     curves = None
-    for track_id, (birth, frame, _, p, _) in self.tracks.items():
+    for track_id, (birth, stamp, _, p, _) in self.tracks.items():
       admission = self.boundary_admission.get(track_id)
-      if admission is not None and (admission['status'] == 'allowed' or admission['frame'] == frame):
+      if admission is None:
+        admission = dict(birth=birth, frame=-1, status='pending', samples=0, near=0,
+                         moving=None)
+        self.boundary_admission[track_id] = admission
+      if admission['status'] == 'allowed':
         continue
+      if admission['frame'] == stamp:
+        continue
+      admission['frame'] = stamp
       lateral_speed = getattr(p, 'yvRel', 0.0)
       stationary = abs(p.vLead) <= 2.0 / CV.MS_TO_KPH and abs(lateral_speed) <= 2.0 / CV.MS_TO_KPH
-      if admission is None or admission['status'] == 'pending':
+      # Compensate longitudinal travel only; radar lateral position/speed are unmodified.
+      position = (self.stop_distance + p.dRel, p.yRel)
+      vx, vy = p.vLead, lateral_speed
+      speed = math.hypot(vx, vy)
+      if not math.isfinite(speed) or speed <= 2.0 / CV.MS_TO_KPH:
+        admission['moving'] = None
+      else:
+        direction = (vx / speed, vy / speed)
+        moving = admission['moving']
+        if moving is None or sum(a * b for a, b in zip(direction, moving[2])) < 0.5:
+          admission['moving'] = (stamp, position, direction)
+        elif (stamp - moving[0] >= (50 if admission['status'] == 'blocked' else 15)
+              and sum((a - b) * d for a, b, d in zip(position, moving[1], moving[2])) >= 0.5):
+          admission['status'] = 'allowed'
+      if admission['status'] == 'pending':
         if curves is None:
           curves = []
           if md is not None:
             for line, probability in zip(md.laneLines, md.laneLineProbs):
-              if probability > 0.1 and _ccnc_valid_boundary(line.x, line.y):
-                curves.append((np.asarray(line.x), np.asarray(line.y)))
-        near = stationary and any(xs[0] <= p.dRel <= xs[-1]
-                                  and abs(p.yRel + float(np.interp(p.dRel, xs, ys))) <= 0.3
-                                  for xs, ys in curves)
-        if admission is None:
-          admission = dict(birth=birth, frame=frame, status='pending' if stationary else 'allowed',
-                           samples=0, near=0, moving=None)
-          self.boundary_admission[track_id] = admission
-        admission['samples'] += 1
-        admission['near'] += int(near)
-        # Suppress a suspect start immediately; confirm using fresh radar publications.
-        if admission['status'] == 'pending' and frame - birth >= 30:
-          admission['status'] = ('blocked' if admission['near'] >= 3
-                                 and admission['near'] * 2 >= admission['samples'] else 'allowed')
-      admission['frame'] = frame
-      if admission['status'] == 'blocked':
-        # A speed spike or lane jitter cannot release a rejected stationary reflector.
-        # Straight-road ego-distance compensation also works while ego approaches a stop.
-        if stationary or not math.isfinite(yaw_rate) or abs(yaw_rate) > 0.05:
-          admission['moving'] = None
-        else:
-          longitudinal = abs(p.vLead) > 2.0 / CV.MS_TO_KPH
-          speed = p.vLead if longitudinal else lateral_speed
-          position = p.dRel + self.stop_distance if longitudinal else p.yRel
-          direction = 1 if speed > 0 else -1
-          moving = admission['moving']
-          if not math.isfinite(speed):
-            admission['moving'] = None
-          elif moving is None or moving[2:] != (direction, longitudinal):
-            admission['moving'] = (frame, position, direction, longitudinal)
-          elif frame - moving[0] >= 50 and direction * (position - moving[1]) >= 0.5:
-            admission['status'] = 'allowed'
+              if _ccnc_valid_boundary(line.x, line.y):
+                curves.append((np.asarray(line.x), np.asarray(line.y), probability))
+        boundaries = [(abs(p.yRel + float(np.interp(p.dRel, xs, ys))), probability)
+                      for xs, ys, probability in curves if xs[0] <= p.dRel <= xs[-1]]
+        gap, probability = min(boundaries, default=(math.inf, 0.0))
+        near = stationary and probability > 0.1 and gap <= 0.3
+        # Missing/weak nearest geometry is not evidence that the point is interior.
+        if stationary and (near or probability >= 0.3):
+          admission['samples'] += 1
+          admission['near'] += int(near)
+          if admission['samples'] >= 7 and stamp - birth >= 30:
+            admission['status'] = ('blocked' if admission['near'] >= 3
+                                   and admission['near'] * 2 >= admission['samples'] else 'allowed')
     self.boundary_rejected = {key for key, value in self.boundary_admission.items()
                               if value['status'] == 'blocked' or (value['status'] == 'pending' and value['near'])}
-    # An ID reused by a new rejected point must not resurrect a previous saved display.
+    # Unknown geometry alone must not suppress a stationary vehicle or its display memory.
     for history in (self.stop_holds, self.stop_pending, self.approach_holds, self.approach_pending):
       for side, saved in list(history.items()):
         if saved[0] in self.boundary_rejected:
+          if ((history is self.approach_holds or history is self.stop_holds)
+              and saved[-1] != self.tracks[saved[0]][0]):
+            continue  # A reused radar slot cannot revoke an older physical display memory.
           del history[side]
 
   def stable(self, track_id, frames=15):
@@ -487,6 +534,25 @@ class _CcncRadarDisplayTracker:
     current = self.tracks.get(track_id)
     return (previous is not None and current is not None and previous[0] == current[0]
             and 0 <= self.last_frame - previous[1] <= 30)
+
+  def front_admitted(self, point, md):
+    # Weak lane geometry cannot introduce a stationary FF solely from radar position.
+    if abs(point.vLead) > 2.0 / CV.MS_TO_KPH or self.recently_selected(point.trackId):
+      return True
+    if max(self.lane_probabilities(md)) >= 0.5:
+      return True
+    if md is None or not len(md.leadsV3):
+      return False
+    lead = md.leadsV3[0]
+    if not (len(lead.x) and len(lead.y) and len(lead.v)):
+      return False
+    x, y, v = lead.x[0], lead.y[0], lead.v[0]
+    if not all(math.isfinite(a) for a in (lead.prob, x, y, v)):
+      return False
+    dx, dy, dv = abs(point.dRel - (x - 1.52)), abs(point.yRel + y), abs(point.vLead - v)
+    return ((lead.prob >= 0.5 and dx <= max(6.0, point.dRel * 0.2) and dy <= 1.5 and dv <= 5.0)
+            or (lead.prob >= 0.8 and point.dRel <= 30.0
+                and dx <= max(3.0, point.dRel * 0.2) and dy <= 2.0 and dv <= 3.0))
 
   def path_lead(self, md, minimum_speed, require_vision=False, front_only=False):
     if md is None:
@@ -524,6 +590,8 @@ class _CcncRadarDisplayTracker:
       if track_id in self.boundary_rejected:
         continue
       first, last, count, p, _ = entry
+      if not self.front_admitted(p, md):
+        continue
       if count < 3 or last - first < 15:
         continue
       dRel, yRel = p.dRel, p.yRel
@@ -573,6 +641,9 @@ class _CcncRadarDisplayTracker:
       left, right = (-float(np.interp(p.dRel, *curve)) for curve in data[:2])
       y = p.yRel
       slot = 1 if y > left else 2 if y < right else 0
+      if slot == 0 and not self.front_admitted(p, self._model):
+        del self.crossing[track_id]
+        continue
       curve = data[reference]
       aligned = y + float(np.interp(p.dRel, *curve)) - curve[1][0]
       speed = p.vLead * CV.MS_TO_KPH
@@ -1143,7 +1214,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     display_tracker.observe(CS.live_tracks, frame)
     display_tracker.update_stop(v_ego_kph, frame, a_ego_kph)
     left_prob, right_prob = display_tracker.lane_probabilities(md)
-    display_tracker.update_boundary_admission(md, getattr(getattr(CS, 'out', None), 'yawRate', 0.0))
+    display_tracker.update_boundary_admission(md)
     selected_lane_is_left = state.radar_lane_selector.update(left_prob, right_prob, frame)
     selected_lane_prob = left_prob if selected_lane_is_left else right_prob
 
@@ -1198,13 +1269,14 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
         if (lead.trackId == display_tracker.selected[0]
             and display_tracker.recently_selected(lead.trackId, front_only=True)
             and velocity > min_front_lead_speed
+            and display_tracker.front_admitted(lead, md)
             and right_inner_bound - 0.35 <= yRel <= left_inner_bound + 0.35):
           boundary_front, boundary_front_y = lead, road_aligned_yRel
 
         # 2. [전방 주행 차선] - 외곽선/도로경계선 interp 4회 전부 생략
         if right_inner_bound <= yRel <= left_inner_bound:
           if dist_score < ff_min_dist:
-            if velocity > min_front_lead_speed:
+            if velocity > min_front_lead_speed and display_tracker.front_admitted(lead, md):
               ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel
 
         # 3. [왼쪽 차선 차량] - 좌측 외곽/도로경계선만 지연 계산 (우측 2회 interp 생략)

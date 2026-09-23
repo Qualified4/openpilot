@@ -326,10 +326,10 @@ def lane_model(stamp=1, offset=0.):
            roadEdges=[curve(-7.), curve(7.)])
 
 
-def boundary_step(tracker, p, frame, md=None, ego_kph=0., yaw_rate=0.):
+def boundary_step(tracker, p, frame, md=None, ego_kph=0.):
   tracker.observe(N(points=[p]), frame)
   tracker.update_stop(ego_kph, frame)
-  tracker.update_boundary_admission(lane_model() if md is None else md, yaw_rate)
+  tracker.update_boundary_admission(lane_model() if md is None else md)
 
 
 @pytest.mark.parametrize('y,blocked', [(1.21, True), (1.81, False), (-1.79, True), (5.1, True), (0., False)])
@@ -368,6 +368,7 @@ def test_previously_admitted_vehicle_can_stop_at_boundary(initial_speed, initial
   t = Tracker()
   p = point(y=initial_y, speed=initial_speed)
   for frame in range(0, 61, 5):
+    p.dRel = 10. + initial_speed * frame * .01
     boundary_step(t, p, frame)
   p.vLead = 0.
   for frame in range(65, 126, 5):
@@ -411,15 +412,15 @@ def test_rejected_point_can_start_moving_with_ego_compensated_displacement(ego_k
   assert not t.boundary_rejected
 
 
-@pytest.mark.parametrize('reason', ['speed_only', 'position_only', 'turning'])
-def test_boundary_release_requires_consistent_motion_not_spikes_or_ego_turn(reason):
+@pytest.mark.parametrize('reason', ['speed_only', 'position_only'])
+def test_boundary_release_requires_consistent_motion_not_spikes(reason):
   t = Tracker()
   for frame in range(0, 61, 5):
     boundary_step(t, point(y=1.5, speed=0.), frame)
   for frame in range(65, 141, 5):
     x = 10. if reason == 'speed_only' else 10. + (frame-60) * .01
     speed = 0. if reason == 'position_only' else 2.
-    boundary_step(t, point(x=x, y=1.5, speed=speed), frame, yaw_rate=.1 if reason == 'turning' else 0.)
+    boundary_step(t, point(x=x, y=1.5, speed=speed), frame)
   assert 1 in t.boundary_rejected
 
 
@@ -462,6 +463,43 @@ def test_boundary_rejection_applies_to_direct_and_vision_fallback_selection():
   md.leadsV3[0].v = [0.]
   for frame in range(65, 126, 5):
     assert step(md, N(live_tracks=N(points=[p])), frame, 0., 0.) == (None, None, None)
+
+
+def test_first_lateral_speed_spike_does_not_exempt_stationary_boundary_start():
+  t = Tracker()
+  for frame in range(0, 81, 5):
+    p = point(y=1.5, speed=0.)
+    p.yvRel = -4. if frame == 0 else 0.
+    boundary_step(t, p, frame)
+  assert t.boundary_admission[1]['status'] == 'blocked'
+
+
+def test_weak_nearest_boundary_waits_despite_confident_opposite_lane():
+  t = Tracker()
+  for frame in range(0, 101, 5):
+    md = lane_model(frame)
+    md.laneLineProbs[1] = .05  # The right side cannot establish left geometry.
+    boundary_step(t, point(y=1.5, speed=0.), frame, md)
+  assert t.boundary_admission[1]['samples'] == 0
+  assert t.boundary_admission[1]['status'] == 'pending'
+  assert not t.boundary_rejected  # Unknown geometry does not exclude front or side vehicles.
+  for frame in range(105, 146, 5):
+    boundary_step(t, point(y=1.5, speed=0.), frame)
+  assert t.boundary_admission[1]['status'] == 'blocked'
+
+
+def test_unknown_geometry_recovers_for_stationary_interior():
+  t = Tracker()
+  for frame in range(0, 101, 5):
+    md = lane_model(frame)
+    md.laneLineProbs = [0.] * 4
+    boundary_step(t, point(y=0., speed=0.), frame, md)
+  assert t.boundary_admission[1]['status'] == 'pending'
+  assert not t.boundary_rejected
+  for frame in range(105, 146, 5):
+    boundary_step(t, point(y=0., speed=0.), frame)
+  assert t.boundary_admission[1]['status'] == 'allowed'
+  assert not t.boundary_rejected
 
 
 def test_projection_cache_refreshes_for_new_model_and_reused_point_objects():
@@ -619,7 +657,7 @@ def test_stationary_display_hold_and_release(exit_kind):
     t.finish(None, q, None, 0., True, frame)
     t.stopped_display(values, (q, None), frame)
   assert 0 in t.stop_holds
-  for frame in range(105, 301, 5):
+  for frame in range(105, 151, 5):
     t.observe(N(points=[]), frame)
     t.update_stop(0., frame)
     t.finish(None, None, None, 0., True, frame)
@@ -630,13 +668,13 @@ def test_stationary_display_hold_and_release(exit_kind):
     assert t.selected == (None, None, None)
     assert not t.recent_selected
   moving = point(track_id=9, x=8., y=3., speed=2.)
-  t.observe(None if exit_kind == 'sensor_loss' else N(points=[moving] if exit_kind == 'motion' else []), 305)
-  t.update_stop(1. if exit_kind == 'departure' else 0., 305)
+  t.observe(None if exit_kind == 'sensor_loss' else N(points=[moving] if exit_kind == 'motion' else []), 155)
+  t.update_stop(1. if exit_kind == 'departure' else 0., 155)
   if exit_kind == 'other_slot':
-    t.observe(N(points=[q]), 306)
-    t.finish(q, None, None, 0., True, 306)
+    t.observe(N(points=[q]), 156)
+    t.finish(q, None, None, 0., True, 156)
   out = {'LF_DETECT': 0}
-  t.stopped_display(out, (None, None), 306)
+  t.stopped_display(out, (None, None), 156)
   assert out['LF_DETECT'] == 0
   assert not t.stop_holds
 
@@ -694,13 +732,192 @@ def test_held_motion_clears_even_when_another_candidate_is_selected():
   assert out['LF_DETECT_DISTANCE'] == 24.
 
 
+@pytest.mark.parametrize('approaching', [False, True])
+def test_unreported_lateral_motion_cannot_be_saved_as_stopped(approaching):
+  t = Tracker()
+  for frame in range(0, 201, 5):
+    q = point(x=10. - (frame*.01 if approaching else 0.), y=2. + frame*.01, speed=0.)
+    q.vRel = -1. if approaching else 0.
+    q.yvRel = 0.  # Crosswalk case: position moves despite zero reported lateral speed.
+    t.observe(N(points=[q]), frame)
+    t.update_stop(3.6 if approaching else 0., frame, -1.)
+    t.finish(None, q, None, 0., True, frame)
+    t.stopped_display({'LF_DETECT': 1, 'LF_DETECT_DISTANCE': 8., 'LF_DETECT_LATERAL': q.yRel}, (q, None), frame)
+    if not approaching and frame >= 100:
+      assert not t.stop_holds and t.stop_motion[1]['blocked']
+    if approaching:
+      assert not t.stop_motion
+
+
+@pytest.mark.parametrize('continuation', ['missing', 'unselected', 'lateral_departure', 'other_candidate'])
+def test_stopped_hold_requires_fresh_stationary_identity(continuation):
+  t = Tracker()
+  q = point(x=8., y=3., speed=0.)
+  for frame in range(0, 101, 5):
+    q.yRel = 3. + (.05 if frame % 10 else 0.)
+    t.observe(N(points=[q]), frame)
+    t.update_stop(0., frame)
+    t.finish(None, q, None, 0., True, frame)
+    t.stopped_display({'LF_DETECT': 1, 'LF_DETECT_DISTANCE': 6.4, 'LF_DETECT_LATERAL': 3.}, (q, None), frame)
+  assert 0 in t.stop_holds
+  for frame in range(105, 251, 5):
+    q.yRel = 6. if continuation in ('lateral_departure', 'other_candidate') else 3.
+    other = point(2, x=30., y=3., speed=3.) if continuation == 'other_candidate' else None
+    t.observe(N(points=[] if continuation == 'missing' else [q] + ([other] if other else [])), frame)
+    t.update_stop(0., frame)
+    t.finish(None, other, None, 0., True, frame)
+    out = {'LF_DETECT': int(other is not None), 'LF_DETECT_DISTANCE': 24., 'LF_DETECT_LATERAL': 3.}
+    t.stopped_display(out, (other, None), frame)
+    if continuation == 'missing':
+      assert out['LF_DETECT'] == 1
+    elif continuation == 'unselected':
+      assert out['LF_DETECT'] == 1 and out['LF_DETECT_DISTANCE'] == 6.4
+    else:
+      # A one-frame discontinuity is a new identity, not proof of a crossing.
+      assert t.stop_holds
+      assert out['LF_DETECT'] == 1
+
+
+@pytest.mark.parametrize('confirmation,expected', [('none', False), ('vision', True), ('lane', True),
+                                                 ('moving', True), ('wrong_distance', False), ('wrong_speed', False)])
+def test_stationary_front_admission_is_shared_by_direct_and_path_selection(confirmation, expected):
+  step = display_step_for_test()
+  md = model(x=11.52, probability=.9 if confirmation != 'none' else .05)
+  geom = lane_model()
+  md.laneLines, md.roadEdges = geom.laneLines, geom.roadEdges
+  md.laneLineProbs = [.9 if confirmation == 'lane' else .2] * 4
+  md.leadsV3[0].v = [0.]
+  if confirmation == 'wrong_distance': md.leadsV3[0].x = [60.]
+  if confirmation == 'wrong_speed': md.leadsV3[0].v = [15.]
+  q = point(speed=3. if confirmation == 'moving' else 0.)
+  for frame in range(0, 61, 5):
+    selected = step(md, N(live_tracks=N(points=[q])), frame, 0., 0.)
+  assert bool(selected[0]) == expected
+
+
+def test_moving_front_vehicle_can_brake_to_rest_with_weak_vision_and_lanes():
+  step = display_step_for_test()
+  md = model(probability=.01)
+  geom = lane_model()
+  md.laneLines, md.roadEdges = geom.laneLines, geom.roadEdges
+  md.laneLineProbs = [.2] * 4
+  for frame in range(0, 101, 5):
+    q = point(x=10. + min(frame, 50)*.03, speed=3. if frame < 50 else 0.)
+    selected = step(md, N(live_tracks=N(points=[q])), frame, 0., 0.)
+    assert selected[0].trackId == 1
+
+
+@pytest.mark.parametrize('initially_stationary', [False, True])
+def test_confirmed_moving_car_is_held_until_ego_departure(initially_stationary):
+  t = Tracker()
+  start = 60 if initially_stationary else 0
+  for frame in range(0, 161, 5):
+    distance = max(0, min(frame-start, 50)) * .02
+    speed = 2. if start <= frame < start+50 else 0.
+    q = point(x=8. + distance, y=3., speed=speed)
+    boundary_step(t, q, frame)
+    t.finish(None, q, None, 0., True, frame)
+    t.stopped_display({'LF_DETECT': 1, 'LF_DETECT_DISTANCE': q.dRel*.8, 'LF_DETECT_LATERAL': 3.}, (q, None), frame)
+  assert 0 in t.stop_holds
+  for frame in range(165, 501, 5):
+    t.observe(N(points=[]), frame)
+    t.update_stop(0., frame)
+    t.finish(None, None, None, 0., True, frame)
+    out = {'LF_DETECT': 0}
+    t.stopped_display(out, (None, None), frame)
+    assert out['LF_DETECT'] == 1
+  t.update_stop(1., 505)
+  assert not t.stop_holds
+
+
+def test_approach_confirmed_car_survives_coordinate_step_loss_and_reused_id():
+  t = Tracker()
+  for frame in range(0, 101, 5):
+    q = point(44, x=10.-frame*.01, y=2.4, speed=0.)
+    q.vRel = -1.
+    t.observe(N(points=[q]), frame)
+    t.update_stop(3.6, frame, -1.)
+    t.update_boundary_admission(lane_model(frame))
+    t.finish(None, q, None, 0., True, frame)
+    t.stopped_display({'LF_DETECT': 1, 'LF_DETECT_DISTANCE': q.dRel*.8, 'LF_DETECT_LATERAL': 2.4}, (q, None), frame)
+  q.vRel = 0.
+  for frame in range(105, 141, 5):
+    q.yRel = 2.15 if frame >= 125 else 2.4
+    boundary_step(t, q, frame)
+    t.finish(None, q, None, 0., True, frame)
+    t.stopped_display({'LF_DETECT': 1, 'LF_DETECT_DISTANCE': q.dRel*.8, 'LF_DETECT_LATERAL': q.yRel}, (q, None), frame)
+  assert 0 in t.stop_holds
+  for frame in range(145, 351, 5):
+    new = point(44, x=26., y=1.5, speed=0.)  # Reused slot is a rejected new boundary point.
+    boundary_step(t, new, frame)
+    t.finish(None, None, None, 0., True, frame)
+    out = {'LF_DETECT': 0}
+    t.stopped_display(out, (None, None), frame)
+    assert out['LF_DETECT'] == 1
+    assert out['LF_DETECT_DISTANCE'] < 10.
+  assert 44 in t.boundary_rejected
+
+
+def test_established_hold_cancels_real_continuous_lateral_departure():
+  t = Tracker()
+  q = point(y=3., speed=0.)
+  observe(t, [q])
+  t.update_stop(0., 20)
+  t.stop_holds[0] = (1, 10., 3., (1, 8., 3.), 0)
+  for frame in range(25, 91, 5):
+    q.yRel += .1
+    t.observe(N(points=[q]), frame)
+    t.update_stop(0., frame)
+    out = {'LF_DETECT': 0}
+    t.stopped_display(out, (None, None), frame)
+  assert not t.stop_holds and out['LF_DETECT'] == 0
+
+
+@pytest.mark.parametrize('kind', ['single_step', 'jitter', 'duplicate', 'moving_ego', 'reused_id'])
+def test_crossing_history_does_not_infer_motion_from_discontinuities(kind):
+  t = Tracker()
+  live = N(points=[point(y=3., speed=0.)])
+  for frame in range(0, 151, 5):
+    if kind == 'single_step':
+      y = 3. + (0.7 if frame >= 50 else 0.) + (0.05 if frame >= 70 else 0.) + (0.05 if frame >= 90 else 0.)
+    elif kind == 'jitter':
+      y = 3. + (0.25 if frame % 10 else 0.)
+    else:
+      y = 3. + frame*.02
+    q = point(x=10. + (30. if kind == 'reused_id' and frame >= 30 else 0.), y=y, speed=0.)
+    if kind == 'reused_id':
+      q.yRel = 3. if frame < 30 else 6.
+    if kind != 'duplicate': live = N(points=[q])
+    t.observe(live, frame)
+    t.update_stop(3.6 if kind == 'moving_ego' else 0., frame)
+    assert not any(h['blocked'] for h in t.stop_motion.values())
+
+
+def test_crossing_can_be_saved_again_after_two_seconds_of_real_stop():
+  t = Tracker()
+  for frame in range(0, 401, 5):
+    q = point(x=10., y=2. + min(frame, 100)*.01, speed=0.)
+    q.yvRel = 0.
+    t.observe(N(points=[q]), frame)
+    t.update_stop(0., frame)
+    t.finish(None, q, None, 0., True, frame)
+    out = {'LF_DETECT': 1, 'LF_DETECT_DISTANCE': 8., 'LF_DETECT_LATERAL': q.yRel}
+    t.stopped_display(out, (q, None), frame)
+    # Suppression affects stored fallback only, never the selected live candidate.
+    assert out['LF_DETECT'] == 1
+    if frame == 200:
+      assert t.stop_motion[1]['blocked'] and not t.stop_holds
+  assert not t.stop_motion[1]['blocked']
+  assert 0 in t.stop_holds
+
+
 @pytest.mark.parametrize('x,visible', [(-1.01, False), (-1., True), (-.2, True), (0., True), (1., True)])
 def test_approach_hold_clamps_output_only(x, visible):
   t = Tracker()
   t.live = N(points=[])
   t.approaching = True
   t.stop_distance = 1.5 - x
-  t.approach_holds[0] = (33, 1.5, 2., (1, 1.2, 2.), 0, 0.)
+  t.approach_holds[0] = (33, 1.5, 2., (1, 1.2, 2.), 0, 0., 0)
   out = {'LF_DETECT': 0}
   t.stopped_display(out, (None, None), 10)
   assert bool(out['LF_DETECT']) == visible
@@ -714,7 +931,7 @@ def test_approach_hold_release(reason):
   t = Tracker()
   t.observe(N(points=[]), 0)
   t.update_stop(5., 0, -1.)
-  t.approach_holds[0] = (33, 10., 2., (1, 8., 2.), 0, 0.)
+  t.approach_holds[0] = (33, 10., 2., (1, 8., 2.), 0, 0., 0)
   if reason == 'travel':
     t.stop_distance = 5.01
   elif reason == 'acceleration':
@@ -730,14 +947,15 @@ def test_approach_hold_release(reason):
   assert not t.approach_holds
 
 
-def test_approach_transfers_negative_distance_to_stop_and_departure_clears():
+@pytest.mark.parametrize('reused', [False, True])
+def test_approach_transfers_negative_distance_to_stop_and_departure_clears(reused):
   t = Tracker()
   t.observe(N(points=[]), 0)
   t.update_stop(5., 0, -1.)
-  t.approach_holds[0] = (33, 1.5, 2., (1, 1.2, 2.), 0, 0.)
+  t.approach_holds[0] = (33, 1.5, 2., (1, 1.2, 2.), 0, 0., 0)
   t.stop_distance = 1.7
   # Same ID reused far away must not become the remembered vehicle.
-  t.observe(N(points=[point(33, x=50., y=-12.)]), 5)
+  t.observe(N(points=[point(33 if reused else 99, x=50., y=-12.)]), 5)
   t.update_stop(0., 5, -1.)
   out = {'LF_DETECT': 0}
   t.stopped_display(out, (None, None), 5)
@@ -758,6 +976,9 @@ def test_approaching_stationary_target_is_qualified_before_loss(side):
     q.vRel = -1.
     t.observe(N(points=[q]), frame)
     t.update_stop(3.6, frame, -1.)
+    md = lane_model(frame)
+    md.laneLineProbs = [0.] * 4
+    t.update_boundary_admission(md)
     leads = (q, None) if side == 0 else (None, q)
     t.finish(None, *leads, 0., True, frame)
     t.stopped_display({prefix+'_DETECT': 1, prefix+'_DETECT_DISTANCE': q.dRel*.8,
@@ -867,3 +1088,16 @@ def test_crossing_cancels_stale_or_invalid_target(reason):
   if reason == "recovery": probability = .9
   got, _ = t.bridge_crossing(leads, [0.] * 3, probability, True, frame, (0., 0., 0.))
   assert all(x is None or x.trackId != 1 for x in got)
+
+
+def test_unknown_nearest_boundary_does_not_hide_new_stationary_side_vehicle():
+  step = display_step_for_test()
+  md = model()
+  geom = lane_model()
+  md.laneLines, md.roadEdges = geom.laneLines, geom.roadEdges
+  md.laneLineProbs = [.9, .9, .05, .2]
+  q = point(y=-2.5, speed=0.)
+  for frame in range(0, 101, 5):
+    md.timestampEof = frame
+    selected = step(md, N(live_tracks=N(points=[q])), frame, 0., 0.)
+  assert selected[2] is q
