@@ -72,6 +72,8 @@ class _CcncRadarDisplayTracker:
     self.lateral_grace = {}
     self.recent_selected = {}
     self.recent_front = {}
+    self.boundary_admission = {}
+    self.boundary_rejected = set()
     self.lane_ready = True
     self._model = None
     self._model_stamp = None
@@ -352,6 +354,8 @@ class _CcncRadarDisplayTracker:
       self.lateral_grace.clear()
       self.recent_selected.clear()
       self.recent_front.clear()
+      self.boundary_admission.clear()
+      self.boundary_rejected.clear()
     self.last_frame = frame
     if live is self.live:
       return
@@ -396,6 +400,63 @@ class _CcncRadarDisplayTracker:
           del history[key]
     self.positions = {key: value for key, value in self.positions.items()
                       if key in current and value[0] == current[key][0]}
+
+  def update_boundary_admission(self, md, yaw_rate=0.0):
+    """Remember stationary boundary starts for display only, across slot/lane changes."""
+    self.boundary_admission = {key: value for key, value in self.boundary_admission.items()
+                               if key in self.tracks and value['birth'] == self.tracks[key][0]}
+    curves = None
+    for track_id, (birth, frame, _, p, _) in self.tracks.items():
+      admission = self.boundary_admission.get(track_id)
+      if admission is not None and (admission['status'] == 'allowed' or admission['frame'] == frame):
+        continue
+      lateral_speed = getattr(p, 'yvRel', 0.0)
+      stationary = abs(p.vLead) <= 2.0 / CV.MS_TO_KPH and abs(lateral_speed) <= 2.0 / CV.MS_TO_KPH
+      if admission is None or admission['status'] == 'pending':
+        if curves is None:
+          curves = []
+          if md is not None:
+            for line, probability in zip(md.laneLines, md.laneLineProbs):
+              if probability > 0.1 and _ccnc_valid_boundary(line.x, line.y):
+                curves.append((np.asarray(line.x), np.asarray(line.y)))
+        near = stationary and any(xs[0] <= p.dRel <= xs[-1]
+                                  and abs(p.yRel + float(np.interp(p.dRel, xs, ys))) <= 0.3
+                                  for xs, ys in curves)
+        if admission is None:
+          admission = dict(birth=birth, frame=frame, status='pending' if stationary else 'allowed',
+                           samples=0, near=0, moving=None)
+          self.boundary_admission[track_id] = admission
+        admission['samples'] += 1
+        admission['near'] += int(near)
+        # Suppress a suspect start immediately; confirm using fresh radar publications.
+        if admission['status'] == 'pending' and frame - birth >= 30:
+          admission['status'] = ('blocked' if admission['near'] >= 3
+                                 and admission['near'] * 2 >= admission['samples'] else 'allowed')
+      admission['frame'] = frame
+      if admission['status'] == 'blocked':
+        # A speed spike or lane jitter cannot release a rejected stationary reflector.
+        # Straight-road ego-distance compensation also works while ego approaches a stop.
+        if stationary or not math.isfinite(yaw_rate) or abs(yaw_rate) > 0.05:
+          admission['moving'] = None
+        else:
+          longitudinal = abs(p.vLead) > 2.0 / CV.MS_TO_KPH
+          speed = p.vLead if longitudinal else lateral_speed
+          position = p.dRel + self.stop_distance if longitudinal else p.yRel
+          direction = 1 if speed > 0 else -1
+          moving = admission['moving']
+          if not math.isfinite(speed):
+            admission['moving'] = None
+          elif moving is None or moving[2:] != (direction, longitudinal):
+            admission['moving'] = (frame, position, direction, longitudinal)
+          elif frame - moving[0] >= 50 and direction * (position - moving[1]) >= 0.5:
+            admission['status'] = 'allowed'
+    self.boundary_rejected = {key for key, value in self.boundary_admission.items()
+                              if value['status'] == 'blocked' or (value['status'] == 'pending' and value['near'])}
+    # An ID reused by a new rejected point must not resurrect a previous saved display.
+    for history in (self.stop_holds, self.stop_pending, self.approach_holds, self.approach_pending):
+      for side, saved in list(history.items()):
+        if saved[0] in self.boundary_rejected:
+          del history[side]
 
   def stable(self, track_id, frames=15):
     entry = self.tracks.get(track_id)
@@ -460,6 +521,8 @@ class _CcncRadarDisplayTracker:
     best, best_y, score = None, 0.0, math.inf
     recent = self.recently_selected
     for track_id, entry, aligned in self._path_points:
+      if track_id in self.boundary_rejected:
+        continue
       first, last, count, p, _ = entry
       if count < 3 or last - first < 15:
         continue
@@ -494,7 +557,7 @@ class _CcncRadarDisplayTracker:
     for track_id, saved in list(self.crossing.items()):
       birth, stamp, distance, data, reference = saved
       entry = self.tracks.get(track_id)
-      if (entry is None or entry[0] != birth or not 0 <= frame - stamp <= 200
+      if (track_id in self.boundary_rejected or entry is None or entry[0] != birth or not 0 <= frame - stamp <= 200
           or self.stop_distance - distance > 30.0):
         del self.crossing[track_id]
         continue
@@ -1080,6 +1143,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     display_tracker.observe(CS.live_tracks, frame)
     display_tracker.update_stop(v_ego_kph, frame, a_ego_kph)
     left_prob, right_prob = display_tracker.lane_probabilities(md)
+    display_tracker.update_boundary_admission(md, getattr(getattr(CS, 'out', None), 'yawRate', 0.0))
     selected_lane_is_left = state.radar_lane_selector.update(left_prob, right_prob, frame)
     selected_lane_prob = left_prob if selected_lane_is_left else right_prob
 
@@ -1110,6 +1174,8 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
       left_projection = right_projection = None
 
       for point_index, ((lead, dRel, yRel, vRel, vLead), (left_y, right_y)) in enumerate(zip(display_tracker._points, projected)):
+        if lead.trackId in display_tracker.boundary_rejected:
+          continue
         velocity = vLead * ms_to_kph
         # FF와 저속 측면 예외까지 모두 탈락하는 점은 보간 전에 제외합니다.
         if not (velocity > min_front_lead_speed or velocity > min_side_lead_speed

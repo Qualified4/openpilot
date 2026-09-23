@@ -12,7 +12,7 @@ import pytest
 
 def load_helpers():
   path = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[1] / 'hyundaicanfd_ccnc.py'))
-  names = {'_ccnc_valid_boundary', '_CcncRadarDisplayTracker', '_CcncRadarPositionFilter', 'NoiseFilter', 'apply_curved_deadband'}
+  names = {'_ccnc_valid_boundary', '_ccnc_side_lane_center', '_CcncRadarDisplayTracker', '_CcncRadarPositionFilter', 'NoiseFilter', 'apply_curved_deadband'}
   nodes = [n for n in ast.parse(path.read_text(encoding='utf8')).body
            if isinstance(n, (ast.ClassDef, ast.FunctionDef)) and n.name in names]
   env = dict(math=math, np=np, deque=deque, CV=N(MS_TO_KPH=3.6))
@@ -326,6 +326,144 @@ def lane_model(stamp=1, offset=0.):
            roadEdges=[curve(-7.), curve(7.)])
 
 
+def boundary_step(tracker, p, frame, md=None, ego_kph=0., yaw_rate=0.):
+  tracker.observe(N(points=[p]), frame)
+  tracker.update_stop(ego_kph, frame)
+  tracker.update_boundary_admission(lane_model() if md is None else md, yaw_rate)
+
+
+@pytest.mark.parametrize('y,blocked', [(1.21, True), (1.81, False), (-1.79, True), (5.1, True), (0., False)])
+def test_boundary_stationary_start_is_latched_despite_lane_jitter(y, blocked):
+  t = Tracker()
+  p = point(y=y, speed=0.)
+  for frame in range(0, 36, 5):
+    boundary_step(t, p, frame)
+  assert (1 in t.boundary_rejected) == blocked
+  # Mature detections and a disappearing/moving model boundary cannot grant admission.
+  for frame in range(40, 141, 5):
+    md = lane_model(frame, offset=2.)
+    md.laneLineProbs = [0.]*4
+    boundary_step(t, p, frame, md)
+  assert (1 in t.boundary_rejected) == blocked
+
+
+def test_boundary_start_uses_initial_window_not_single_frame_probability():
+  t = Tracker()
+  p = point(y=-1.6, speed=0.)
+  for frame in range(0, 36, 5):
+    md = lane_model(frame)
+    if frame < 10:
+      md.laneLineProbs = [0.]*4
+    boundary_step(t, p, frame, md)
+  assert 1 in t.boundary_rejected
+  # A lone near-boundary sample does not permanently reject a vehicle.
+  t = Tracker()
+  for frame in range(0, 36, 5):
+    boundary_step(t, p, frame, lane_model(frame, offset=0. if frame == 0 else 2.))
+  assert not t.boundary_rejected
+
+
+@pytest.mark.parametrize('initial_speed,initial_y', [(8., 1.5), (0., 0.)])
+def test_previously_admitted_vehicle_can_stop_at_boundary(initial_speed, initial_y):
+  t = Tracker()
+  p = point(y=initial_y, speed=initial_speed)
+  for frame in range(0, 61, 5):
+    boundary_step(t, p, frame)
+  p.vLead = 0.
+  for frame in range(65, 126, 5):
+    p.yRel = min(1.5, p.yRel + .15)
+    boundary_step(t, p, frame)
+  assert not t.boundary_rejected
+
+
+def test_boundary_check_uses_target_distance_and_does_not_extrapolate():
+  md = lane_model(offset=1.)
+  for x, expected in ((10., True), (35., False)):
+    t = Tracker()
+    for frame in range(0, 36, 5):
+      boundary_step(t, point(x=x, y=.5, speed=0.), frame, md)
+    assert bool(t.boundary_rejected) == expected
+
+
+def test_same_radar_publication_cannot_confirm_boundary_start():
+  t = Tracker()
+  live = N(points=[point(y=1.5, speed=0.)])
+  for frame in range(100):
+    t.observe(live, frame)
+    t.update_stop(0., frame)
+    t.update_boundary_admission(lane_model(frame))
+  assert t.boundary_admission[1]['samples'] == 1
+  assert t.boundary_admission[1]['status'] == 'pending'
+
+
+@pytest.mark.parametrize('ego_kph', [0., 3.6])
+def test_rejected_point_can_start_moving_with_ego_compensated_displacement(ego_kph):
+  t = Tracker()
+  for frame in range(0, 61, 5):
+    p = point(x=10. - ego_kph / 3.6 * frame * .01, y=1.5, speed=0.)
+    p.vRel = -ego_kph / 3.6
+    boundary_step(t, p, frame, ego_kph=ego_kph)
+  assert 1 in t.boundary_rejected
+  for frame in range(65, 126, 5):
+    p = point(x=10. - ego_kph / 3.6 * frame * .01 + 2. * (frame-60) * .01, y=1.5, speed=2.)
+    p.vRel = 2. - ego_kph / 3.6
+    boundary_step(t, p, frame, ego_kph=ego_kph)
+  assert not t.boundary_rejected
+
+
+@pytest.mark.parametrize('reason', ['speed_only', 'position_only', 'turning'])
+def test_boundary_release_requires_consistent_motion_not_spikes_or_ego_turn(reason):
+  t = Tracker()
+  for frame in range(0, 61, 5):
+    boundary_step(t, point(y=1.5, speed=0.), frame)
+  for frame in range(65, 141, 5):
+    x = 10. if reason == 'speed_only' else 10. + (frame-60) * .01
+    speed = 0. if reason == 'position_only' else 2.
+    boundary_step(t, point(x=x, y=1.5, speed=speed), frame, yaw_rate=.1 if reason == 'turning' else 0.)
+  assert 1 in t.boundary_rejected
+
+
+@pytest.mark.parametrize('initially_stopped', [False, True])
+def test_lateral_motion_is_not_a_stationary_boundary_object(initially_stopped):
+  t = Tracker()
+  for frame in range(0, 141, 5):
+    moving = not initially_stopped or frame > 60
+    p = point(y=1.5 + (max(0, frame-60) if initially_stopped else frame) * .01, speed=0.)
+    p.yvRel = 1. if moving else 0.
+    boundary_step(t, p, frame)
+    if frame == 60:
+      assert bool(t.boundary_rejected) == initially_stopped
+  assert not t.boundary_rejected
+
+
+@pytest.mark.parametrize('reset', ['missing', 'jump', 'gap'])
+def test_new_identity_does_not_inherit_boundary_rejection(reset):
+  t = Tracker()
+  for frame in range(0, 36, 5):
+    boundary_step(t, point(y=1.5, speed=0.), frame)
+  assert 1 in t.boundary_rejected
+  if reset == 'missing':
+    t.observe(N(points=[]), 40)
+    t.update_boundary_admission(lane_model())
+    assert not t.boundary_admission
+  boundary_step(t, point(x=20. if reset == 'jump' else 10., y=1.5, speed=8.), 70 if reset == 'gap' else 45)
+  assert not t.boundary_rejected
+
+
+def test_boundary_rejection_applies_to_direct_and_vision_fallback_selection():
+  step = display_step_for_test()
+  md = model(y=1.5)
+  geom = lane_model()
+  md.laneLines, md.laneLineProbs, md.roadEdges = geom.laneLines, geom.laneLineProbs, geom.roadEdges
+  p = point(y=1.5, speed=0.)
+  for frame in range(0, 61, 5):
+    assert step(md, N(live_tracks=N(points=[p])), frame, 0., 0.) == (None, None, None)
+  md.laneLineProbs = [0.]*4
+  md.leadsV3[0].v = [0.]
+  for frame in range(65, 126, 5):
+    assert step(md, N(live_tracks=N(points=[p])), frame, 0., 0.) == (None, None, None)
+
+
 def test_projection_cache_refreshes_for_new_model_and_reused_point_objects():
   t = Tracker()
   p = point(x=10.)
@@ -398,6 +536,8 @@ def display_step_for_test():
   control = N(radar_display_tracker=Tracker(), radar_lane_selector=env['_CcncRadarLaneSelector']())
   for side in ('ff', 'lf', 'rf'):
     setattr(control, side + '_detect', N(apply=lambda v: 1))
+  for side in ('lf', 'rf'):
+    setattr(control, side + '_center', H['NoiseFilter'](3, 3., .03))
   env['state'] = control
   start = source.index('    ff_lead = lf_lead = rf_lead = None')
   end = source.index('    center_lane_offset =', start)
