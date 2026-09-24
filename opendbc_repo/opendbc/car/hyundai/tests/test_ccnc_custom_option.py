@@ -3,6 +3,8 @@ from types import SimpleNamespace as N
 
 import pytest
 
+from opendbc.can import CANPacker
+from opendbc.can.parser import get_raw_value
 from opendbc.car import structs
 from opendbc.car.hyundai import hyundaicanfd as main, hyundaicanfd_ccnc as custom
 from opendbc.car.hyundai.values import HyundaiFlags
@@ -233,3 +235,33 @@ def test_custom_radar_is_final_vehicle_display_authority(display, monkeypatch, r
   monkeypatch.setattr(custom, "update_vehicles", lambda values, *args: values)
   values = dict(send())["CCNC_0x162"]
   assert values["FF_DETECT"] == (0 if radar else 4)
+
+
+@pytest.mark.parametrize("detect", range(15))
+def test_custom_vehicle_icons_pack_without_changing_geometry(display, monkeypatch, detect):
+  params, cs, _ = display
+  params["CcncRadarVehicles"] = True
+  packer = CANPacker("hyundai_canfd_generated")
+  definition = packer.dbc.name_to_msg["CCNC_0x162"]
+  source = dict.fromkeys(definition.sigs, 0)
+  source.update(FF_DETECT=detect, FF_DISTANCE=81.2, FF_LATERAL=1.3,
+                FF_DETECT_ALT=2, FF_DISTANCE_ALT=42.1, FF_LATERAL_ALT=0.7)
+  for side in ("LF", "RF", "LR", "RR"):
+    source.update({f"{side}_DETECT": detect, f"{side}_DETECT_DISTANCE": 20., f"{side}_DETECT_LATERAL": 2.9})
+  cs.ccnc_0x162 = source.copy()
+  cs.adrv_0x161 = None
+  monkeypatch.setattr(custom, "update_vehicles", lambda values, *args: values)
+
+  messages = main.create_ccnc_messages(N(flags=HyundaiFlags.CAMERA_SCC.value), packer, N(ECAN=0, CAM=2), 0,
+                                     N(enabled=False, latActive=False), cs, N(), 0, False, False, 0, False, 0, 0)
+  assert len(messages) == 1
+  address, data, bus = messages[0]
+  assert (address, bus) == (definition.address, 0)
+  decoded = {key: get_raw_value(data, sig) * sig.factor + sig.offset for key, sig in definition.sigs.items()}
+  expected = source.copy()
+  for key in ("FF_DETECT", "LF_DETECT", "RF_DETECT", "LR_DETECT", "RR_DETECT"):
+    expected[key] = detect + 2 if detect in (1, 2) else detect
+  for key in expected.keys() - {"CHECKSUM", "COUNTER"}:
+    assert decoded[key] == pytest.approx(expected[key])
+  assert decoded["CHECKSUM"] == main.hkg_can_fd_checksum(address, None, bytearray(data))
+  assert cs.ccnc_0x162 == source
