@@ -312,8 +312,8 @@ def create_job(segments: list[str]) -> dict[str, Any]:
   return job
 
 
-def start_job(job: dict[str, Any]) -> asyncio.Task:
-  task = asyncio.create_task(run_job(job))
+def start_job(job: dict[str, Any], *, runner=None) -> asyncio.Task:
+  task = asyncio.create_task((runner or run_job)(job))
   job["_task"] = task
 
   def finalize_task(done_task: asyncio.Task) -> None:

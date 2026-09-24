@@ -1,5 +1,7 @@
 "use strict";
 
+import { chooseUploadDestination, roadViewerError } from "../road_viewer/index.js";
+
 import { dashcamReadStateStore } from "./dashcam_player_session.js";
 import { createLogsSegmentStatusTag } from "./player/components.js";
 import { loadScreenrecordVideos } from "./screenrecord.js";
@@ -1198,6 +1200,7 @@ function openDashcamPlayer(route, segment) {
         return formatDashcamTimeRange(targetEndEpoch - seconds, targetEndEpoch);
       },
       onSegmentSend: (target) => uploadDashcamSegments([target], {
+        chooseDestination: true,
         showProgress: true,
         showResult: true,
         showSuccessToast: false,
@@ -1299,7 +1302,9 @@ function dashcamUploadResultHtml(result) {
       const ok = item?.ok === true;
       const status = ok
         ? getUIText("upload_status_complete", "Complete")
-        : getUIText("upload_status_failed", "Failed");
+        : result.target === "road_viewer" && item.transferred
+          ? getUIText("rv_pending_registration", "Waiting for batch completion")
+          : getUIText("upload_status_failed", "Failed");
       return `<div class="app-dialog__metaResult">
         <code class="app-dialog__metaCode">${escapeHtml(String(item?.segment || ""))}</code>
         <span class="app-dialog__metaState" data-tone="${ok ? "success" : "error"}">${escapeHtml(status)}</span>
@@ -1327,6 +1332,7 @@ function dashcamUploadResultHtml(result) {
       uploaded: Number(result?.uploaded || 0),
       total: Number(result?.total || 0),
     }))}</div>
+    ${result.target === "road_viewer" && result.error ? `<p>${escapeHtml(roadViewerError(result.error))}</p><p>${escapeHtml(getUIText("rv_retry_hint", "Files already received are kept until the session expires. Retry resumes those files; the batch is registered only when all files finish."))}</p>` : ""}
     ${resultList}
     <div class="app-dialog__metaSummary">
       <span>${escapeHtml(qcameraLabel)}</span>
@@ -1338,14 +1344,18 @@ function dashcamUploadResultHtml(result) {
 
 async function showDashcamUploadResult(result) {
   const text = String(result?.shareText || result?.message || "").trim();
-  await openAppDialog({
+  const selected = await openAppDialog({
     mode: "choice",
+    choices: result.retry_job_id ? [{ label: getUIText("rv_retry", "Resume upload"), value: "retry" }] : [],
     title: getUIText("log_upload_result", "Upload Result"),
     html: true,
     messageHtml: dashcamUploadResultHtml(result),
     cancelLabel: getUIText("close", "Close"),
     copyText: text,
     copyLabel: getUIText("copy", "Copy"),
+  });
+  if (selected === "retry") await uploadDashcamSegments(result.results.map((item) => item.segment), {
+    destination: "road_viewer", retryJobId: result.retry_job_id, confirm: false,
   });
 }
 
@@ -1572,7 +1582,7 @@ async function resumeDashcamUploadJobIfNeeded(options = {}) {
         step_current: Number(result.uploaded || 0),
         step_total: Number(result.total || total),
         progress: result.ok ? 100 : null,
-        bytes_current: resultStats.bytes,
+        bytes_current: result.target === "road_viewer" ? result.bytes_received : resultStats.bytes,
         bytes_total: resultStats.bytes,
       }, total);
       progress.setSummary(resultStats);
@@ -1608,6 +1618,13 @@ async function resumeDashcamUploadJobIfNeeded(options = {}) {
 }
 
 async function uploadDashcamSegments(segments, options = {}) {
+  if (options.chooseDestination) {
+    const destination = await chooseUploadDestination();
+    if (!destination) return;
+    options = { ...options, destination, chooseDestination: false };
+  }
+  const roadViewer = options.destination === "road_viewer";
+  const api = roadViewer ? "/api/road-viewer" : "/api/dashcam/upload";
   if (dashcamUploadActiveJobId) {
     showAppToast(getUIText("upload_already_running", "Upload already running."), { tone: "error", duration: 3200 });
     return;
@@ -1632,20 +1649,20 @@ async function uploadDashcamSegments(segments, options = {}) {
   };
   if (options.confirm !== false) {
     try {
-      const summary = await postJson("/api/dashcam/upload/summary", { segments: targets });
+      const summary = await postJson(`${api}/summary`, { segments: targets });
       if (!Array.isArray(summary?.summaries) || summary.summaries.length !== targets.length) {
         throw new Error(getUIText("upload_summary_unavailable", "Upload information is unavailable."));
       }
       uploadStats = dashcamUploadStats(summary.summaries);
     } catch (error) {
-      showAppToast(`${getUIText("log_upload", "Upload Logs")} ${getUIText("error", "Error")}: ${error?.message || error}`, {
+      showAppToast(`${getUIText("log_upload", "Upload Logs")} ${getUIText("error", "Error")}: ${roadViewer ? roadViewerError(error) : error?.message || error}`, {
         tone: "error",
         duration: 4200,
       });
       return;
     }
     const ok = await appConfirm("", {
-      title: getUIText("log_upload", "Upload Logs"),
+      title: roadViewer ? getUIText("rv_send", "Send to Road Viewer") : getUIText("log_upload", "Upload Logs"),
       html: true,
       messageHtml: dashcamUploadConfirmHtml(uploadStats),
       confirmLabel: getUIText("upload_send", "Send"),
@@ -1697,7 +1714,7 @@ async function uploadDashcamSegments(segments, options = {}) {
       progress: null,
     }, targets.length);
     if (cancelRequested) throw makeDashcamUploadCanceledError();
-    const started = await postJson("/api/dashcam/upload/start", { segments: targets });
+    const started = await postJson(`${api}/start`, { segments: targets, ...(options.retryJobId ? { retry_job_id: options.retryJobId } : {}) });
     jobId = started.job_id;
     rememberDashcamUploadJob(jobId);
     if (cancelRequested) {
@@ -1713,7 +1730,7 @@ async function uploadDashcamSegments(segments, options = {}) {
       step_current: Number(result.uploaded || 0),
       step_total: Number(result.total || targets.length),
       progress: result.ok ? 100 : null,
-      bytes_current: resultStats.bytes,
+      bytes_current: result.target === "road_viewer" ? result.bytes_received : resultStats.bytes,
       bytes_total: resultStats.bytes,
     }, targets.length);
     progress.setSummary(resultStats);
@@ -1745,7 +1762,7 @@ async function uploadDashcamSegments(segments, options = {}) {
     } else if (isDashcamUploadCanceledError(e)) {
       showAppToast(getUIText("upload_canceled", "Upload canceled"), { duration: 2600 });
     } else {
-      showAppToast(`${getUIText("log_upload", "Upload Logs")} ${getUIText("error", "Error")}: ${e.message || e}`, {
+      showAppToast(`${getUIText("log_upload", "Upload Logs")} ${getUIText("error", "Error")}: ${roadViewer ? roadViewerError(e) : e.message || e}`, {
         tone: "error",
         duration: Number(options.toastDuration) || 4200,
       });
@@ -1766,7 +1783,7 @@ async function uploadRecentDashcamSegments(limit) {
       showAppToast(getUIText("no_completed_logs", "No completed logs available."), { tone: "error" });
       return;
     }
-    await uploadDashcamSegments(segments);
+    await uploadDashcamSegments(segments, { chooseDestination: true });
   } catch (error) {
     showAppToast(`${getUIText("recent_log_upload", "Upload recent logs")}: ${error.message || error}`, {
       tone: "error",
@@ -1798,7 +1815,7 @@ async function showDashcamSegmentMenu(route, segment, options = {}) {
     options.activePlayerClose?.();
     await openDashcamDriveReplay(route, segment);
   } else if (selected === "play" && typeof options.activePlayerClose !== "function") openDashcamPlayer(route, segment);
-  else if (selected === "upload") await uploadDashcamSegments([segment]);
+  else if (selected === "upload") await uploadDashcamSegments([segment], { chooseDestination: true });
   else if (selected?.startsWith?.("download_")) {
     const kind = selected.replace("download_", "");
     window.open(dashcamApiPath(`download/${encodeURIComponent(segment)}`, kind), "_blank", "noopener");

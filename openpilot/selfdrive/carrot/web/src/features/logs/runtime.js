@@ -1,5 +1,7 @@
 "use strict";
 
+import { openRoadViewerSettings } from "../road_viewer/index.js";
+
 import { createDashcamPlayerSession } from "./dashcam_player_session.js";
 import {
   createLogsPlayerDialog,
@@ -121,6 +123,7 @@ function syncLogsMenu() {
 function logsMenuChoices() {
   const sort = typeof dashcamSortDirection === "function" ? dashcamSortDirection() : "asc";
   return [
+    { label: getUIText("rv_settings", "Road Viewer connection"), value: "road_viewer" },
     { heading: getUIText("logs_sort", "Sort") },
     {
       label: getUIText("sort_ascending", "Sort: ascending"),
@@ -142,7 +145,8 @@ function logsMenuChoices() {
 
 async function runLogsMenuAction(selected) {
   const [action, argument] = String(selected || "").split(":");
-  if (action === LOGS_MENU_SORT) await setDashcamSort(argument === "desc" ? "desc" : "asc");
+  if (action === "road_viewer") await openRoadViewerSettings();
+  else if (action === LOGS_MENU_SORT) await setDashcamSort(argument === "desc" ? "desc" : "asc");
   else if (action === LOGS_MENU_UPLOAD) await uploadRecentDashcamSegments(Number(argument) || 0);
 }
 
@@ -900,7 +904,7 @@ function bindLogsPage() {
       } else if (action === "upload-selected") {
         const entry = dashcamState.routes.find((item) => item.route === route);
         const targets = dashcamSelectedForRoute(entry || { segmentFolders: [] });
-        uploadDashcamSegments(targets).catch(() => {});
+        uploadDashcamSegments(targets, { chooseDestination: true }).catch(() => {});
       }
     });
     routesHost.addEventListener("change", (ev) => {
