@@ -24,6 +24,44 @@ H = load_helpers()
 Tracker = H['_CcncRadarDisplayTracker']
 
 
+@pytest.mark.parametrize('side', [0, 1])
+@pytest.mark.parametrize('invalid', [None, 'inner_prob', 'outer_prob', 'nan_prob', 'nan_origin',
+                                    'inf_coordinate', 'mismatched_xy', 'reversed_x', 'reversed_boundaries', 'no_20m'])
+def test_side_lane_center_rejects_unreliable_geometry(side, invalid):
+  md = N(laneLines=[N(x=[0., 10., 20., 30.], y=[y, y + .1, y + .4, y + .9])
+                    for y in (-5.4, -1.8, 1.8, 5.4)], laneLineProbs=[.6] * 4)
+  inner, outer = ((1, 0) if side == 0 else (2, 3))
+  line = md.laneLines[inner]
+  if invalid == 'inner_prob':
+    md.laneLineProbs[inner] = .59
+  elif invalid == 'outer_prob':
+    md.laneLineProbs[outer] = .59
+  elif invalid == 'nan_prob':
+    md.laneLineProbs[inner] = math.nan
+  elif invalid == 'nan_origin':
+    line.y[0] = math.nan
+  elif invalid == 'inf_coordinate':
+    md.laneLines[outer].y[-1] = math.inf
+  elif invalid == 'mismatched_xy':
+    line.y.pop()
+  elif invalid == 'reversed_x':
+    line.x.reverse()
+  elif invalid == 'reversed_boundaries':
+    md.laneLines[inner], md.laneLines[outer] = md.laneLines[outer], md.laneLines[inner]
+  elif invalid == 'no_20m':
+    line.x = [0., 5., 10., 15.]
+  center = H['_ccnc_side_lane_center'](md, side)
+  if invalid is None:
+    assert center == pytest.approx(3.6)
+  else:
+    assert center is None
+  # Rejected input must preserve the last good center, not poison its filter.
+  filtered = H['NoiseFilter'](3, 3.6, .03)
+  if center is not None:
+    filtered.apply(center)
+  assert filtered.value == pytest.approx(3.6)
+
+
 def point(track_id=1, x=10., y=0., speed=8.):
   return N(trackId=track_id, radarSource='frontRadar', dRel=x, yRel=y, vRel=0., vLead=speed)
 
@@ -114,6 +152,35 @@ def test_reliable_lane_recovers_slot_without_waiting():
   assert not t.lane_available(.05, 0)
   assert not t.lane_available(.15, 20)
   assert t.lane_available(.5, 21)
+
+
+@pytest.mark.parametrize('reference', [('lane', True), ('path', False)])
+def test_curve_spike_blends_and_recovers_without_a_lingering_offset(reference):
+  t = Tracker()
+  p = point(y=0.)
+  observe(t, [p])
+  t.filter_position(p, 0., reference, 20)
+  t.filter_position(p, 2., reference, 25)
+  assert t.positions[p.trackId][4] == pytest.approx(.15)
+  t.filter_position(p, 0., reference, 30)
+  assert t.positions[p.trackId][4] == pytest.approx(0.)
+  for frame in range(35, 111, 5):
+    previous = t.positions[p.trackId][4]
+    t.filter_position(p, 2., reference, frame)
+    assert 0 <= t.positions[p.trackId][4] - previous <= .150001
+  assert t.positions[p.trackId][4] == pytest.approx(2.)
+
+
+def test_curve_blend_preserves_raw_radar_motion_and_new_target_position():
+  t = Tracker()
+  p = point(y=0.)
+  observe(t, [p])
+  t.filter_position(p, 0., ('lane', True), 20)
+  t.filter_position(p, 2., ('lane', True), 25)
+  p.yRel = 1.
+  t.filter_position(p, 3., ('lane', True), 30)
+  assert t.positions[p.trackId][4] == pytest.approx(1.3)
+  assert t.filter_position(point(2, y=4.), 6., ('lane', True), 30)[1] == pytest.approx(6.)
 
 
 def test_reference_switch_blends_without_losing_raw_lateral_motion():
@@ -295,7 +362,7 @@ def test_failed_fallback_does_not_introduce_new_target_from_weak_lanes():
   assert env['ff_lead'] is None
 
 
-@pytest.mark.parametrize('distance', [True, False])
+@pytest.mark.parametrize('distance', [True])
 def test_specialized_position_filter_matches_general_filter(distance):
   fast = H['_CcncRadarPositionFilter'](1., distance)
   reference = H['NoiseFilter'](3, 1., [.3, .9] if distance else .3,
@@ -305,6 +372,139 @@ def test_specialized_position_filter_matches_general_filter(distance):
     assert fast.apply(float(value)) == reference.apply(float(value))
   for value in [100., 0., 1., 1.6, 1.6000001, -50., 2., 3., 4.]:
     assert fast.apply(value) == reference.apply(value)
+
+
+@pytest.mark.parametrize('step', [-1.2, 1.2])
+def test_lateral_median_rejects_single_spike_but_follows_sustained_step(step):
+  lateral = H['_CcncRadarPositionFilter'](0., False)
+  assert lateral.apply(step) == 0.
+  assert lateral.apply(0.) == 0.
+  assert lateral.apply(0.) == 0.
+  assert lateral.apply(step) == 0.
+  previous = 0.
+  for _ in range(6):
+    value = lateral.apply(step)
+    assert 0 <= (value - previous) * math.copysign(1., step) <= .250001
+    previous = value
+  assert lateral.apply(step) == pytest.approx(step)
+  assert H['_CcncRadarPositionFilter'](step, False).apply(step) == pytest.approx(step)
+
+
+def test_lateral_fast_follow_uses_elapsed_time_and_recovers_from_reversal():
+  outputs = []
+  for dt in (.01, .05):
+    f = H['_CcncRadarPositionFilter'](0., False)
+    f.dt = dt
+    f.apply(1.2)  # First sample is deliberately rejected by the median.
+    for _ in range(round(.2 / dt)):
+      f.apply(1.2)
+    outputs.append(f.value)
+    for _ in range(round(.4 / dt)):
+      f.apply(0.)
+    assert f.value == pytest.approx(0.)
+  assert outputs == pytest.approx([1., 1.])
+
+
+def test_far_lane_small_geometry_steps_are_limited_but_raw_motion_is_not():
+  t = Tracker()
+  p = point(x=140.)
+  observe(t, [p])
+  t.filter_position(p, 0., ('lane', True), 20)
+  for frame in range(25, 51, 5):
+    old = t.positions[1][4]
+    t.filter_position(p, (frame - 20) * .04, ('lane', True), frame)
+    assert t.positions[1][4] - old == pytest.approx(.075)
+  old = t.positions[1][4]
+  p.yRel = .5
+  t.filter_position(p, 1.7, ('lane', True), 55)
+  assert t.positions[1][4] - old == pytest.approx(.575)
+
+
+@pytest.mark.parametrize('sign', [-1., 1.])
+def test_far_curve_preserves_cancelled_radar_motion(sign):
+  t = Tracker()
+  p = point(x=80., y=-6. * sign)
+  observe(t, [p])
+  t.filter_position(p, -1.4 * sign, ('lane', True), 20)
+  for frame in range(25, 86, 5):
+    p.yRel += .4 * sign
+    t.filter_position(p, -1.4 * sign, ('lane', True), frame)
+    assert t.positions[1][4] == pytest.approx(-1.4 * sign)
+    assert t.positions[1][-1].value == pytest.approx(-1.4 * sign)
+
+
+def test_far_curve_cancellation_still_limits_unmatched_geometry_and_recovers_bias():
+  t = Tracker()
+  p = point(x=140.)
+  observe(t, [p])
+  t.filter_position(p, 0., ('lane', True), 20)
+  p.yRel = -.2
+  t.filter_position(p, 1., ('lane', True), 25)
+  assert t.positions[1][4] == pytest.approx(.075)
+  # Keep a fixed road-aligned target while radar and road geometry rotate.
+  for frame in range(30, 101, 5):
+    p.yRel -= .2
+    t.filter_position(p, 1., ('lane', True), frame)
+  assert t.positions[1][4] == pytest.approx(1.)
+  assert t.positions[1][5] == pytest.approx(0.)
+
+
+def test_recent_side_needs_path_and_vision_but_true_front_survives_lane_loss():
+  t = Tracker()
+  p = point(y=1.7)
+  observe(t, [p])
+  t.finish(None, p, None, 0., True, 20)
+  assert t.path_lead(model(probability=0.), 0.)[0] is None
+  assert t.path_lead(model(y=1.7), 0.)[0] is None
+  p.yRel = .5
+  t.observe(N(points=[p]), 25)
+  observe(t, [p], 30)
+  assert t.path_lead(model(y=.5), 0.)[0] is p
+  t.finish(p, None, None, .5, True, 50)
+  assert t.path_lead(model(probability=0.), 0.)[0] is p
+
+
+def test_reliable_side_history_expires_and_does_not_follow_reused_id():
+  t = Tracker()
+  p = point(y=-2.)
+  observe(t, [p])
+  md = lane_model()
+  t.lane_probabilities(md)
+  t.lane_projection(t.live)
+  assert t.lane_sides[1][-1] == -1
+  t.finish(p, None, None, -2., False, 20)
+  assert t.path_lead(model(y=-2., path_y=(0., .3, .3)), 0.)[0] is None
+  assert t.path_lead(model(y=-2., path_y=(0., 1., 1.)), 0.)[0] is p
+  t.observe(N(points=[point(x=50., y=-2.)]), 25)
+  assert not t.lane_sides
+  t.lane_probabilities(lane_model())
+  t.lane_projection(t.live)
+  assert not t.lane_sides  # Never extrapolate trusted lane evidence beyond its range.
+
+
+def test_reliable_side_history_is_bounded_by_time_and_travel():
+  for expired_by in ('time', 'travel', 'missing'):
+    t = Tracker()
+    p = point(y=-2.)
+    observe(t, [p])
+    t.lane_probabilities(lane_model())
+    t.lane_projection(t.live)
+    if expired_by == 'travel':
+      t.stop_distance = 16.
+    if expired_by == 'time':
+      for frame in range(25, 126, 5):
+        t.observe(N(points=[p]), frame)
+    else:
+      t.observe(None if expired_by == 'missing' else N(points=[p]), 25)
+    assert not t.lane_sides
+
+
+def test_expired_side_evidence_cannot_block_a_current_vision_match():
+  t = Tracker()
+  p = point(y=-1.7)
+  observe(t, [p])
+  t.lane_sides[1] = (t.tracks[1][0], -100, 0., -1)
+  assert t.path_lead(model(y=-1.7), 0.)[0] is p
 
 
 def test_scalar_speed_thresholds_match_original_interpolation():

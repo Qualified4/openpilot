@@ -24,13 +24,14 @@ def _ccnc_side_lane_center(md, side):
   if md is None or len(md.laneLines) < 4 or len(md.laneLineProbs) < 4:
     return None
 
-  if md.laneLineProbs[outer_idx] < 0.6:
+  if not all(math.isfinite(md.laneLineProbs[i]) and md.laneLineProbs[i] >= 0.6
+             for i in (inner_idx, outer_idx)):
     return None
 
   inner = md.laneLines[inner_idx]
   outer = md.laneLines[outer_idx]
 
-  if len(inner.x) < 2 or len(outer.x) < 2:
+  if not (_ccnc_valid_boundary(inner.x, inner.y) and _ccnc_valid_boundary(outer.x, outer.y)):
     return None
 
   x = 20.0
@@ -42,12 +43,14 @@ def _ccnc_side_lane_center(md, side):
   inner_y = float(np.interp(x, inner.x, inner.y))
   outer_y = float(np.interp(x, outer.x, outer.y))
 
-  width = abs(outer_y - inner_y)
+  # Model y is positive to the right; reversed boundaries are not a valid lane.
+  width = (inner_y - outer_y) if side == 0 else (outer_y - inner_y)
 
   if not 2.3 <= width <= 4.8:
     return None
 
-  return abs(inner.y[0]) + width * 0.5
+  center = abs(inner.y[0]) + width * 0.5
+  return center if math.isfinite(center) else None
 
 class _CcncRadarDisplayTracker:
   """Observation continuity and lane-free fallback for the CCNC display only."""
@@ -73,6 +76,7 @@ class _CcncRadarDisplayTracker:
     self.lateral_grace = {}
     self.recent_selected = {}
     self.recent_front = {}
+    self.lane_sides = {}
     self.boundary_admission = {}
     self.boundary_rejected = set()
     self.lane_ready = True
@@ -306,6 +310,16 @@ class _CcncRadarDisplayTracker:
     data, flags = self._lane_data
     distances = np.fromiter((p[1] for p in self._points), dtype=np.float64, count=len(self._points))
     projected = [np.interp(distances, *data[0]), np.interp(distances, *data[1])]
+    if all(math.isfinite(prob) and prob >= 0.6 for prob in self._lane_probs):
+      for (p, d, y, _, _), left_y, right_y in zip(self._points, *projected):
+        if not (max(data[0][0][0], data[1][0][0]) <= d <= min(data[0][0][-1], data[1][0][-1])
+                and right_y > left_y):
+          continue
+        side = 1 if y > -left_y + 0.35 else -1 if y < -right_y - 0.35 else 0
+        if side:
+          self.lane_sides[p.trackId] = (self.tracks[p.trackId][0], self.last_frame, self.stop_distance, side)
+        else:
+          self.lane_sides.pop(p.trackId, None)
     self._projection_distances = distances
     self._projection_inner = projected
     self._side_projection = [None, None]
@@ -397,6 +411,7 @@ class _CcncRadarDisplayTracker:
       self.lateral_grace.clear()
       self.recent_selected.clear()
       self.recent_front.clear()
+      self.lane_sides.clear()
       self.boundary_admission.clear()
       self.boundary_rejected.clear()
     self.last_frame = frame
@@ -443,6 +458,9 @@ class _CcncRadarDisplayTracker:
           del history[key]
     self.positions = {key: value for key, value in self.positions.items()
                       if key in current and value[0] == current[key][0]}
+    self.lane_sides = {key: value for key, value in self.lane_sides.items()
+                       if key in current and value[0] == current[key][0]
+                       and 0 <= frame - value[1] <= 100 and self.stop_distance - value[2] <= 15.0}
 
   def update_boundary_admission(self, md):
     """Confirm sustained radar motion before exempting a new detection."""
@@ -600,7 +618,7 @@ class _CcncRadarDisplayTracker:
       distance = dRel * dRel + yRel * yRel
       if distance >= score or (front_only and not recent(track_id, front_only=True)):
         continue
-      retained = recent(track_id)
+      retained = recent(track_id, front_only=True)
       vision_match = strong_vision_match = False
       if vision is not None:
         prob, vx, vy, vv = vision
@@ -611,6 +629,14 @@ class _CcncRadarDisplayTracker:
                                and dx <= max(3.0, dRel * 0.2) and dy <= 2.0 and dv <= 3.0)
         vision_match = vision_match or strong_vision_match
       if require_vision and not vision_match:
+        continue
+      # A recent side identity alone is not evidence of a cut-in during lane loss.
+      # Require both present path agreement and vision before promoting it to FF.
+      side = self.lane_sides.get(track_id)
+      was_side = (side is not None and side[0] == first and 0 <= self.last_frame - side[1] <= 100
+                  and self.stop_distance - side[2] <= 15.0)
+      if (was_side or (recent(track_id) and not retained)) and not (
+          vision_match and abs(aligned) <= 1.2):
         continue
       corridor = 2.0 if strong_vision_match else 1.8 if retained else 1.2
       if not ((abs(aligned) <= corridor and (retained or vision_match))
@@ -678,16 +704,38 @@ class _CcncRadarDisplayTracker:
       distance = _CcncRadarPositionFilter(point.dRel, True)
       lateral = _CcncRadarPositionFilter(aligned_y, False)
       bias = 0.0
+      geometry_blend = False
     else:
-      _, last, old_reference, old_raw, old_input, bias, distance, lateral = previous
+      _, last, old_reference, old_raw, old_input, bias, geometry_blend, distance, lateral = previous
+      dt = (frame - last) * 0.01
+      lateral.dt = dt
+      # At long range, repeated small geometry changes also need a bounded rate.
+      # Raw radar motion remains outside this correction-only limiter.
+      far_lane = reference[0] == 'lane' and point.dRel > 60.0
+      rate = 3.0 - 1.5 * min(1.0, max(0.0, (point.dRel - 60.0) / 60.0)) if far_lane else 3.0
+      step = dt * rate
+      correction_change = (aligned_y - point.yRel) - (old_input - old_raw)
+      if far_lane and reference == old_reference:
+        raw_change = point.yRel - old_raw
+        geometry_change = correction_change + bias  # Compare unblended geometry targets.
+        if raw_change * geometry_change < 0.0:
+          # Preserve the portion of radar motion cancelled by the road geometry.
+          # Only the remaining geometry change needs the ordinary rate limit.
+          step += min(abs(raw_change), abs(geometry_change))
       if reference != old_reference:
-        # Cancel the reference change, while retaining the radar's actual lateral motion.
         bias = old_input + (point.yRel - old_raw) - aligned_y
+        geometry_blend = False
+      elif geometry_blend or (not bias and abs(correction_change) > (step if far_lane else 0.6)):
+        # Blend abrupt road-geometry changes separately from actual radar motion.
+        # Rebase an active blend so a transient model spike does not leave a tail.
+        bias = old_input + (point.yRel - old_raw) - aligned_y
+        geometry_blend = True
       if bias:
-        step = (frame - last) * 0.03
         bias = math.copysign(max(0.0, abs(bias) - step), bias)
+      if not bias:
+        geometry_blend = False
     filtered_input = aligned_y + bias
-    self.positions[track_id] = (birth, frame, reference, point.yRel, filtered_input, bias, distance, lateral)
+    self.positions[track_id] = (birth, frame, reference, point.yRel, filtered_input, bias, geometry_blend, distance, lateral)
     return distance.apply(point.dRel), lateral.apply(filtered_input)
 
   def finish(self, ff, lf, rf, ff_y, lane_mode, frame):
@@ -908,7 +956,25 @@ class _CcncRadarPositionFilter(NoiseFilter):
     self._a_max = 0.9 if distance else 0.3
     self._err_min = 1.0 if distance else 0.6
     self._err_max = 4.0 if distance else 0.6
+    self.dt = 0.05
+    self._following_step = False
     self.apply = self._apply_adaptive if distance else self._apply_step
+
+  def _apply_step(self, target):
+    # Track changes initialize immediately. A sustained step on the same track
+    # catches up quickly without a single-frame reset or changing the deadband.
+    self._buffer.append(target)
+    med = self._get_median()
+    error = med - self._filtered_value
+    self._following_step = self._following_step or abs(error) > self._err_max
+    if self._following_step:
+      step = max(0.0, self.dt) * 5.0
+      self._filtered_value += math.copysign(min(abs(error), step), error)
+      if abs(error) <= step:
+        self._following_step = False
+    else:
+      self._filtered_value += self._a_min * error
+    return self._filtered_value
 
   def _apply_adaptive(self, target):
     if self._check_hard_reset(target):
