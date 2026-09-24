@@ -1045,14 +1045,15 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         if radar_vehicles:
           values = ccnc_custom.update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes)
-          # Custom 0x162 slots use box enums 1/2 for gray/white cars 3/4.
-          for key in ("FF_DETECT", "LF_DETECT", "RF_DETECT", "LR_DETECT", "RR_DETECT"):
+          # Custom corner slots use box enums 1/2 for gray/white cars 3/4.
+          for key in ("LF_DETECT", "RF_DETECT", "LR_DETECT", "RR_DETECT"):
             if values[key] in (1, 2):
               values[key] += 2
         else:
           _normalize_cluster_corner_objects(values)
-          _convert_ccnc_front_box_to_car(values)
           _apply_ccnc_lead(values, getattr(CS, "radarState", None), CC.enabled, getattr(CS, "modelV2", None), hud_lateral)
+
+        _convert_ccnc_front_box_to_car(values)
 
         if (left_lane_warning and not CS.out.leftBlinker) or (right_lane_warning and not CS.out.rightBlinker):
           values["VIBRATE"] = 1
