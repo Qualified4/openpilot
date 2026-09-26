@@ -38,7 +38,7 @@ def apply_canfd_stopping(values, CS, controller, accel, previous_value, jerk_u, 
 
   wheels = CS.out.wheelSpeeds
   speeds = [CS.out.vEgo, CS.out.vEgoRaw, wheels.fl, wheels.fr, wheels.rl, wheels.rr]
-  finite = all(math.isfinite(v) for v in (*speeds, accel, values["aReqValue"], previous_value, jerk_u, jerk_l))
+  finite = all(math.isfinite(v) for v in (*speeds, CS.out.aEgo, accel, values["aReqValue"], previous_value, jerk_u, jerk_l))
   speed = max(abs(v) for v in speeds) if finite else 0.0
   soft_hold = CS.softHoldActive > 0 and CS.out.cruiseState.available
   # Only an armed, stationary soft hold may remain active while the driver brakes.
@@ -48,7 +48,7 @@ def apply_canfd_stopping(values, CS, controller, accel, previous_value, jerk_u, 
              or str(CS.out.gearShifter) != "drive" or longitudinal_interlock_active(CS))
   previous_phase = controller.phase
   command = controller.update(
-    active=values["ACCMode"] == 1 and not blocked, requested=bool(values["StopReq"]), speed=speed,
+    active=values["ACCMode"] == 1 and not blocked, requested=bool(values["StopReq"]), speed=speed, a_ego=CS.out.aEgo,
     held=CS.canfdSccHoldActive, accel=accel, value=values["aReqValue"], previous_value=previous_value,
     jerk_u=max(0.0, min(jerk_u, 5.0)), jerk_l=max(1.0, min(jerk_l, 5.0)),
   )
@@ -784,12 +784,15 @@ def _apply_cluster_lane_lines(values, CS, lat_active, desire):
     _apply_lane_desire(values, desire)
 
 
-def _normalize_cluster_corner_objects(values):
-  # Restore the legacy corner display state without blinking or clamping distance.
+def _normalize_cluster_corner_objects(values, *, ccnc=False):
+  # EV5 can report 0x162 corner geometry with DETECT=0 while 0x1ea marks it visible.
+  # Use nonzero corner distance to show a gray car, including those hidden types.
+  # 0x1ea uses different enums; retain its legacy hidden-to-visible normalization.
+  # Neither message blinks or clamps the received distance.
   for side in ("LF", "RF", "LR", "RR"):
     key = f"{side}_DETECT"
-    if values[key] >= 4 and values[f"{side}_DETECT_DISTANCE"] != 0:
-      values[key] = 1
+    if values[f"{side}_DETECT_DISTANCE"] != 0 and (ccnc or values[key] >= 4):
+      values[key] = 3 if ccnc else 1
 
 
 def _convert_ccnc_front_box_to_car(values):
@@ -820,6 +823,38 @@ def _apply_ccnc_lead(values, radar_state, enabled, model_v2=None, hud_lateral=No
   values["FF_DISTANCE"] = float(np.clip(lead.dRel, 0.1, 204.5))
   # Match the OEM object using current geometry, independently of display lag.
   values["FF_LATERAL"] = float(np.clip(lateral if hud_lateral is None else hud_lateral, -6.4, 6.3))
+
+
+def create_alt2_adas_button_request(packer, CAN, frame, CC, CS, stopping):
+  # This is a button request for Panda, not a replacement vehicle frame.
+  # Panda overlays it on fresh 0x10B input, retaining all unknown fields,
+  # the received counter, and the vehicle's original transmission cadence.
+  source = CS.cruise_buttons_alt2
+  lfa_button = 0
+  cruise_button = 0
+  driver_pressed = source["LFA_BTN"] != 0 or source["CRUISE_BUTTONS"] != 0
+  if not driver_pressed:
+    lfa_off = CS.lfahda_cluster is not None and CS.lfahda_cluster["HDA_LFA_SymSta"] == 0
+    if lfa_off and 0 < frame % 200 < 12:
+      lfa_button = 1
+
+    if CC.enabled and not longitudinal_interlock_active(CS) and not lfa_button:
+      # Leave a release interval after the LFA pulse before requesting SCC.
+      scc_pulse = 20 < frame % 200 <= 26 and CS.out.vEgo > 3.
+      if not CS.MainMode_ACC:
+        cruise_button = 8 if scc_pulse else 0
+      elif CS.ACCMode in (0, 4):
+        cruise_button = 2 if scc_pulse else 0
+      elif CS.scc_control is not None and CS.scc_control["InfoDisplay"] == 4 and not stopping:
+        cruise_button = 2 if 10 < frame % 30 <= 16 else 0
+      # Do not toggle MAIN merely because HDA is off: SCC is already active.
+
+  address, data, bus = packer.make_can_msg("CRUISE_BUTTONS_ALT2", CAN.CAM,
+                                          {"LFA_BTN": lfa_button, "CRUISE_BUTTONS": cruise_button})
+  # The sparse receive DBC intentionally leaves the integrity fields unnamed.
+  data = bytearray(data)
+  data[:2] = hkg_can_fd_checksum(address, None, data).to_bytes(2, "little")
+  return address, bytes(data), bus
 
 
 def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
@@ -864,7 +899,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
       #  values = copy.copy(CS.adrv_0x160)
       #  ret.append(packer.make_can_msg("ADRV_0x160", CAN.ECAN, values))
 
-      if CS.cruise_buttons_msg is not None:
+      if getattr(CS, "cruise_buttons_alt2", None) is not None:
+        ret.append(create_alt2_adas_button_request(packer, CAN, frame, CC, CS, stopping))
+      elif CS.cruise_buttons_msg is not None:
         values = copy.copy(CS.cruise_buttons_msg)
         # Keep the physical long press on ECAN for CarState, but don't forward it to CAM.
         values["NORMAL_CRUISE_MAIN_BTN"] = 0
@@ -1050,7 +1087,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             if values[key] in (1, 2):
               values[key] += 2
         else:
-          _normalize_cluster_corner_objects(values)
+          _normalize_cluster_corner_objects(values, ccnc=True)
           _apply_ccnc_lead(values, getattr(CS, "radarState", None), CC.enabled, getattr(CS, "modelV2", None), hud_lateral)
 
         _convert_ccnc_front_box_to_car(values)

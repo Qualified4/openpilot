@@ -25,6 +25,7 @@ def main():
   if args.suite in ("vehicle", "all"):
     paths.extend(f"opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_{name}.py"
                  for name in ("cluster", "lead", "fault_filter", "extension"))
+    paths.append("opendbc_repo/opendbc/car/hyundai/tests/test_alt2_adas_buttons.py")
   return pytest.main(["-c", str(Path(__file__).with_name("pytest.ini")), "--noconftest",
                       "-p", "tools.ccnc.pytest_plugin", "-q", *paths])
 

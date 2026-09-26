@@ -53,7 +53,8 @@ def test_three_independent_options(display, monkeypatch, options):
   calls = []
   monkeypatch.setattr(ccnc_extension, "update_vehicles", lambda values, *args: calls.append(args[-1]) or values)
   monkeypatch.setattr(main, "_apply_ccnc_lead", lambda *args: None)
-  cs.ccnc_0x162 = dict(SPEEDLIMIT=0, FF_DETECT=0, LF_DETECT=0, RF_DETECT=0, LR_DETECT=0, RR_DETECT=0)
+  cs.ccnc_0x162 = dict.fromkeys(CANPacker("hyundai_canfd_generated").dbc.name_to_msg["CCNC_0x162"].sigs, 0)
+  cs.ccnc_0x162.update(SPEEDLIMIT=0, FF_DETECT=0, LF_DETECT=0, RF_DETECT=0, LR_DETECT=0, RR_DETECT=0)
   color, geometry, radar = options
   for frame in (0, 5, 10, 15):
     values = dict(send(frame))["ADRV_0x161"]
@@ -77,7 +78,8 @@ def test_three_independent_options(display, monkeypatch, options):
 def test_hda2_never_calls_front_radar_display(display, monkeypatch):
   params, cs, send = display
   params.update(dict.fromkeys(KEYS, True))
-  cs.ccnc_0x162 = dict(SPEEDLIMIT=0, FF_DETECT=0, LF_DETECT=0, RF_DETECT=0, LR_DETECT=0, RR_DETECT=0)
+  cs.ccnc_0x162 = dict.fromkeys(CANPacker("hyundai_canfd_generated").dbc.name_to_msg["CCNC_0x162"].sigs, 0)
+  cs.ccnc_0x162.update(SPEEDLIMIT=0, FF_DETECT=0, LF_DETECT=0, RF_DETECT=0, LR_DETECT=0, RR_DETECT=0)
   monkeypatch.setattr(main, "_apply_ccnc_lead", lambda *args: None)
   monkeypatch.setattr(ccnc_extension, "update_vehicles", lambda *args: pytest.fail("HDA1 display called on HDA2"))
   for frame in (0, 5, 10, 15):
@@ -235,7 +237,8 @@ def test_scalar_lane_math_matches_numpy_at_rounding_boundaries():
 def test_extension_radar_is_final_vehicle_display_authority(display, monkeypatch, radar):
   params, cs, send = display
   params["CcncRadarVehicles"] = radar
-  cs.ccnc_0x162 = dict(SPEEDLIMIT=0, FF_DISTANCE=204.6, FF_LATERAL=0., FF_DETECT=0, LF_DETECT=0, RF_DETECT=0, LR_DETECT=0, RR_DETECT=0)
+  cs.ccnc_0x162 = dict.fromkeys(CANPacker("hyundai_canfd_generated").dbc.name_to_msg["CCNC_0x162"].sigs, 0)
+  cs.ccnc_0x162.update(SPEEDLIMIT=0, FF_DISTANCE=204.6, FF_LATERAL=0., FF_DETECT=0, LF_DETECT=0, RF_DETECT=0, LR_DETECT=0, RR_DETECT=0)
   cs.radarState = N(leadOne=N(status=True, dRel=6., yRel=0., vRel=0., radar=False), leadTwo=None)
   monkeypatch.setattr(ccnc_extension, "update_vehicles", lambda values, *args: values)
   values = dict(send())["CCNC_0x162"]
@@ -270,3 +273,20 @@ def test_extension_vehicle_icons_pack_without_changing_geometry(display, monkeyp
     assert decoded[key] == pytest.approx(expected[key])
   assert decoded["CHECKSUM"] == main.hkg_can_fd_checksum(address, None, bytearray(data))
   assert cs.ccnc_0x162 == source
+
+
+@pytest.mark.parametrize("radar,hda2", list(product((False, True), repeat=2)))
+def test_stock_corner_visibility_does_not_override_extension_hiding(display, monkeypatch, radar, hda2):
+  params, cs, send = display
+  params["CcncRadarVehicles"] = radar
+  cs.adrv_0x161 = None
+  cs.ccnc_0x162 = dict.fromkeys(CANPacker("hyundai_canfd_generated").dbc.name_to_msg["CCNC_0x162"].sigs, 0)
+  for side in ("LF", "RF", "LR", "RR"):
+    cs.ccnc_0x162[f"{side}_DETECT_DISTANCE"] = 20.
+  monkeypatch.setattr(ccnc_extension, "update_vehicles", lambda values, *args: values)
+  flags = HyundaiFlags.CAMERA_SCC.value | (HyundaiFlags.CANFD_HDA2.value if hda2 else 0)
+  values = dict(send(flags=flags))["CCNC_0x162"]
+  for side in ("LF", "RF", "LR", "RR"):
+    assert values[f"{side}_DETECT"] == (0 if radar and not hda2 else 3)
+    assert values[f"{side}_DETECT_DISTANCE"] == 20.
+    assert cs.ccnc_0x162[f"{side}_DETECT"] == 0
