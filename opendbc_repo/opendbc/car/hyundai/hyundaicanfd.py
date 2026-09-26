@@ -8,7 +8,7 @@ from opendbc.car.hyundai.values import HyundaiFlags, HyundaiExtFlags
 from opendbc.car.hyundai.stopping import MOVING_SPEED
 from openpilot.common.params import Params
 from openpilot.common.filter_simple import FirstOrderFilter
-from opendbc.car.hyundai import hyundaicanfd_ccnc as ccnc_custom
+from opendbc.car.hyundai import hyundaicanfd_ccnc_extension as ccnc_extension
 from opendbc.car.common.conversions import Conversions as CV
 from openpilot.cereal import log
 
@@ -824,9 +824,9 @@ def _apply_ccnc_lead(values, radar_state, enabled, model_v2=None, hud_lateral=No
 
 def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                          disp_angle, left_lane_warning, right_lane_warning,
-                         enable_corner_radar, stopping, canfd_debug, paddle_mode, hud_lateral=None, *, custom_ccnc=None):
+                         enable_corner_radar, stopping, canfd_debug, paddle_mode, hud_lateral=None, *, extended_ccnc=None):
   ret = []
-  if custom_ccnc is None:
+  if extended_ccnc is None:
     if not hasattr(create_ccnc_messages, '_display_options') or frame % 100 == 0:
       params = Params()
       create_ccnc_messages._display_options = (
@@ -835,9 +835,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
       )
     lane_color_enabled, model_lanes, radar_vehicles = create_ccnc_messages._display_options
   else:
-    lane_color_enabled = model_lanes = radar_vehicles = custom_ccnc
+    lane_color_enabled = model_lanes = radar_vehicles = extended_ccnc
   radar_vehicles = radar_vehicles and not (CP.flags & HyundaiFlags.CANFD_HDA2.value)
-  ccnc_custom.configure(lane_color_enabled, model_lanes, radar_vehicles)
+  ccnc_extension.configure(lane_color_enabled, model_lanes, radar_vehicles)
   interlock_active = longitudinal_interlock_active(CS)
   display_lead = _display_lead(getattr(CS, "radarState", None))
   lead_visible = display_lead is not None
@@ -919,7 +919,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["vSetDis"] = int(set_speed_in_units + 0.5)
 
         if model_lanes:
-          ccnc_custom.update_speed_limit(values, CS, cruise_enabled)
+          ccnc_extension.update_speed_limit(values, CS, cruise_enabled)
 
         values["DISTANCE"] = 4 if hdp_active else hud_control.leadDistanceBars
         values["DISTANCE_LEAD"] = 2 if cruise_enabled and lead_visible else 1 if main_enabled and lead_visible else 0
@@ -938,7 +938,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["NAV_ICON"] = 2 if nav_icon_available and cruise_enabled else 1 if main_enabled and nav_icon_available else 0
         values["HDA_ICON"] = 5 if hdp_active else 2 if cruise_enabled else 1 if main_enabled else 0
         if model_lanes:
-          ccnc_custom.update_lfa_icon(values, CS, lat_enabled, lat_active, hdp_active)
+          ccnc_extension.update_lfa_icon(values, CS, lat_enabled, lat_active, hdp_active)
         else:
           values["LFA_ICON"] = 5 if hdp_active else 2 if lat_active else 1 if lat_enabled else 0
           values["LKA_ICON"] = 4 if lat_active else 3 if lat_enabled else 0
@@ -1017,7 +1017,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LANE_RIGHT"] = 1 if desire in (2, 4) else 0
 
           if lane_color_enabled or model_lanes:
-            ccnc_custom.update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_active, lat_enabled,
+            ccnc_extension.update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled,
                                      lane_color_enabled, model_lanes)
 
         ret.append(packer.make_can_msg("ADRV_0x161", CAN.ECAN, values, rx_counter = rx_counter))
@@ -1044,8 +1044,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values = copy.copy(CS.ccnc_0x162)
 
         if radar_vehicles:
-          values = ccnc_custom.update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes)
-          # Custom corner slots use box enums 1/2 for gray/white cars 3/4.
+          values = ccnc_extension.update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes)
+          # HDA1 extension corner slots use box enums 1/2 for gray/white cars 3/4.
           for key in ("LF_DETECT", "RF_DETECT", "LR_DETECT", "RR_DETECT"):
             if values[key] in (1, 2):
               values[key] += 2

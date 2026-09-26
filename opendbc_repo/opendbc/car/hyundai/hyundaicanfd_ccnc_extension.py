@@ -1,4 +1,7 @@
-"""Optional custom CCNC presentation only; baseline CAN handling stays in hyundaicanfd."""
+"""CCNC display extension; baseline CAN handling stays in hyundaicanfd.
+
+Lane/color effects are also used by HDA2. Front-radar vehicle display is HDA1-only.
+"""
 import math
 import time
 from collections import deque
@@ -814,7 +817,6 @@ class ThresholdTracker:
     """
     :param bounds: (상한선, 하한선) 튜플
     :param states: (상한 이탈 시 상태, 하한 이탈 시 상태) 튜플
-    :param initial_state: 객체 생성 시점의 초기 상태
     """
     self._upper_bound, self._lower_bound = bounds
     self._state_high, self._state_low = states
@@ -872,16 +874,6 @@ class NoiseFilter:
     """값을 초기화하고 버퍼를 완전히 비웁니다."""
     self._filtered_value = new_value if new_value is not None else self._default_value
     self._buffer.clear()
-    return self._filtered_value
-
-  def fill(self, value):
-    """
-    현재 필터의 버퍼를 특정 값으로 가득 채우고 필터 출력값도 동기화합니다.
-    reset과 달리 내부 설정값(default_value 등)은 유지하며 데이터 흐름만 강제 수정합니다.
-    """
-    self._filtered_value = value
-    self._buffer.extend([self._filtered_value] * self._buffer.maxlen)
-
     return self._filtered_value
 
   def update_alpha(self, new_alpha):
@@ -953,8 +945,6 @@ class _CcncRadarPositionFilter(NoiseFilter):
     self._default_value = self._filtered_value = value
     self._buffer = deque((value, value, value), maxlen=3)
     self._a_min = 0.3
-    self._a_max = 0.9 if distance else 0.3
-    self._err_min = 1.0 if distance else 0.6
     self._err_max = 4.0 if distance else 0.6
     self.dt = 0.05
     self._following_step = False
@@ -1060,7 +1050,7 @@ def update_lfa_icon(values, CS, lat_enabled, lat_active, hdp_active):
     # 횡컨 OFF -> 아이콘 숨김
     values["LFA_ICON"] = 0
 
-def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_active, lat_enabled, lane_color=True, model_lanes=True):
+def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane_color=True, model_lanes=True):
   # 주행 기어에서만 가속도·드라이브 모드에 따른 차로 색 변경
   if lane_color and CS.out.gearShifter == structs.CarState.GearShifter.drive:
     now = time.monotonic()
@@ -1081,60 +1071,59 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_active, lat_e
   is_blinking = CS.out.leftBlinker != CS.out.rightBlinker
   is_currently_lane_changing = model_lanes and (is_auto_lane_changing or (is_blinking and v_ego_kph > 20.0))
 
-  if model_lanes:
-    try:
-      if lat_enabled:
-        # 스칼라 np.interp 오버헤드 제거 (선형 보간 수식 직접 계산: 20~100 kph -> 30~80 m)
-        max_lookahead_x = 30.0 + min(max((v_ego_kph - 20.0) / 80.0, 0.0), 1.0) * 50.0
-
-        # 객체 속성 접근 오버헤드 캐싱 (루프 내 다중 점근 방지)
-        pos = md.position
-        pos_x, pos_y, pos_y_std = pos.x, pos.y, pos.yStd
-
-        trust_threshold = 0.8
-        max_y_abs = 0.0
-        peak_idx = 0
-        start_search_idx = 0
-        start_found = not is_currently_lane_changing
-        min_calc_dist = 20.0 if is_currently_lane_changing else 0.0
-
-        for i in range(1, len(pos_x)):
-          x = pos_x[i]
-
-          if not start_found and x >= min_calc_dist:
-            start_search_idx = i
-            start_found = True
-
-          if pos_y_std[i] > trust_threshold or x > max_lookahead_x:
-            break
-
-          y_abs = abs(pos_y[i])
-          if y_abs > max_y_abs:
-            max_y_abs = y_abs
-            peak_idx = i
-
-        if start_search_idx != peak_idx and pos_x[peak_idx] >= (20.0 + min_calc_dist):
-          x_dist = pos_x[peak_idx]
-          y_diff = pos_y[peak_idx] - pos_y[start_search_idx]
-          # 곡률 공식: (2y / x^2) * 1800 -> (3600 * y) / x^2
-          max_curve_val = (3600.0 * y_diff) / (x_dist * x_dist)
-        else:
-          max_curve_val = 0.0
-
-        curvature = round(state.lane_curv.apply(-max_curve_val))
-      else:
-        curvature = round(CS.out.steeringAngleDeg / 3)
-
-    except:
-      # 모델 데이터 예외 발생 시 핸들 각도 기반 백업
-      curvature = round(CS.out.steeringAngleDeg / 3)
-      values["LFA_ICON"] = 5
-
-    values["LANELINE_CURVATURE"] = min(abs(curvature), 15) + (-1 if curvature < 0 else 0)
-    values["LANELINE_CURVATURE_DIRECTION"] = 1 if curvature < 0 else 0
-
   if not model_lanes:
     return
+
+  try:
+    if lat_enabled:
+      # 스칼라 np.interp 오버헤드 제거 (선형 보간 수식 직접 계산: 20~100 kph -> 30~80 m)
+      max_lookahead_x = 30.0 + min(max((v_ego_kph - 20.0) / 80.0, 0.0), 1.0) * 50.0
+
+      # 객체 속성 접근 오버헤드 캐싱 (루프 내 다중 점근 방지)
+      pos = md.position
+      pos_x, pos_y, pos_y_std = pos.x, pos.y, pos.yStd
+
+      trust_threshold = 0.8
+      max_y_abs = 0.0
+      peak_idx = 0
+      start_search_idx = 0
+      start_found = not is_currently_lane_changing
+      min_calc_dist = 20.0 if is_currently_lane_changing else 0.0
+
+      for i in range(1, len(pos_x)):
+        x = pos_x[i]
+
+        if not start_found and x >= min_calc_dist:
+          start_search_idx = i
+          start_found = True
+
+        if pos_y_std[i] > trust_threshold or x > max_lookahead_x:
+          break
+
+        y_abs = abs(pos_y[i])
+        if y_abs > max_y_abs:
+          max_y_abs = y_abs
+          peak_idx = i
+
+      if start_search_idx != peak_idx and pos_x[peak_idx] >= (20.0 + min_calc_dist):
+        x_dist = pos_x[peak_idx]
+        y_diff = pos_y[peak_idx] - pos_y[start_search_idx]
+        # 곡률 공식: (2y / x^2) * 1800 -> (3600 * y) / x^2
+        max_curve_val = (3600.0 * y_diff) / (x_dist * x_dist)
+      else:
+        max_curve_val = 0.0
+
+      curvature = round(state.lane_curv.apply(-max_curve_val))
+    else:
+      curvature = round(CS.out.steeringAngleDeg / 3)
+
+  except:
+    # 모델 데이터 예외 발생 시 핸들 각도 기반 백업
+    curvature = round(CS.out.steeringAngleDeg / 3)
+    values["LFA_ICON"] = 5
+
+  values["LANELINE_CURVATURE"] = min(abs(curvature), 15) + (-1 if curvature < 0 else 0)
+  values["LANELINE_CURVATURE_DIRECTION"] = 1 if curvature < 0 else 0
 
   try:
     # 차선 위치 갱신: 항시 적용
@@ -1243,12 +1232,11 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_active, lat_e
       if 2 < lane_width < 4.6:
         state.last_known_lane_width = lane_width # 마지막 차선 폭을 기억해둠
 
-    if model_lanes:
-      values["LANELINE_LEFT_POSITION"] = int(round(min(max(current_l_target, 0.0), 3.0) * 10.0))
-      values["LANELINE_RIGHT_POSITION"] = int(round(min(max(current_r_target, 0.0), 3.0) * 10.0))
+    values["LANELINE_LEFT_POSITION"] = int(round(min(max(current_l_target, 0.0), 3.0) * 10.0))
+    values["LANELINE_RIGHT_POSITION"] = int(round(min(max(current_r_target, 0.0), 3.0) * 10.0))
 
     # 차선 변경 아이콘
-    if model_lanes and lat_enabled:
+    if lat_enabled:
       values["LCA_LEFT_ICON"] = 1 if CS.out.leftBlindspot else 4 if CS.out.rightBlinker or not md.meta.laneChangeAvailableLeft else 2
       values["LCA_RIGHT_ICON"] = 1 if CS.out.rightBlindspot else 4 if CS.out.leftBlinker or not md.meta.laneChangeAvailableRight else 2
   except:
@@ -1258,15 +1246,13 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_active, lat_e
         len(md.laneLines[1].y) == 0 or len(md.laneLines[2].y) == 0):
       values["ALERTS_5"] = 19  # ACTIVATING_HIGHWAY_DRIVING_PILOT_SYSTEM
     else:
-      if model_lanes:
-        values["LANELINE_LEFT_POSITION"] = 30
-        values["LANELINE_RIGHT_POSITION"] = 30
-      if model_lanes:
-        values["LANE_HIGHLIGHT"] = 3
-        values["LANE_HIGHLIGHT_DISTANCE"] = 60
-        values["LANE_LEFT"] = 1
-        values["LANE_RIGHT"] = 1
-        values["LKA_ICON"] = 1
+      values["LANELINE_LEFT_POSITION"] = 30
+      values["LANELINE_RIGHT_POSITION"] = 30
+      values["LANE_HIGHLIGHT"] = 3
+      values["LANE_HIGHLIGHT_DISTANCE"] = 60
+      values["LANE_LEFT"] = 1
+      values["LANE_RIGHT"] = 1
+      values["LKA_ICON"] = 1
 
 def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=True):
   # --- liveTracks 원본 레이더를 이용한 전방 차량 감지 ---
@@ -1302,7 +1288,6 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     if CS.live_tracks is not None and lane_mode:
       left_y0, right_y0, projected = display_tracker.lane_projection(CS.live_tracks)
       selected_lane_y0 = left_y0 if selected_lane_is_left else right_y0
-      interp = np.interp
       ms_to_kph = CV.MS_TO_KPH
       # 여러 차로의 후보를 허용하되, 보정 후 횡거리 5.4m 밖의 측면 점은 선택하지 않습니다.
       max_side_lateral = 5.4
@@ -1458,7 +1443,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     ff_yRel = filtered_positions[0][1]
     lf_yRel = min(max(float(filtered_positions[1][1]), -5.4), 5.4)
     rf_yRel = min(max(float(filtered_positions[2][1]), -5.4), 5.4)
-    ff_yRel, changed_tracks = display_tracker.finish(ff_lead, lf_lead, rf_lead, ff_yRel, ff_lane_mode, frame)
+    ff_yRel, _ = display_tracker.finish(ff_lead, lf_lead, rf_lead, ff_yRel, ff_lane_mode, frame)
 
     # 전방(FF) 차량 정보 업데이트
     if ff_lead:
@@ -1575,7 +1560,6 @@ def reset():
   global _options
   _options = None
   state.__dict__.clear()
-  state.sla_active_time = 0
   configure(False, False, False)
 
 

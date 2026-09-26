@@ -36,7 +36,7 @@ def send_ccnc(monkeypatch, radar, *, enabled=True, stock=None, present=True, wit
     cs.trailer_connected = False
   messages = hyundaicanfd.create_ccnc_messages(
     SimpleNamespace(flags=HyundaiFlags.CAMERA_SCC), packer, SimpleNamespace(ECAN=0, CAM=2), 5,
-    SimpleNamespace(enabled=enabled, latActive=True), cs, structs.CarControl().hudControl, 0, False, False, 0, False, 0, 0, custom_ccnc=False,
+    SimpleNamespace(enabled=enabled, latActive=True), cs, structs.CarControl().hudControl, 0, False, False, 0, False, 0, 0,
     hud_lateral=hud_lateral,
   )
   assert source == original

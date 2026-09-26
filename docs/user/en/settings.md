@@ -103,12 +103,12 @@ Ignoring `x0.01`, `x0.001`, `cm`, `km/h`, or `%` can make a value appear one hun
 
 ## Settings map
 
-The current `carrot_settings.json` contains **183 parameters**. Every entry is assigned to one of these menus:
+There are **186 settings**, organized into the following menus:
 
 | Category | Count | Groups |
 |---|---:|---|
 | Driving control | 122 | Startup and auto, buttons and presets, steering, speed and deceleration, cruise and following gap |
-| Vehicle and hardware | 15 | Hyundai/Kia, CAN FD/HDA, radar, driver monitoring, vehicle assistance, device hardware |
+| Vehicle and hardware | 18 | Hyundai/Kia, CAN FD/HDA, radar, driver monitoring, vehicle assistance, device hardware |
 | Display | 34 | Information, path, brightness/on-road view, external HUD |
 | System | 12 | Recording/power, network/map, sound, software |
 
@@ -223,15 +223,15 @@ On supported Tesla vehicles with the additional vehicle bus detected, the device
 <a id="vehicle-hardware"></a>
 ## Vehicle and hardware
 
-These settings describe the car, harness, and device hardware configuration. Do not enable them merely as a display experiment.
+This category contains 18 settings. Set car, harness and device options to match your vehicle and hardware. The three CCNC instrument cluster options let you choose display features as described below.
 
 | Group | Parameters | Purpose |
 |---|---|---|
 | Hyundai/Kia | `HyundaiCameraSCC`, `IsLdwsCar`, `HapticFeedbackWhenSpeedCamera` | SCC connection, LDWS behavior, and speed-event haptics |
 | CAN FD/HDA | `CanfdHDA2`, `CanfdDebug`, `HDPuse` | HDA2 selection, CAN FD diagnostics, and HDP |
-| CANFD·HDA | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
-| CANFD·HDA | `CcncModelLanes` | CCNC model lanes and lane-change animation · Default OFF (0) |
-| CANFD·HDA | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Default OFF (0) |
+| [CCNC display](#ccnc-display) | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
+| [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes and lane-change animation · Default OFF (0) |
+| [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Default OFF (0) |
 | Radar | `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC radar, front-track orientation, corner radar, and Carrot Radar processing and cut-in sensitivity |
 | Driver monitoring | `DisableDM`, `MuteDoor`, `MuteSeatbelt` | Driver monitoring and selected vehicle alerts |
 | Vehicle assistance | `MaxAngleFrames`, `SpeedFromPCM` | Steering-angle frames and stock-SCC speed control |
@@ -259,6 +259,31 @@ In modes `EnableRadarTracks=1`–`3`, a confirmed departing front lead can recei
 `HardwareC3xLite` must remain off on standard C3 and C3X hardware. Enable it only on a C3X Lite, then reboot the device. The setting skips the unavailable amplifier so startup is not delayed by I2C retries, uses the GPIO buzzer for alerts, disables `micd`, `soundd`, and `loggerd`, and turns off `RecordAudio`. Normal route logging is unavailable while this hardware mode is enabled.
 
 <a id="display"></a>
+<a id="ccnc-display"></a>
+### CCNC instrument cluster display
+
+Under **Vehicle and hardware → CAN FD/HDA**, each of the three options can be switched independently. All are off by default, and changes appear within about one second. These settings adjust the instrument cluster display.
+
+#### CCNC acceleration/mode lane color
+
+Uses the highlighted lane color to show acceleration, deceleration and driving mode. Operates in Drive, with a longer highlight at higher speeds. Turn off to use the default color and length.
+
+A driving-mode change may take about one second to appear in the lane color. Lane-change direction highlighting is controlled by the next option.
+
+#### CCNC model lanes and lane-change animation
+
+Displays detected lane curves and left/right positions, with highlights and transition animation showing lane-change direction. Also adjusts set-speed and speed-limit indications and steering-assistance icons, and hides lanes when steering assistance is inactive.
+
+Turn off to use the default lane and icon display. Trailer-related lane-change restrictions take priority. Nearby vehicle display is controlled separately by the next option.
+
+#### CCNC HDA1 radar vehicles
+
+Displays up to one front-radar vehicle ahead and one in each adjacent lane. Adjusts displayed positions for curves and retains nearby vehicle displays while stopped. Applies to HDA1 CCNC vehicles, but not HDA2. Turn off to use the default vehicle display.
+
+If lane markings briefly disappear, previously detected side vehicles that remain continuously detected may stay displayed for up to two seconds or 30 m of ego travel, whichever comes first. This continuation ends if detection is interrupted or the target changes. Switching this option on or off reassesses retained vehicle displays.
+
+Rear-side vehicle icons indicate blind-spot detection, not actual distance or precise position. Do not use icon spacing to judge following distance or whether a lane change is safe.
+
 ## Display
 
 Display contains 34 settings. External-HUD settings control the layout and output of separate display hardware.
@@ -350,16 +375,3 @@ Check storage use for recording and network use, heat, and privacy before enabli
 7. Restore the previous value or baseline profile immediately if the result is worse or unclear.
 
 See the Wiki [Tuning introduction](https://github.com/ajouatom/openpilot/wiki/Guide-Tuning) for the recommended steering and longitudinal adjustment order.
-
-### Independent CCNC display options
-
-Under Vehicle and hardware → CAN FD/HDA, three independent options replace `CcncCustomDisplay`. All default to OFF (0). SLA/LFA/LKA and lane display while lateral control is inactive are included in the model-lanes option. With all three options OFF, CCNC messages use the original carrot-wip behavior. Cruise-button speed thresholds and lead-departure alert handling also follow the original behavior.
-
-**CcncLaneColor**: Applies lane highlight color and length from acceleration, driving mode and gear. OFF leaves these fields unchanged. Lane-change highlighting is included in the model-lanes option. Driving mode is read once per second; mode-dependent colors may update up to about one second later. Re-enabling the option reads it immediately.
-
-**CcncModelLanes**: Applies model lane curvature and lateral positions together with lane-change highlights, icons and transition animation. OFF uses the original display for both. Trailer lane-change blocking takes precedence. Radar candidate selection and lateral correction remain independent under the vehicle-display option. Also switches SLA set-speed display, LFA/LKA icon handling and lane hiding while lateral control is inactive; OFF uses original handling. Toggling resets the SLA display timer.
-
-
-**CcncRadarVehicles**: Displays FF/LF/RF vehicles from front liveTracks on HDA1 CCNC, including filtering, curvature correction and stopped-vehicle retention. Does not apply to HDA2. OFF uses the original vehicle display. BSD LR/RR positions are fixed, not measured distances or positions. When enabled, radarState leadOne/leadTwo cannot overwrite FF. Previously lane-validated side vehicles can continue across a lane dropout using the last valid lane geometry for up to two seconds and 30 m of ego travel, while the same radar track remains continuous. Missing/discontinuous tracks or replacement candidates end continuation; model-only targets are not added.
-
-Changes apply within about one second during CCNC processing. Color/lane changes preserve retained radar vehicles; toggling radar vehicle display clears vehicle retention state. Rebuild and restart after registering the new Params.

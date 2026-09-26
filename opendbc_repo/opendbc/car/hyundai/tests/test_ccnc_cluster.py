@@ -63,7 +63,7 @@ def test_cluster_objects_restore_corner_state_without_blinking_or_distance_clamp
 
   for frame in (0, 5, 65, 70, 100, 135, 200):
     messages = hyundaicanfd.create_ccnc_messages(cp, packer, can, frame, control, state, hud,
-                                                0, False, False, 0, False, 0, 0, custom_ccnc=False)
+                                                0, False, False, 0, False, 0, 0)
     assert len(messages) == 1
     address, data, bus = messages[0]
     assert (address, bus) == (definition.address, 0)

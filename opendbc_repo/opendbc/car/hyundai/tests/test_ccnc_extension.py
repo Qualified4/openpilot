@@ -6,7 +6,7 @@ import pytest
 from opendbc.can import CANPacker
 from opendbc.can.parser import get_raw_value
 from opendbc.car import structs
-from opendbc.car.hyundai import hyundaicanfd as main, hyundaicanfd_ccnc as custom
+from opendbc.car.hyundai import hyundaicanfd as main, hyundaicanfd_ccnc_extension as ccnc_extension
 from opendbc.car.hyundai.values import HyundaiFlags
 
 KEYS = ("CcncLaneColor", "CcncModelLanes", "CcncRadarVehicles")
@@ -16,11 +16,11 @@ KEYS = ("CcncLaneColor", "CcncModelLanes", "CcncRadarVehicles")
 def display(monkeypatch):
   params = dict.fromkeys(KEYS, False)
   monkeypatch.setattr(main, "Params", lambda: N(get_bool=lambda key: params[key], get_int=lambda key: 0, get=lambda key: "0"))
-  monkeypatch.setattr(custom, "Params", lambda: N(get_int=lambda key: 3))
+  monkeypatch.setattr(ccnc_extension, "Params", lambda: N(get_int=lambda key: 3))
   monkeypatch.delattr(main.create_ccnc_messages, "_display_options", raising=False)
-  monkeypatch.setattr(custom, "state", N())
-  monkeypatch.setattr(custom, "_options", None)
-  custom.reset()
+  monkeypatch.setattr(ccnc_extension, "state", N())
+  monkeypatch.setattr(ccnc_extension, "_options", None)
+  ccnc_extension.reset()
   md = N(meta=N(desire=N(raw=0), desireState=[], laneChangeAvailableLeft=True, laneChangeAvailableRight=True),
          position=N(x=[0., 10., 30.], y=[0., 0.5, 2.], yStd=[0., 0., 0.]),
          laneLineProbs=[.9]*4, laneLines=[N(y=[y]) for y in (-5., -1., 2., 6.)])
@@ -39,10 +39,10 @@ def display(monkeypatch):
   hud.leftLaneVisible = hud.rightLaneVisible = True
   packer = N(make_can_msg=lambda name, bus, values, **kwargs: (name, dict(values)))
 
-  def send(frame=0, flags=HyundaiFlags.CAMERA_SCC.value, lat_active=True, custom_ccnc=None):
+  def send(frame=0, flags=HyundaiFlags.CAMERA_SCC.value, lat_active=True, extended_ccnc=None):
     return main.create_ccnc_messages(N(flags=flags), packer, N(ECAN=0, CAM=2), frame,
                                     N(enabled=True, latActive=lat_active), cs, hud, 0, False, False, 0, False, 0, 0,
-                                    custom_ccnc=custom_ccnc)
+                                    extended_ccnc=extended_ccnc)
   return params, cs, send
 
 
@@ -51,7 +51,7 @@ def test_three_independent_options(display, monkeypatch, options):
   params, cs, send = display
   params.update(zip(KEYS, options))
   calls = []
-  monkeypatch.setattr(custom, "update_vehicles", lambda values, *args: calls.append(args[-1]) or values)
+  monkeypatch.setattr(ccnc_extension, "update_vehicles", lambda values, *args: calls.append(args[-1]) or values)
   monkeypatch.setattr(main, "_apply_ccnc_lead", lambda *args: None)
   cs.ccnc_0x162 = dict(SPEEDLIMIT=0, FF_DETECT=0, LF_DETECT=0, RF_DETECT=0, LR_DETECT=0, RR_DETECT=0)
   color, geometry, radar = options
@@ -79,32 +79,37 @@ def test_hda2_never_calls_front_radar_display(display, monkeypatch):
   params.update(dict.fromkeys(KEYS, True))
   cs.ccnc_0x162 = dict(SPEEDLIMIT=0, FF_DETECT=0, LF_DETECT=0, RF_DETECT=0, LR_DETECT=0, RR_DETECT=0)
   monkeypatch.setattr(main, "_apply_ccnc_lead", lambda *args: None)
-  monkeypatch.setattr(custom, "update_vehicles", lambda *args: pytest.fail("HDA1 display called on HDA2"))
-  send(flags=HyundaiFlags.CAMERA_SCC.value | HyundaiFlags.CANFD_HDA2.value)
-  assert custom._options[2] is False
+  monkeypatch.setattr(ccnc_extension, "update_vehicles", lambda *args: pytest.fail("HDA1 display called on HDA2"))
+  for frame in (0, 5, 10, 15):
+    values = dict(send(frame, flags=HyundaiFlags.CAMERA_SCC.value | HyundaiFlags.CANFD_HDA2.value))["ADRV_0x161"]
+  assert ccnc_extension._options[2] is False
+  # The extension name must not disable the existing HDA2 lane/color effects.
+  assert values["LANE_HIGHLIGHT_DISTANCE"] > 0
+  assert values["LANELINE_LEFT_POSITION"] != 15
+  assert values["LANELINE_CURVATURE"] != 2
 
 
 def test_option_refresh_only_resets_related_state(display):
   params, cs, send = display
   params.update(dict.fromkeys(KEYS, True))
   send(1)
-  tracker = custom.state.radar_display_tracker
+  tracker = ccnc_extension.state.radar_display_tracker
   tracker.approach_holds[37] = {"dRel": 2.0}
   params[KEYS[0]] = False
   send(99)
-  assert custom._options[0] is True
+  assert ccnc_extension._options[0] is True
   send(100)
-  assert custom._options[0] is False
-  assert custom.state.radar_display_tracker is tracker
+  assert ccnc_extension._options[0] is False
+  assert ccnc_extension.state.radar_display_tracker is tracker
   params[KEYS[1]] = False
   send(200)
-  assert custom.state.radar_display_tracker is tracker
+  assert ccnc_extension.state.radar_display_tracker is tracker
   assert 37 in tracker.approach_holds
-  assert custom.state.l_lane_f.value == 1.5
+  assert ccnc_extension.state.l_lane_f.value == 1.5
   params[KEYS[2]] = False
   send(300)
-  assert custom.state.radar_display_tracker is not tracker
-  assert not custom.state.radar_display_tracker.approach_holds
+  assert ccnc_extension.state.radar_display_tracker is not tracker
+  assert not ccnc_extension.state.radar_display_tracker.approach_holds
 
 
 def test_color_only_does_not_need_model(display):
@@ -118,14 +123,14 @@ def test_color_only_does_not_need_model(display):
 
 
 @pytest.mark.parametrize("animation", [False, True])
-def test_trailer_block_precedes_custom_lane_display(display, monkeypatch, animation):
+def test_trailer_block_precedes_extended_lane_display(display, monkeypatch, animation):
   params, cs, send = display
   params.update(dict.fromkeys(KEYS, True))
   params["CcncModelLanes"] = animation
   cs.trailer_connected = True
   cs.modelV2.meta.desire.raw = 3
   cs.adrv_0x161.update(LANE_LEFT=1, LANE_RIGHT=1)
-  monkeypatch.setattr(custom, "update_lanes", lambda *args: pytest.fail("custom lanes override trailer block"))
+  monkeypatch.setattr(ccnc_extension, "update_lanes", lambda *args: pytest.fail("ccnc_extension lanes override trailer block"))
   values = dict(send())["ADRV_0x161"]
   assert values["LCA_LEFT_ICON"] == values["LCA_RIGHT_ICON"] == 1
   assert values["LANE_LEFT"] == values["LANE_RIGHT"] == 0
@@ -154,7 +159,7 @@ def test_all_params_off_uses_original_display_path(display):
   cs.out.steeringPressed = True
   cs.adrv_0x161["ALERTS_5"] = 11
   for lat_active in (False, True):
-    assert send(lat_active=lat_active) == send(lat_active=lat_active, custom_ccnc=False)
+    assert send(lat_active=lat_active) == send(lat_active=lat_active, extended_ccnc=False)
 
 
 def test_model_toggle_resets_sla_timer(display):
@@ -162,10 +167,10 @@ def test_model_toggle_resets_sla_timer(display):
   params["CcncModelLanes"] = True
   cs.out.vCruiseCluster = 80
   send()
-  assert custom.state.sla_active_time > 0
+  assert ccnc_extension.state.sla_active_time > 0
   params["CcncModelLanes"] = False
   send(100)
-  assert custom.state.sla_active_time == 0
+  assert ccnc_extension.state.sla_active_time == 0
 
 
 
@@ -180,22 +185,22 @@ def test_driving_mode_cache_refresh_and_reenable(display, monkeypatch):
     reads.append(key)
     return mode[0]
 
-  monkeypatch.setattr(custom, "time", N(monotonic=lambda: clock[0]))
-  monkeypatch.setattr(custom, "Params", lambda: N(get_int=read_mode))
+  monkeypatch.setattr(ccnc_extension, "time", N(monotonic=lambda: clock[0]))
+  monkeypatch.setattr(ccnc_extension, "Params", lambda: N(get_int=read_mode))
   send()
   mode[0] = 1
   clock[0] = 10.99
   send(5)
-  assert custom.state.drive_mode == 3 and len(reads) == 1
+  assert ccnc_extension.state.drive_mode == 3 and len(reads) == 1
   clock[0] = 11.0
   send(10)
-  assert custom.state.drive_mode == 1 and len(reads) == 2
+  assert ccnc_extension.state.drive_mode == 1 and len(reads) == 2
   params["CcncLaneColor"] = False
   send(100)
   params["CcncLaneColor"] = True
   mode[0] = 4
   send(200)
-  assert custom.state.drive_mode == 4 and len(reads) == 3
+  assert ccnc_extension.state.drive_mode == 4 and len(reads) == 3
 
 
 def test_scalar_lane_math_matches_numpy_at_rounding_boundaries():
@@ -204,7 +209,7 @@ def test_scalar_lane_math_matches_numpy_at_rounding_boundaries():
   import math
   import numpy as np
 
-  tree = ast.parse(inspect.getsource(custom.update_lanes))
+  tree = ast.parse(inspect.getsource(ccnc_extension.update_lanes))
   assignments = {ast.unparse(n.targets[0]): n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)}
   position_expr = next(n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
                        and ast.unparse(n.targets[0]) == "values['LANELINE_LEFT_POSITION']"
@@ -227,18 +232,18 @@ def test_scalar_lane_math_matches_numpy_at_rounding_boundaries():
 
 
 @pytest.mark.parametrize("radar", [False, True])
-def test_custom_radar_is_final_vehicle_display_authority(display, monkeypatch, radar):
+def test_extension_radar_is_final_vehicle_display_authority(display, monkeypatch, radar):
   params, cs, send = display
   params["CcncRadarVehicles"] = radar
   cs.ccnc_0x162 = dict(SPEEDLIMIT=0, FF_DISTANCE=204.6, FF_LATERAL=0., FF_DETECT=0, LF_DETECT=0, RF_DETECT=0, LR_DETECT=0, RR_DETECT=0)
   cs.radarState = N(leadOne=N(status=True, dRel=6., yRel=0., vRel=0., radar=False), leadTwo=None)
-  monkeypatch.setattr(custom, "update_vehicles", lambda values, *args: values)
+  monkeypatch.setattr(ccnc_extension, "update_vehicles", lambda values, *args: values)
   values = dict(send())["CCNC_0x162"]
   assert values["FF_DETECT"] == (0 if radar else 4)
 
 
 @pytest.mark.parametrize("detect", range(15))
-def test_custom_vehicle_icons_pack_without_changing_geometry(display, monkeypatch, detect):
+def test_extension_vehicle_icons_pack_without_changing_geometry(display, monkeypatch, detect):
   params, cs, _ = display
   params["CcncRadarVehicles"] = True
   packer = CANPacker("hyundai_canfd_generated")
@@ -250,7 +255,7 @@ def test_custom_vehicle_icons_pack_without_changing_geometry(display, monkeypatc
     source.update({f"{side}_DETECT": detect, f"{side}_DETECT_DISTANCE": 20., f"{side}_DETECT_LATERAL": 2.9})
   cs.ccnc_0x162 = source.copy()
   cs.adrv_0x161 = None
-  monkeypatch.setattr(custom, "update_vehicles", lambda values, *args: values)
+  monkeypatch.setattr(ccnc_extension, "update_vehicles", lambda values, *args: values)
 
   messages = main.create_ccnc_messages(N(flags=HyundaiFlags.CAMERA_SCC.value), packer, N(ECAN=0, CAM=2), 0,
                                      N(enabled=False, latActive=False), cs, N(), 0, False, False, 0, False, 0, 0)
