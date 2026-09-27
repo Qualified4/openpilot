@@ -8,7 +8,7 @@ window.CarrotTranslations.register("en", {
     rv_error_device_limit_reached: "Road Viewer has too many registered devices. Remove unused devices and pair again.",
     rv_settings: "Road Viewer connection",
     rv_destination: "Upload destination",
-    rv_existing_upload: "Existing log upload",
+    rv_existing_upload: "Carrot log upload",
     rv_send: "Send to Road Viewer",
     rv_connect: "Connect",
     rv_disconnect: "Disconnect",

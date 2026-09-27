@@ -8,7 +8,7 @@ window.CarrotTranslations.register("zh", {
     rv_error_device_limit_reached: "Road Viewer 注册的设备过多，请移除不使用的设备后重新配对。",
     rv_settings: "Road Viewer 连接",
     rv_destination: "上传目标",
-    rv_existing_upload: "现有日志上传",
+    rv_existing_upload: "Carrot 日志上传",
     rv_send: "发送到 Road Viewer",
     rv_connect: "连接",
     rv_disconnect: "断开连接",

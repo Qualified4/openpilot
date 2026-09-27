@@ -58,7 +58,7 @@ export async function chooseUploadDestination() {
   const target = await openAppDialog({
     mode: "choice", title: getUIText("rv_destination", "Upload destination"), choiceLayout: "list",
     choices: [
-      { label: getUIText("rv_existing_upload", "Existing log upload"), value: "web" },
+      { label: getUIText("rv_existing_upload", "Carrot log upload"), value: "web" },
       { label: getUIText("rv_send", "Send to Road Viewer"), value: "road_viewer" },
     ],
   });

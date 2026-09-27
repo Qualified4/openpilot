@@ -8,7 +8,7 @@ window.CarrotTranslations.register("ko", {
     rv_error_device_limit_reached: "Road Viewer에 등록된 장치가 너무 많습니다. 사용하지 않는 장치를 제거한 후 연결하세요.",
     rv_settings: "Road Viewer 연결",
     rv_destination: "전송 대상",
-    rv_existing_upload: "기존 로그 전송",
+    rv_existing_upload: "Carrot 로그 전송",
     rv_send: "Road Viewer로 전송",
     rv_connect: "연결",
     rv_disconnect: "연결 해제",
