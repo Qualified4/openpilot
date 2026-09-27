@@ -54,23 +54,15 @@ export async function openRoadViewerSettings() {
   }
 }
 
-export async function chooseUploadDestination() {
-  const target = await openAppDialog({
-    mode: "choice", title: getUIText("rv_destination", "Upload destination"), choiceLayout: "list",
-    choices: [
-      { label: getUIText("rv_existing_upload", "Carrot log upload"), value: "web" },
-      { label: getUIText("rv_send", "Send to Road Viewer"), value: "road_viewer" },
-    ],
-  });
-  if (target !== "road_viewer") return target;
+export async function ensureRoadViewerConnection() {
   try {
     const status = await getJson("/api/road-viewer/status");
     if (["disconnected", "re_pair_required", "revoked_or_unknown"].includes(status.state)) {
-      return await openRoadViewerSettings() ? target : null;
+      return await openRoadViewerSettings();
     }
-    return target;
+    return true;
   } catch (error) {
     showAppToast(roadViewerError(error), { tone: "error" });
-    return null;
+    return false;
   }
 }

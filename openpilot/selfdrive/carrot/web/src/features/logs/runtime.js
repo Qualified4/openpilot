@@ -140,6 +140,11 @@ function logsMenuChoices() {
       label: getUIText("upload_recent_logs", "Upload recent {count}", { count }),
       value: `${LOGS_MENU_UPLOAD}:${count}`,
     })),
+    { heading: getUIText("rv_send", "Send to Road Viewer") },
+    ...LOGS_RECENT_UPLOAD_LIMITS.map((count) => ({
+      label: getUIText("upload_recent_logs", "Upload recent {count}", { count }),
+      value: `upload_recent_road_viewer:${count}`,
+    })),
   ];
 }
 
@@ -148,6 +153,7 @@ async function runLogsMenuAction(selected) {
   if (action === "road_viewer") await openRoadViewerSettings();
   else if (action === LOGS_MENU_SORT) await setDashcamSort(argument === "desc" ? "desc" : "asc");
   else if (action === LOGS_MENU_UPLOAD) await uploadRecentDashcamSegments(Number(argument) || 0);
+  else if (action === "upload_recent_road_viewer") await uploadRecentDashcamSegments(Number(argument) || 0, "road_viewer");
 }
 
 async function openLogsMenu() {
@@ -329,6 +335,9 @@ function openLogsVideoPlayer(title, src, options = {}) {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z"/></svg>
       </button>`
     : "";
+  const roadViewerButton = typeof options.onSegmentRoadViewerSend === "function"
+    ? `<button class="dashcam-menu-btn dashcam-player-action dashcam-player-road-viewer" type="button" aria-label="${escapeHtml(getUIText("rv_send", "Send to Road Viewer"))}" title="${escapeHtml(getUIText("rv_send", "Send to Road Viewer"))}">Road Viewer</button>`
+    : "";
   const menuButton = hasMenuAction
     ? `<button class="dashcam-menu-btn dashcam-player-action dashcam-player-menu" type="button" aria-label="${escapeHtml(getUIText("segment_menu", "Segment menu"))}" title="${escapeHtml(getUIText("segment_menu", "Segment menu"))}">
         <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4m0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4m0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4"/></svg>
@@ -366,6 +375,7 @@ function openLogsVideoPlayer(title, src, options = {}) {
         <div class="dashcam-player-subtitle"${currentMedia.subtitle ? "" : " hidden"}>${escapeHtml(currentMedia.subtitle)}</div>
       </div>
       ${sendButton}
+      ${roadViewerButton}
       ${menuButton}
       <button class="dashcam-player-close c-close" type="button" aria-label="${escapeHtml(getUIText("close", "Close"))}" title="${escapeHtml(getUIText("close", "Close"))}">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>
@@ -651,6 +661,11 @@ function openLogsVideoPlayer(title, src, options = {}) {
     pauseCurrentPlayback();
     runTopAction(event, handler, "is-action-open");
   });
+  overlay.querySelector(".dashcam-player-road-viewer")?.addEventListener("click", (event) => {
+    const targetSegment = activeSegmentId();
+    pauseCurrentPlayback();
+    runTopAction(event, () => options.onSegmentRoadViewerSend(targetSegment), "is-action-open");
+  });
   overlay.querySelector(".dashcam-player-menu")?.addEventListener("click", (event) => {
     const targetSegment = activeSegmentId();
     const handler = typeof options.onSegmentMenu === "function"
@@ -901,10 +916,10 @@ function bindLogsPage() {
       } else if (action === "select-route") {
         const shouldClear = actionEl.dataset.selected === "1";
         toggleDashcamRouteSelectAll(route, shouldClear).catch(() => {});
-      } else if (action === "upload-selected") {
+      } else if (action === "upload-selected" || action === "upload-road-viewer") {
         const entry = dashcamState.routes.find((item) => item.route === route);
         const targets = dashcamSelectedForRoute(entry || { segmentFolders: [] });
-        uploadDashcamSegments(targets, { chooseDestination: true }).catch(() => {});
+        uploadDashcamSegments(targets, { destination: action === "upload-road-viewer" ? "road_viewer" : "web" }).catch(() => {});
       }
     });
     routesHost.addEventListener("change", (ev) => {

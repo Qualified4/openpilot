@@ -1006,6 +1006,14 @@
               color var(--motion-quick) var(--ease-standard);
 }
 
+.dashcam-player-road-viewer {
+  width: auto;
+  flex-shrink: 0;
+  padding-inline: 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .dashcam-player-action svg {
   width: var(--close-icon, 16px);
   height: var(--close-icon, 16px);

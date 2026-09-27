@@ -1,6 +1,6 @@
 "use strict";
 
-import { chooseUploadDestination, roadViewerError } from "../road_viewer/index.js";
+import { ensureRoadViewerConnection, roadViewerError } from "../road_viewer/index.js";
 
 import { dashcamReadStateStore } from "./dashcam_player_session.js";
 import { createLogsSegmentStatusTag } from "./player/components.js";
@@ -847,6 +847,7 @@ function dashcamRouteCardHtml(entry, index = 0, options = {}) {
           <span class="dashcam-selection-count">${escapeHtml(getUIText("selected_count", "{count} selected", { count: selected.length }))}</span>
           <button class="smallBtn" type="button" data-action="select-route" data-route="${routeAttr}" data-selected="${allSelected ? "1" : "0"}">${escapeHtml(selectLabel)}</button>
           <button class="smallBtn btn--filled" type="button" data-action="upload-selected" data-route="${routeAttr}" ${selected.length ? "" : "disabled"}>${escapeHtml(getUIText("upload_selected", "Upload selected"))}</button>
+          <button class="smallBtn" type="button" data-action="upload-road-viewer" data-route="${routeAttr}" ${selected.length ? "" : "disabled"}>${escapeHtml(getUIText("rv_send", "Send to Road Viewer"))}</button>
           <button class="smallBtn dashcam-group-menu-btn dashcam-group-menu-btn--row" type="button" data-action="route-menu" data-route="${routeAttr}" aria-label="${escapeHtml(getUIText("group_menu", "Group menu"))}" title="${escapeHtml(getUIText("group_menu", "Group menu"))}">
             <svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2m12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2m-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2"/></svg>
           </button>
@@ -956,8 +957,9 @@ function updateDashcamRouteSelectionUi(route) {
       : getUIText("select_all", "Select all");
   }
 
-  const uploadBtn = card.querySelector('[data-action="upload-selected"]');
-  if (uploadBtn) uploadBtn.disabled = selected.length === 0;
+  card.querySelectorAll('[data-action="upload-selected"], [data-action="upload-road-viewer"]').forEach((button) => {
+    button.disabled = selected.length === 0;
+  });
 
   card.querySelectorAll('input[data-action="select-segment"]').forEach((input) => {
     const segment = input.dataset.segment || "";
@@ -1200,7 +1202,12 @@ function openDashcamPlayer(route, segment) {
         return formatDashcamTimeRange(targetEndEpoch - seconds, targetEndEpoch);
       },
       onSegmentSend: (target) => uploadDashcamSegments([target], {
-        chooseDestination: true,
+        showProgress: true,
+        showResult: true,
+        showSuccessToast: false,
+      }),
+      onSegmentRoadViewerSend: (target) => uploadDashcamSegments([target], {
+        destination: "road_viewer",
         showProgress: true,
         showResult: true,
         showSuccessToast: false,
@@ -1618,11 +1625,6 @@ async function resumeDashcamUploadJobIfNeeded(options = {}) {
 }
 
 async function uploadDashcamSegments(segments, options = {}) {
-  if (options.chooseDestination) {
-    const destination = await chooseUploadDestination();
-    if (!destination) return;
-    options = { ...options, destination, chooseDestination: false };
-  }
   const roadViewer = options.destination === "road_viewer";
   const api = roadViewer ? "/api/road-viewer" : "/api/dashcam/upload";
   if (dashcamUploadActiveJobId) {
@@ -1639,6 +1641,7 @@ async function uploadDashcamSegments(segments, options = {}) {
     showAppToast(getUIText("no_selected_segments", "No segments selected."), { tone: "error" });
     return;
   }
+  if (roadViewer && !await ensureRoadViewerConnection()) return;
   let uploadStats = {
     segments: targets.length,
     segmentNames: targets,
@@ -1773,7 +1776,7 @@ async function uploadDashcamSegments(segments, options = {}) {
   }
 }
 
-async function uploadRecentDashcamSegments(limit) {
+async function uploadRecentDashcamSegments(limit, destination = "web") {
   const count = Number(limit);
   if (![2, 5, 10].includes(count)) return;
   try {
@@ -1783,7 +1786,7 @@ async function uploadRecentDashcamSegments(limit) {
       showAppToast(getUIText("no_completed_logs", "No completed logs available."), { tone: "error" });
       return;
     }
-    await uploadDashcamSegments(segments, { chooseDestination: true });
+    await uploadDashcamSegments(segments, { destination });
   } catch (error) {
     showAppToast(`${getUIText("recent_log_upload", "Upload recent logs")}: ${error.message || error}`, {
       tone: "error",
@@ -1805,7 +1808,8 @@ async function showDashcamSegmentMenu(route, segment, options = {}) {
     choices: [
       { label: getUIText("play", "Play"), value: "play" },
       { label: getUIText("drive_replay", "Replay"), value: "drive_replay" },
-      { label: getUIText("log_upload", "Upload Logs"), value: "upload" },
+      { label: getUIText("rv_existing_upload", "Carrot log upload"), value: "upload" },
+      { label: getUIText("rv_send", "Send to Road Viewer"), value: "upload_road_viewer" },
       { label: `qcamera ${getUIText("download", "Download")}`, value: "download_qcamera" },
       { label: `rlog ${getUIText("download", "Download")}`, value: "download_rlog" },
       { label: `qlog ${getUIText("download", "Download")}`, value: "download_qlog" },
@@ -1815,7 +1819,8 @@ async function showDashcamSegmentMenu(route, segment, options = {}) {
     options.activePlayerClose?.();
     await openDashcamDriveReplay(route, segment);
   } else if (selected === "play" && typeof options.activePlayerClose !== "function") openDashcamPlayer(route, segment);
-  else if (selected === "upload") await uploadDashcamSegments([segment], { chooseDestination: true });
+  else if (selected === "upload") await uploadDashcamSegments([segment]);
+  else if (selected === "upload_road_viewer") await uploadDashcamSegments([segment], { destination: "road_viewer" });
   else if (selected?.startsWith?.("download_")) {
     const kind = selected.replace("download_", "");
     window.open(dashcamApiPath(`download/${encodeURIComponent(segment)}`, kind), "_blank", "noopener");
