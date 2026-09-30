@@ -337,7 +337,7 @@ def create_acc_cancel(packer, CP, CAN, cruise_info_copy):
   })
   return packer.make_can_msg("SCC_CONTROL", CAN.ECAN, values)
 
-def create_lfahda_cluster(packer, CS, CAN, long_active, lat_active):
+def create_lfahda_cluster(packer, CS, CAN, long_active, lat_active, *, suppress_camera_auto_disengage=False):
 
 
   if CS.lfahda_cluster is not None:
@@ -351,6 +351,19 @@ def create_lfahda_cluster(packer, CS, CAN, long_active, lat_active):
     values["HDA_OptUsmSta"] = 2
   values["HDA_CntrlModSta"] = 2 if long_active else 0
   values["HDA_LFA_SymSta"] = 2 if lat_active else 0
+  # GV70's blocked stock camera can request this popup during lateral-only
+  # control. Suppress only the observed signature in the outgoing cluster copy;
+  # retain raw camera evidence and all fault / hands-off popup identities.
+  lfa = CS.lfa if suppress_camera_auto_disengage else None
+  mdps = CS.mdps if suppress_camera_auto_disengage else None
+  scc = CS.scc_control if suppress_camera_auto_disengage else None
+  if (suppress_camera_auto_disengage and lat_active and not long_active
+      and values.get("HDA_InfoPUDis") == 3 and values.get("HDA_InfoPUDis1") == 0
+      and values.get("HDA_LFA_WrnSnd") == 0
+      and lfa is not None and lfa.get("FCA_SYSWARN") == 1 and lfa.get("VALUE63") == 15
+      and mdps is not None and mdps.get("LKA_FAULT") == 0 and mdps.get("LFA2_FAULT") == 0
+      and scc is not None and scc.get("SysFailState") == 0):
+    values["HDA_InfoPUDis"] = 0
   return [packer.make_can_msg("LFAHDA_CLUSTER", CAN.ECAN, values, rx_counter=rx_counter)]
 
 def create_lfa_icon_non_camera_scc(packer, CS, CAN, CC):
@@ -441,7 +454,9 @@ def _apply_scc_lead(values, radar_state, model_v2=None, hud_lateral=None):
     lateral = _display_lead_lateral(lead, model_v2) if hud_lateral is None else hud_lateral
     values["ACC_ObjLatPos"] = float(np.clip(lateral, -45.6, 5.5))
     values["ACC_ObjRelSpd"] = float(np.clip(lead.vRel, -170.0, 239.3))
-    values["HUD_LEAD_INFO"] = 1 if lead.vRel > 0 else 2
+    # Keep the OEM HUD/cluster lead white around standstill; relative-speed
+    # noise near zero must not alternate white (2) and receding gray (1).
+    values["HUD_LEAD_INFO"] = 1 if lead.vRel > 0.3 else 2
 
 
 def create_acc_control_scc2(packer, CAN, enabled, accel_value_last, accel, stopping, gas_override, set_speed, hud_control, hyundai_jerk, CS,

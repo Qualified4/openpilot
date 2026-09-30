@@ -7,6 +7,8 @@
 
 carrotpilot의 세부 설정은 **Carrot Web에서 모두 확인하고 변경하는 것**을 기준으로 합니다. 장치 자체의 기본 설정 화면은 Wi-Fi, 장치 정보, openpilot 기본 토글과 소프트웨어 업데이트에 사용하고, 아래에서 설명하는 `carrot_settings.json`의 파라미터는 Carrot Web의 **설정** 화면에서 관리합니다.
 
+주행 중 가속도센서로 1.5g 이상의 수평 충격이 의심되면 경고와 10초 취소 안내를 표시합니다. 터치가 없으면 `OpenpilotEnabledToggle`을 꺼짐으로 저장하고 Dashcam 모드로 재부팅하며, 다시 켤 때까지 제어를 사용할 수 없습니다. [감지 조건·취소·복구와 녹화 공백](dashcam-log-sharing.md#충격-의심-시-자동-dashcam-모드)을 확인하세요.
+
 > [!IMPORTANT]
 > **현재 지원 상태**
 >
@@ -103,18 +105,18 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 
 ## 전체 설정 지도
 
-설정은 **187개 항목**으로 구성되며, 아래 메뉴에서 찾을 수 있습니다.
+현재 `ccnc-hda1`의 `carrot_settings.json`에는 **190개 파라미터**가 있습니다. 운전자 감시 예외 설정 1개는 검색으로만 표시되며, 나머지는 아래 메뉴에 표시됩니다.
 
 | 대분류 | 항목 수 | 중분류 |
 |---|---:|---|
-| 주행 제어 | 123 | 시작·오토, 버튼·프리셋, 차량 조향, 속도·감속, 크루즈·차간 |
-| 차량·하드웨어 | 18 | 현대·기아, CANFD·HDA, 레이더, 운전자 모니터링, 차량 보조, 기기 하드웨어 |
+| 주행 제어 | 124 | 시작·오토, 버튼·프리셋, 차량 조향, 속도·감속, 크루즈·차간 |
+| 차량·하드웨어 | 19 | 현대·기아, CANFD·HDA, 레이더, 운전자 모니터링, 차량 보조, 기기 하드웨어 |
 | 화면 표시 | 34 | 정보 표시, 경로 표시, 밝기·주행화면, 외부 HUD |
 | 시스템 | 12 | 녹화·전원, 네트워크·지도, 사운드, 소프트웨어 |
 
 ## 주행 제어
 
-주행 제어는 차량 움직임에 영향을 줄 수 있는 112개 항목입니다. 한 번에 여러 값을 변경하지 마세요.
+주행 제어는 차량 움직임에 영향을 줄 수 있는 124개 항목입니다. 한 번에 여러 값을 변경하지 마세요.
 
 <a id="start-auto"></a>
 ### 시작·오토 — 9개
@@ -145,13 +147,13 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 폭스바겐의 별도 `SET`은 현재 속도 설정, `RES`는 이전 설정속도 복원에 사용하고, `+`·`-`는 버튼 모드·속도 단위·길게 누르기 설정을 따릅니다. 오픈파일럿 종방향 제어의 수동 인게이지 버튼은 기존 물리 `SET`·`RES`로 유지됩니다.
 
 <a id="vehicle-steering"></a>
-### 차량 조향 — 상위 37개 + ONNX 상세 5개
+### 차량 조향 — 상위 38개 + ONNX 상세 5개
 
 | 세부 구역 | 파라미터 | 용도 |
 |---|---|---|
 | ONNX 차선·BSD | `ShareData`, `OnnxLaneThreshold`, `OnnxLaneIntervalMs`, `OnnxBsdThreshold`, `OnnxBsdSmoothingMs`, `OnnxBsdIntervalMs` | 장치의 차선 종류와 조건부 카메라 BSD 인식·세부 조정 |
 | 중앙 보정 | `PathOffset`, `CameraYawTrimDeg` | 레인모드 경로의 좌우 위치와 카메라 YAW 미세 보정 |
-| 조향감 | `SteerActuatorDelay`, `LatSmoothSec`, `LatSuspendAngleDeg`, `CustomSR`, `SteerRatioRate` | 조향 시점, 평활화, 일시중지 각도와 조향비 |
+| 조향감 | `SteerActuatorDelay`, `LatSmoothSec`, `SteerHandoverMode`, `LatSuspendAngleDeg`, `CustomSR`, `SteerRatioRate` | 조향 시점, 평활화, 개입 후 복구, 일시중지 각도와 조향비 |
 | [차로 변경](lane-change.md)·자동 턴 | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneLineCheck`, `AutoTurnControl`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | 차로 변경 진입 조건과 ATC 동작 |
 | 레인모드 | `LatMpcPathCost`, `LatMpcMotionCost`, `LatMpcAccelCost`, `LatMpcJerkCost`, `LatMpcSteeringRateCost`, `LatMpcInputOffset`, `UseLaneLineSpeed`, `UseLaneLineCurveSpeed`, `AdjustLaneOffset` | 레인모드 MPC 가중치와 차선 사용 조건 |
 | 고급 토크·토크 계수 | `LateralTorqueCustom`, `LateralTorqueAccelFactor`, `LateralTorqueFriction`, `LateralTorqueKpV`, `LateralTorqueKiV`, `LateralTorqueKf`, `LateralTorqueKd` | 커스텀 토크 제어 계수 |
@@ -164,6 +166,25 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 `SteerRatioRate`의 기본값 `100%`는 학습된 조향비를 그대로 적용합니다. `CustomSR=0`일 때 사용되며, 저장된 비율이 허용 범위(`30~200%`)를 벗어나면 안전하게 `100%`로 대체됩니다.
 
 `LateralTorqueCustom`과 `CustomSteer*` 계열은 차량의 기본 조향 튜닝과 안전 제한에 영향을 줄 수 있는 고급 항목입니다. 차종별 검증값과 복구 방법이 없으면 변경하지 마세요.
+
+#### 조향 복구 모드 — SteerHandoverMode
+
+Carrot Web **주행 제어 → 차량 조향 → 조향감 → 조향 복구 모드 (시험)**에서 선택합니다. 현대·기아·제네시스의 조향각 제어 차량에만 적용되며 토크 제어 차량에는 효과가 없습니다.
+
+| 값 | 방식 | 동작 |
+|---|---|---|
+| **0 (기본)** | 기존 복구 | 기존 운전자 개입·복구 동작을 유지합니다. |
+| 1 | 수렴 기반 복구 | 조향 오차와 운전자 힘의 크기·변화를 함께 보고 제한적으로 복구합니다. 작은 오차 흔들림은 허용하며, 수렴이 불명확하면 상승을 멈추거나 완만하게 줄입니다. |
+| 2 | 급해제 빠른 복구 | 지속된 개입 뒤 힘이 빠르게 감소하면 제한적으로 복구를 시작합니다. 낮은 힘 유지가 확인되면 조향 오차가 작을수록 빠르게, 클수록 완만하게 토크 상한을 올립니다. |
+| 3 | 1+2 조합 | 1번 동작 중 급해제가 확인되면 2번을 우선합니다. 두 증가량을 더하지 않습니다. |
+
+**재부팅 없이 약 0.5초 주기로 변경을 반영합니다.** 실제 모드 전환은 실험 판단 이력을 초기화하며 기존 복구 로직의 이력은 유지합니다. 같은 값을 다시 읽는 것으로는 초기화하지 않습니다. 0번으로 돌아가면 추가 복구를 종료하고 기존 방식으로 동작합니다. 설정 조작은 정차 후 하세요.
+
+1번의 제한적 복구는 운전자의 힘 감소를 기다리는 짧은 제안입니다. 힘이 강할수록 상한을 낮추고, 명확한 반대 힘이나 힘 증가에는 빠르게 양보합니다. 오차 확대만으로 급격히 취소하지 않으며 무응답이면 완만하게 거둡니다. 거절 후에는 힘 해제가 확인되기 전까지 반복하지 않습니다. 제안 상한 `80`은 실제 토크 단위나 일정한 손 느낌을 보장하는 값이 아닙니다.
+
+2번은 큰 조향 오차만으로 복구를 차단하지 않으며 최대 제어로 즉시 뛰지 않습니다. 복구 중에도 현재 오차에 따라 상승 속도를 조절하고, 다시 힘을 주면 빠르게 양보합니다. 모든 모드에서 목표각과 기존 조향각 제한은 그대로이며, 실험 복구 중에는 기존 복구 상한이 더 높더라도 선택된 상승 속도를 건너뛰지 않습니다.
+
+이 기능은 힘 센서의 추세를 사용하며 손 접촉 해제나 운전자의 인계 동의를 확인하지 못합니다. 기존 `steeringPressed` 판정과 운전자 감시는 그대로입니다. 1·2·3은 실제 차량 조향감이 검증되지 않은 실험 모드이므로 통제된 시험 환경에서만 비교하세요.
 
 ### 속도·감속 — 23개
 
@@ -196,14 +217,14 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 | [가속 성향·드라이브 모드](cruise-gap.md#driving-mode) | `MyDrivingMode`, `MyDrivingModeAuto` | 연비, 안전, 일반, 고속 모드와 자동 전환 |
 | [가속 성향·속도별 가속값](cruise-gap.md#acceleration-table) | `CruiseMaxVals0`, `CruiseMaxVals1`, `CruiseMaxVals2`, `CruiseMaxVals3`, `CruiseMaxVals4`, `CruiseMaxVals5`, `CruiseMaxVals6` | 속도 구간별 최대 가속 성향 |
 | [정차·재출발](cruise-gap.md#stop-resume) | `StopDistanceCarrot`, `StoppingAccel`, `VEgoStopping`, `AChangeCostStarting` | 정지 위치, 정지 진입과 재출발 특성 |
-| [가감속 튜닝](cruise-gap.md#longitudinal-tuning) | `LongTuningKpV`, `LongTuningKiV`, `LongTuningKf`, `LongActuatorDelay` | 현기차는 Kp/Ki/Kf `100/0/100` 고정·숨김, 다른 브랜드는 조정 가능 |
+| [가감속 튜닝](cruise-gap.md#longitudinal-tuning) | `LongTuningKpV`, `LongTuningKiV`, `LongTuningKf`, `LongActuatorDelay` | 현기차는 Kp/Ki/Kf `100/0/100` 고정·숨김; VW MEB(ID.4 포함)는 저장 게인 적용 |
 | [차간거리](cruise-gap.md#following-gap) | `TFollowGap1`, `TFollowGap2`, `TFollowGap3`, `TFollowGap4`, `DynamicTFollowLC`, `SpeedTFFactor`, `TFollowDecelBoost` | 차간 단계별 시간, 정상 선택 앞차 기준 차로 변경 완화와 감속 여유(기본 0%) |
 | [추종응답성](cruise-gap.md#lead-response) | `LeadAccelResponse`, `LeadAccelResponseTF1`–`LeadAccelResponseTF4` | 모든 차간 단계의 앞차 출발·가속 추종과 접근 반응 |
 | [당근 크루즈](cruise-gap.md#carrot-cruise) | `CruiseEcoControl`, `CruiseCoastingPercent`, `CarrotCruiseDecel`, `CarrotCruiseAtcDecel` | 연비 제어, 진입 기준속도를 고정하는 코스팅 여유(기본 0%: 기존 제어), 당근 크루즈 감속 특성 |
 
 `MyDrivingMode`는 `1` 연비, `2` 안전, `3` 일반, `4` 고속 모드입니다. 고속 모드는 신호 감지를 무시하고 가속 성향을 높이므로 모드 이름만 보고 선택하지 말고 설명을 확인하세요.
 
-모드별 앞차 반응 상한은 연비 2, 안전 3이며 일반·고속은 선택값을 유지합니다. 공통값과 TF별 반응을 먼저 선택한 뒤 적용하고 낮은 값과 0은 올리지 않습니다. TF 배율은 연비 ×1.1·안전 ×1.2를 유지하며 모드 여유는 복귀 때 서서히 줄입니다. 자동전환은 정지 접근·지속 서행에서 안전을 선택합니다. 정지 접근이 아니며 앞차 가속도가 1.5m/s² 초과로 약 0.5초 유지되면 일반/연비로 복귀하고, 그 외에는 흐름 회복 6초 또는 앞차 없이 15km/h 이상 주행 4초를 확인합니다.
+모드별 앞차 반응 상한은 연비 2, 안전 3이며 일반·고속은 선택값을 유지합니다. 공통값과 TF별 반응을 먼저 선택한 뒤 적용하고 낮은 값과 0은 올리지 않습니다. TF 배율은 연비 ×1.1·안전 ×1.2를 유지하며 모드 여유는 복귀 때 서서히 줄입니다. 자동전환은 정지 접근·지속 서행에서 안전을 선택합니다. 정지 접근이 아니며 앞차 가속도가 1.0m/s² 초과로 약 0.5초 유지되면 일반/연비로 복귀하고, 그 외에는 흐름 회복 3초 또는 앞차 없이 15km/h 이상 주행 4초를 확인합니다.
 
 `CruiseGapLevels`(갭 단계 수)는 버튼 순환을 2단계부터 차량 최대 단계까지 줄일 수 있으며 기본값은 차량 최대 단계입니다. 2는 TF1·TF2, 3은 TF1~TF3을 사용합니다. 다음 갭 버튼 조작부터 적용하며 사용하지 않는 TF·추종응답성 값은 보관합니다. openpilot 가감속 제어에 적용합니다.
 
@@ -220,6 +241,8 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 
 `StoppingAccel`(정지시작가속도)은 기본 `-50`, 범위 `-100~-50`, 변경 단위 `10`으로 다시 조정할 수 있습니다. 저장값에 0.01을 곱한 가속도를 사용하며, 제어에서도 범위를 제한합니다. 기존 정지 진입·감속 방식과 차종별 소프트홀드를 사용하고 변경은 약 1초 안에 반영됩니다. [정차·재출발](cruise-gap.md#stop-resume)을 참고하세요.
 
+`VEgoStopping`(정지출발민감도)은 범위 `10~100`, 기본 `50`이며, `10`은 `0.10m/s`입니다. 기존의 `10` 미만 저장값은 자동으로 `10`으로 올리고, 주행 중에도 같은 최저값을 적용합니다.
+
 현대·기아 CANFD 오픈파일럿 종방향 제어는 실제 속도 재상승 또는 지속적인 감속 소실을 확인해 한 번의 정지 재시도를 기본 적용합니다. 저속에서 감속이 이어지면 거리·시간 조건만으로 재시도하지 않습니다. [CANFD 정지 제어](cruise-gap.md#canfd-stopping)를 참고하세요.
 
 지원되는 Tesla 차량에서 추가 차량 버스가 감지되면 장치의 **alpha longitudinal**(`AlphaLongitudinalEnabled`) 토글을 켤 때 차량 수신 제한속도에 맞춘 [크루즈 설정속도 자동 조절](tesla.md#automatic-cruise-speed)도 활성화됩니다. 오른쪽 속도 휠을 직접 돌리면 일시 중지하며, 1초 안에 반대 방향으로 돌리거나 제어를 해제했다가 다시 켜면 재개합니다. 별도의 Carrot Web 설정은 없습니다.
@@ -227,7 +250,7 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 <a id="vehicle-hardware"></a>
 ## 차량·하드웨어
 
-차량·하드웨어에는 18개 항목이 있습니다. 차종·하네스·기기 구성을 정하는 항목은 사용 중인 차량과 장치에 맞춰 설정하세요. CCNC 계기판 표시 세 항목은 아래 안내에 따라 원하는 표시 기능을 선택할 수 있습니다.
+차량·하드웨어에는 일반 메뉴 19개와 검색 전용 운전자 감시 예외 설정 1개가 있습니다. 차종·하네스·기기 구성을 정하는 항목은 사용 중인 차량과 장치에 맞춰 설정하세요. CCNC 계기판 표시 세 항목은 아래 안내에 따라 원하는 표시 기능을 선택할 수 있습니다.
 
 | 중분류 | 파라미터 | 용도 |
 |---|---|---|
@@ -237,7 +260,7 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 | [CCNC 계기판 표시](#ccnc-display) | `CcncModelLanes` | CCNC 모델 차선·변경 애니메이션 · 기본 OFF(0) |
 | [CCNC 계기판 표시](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 레이더 차량 표시 · 기본 OFF(0) |
 | 레이더 | `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC 레이더, 전방 트랙 좌우 보정, 코너 레이더와 당근레이더 처리·컷인 감도 |
-| 운전자 모니터링 | `DisableDM`, `MuteDoor`, `MuteSeatbelt` | 운전자 모니터링과 일부 차량 경고음 처리 |
+| 운전자 모니터링 | `DriverMonitoringEnabled`(검색 전용), `DriverMonitoringMode`, `CarrotVisionEnabled`, `MuteDoor`, `MuteSeatbelt` | 운전자 모니터링과 일부 차량 경고음 처리 |
 | 차량 보조 | `MaxAngleFrames`, `SpeedFromPCM` | 최대 조향각 관련 프레임과 순정 SCC 속도 제어 방식 |
 | 기기 하드웨어 | `HardwareC3xLite` | 스피커가 없는 C3X Lite의 알림음과 프로세스 구성 |
 
@@ -254,7 +277,12 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 `EnableRadarTracks=1`~`3`에서는 확인된 프런트 선행차의 바깥쪽 레이더 움직임과 비전의 먼 차량 전환이 일치하면 ACC의 미래 추종 거리 요구를 제한적으로 완화합니다. [CUT-OUT 예측 처리](radar.md)를 참고하세요.
 - `CarrotRadarMode`: 전방·코너 레이더로 차량의 움직임을 계속 추적해 끼어드는 차량을 감지하고, 카메라 영상과 레이더 정보를 새로운 방식으로 맞춰 앞차를 선택합니다. 코너 레이더와 레이더 트랙 기능이 모두 없는 차량에서는 기존 방식과 동일하게 동작합니다. 가감속 동작이 달라질 수 있으므로 검증을 마친 동일 차량에서만 켭니다. 변경값은 다음 OnRoad가 시작될 때 고정되므로, 변경 후 현재 주행을 끝내고 차량을 재시동하거나 기기를 재부팅해야 적용됩니다. 기존 `RadarMotionMode` 값은 업데이트 후 처음 시작할 때 새 이름으로 한 번 자동 이관됩니다.
 - `CarrotRadarCutInSensitivity`: 당근레이더모드 전용 CUT-IN 감도입니다. `0`은 사용 안 함, `1`은 둔감, `3`은 보통(기본값), `5`는 아주 민감이며 `2`와 `4`는 중간 단계입니다. 단계 `1`~`5`는 실제 측정 움직임이 각각 `0.50`, `0.40`, `0.35`, `0.25`, `0.20초` 계속될 때 확정하며, 물리 미래 예측시간은 5.0초로 고정합니다. 전방 레이더의 최근 실측 이력에서 0.50m 이상 강한 단방향 진입이 확인되면 timestamp 양자화로 확정을 놓치지 않도록 최대 20Hz 레이더 한 프레임만 반영하며, 작은 인접 차로 흔들림에는 적용하지 않습니다. 기존 레이더모드와 `EnableCornerRadar`에는 영향을 주지 않습니다. 다음 OnRoad 시작 때 읽으므로 변경 후 차량을 재시동하거나 기기를 재부팅해야 적용됩니다.
-- `DisableDM`: 운전자 모니터링을 비활성화할 수 있는 안전 관련 항목이며 재부팅이 필요합니다.
+`DriverMonitoringEnabled`의 기본값은 켜짐이며 Carrot Web 설정 검색에서만 찾을 수 있습니다. 파라미터 이름으로 검색하세요. 끄기 기능은 DM 카메라가 없거나 고장 난 경우를 위한 것으로, 기본 켜짐을 변경하지 않는 것을 권장합니다. 끄면 일반 주행 중 운전자 감시 경고·감시로 인한 강제 감속·재사용 제한이 사라지며, 사용 지역과 조건에 따라 적용 법규나 운행 요건에 위배될 수 있습니다. Driver View에서는 얼굴 미리보기만 유지하고 판정은 중립입니다. Web에서 끈 설정은 다음 주행과 재시작 후에도 유지되므로 직접 다시 켜야 합니다. 파일·QR 백업, 복원 및 설정 프로필은 이 값을 제외합니다. 복원 작업은 현재 값을 바꾸지 않으며 다른 기기의 끄기 값을 가져오지 않습니다.
+
+기어와 속도에 관계없이 정차 중에도 실제 차량 CANCEL 버튼을 놓았다 다시 누르는 방식으로 3초 안에 세 번 누르면 `DriverMonitoringEnabled` 설정을 바꾸지 않고 현재 시동 구간 동안 감시를 끕니다. 기어 또는 속도가 바뀌어도 횟수를 초기화하지 않습니다. 자동 제어 CANCEL 반사와 BT CANCEL은 세지 않습니다. 다른 차량 버튼의 누름 또는 놓음 신호, 무효·오래된 차량 상태, 입력 스트림 끊김이나 시간 초과는 횟수를 초기화하며, 실제 입력과 구분할 수 없는 순정 ACC 속도 버튼 반사도 보수적으로 초기화할 수 있습니다. 다음 시동을 켜거나 manager/기기를 재시작하면 임시 꺼짐 상태만 해제하므로, 저장된 설정이 켜짐일 때만 감시가 다시 켜집니다. `DriverMonitoringMode`와 `CarrotVisionEnabled`는 바꾸지 않습니다.
+
+- `DriverMonitoringMode`: 운전자 감시가 켜져 있을 때 적용됩니다. 기본값 0은 카메라 사용 시 콤마 순정 감시 기준이며, 카메라 미장착·고장 시에는 15·30·45초 조작 감시로 전환합니다. 1은 빈 도로 시간 완화와 조작 후 카메라 경고 유예를 적용하는 시험 전용 실험 모드입니다. 공통 예외로 P단·완전 정차·인게이지 해제가 유효한 신호로 1초간 확인되면 재사용 제한을 초기화합니다. 모드 변경은 재부팅 없이 약 0.5초 주기로 적용됩니다. 전환해도 누적 감시시간·경고 횟수·재사용 제한은 초기화되지 않으며, 이전 조작 유예와 전방주시 연속 판정은 종료됩니다. [운전자 감시와 실험 모드 조건](driver-monitoring.md)을 확인하세요. 현대·기아·제네시스 CAN-FD의 검증된 원본 `STEER_TOUCH_2AF` 수신 신호를 차종명 제한 없이 처리하며 카메라·모드에 따라 유지와 새 접촉을 구분합니다.
+- `CarrotVisionEnabled`: 운전자 감시와 별도로 웹 도로 영상을 켭니다. `DisableDM`은 이관 전용이며, 기존 `DisableDM=2`의 영상 기능만 최초 전환 시 `CarrotVisionEnabled`로 승계합니다.
 - `SpeedFromPCM`: 기본값은 `2`(커브·카메라 감속)이며, 비롱컨 순정 SCC의 버튼 스패밍과 감속 방식에 영향을 줍니다. [버튼 전송 상세](buttons-presets.md#button-spam)를 참고하세요.
 
 `HardwareC3xLite`는 일반 C3/C3X에서는 반드시 꺼 두고 C3X Lite에서만 켠 뒤 기기를 재부팅하세요. 이 설정을 켜면 존재하지 않는 앰프를 초기화하지 않아 I2C 재시도로 인한 시작 지연을 없애고, 경고음을 GPIO 부저로 출력합니다. 또한 `micd`, `soundd`, `loggerd`를 실행하지 않고 `RecordAudio`를 끄므로 이 하드웨어 모드에서는 일반 주행 로그 기록을 사용할 수 없습니다.
@@ -287,7 +315,7 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 
 ## 화면 표시
 
-화면 표시에는 35개 항목이 있습니다. 외부 HUD 항목은 별도 하드웨어의 화면 구성과 출력 방식을 조정합니다.
+화면 표시에는 34개 항목이 있습니다. 외부 HUD 항목은 별도 하드웨어의 화면 구성과 출력 방식을 조정합니다.
 
 | 중분류 | 파라미터 | 용도 |
 |---|---|---|
@@ -374,6 +402,10 @@ Carrot Vision에는 `carrot_settings.json` 카탈로그와 별도로 **AR 표시
 - `HotspotOnBoot`: USIM을 장착한 장치에서 자동 핫스팟을 사용할 때의 설정입니다.
 - `SoftwareMenu`: 메모리 문제가 있을 때 끌 수 있는 Carrot Web 메뉴 설정입니다.
 
+`SoundVolumeAdjust`는 일반 안내음의 음량을 조절합니다. DM 첫 경고음은 출력 음량 최소 70%, 마지막 경고음은 항상 100%이며 볼륨 설정이나 주변 소음에 의해 낮아지지 않습니다. 그보다 앞선 화면 예고는 무음입니다. 자세한 내용은 [운전자 모니터링](driver-monitoring.md)을 참고하세요.
+
+실험 DM은 주변 이동 차량이 없다가 처음 나타날 때만 20초간 기본 감시로 전환하고, 차량 추가로 시간을 연장하지 않습니다. 이후 실험 감시로 복귀하되 차량이 남아 있으면 빈 도로 추가 완화는 적용하지 않습니다.
+
 ## 위험도별로 접근하기
 
 ### 비교적 쉽게 되돌릴 수 있는 설정
@@ -396,7 +428,7 @@ Carrot Vision에는 `carrot_settings.json` 카탈로그와 별도로 **AR 표시
 - `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity`
 - `SpeedFromPCM`, `DisableMinSteerSpeed`
 - `LateralTorqueCustom`, `CustomSteer*`
-- `DisableDM`
+- `DriverMonitoringMode`
 
 ## 안전한 변경 순서
 

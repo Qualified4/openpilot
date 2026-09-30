@@ -2,6 +2,19 @@
   "sensitivity": 50,
   "cases": [
     {
+      "id": "ev9-97-35-tentative-front-phantom-35",
+      "vehicle_folder": "KIA_EV9 a6444e342fe1700f",
+      "log": "00000097--e22228b4eb--35/rlog.zst",
+      "source": "front+corner",
+      "window": [39.5, 41.0],
+      "expected": "clear",
+      "validation_stage": "lead_one",
+      "target_track_ids": [35],
+      "forbidden_lead_one_ids": [35],
+      "forbidden_lead_two_ids": [35],
+      "scene": "EV9 phantom braking on 835bcce07c. Front radar 35 remains native state 1 for 22 central samples, raw range 31.05 to 8.55 m. After the tentative dwell it becomes L1 for one frame at replay 40.647 s (video 40.700 s), corrected range 9.80 m and absolute speed 6.42 m/s. Vision probability is below 0.01 and nearby video shows no corresponding vehicle. Recorded target acceleration reaches -2.04 m/s^2. A tentative front track must not acquire radar-only L1 merely by surviving a timer; retain vision-supported matching. Reflector identity and closed-loop corrected braking are unverified."
+    },
+    {
       "id": "carnival-1dc-19-stopping-path-endpoint-front-43",
       "vehicle_folder": "KIA_CARNIVAL_4TH_GEN c4dcf95545dafe68",
       "log": "000001dc--23e0551f1d--19/rlog.zst",
@@ -2202,6 +2215,21 @@
       "forbidden_lead_one_ids": [39, 0],
       "forbidden_lead_two_ids": [39, 0],
       "scene": "User-reported bridge-joint false braking at 35.60s. Vision and front 35 continuously track the moving vehicle around 17m. SCC jumps to a stationary near-road return also reported as front 39 and previously bypassed independent confirmation into L2 at 35.55-36.05s. The camera shows the road joint approaching without a vehicle at that near range. SCC and front are the same radar, not independent vehicle evidence."
+    },
+    {
+      "id": "sonata-3f2-27-braking-front-continuity-50",
+      "vehicle_folder": "HYUNDAI_SONATA 81685acfb327ceef",
+      "log": "000003f2--3246ccd0e1--27/rlog.zst",
+      "source": "front",
+      "window": [0.3, 6.0],
+      "expected": "detect",
+      "human_verified": false,
+      "validation_stage": "lead_one",
+      "target_track_ids": [50],
+      "required_lead_one_ids": [50],
+      "lead_one_continuous_window": [0.3, 6.0],
+      "forbidden_lead_one_ids": [42],
+      "scene": "User-reported close automatic stop. Log-derived regression: confirmed center front 50 remains measured while braking through 4m/s to rest. A similar-speed front 42 appears about 2.3m farther away and must not replace it solely when the moving-acquisition speed gate closes. The screenshot and kinematics support the nearer return; physical identity of the farther reflection is not established. Times use replay frame origin; video is about 0.10s later."
     }
   ]
 }
