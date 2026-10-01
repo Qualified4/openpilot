@@ -46,11 +46,11 @@
 
 ## 테스트 구성
 
-기존 테스트는 병합한 `carrot-wip` 커밋 `dbeb799ed2d497540a95054cd083bfb4ec8ff6bb`의 내용을 유지합니다. 전용 실행기는 이 커밋의 카탈로그를 제공하며, CCNC·ALT2 버튼 원본 테스트에만 확장 옵션을 끈 호출을 적용합니다. 추가 설정은 별도 테스트에서 현재 카탈로그로 검증합니다.
+기존 테스트는 병합한 `carrot-wip` 커밋 `abe1a232d81fd5b0f8db4b7212587952514e0274`의 내용을 유지합니다. 전용 실행기는 이 커밋의 카탈로그를 제공하며, CCNC·ALT2 버튼·DM 계기판 원본 테스트에만 확장 옵션을 끈 호출을 적용합니다. 추가 설정은 별도 테스트에서 현재 카탈로그로 검증합니다.
 
 | 테스트 | 목적 | 실행 대상 |
 |---|---|---|
-| 기존 `test_ccnc_cluster.py`, `test_ccnc_lead.py`, `test_ccnc_fault_filter.py`, `test_alt2_adas_buttons.py` | 기본 차량·선행차·알림 처리 | `vehicle` |
+| 기존 `test_ccnc_cluster.py`, `test_ccnc_lead.py`, `test_ccnc_fault_filter.py`, `test_alt2_adas_buttons.py`, `test_dm_cluster.py` | 기본 차량·선행차·알림 및 DM 계기판 경고 처리 | `vehicle` |
 | `test_ccnc_extension.py` | 세 설정 조합, HDA2 제외, 상태 갱신, 실제 CAN 포장 | `vehicle` |
 | `tools/ccnc/test_radar_display.py` | 경계·연속성·정차 유지·위치 필터 회귀 | `display` |
 | 기존 Wiki 테스트 | 공통 기준 카탈로그의 생성·검증 | `docs` |

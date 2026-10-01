@@ -7,7 +7,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 # carrot-wip revision matching the merged, unmodified upstream tests.
-BASELINE = "dbeb799ed2d497540a95054cd083bfb4ec8ff6bb"
+BASELINE = "abe1a232d81fd5b0f8db4b7212587952514e0274"
 
 
 @pytest.fixture(scope="session")
@@ -34,6 +34,7 @@ def ccnc_original_test_environment(request, monkeypatch):
     "opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_cluster.py",
     "opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_lead.py",
     "opendbc_repo/opendbc/car/hyundai/tests/test_alt2_adas_buttons.py",
+    "opendbc_repo/opendbc/car/hyundai/tests/test_dm_cluster.py",
   ):
     main = request.module.hyundaicanfd
     original = main.create_ccnc_messages
