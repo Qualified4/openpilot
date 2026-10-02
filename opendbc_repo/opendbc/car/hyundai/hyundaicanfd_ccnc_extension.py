@@ -55,6 +55,224 @@ def _ccnc_side_lane_center(md, side):
   center = abs(inner.y[0]) + width * 0.5
   return center if math.isfinite(center) else None
 
+class _CcncTemporalTracks:
+  """Bounded display-only observations; never change the published radar data."""
+  HOLD = 30  # 300 ms since the last accepted position, not since the last prediction.
+  RECONNECT = 35
+
+  def __init__(self):
+    self.entries = {}
+    self.raw = self.view = None
+    self.stamp = -1000
+    self.next_id = 1 << 32  # Avoid alias collisions when a radar slot is reused.
+    self.selection = [None, None, None]
+    self.reconnections = {}
+
+  @staticmethod
+  def copy(point, track_id, frame):
+    return SimpleNamespace(trackId=track_id, radarSource='frontRadar', dRel=point.dRel, yRel=point.yRel,
+                           vRel=point.vRel, vLead=point.vLead, yvRel=getattr(point, 'yvRel', 0.0),
+                           measured=getattr(point, 'measured', True), trackState=getattr(point, 'trackState', 0),
+                           ccnc_source_id=point.trackId, ccnc_stamp=frame, ccnc_fresh=True, ccnc_continuous=False)
+
+  def new(self, point, frame):
+    track_id = point.trackId
+    if track_id in self.entries:
+      track_id, self.next_id = self.next_id, self.next_id + 1
+    p = self.copy(point, track_id, frame)
+    entry = dict(point=p, source=point.trackId, frame=frame, good=frame, selected=None, confirmed=False,
+                 vy=0.0, pending=[deque(maxlen=4) for _ in range(3)], lateral=deque(maxlen=4))
+    self.entries[track_id] = entry
+    return entry
+
+  @staticmethod
+  def coherent(samples, axis):
+    if len(samples) < 3 or samples[-1][0] - samples[0][0] < 10:
+      return False
+    steps = [b[1] - a[1] for a, b in zip(samples, list(samples)[1:])]
+    rates = (4.0, 15.0, 10.0)
+    return (all(0 < b[0] - a[0] <= 15
+                and abs(b[1] - a[1] - (a[2] * (b[0] - a[0]) * .01 if axis == 0 else 0.0))
+                <= 0.15 + rates[axis] * (b[0] - a[0]) * .01
+                for a, b in zip(samples, list(samples)[1:]))
+            and (sum(abs(s) for s in steps) < .2 or abs(sum(steps)) >= .8 * sum(abs(s) for s in steps)))
+
+  def update(self, live, frame, selected, observations):
+    if live is None:
+      self.entries.clear()
+      self.reconnections.clear()
+      self.selection = [None, None, None]
+      self.raw = self.view = None
+      self.stamp = frame
+      return None
+    if live is self.raw and 0 <= frame - self.stamp <= 15:
+      return self.view
+    if not 0 < frame - self.stamp <= 15:
+      self.entries.clear()
+      self.reconnections.clear()
+      self.selection = [None, None, None]
+      if live is self.raw:  # Re-reading stale data cannot create a new observation.
+        self.view = None
+        return None
+    self.raw, self.stamp = live, frame
+    self.entries = {key: e for key, e in self.entries.items() if frame - e['good'] <= self.RECONNECT}
+    for key, e in self.entries.items():
+      previous = observations.get(key)
+      e['confirmed'] |= previous is not None and previous[2] >= 3 and previous[1] - previous[0] >= 15
+      if key in selected and e['confirmed']:
+        e['selected'] = frame
+    raw = {p.trackId: p for p in live.points if str(p.radarSource) == 'frontRadar' and p.dRel >= 1
+           and all(math.isfinite(v) for v in (p.dRel, p.yRel, p.vRel, p.vLead))}
+    by_source = {e['source']: key for key, e in self.entries.items() if e['source'] is not None}
+    matches = {source: by_source[source] for source in raw if source in by_source}
+    # Only reconnect absent sources, with a unique candidate in both directions.
+    # ponytail: small radar candidate set; ambiguous matches wait instead of global assignment.
+    candidates = {}
+    for source, p in raw.items():
+      if source in matches:
+        continue
+      options = []
+      for key, e in self.entries.items():
+        if e['source'] in raw or not e['confirmed'] or e['selected'] is None:
+          continue
+        dt = (frame - e['frame']) * .01
+        old = e['point']
+        if (frame - e['good'] <= self.RECONNECT and frame - e['selected'] <= self.RECONNECT
+            and abs(p.dRel - old.dRel - old.vRel * dt) <= 1.0 + 2.0 * dt
+            and abs(p.yRel - old.yRel - e['vy'] * dt) <= .5 + 2.0 * dt and abs(p.vRel - old.vRel) <= 2.0):
+          options.append(key)
+      candidates[source] = options
+    reconnecting, reconnected, pending_reconnections = set(), set(), {}
+    for source, options in candidates.items():
+      if len(options) == 1 and sum(options[0] in others for others in candidates.values()) == 1:
+        key = options[0]
+        pending = self.reconnections.get(source)
+        if pending is not None and pending[0] == key and 0 < frame - pending[1] <= 15:
+          matches[source] = key
+          self.entries[key]['source'] = source
+          reconnected.add(source)
+        else:
+          # One-frame ghosts cannot acquire an established display identity.
+          pending_reconnections[source] = (key, frame)
+          reconnecting.add(source)
+    self.reconnections = pending_reconnections
+    points, used = [], set()
+    for source, p in raw.items():
+      if source in reconnecting:
+        continue
+      key = matches.get(source)
+      e = self.entries.get(key)
+      if e is None:
+        e = self.new(p, frame)
+        points.append(e['point'])
+        used.add(e['point'].trackId)
+        continue
+      old = e['point']
+      dt = (frame - e['frame']) * .01
+      predicted = (old.dRel + old.vRel * dt, old.yRel + e['vy'] * dt, old.vRel)
+      observed = (p.dRel, p.yRel, p.vRel)
+      limits = (.5 + 2.0 * dt, .35 + 2.0 * dt, 1.0 + 5.0 * dt)
+      accepted, values = [], []
+      for axis, (value, estimate, limit) in enumerate(zip(observed, predicted, limits)):
+        pending = e['pending'][axis]
+        valid = abs(value - estimate) <= limit or (source in reconnected and axis < 2)
+        if valid:
+          pending.clear()
+        else:
+          pending.append((frame, value, p.vRel))
+          valid = self.coherent(pending, axis)
+        accepted.append(valid)
+        values.append(value if valid else estimate)
+      # A sustained large relocation is a new identity, never a correction of the old car.
+      relocated = abs(p.dRel - predicted[0]) > 3.0 or abs(p.yRel - predicted[1]) > 3.0
+      if not e['confirmed'] or (relocated and all(accepted[:2])):
+        continuous = not relocated and all(accepted[:2])
+        if relocated:
+          e['source'] = None
+          e = self.new(p, frame)
+          old = e['point']
+        result = self.copy(p, old.trackId, frame)
+        result.ccnc_continuous = continuous
+        e['good'], e['vy'] = frame, 0.0
+      else:
+        result = self.copy(p, old.trackId, frame)
+        result.dRel, result.yRel, result.vRel = values
+        result.vLead += result.vRel - p.vRel
+        result.ccnc_fresh = all(accepted[:2])
+        result.ccnc_continuous = True
+        result.ccnc_stamp = frame if result.ccnc_fresh else old.ccnc_stamp
+        result.measured = result.measured and result.ccnc_fresh
+        if result.ccnc_fresh:
+          e['good'] = frame
+        if accepted[0] and accepted[2]:
+          e['lateral'].append((frame, p.yRel))
+        else:
+          e['lateral'].clear()
+        history = e['lateral']
+        e['vy'] = 0.0
+        if self.coherent(history, 1):
+          span = (history[-1][0] - history[0][0]) * .01
+          net = history[-1][1] - history[0][1]
+          steps = [b[1] - a[1] for a, b in zip(history, list(history)[1:])]
+          e['vy'] = net / span if max(abs(s) for s in steps) <= .7 * abs(net) else 0.0
+        if not result.ccnc_fresh and frame - e['good'] > self.HOLD:
+          e['source'] = None
+          e = self.new(p, frame)
+          result = e['point']
+      e['point'], e['frame'] = result, frame
+      points.append(result)
+      used.add(result.trackId)
+    for key, e in self.entries.items():
+      if key in used or not e['confirmed'] or e['selected'] is None or frame - e['good'] > self.HOLD:
+        continue
+      old = e['point']
+      dt = (frame - e['frame']) * .01
+      predicted = SimpleNamespace(**vars(old))
+      predicted.dRel += old.vRel * dt
+      predicted.yRel += e['vy'] * dt
+      predicted.ccnc_fresh = predicted.measured = False
+      predicted.ccnc_continuous = True
+      e['point'], e['frame'] = predicted, frame
+      if predicted.dRel >= 1:
+        points.append(predicted)
+    self.view = SimpleNamespace(points=points)
+    return self.view
+
+  def select(self, leads, lateral, references, frame, bypass=False, rejected=()):
+    if bypass:
+      self.selection = [None, None, None]
+      return leads, lateral, references
+    chosen = {p.trackId for p in leads if p is not None}
+    available = {p.trackId for p in self.view.points} if self.view is not None else set()
+    for slot, point in enumerate(leads):
+      saved = self.selection[slot]
+      old_id = saved['id'] if saved else None
+      e = self.entries.get(old_id)
+      old = e['point'] if e else None
+      retain = (old_id in available and saved is not None and e is not None and e['confirmed'] and frame - saved['qualified'] <= self.HOLD
+                and frame - e['good'] <= self.HOLD and old_id not in rejected and old_id not in chosen
+                and 1 <= old.dRel <= (160 if slot == 0 else 80)
+                and (slot == 0 or (old.yRel + saved['offset']) * (1 if slot == 1 else -1) > 0))
+      if retain and (point is None or point.dRel >= old.dRel - 2.0):
+        if point is not None:
+          stamp = point.ccnc_stamp
+          if saved.get('pending') != point.trackId:
+            saved.update(pending=point.trackId, start=stamp, stamp=stamp, count=1)
+          elif stamp != saved['stamp']:
+            saved.update(stamp=stamp, count=saved['count'] + 1)
+          retain = stamp - saved['start'] < 15 or saved['count'] < 3
+        if retain:
+          leads[slot], lateral[slot], references[slot] = old, old.yRel + saved['offset'], saved['reference']
+          chosen.add(old_id)
+          continue  # A held selection cannot renew its own qualification deadline.
+      if point is None:
+        self.selection[slot] = None
+      elif point.ccnc_fresh:
+        self.selection[slot] = dict(id=point.trackId, qualified=frame, offset=lateral[slot] - point.yRel,
+                                    reference=references[slot])
+    return leads, lateral, references
+
+
 class _CcncRadarDisplayTracker:
   """Observation continuity and lane-free fallback for the CCNC display only."""
   def __init__(self):
@@ -76,6 +294,8 @@ class _CcncRadarDisplayTracker:
     self.selected = (None, None, None)
     self.crossing = {}
     self.positions = {}
+    self.position_correction = None
+    self.temporal = None
     self.lateral_grace = {}
     self.recent_selected = {}
     self.recent_front = {}
@@ -132,6 +352,8 @@ class _CcncRadarDisplayTracker:
     self.stop_motion = {key: value for key, value in self.stop_motion.items()
                         if key in self.tracks and value['birth'] == self.tracks[key][0]}
     for track_id, (birth, stamp, _, p, _) in self.tracks.items():
+      if not getattr(p, 'ccnc_fresh', True):
+        continue
       history = self.stop_motion.get(track_id)
       if history is None:
         history = dict(birth=birth, samples=deque(), blocked=False, settled=(stamp, p.dRel, p.yRel))
@@ -170,7 +392,7 @@ class _CcncRadarDisplayTracker:
     for side, lead in enumerate(leads):
       prefix = 'LF' if side == 0 else 'RF'
       keys = (prefix + '_DETECT', prefix + '_DETECT_DISTANCE', prefix + '_DETECT_LATERAL')
-      if self.approaching and lead is not None:
+      if self.approaching and lead is not None and getattr(lead, 'ccnc_fresh', True):
         pending = self.approach_pending.get(side)
         world_x = lead.dRel + self.stop_distance
         if abs(lead.vLead) > (3.0 if side in self.approach_holds else 2.0) / 3.6:
@@ -244,7 +466,7 @@ class _CcncRadarDisplayTracker:
         if invalid:
           self.stop_holds.pop(side, None)
           held = None
-      if lead is not None:
+      if lead is not None and getattr(lead, 'ccnc_fresh', True):
         pending = self.stop_pending.get(side)
         stationary = (abs(lead.vLead) <= 2.0 / 3.6 and abs(lead.vRel) <= 2.0 / 3.6
                       and not self.stop_motion.get(lead.trackId, {}).get('blocked', False))
@@ -263,7 +485,7 @@ class _CcncRadarDisplayTracker:
                                    tuple(values[k] for k in keys), birth)
       else:
         self.stop_pending.pop(side, None)
-        if held is not None:
+        if held is not None and lead is None:
           values.update(zip(keys, held[3]))
 
   def _update_model(self, md):
@@ -315,6 +537,8 @@ class _CcncRadarDisplayTracker:
     projected = [np.interp(distances, *data[0]), np.interp(distances, *data[1])]
     if all(math.isfinite(prob) and prob >= 0.6 for prob in self._lane_probs):
       for (p, d, y, _, _), left_y, right_y in zip(self._points, *projected):
+        if not getattr(p, 'ccnc_fresh', True):
+          continue
         if not (max(data[0][0][0], data[1][0][0]) <= d <= min(data[0][0][-1], data[1][0][-1])
                 and right_y > left_y):
           continue
@@ -402,6 +626,8 @@ class _CcncRadarDisplayTracker:
     return valid
 
   def observe(self, live, frame):
+    if self.temporal is not None:
+      live = self.temporal.update(live, frame, self.selected, self.tracks)
     if frame < self.last_frame or frame - self.last_frame > 15:
       self.live = None
       self.lane_ready = True
@@ -434,6 +660,13 @@ class _CcncRadarDisplayTracker:
         points.append((p, dRel, yRel, vRel, vLead))
         start, count = frame, 1
         previous = self.tracks.get(p.trackId)
+        if self.temporal is not None:
+          if not p.ccnc_continuous:
+            previous = None
+          elif previous is not None:
+            first, last, n = previous[:3]
+            current[p.trackId] = (first, p.ccnc_stamp, n + int(p.ccnc_fresh), p, (dRel, yRel, vRel))
+            continue
         if previous is not None:
           first, last, n, _, (old_d, old_y, old_v) = previous
           dt = (frame - last) * 0.01
@@ -471,6 +704,8 @@ class _CcncRadarDisplayTracker:
                                if key in self.tracks and value['birth'] == self.tracks[key][0]}
     curves = None
     for track_id, (birth, stamp, _, p, _) in self.tracks.items():
+      if not getattr(p, 'ccnc_fresh', True):
+        continue
       admission = self.boundary_admission.get(track_id)
       if admission is None:
         admission = dict(birth=birth, frame=-1, status='pending', samples=0, near=0,
@@ -752,6 +987,254 @@ class _CcncRadarDisplayTracker:
     if ff is not None and ff.trackId in self.tracks:
       self.recent_front[ff.trackId] = (self.tracks[ff.trackId][0], frame)
     return ff_y, changed
+
+  def correct_position(self, point, aligned_y, filtered_y, slot, reference, frame):
+    correction = self.position_correction
+    if correction is None:
+      return filtered_y
+    bounds = None
+    if reference[0] == 'lane' and self._lane_data is not None:
+      data, flags = self._lane_data
+      indices = ((0, 1), (2, 0), (1, 3))[slot]
+      saved = correction.tracks.get(point.trackId)
+      retained = (saved is not None and saved['locked'] and saved['slot'] == slot
+                  and 0 <= frame - saved['frame'] <= 15
+                  and self.tracks.get(point.trackId, (None,))[0] == saved['birth'])
+      reliable = (all(math.isfinite(p) and p >= 0.6 for p in self._lane_probs) if slot == 0
+                  else correction.center_valid[slot - 1] and flags[slot - 1])
+      # Confidence hysteresis retains only a continuous, previously qualified lock.
+      if retained and self._model is not None:
+        line_indices = ((1, 2), (0, 1), (2, 3))[slot]
+        reliable = all(math.isfinite(self._model.laneLineProbs[i])
+                       and self._model.laneLineProbs[i] >= 0.3 for i in line_indices)
+      curves = [data[i] for i in indices]
+      if all(c is not None and _ccnc_valid_boundary(*c)
+             and c[0][0] <= point.dRel <= c[0][-1] for c in curves):
+        bounds = tuple(-float(np.interp(point.dRel, *c)) + aligned_y - point.yRel for c in curves)
+    else:
+      reliable = False
+    return correction.apply(point, aligned_y, filtered_y, slot, reference, bounds,
+                            self.tracks.get(point.trackId), frame, reliable)
+
+
+class _CcncVehiclePositionCorrection:
+  """Display-only center lock; fresh radar motion releases it across slot changes."""
+  CENTER_TAU = 1.0
+  CENTER_RATE = 0.3
+  FOLLOW_RATE = 1.5
+  MOVE_TIME = 60  # Control frames (10 ms); samples are distinct radar publications.
+  MOVE_SPEED = 0.3
+  MOVE_DISTANCE = 0.2
+  SETTLE_TIME = 100
+  SETTLE_SPEED = 0.1
+  SETTLE_RANGE = 0.2
+  GEOMETRY_HOLD = 50  # A short confidence dip may retain an existing center lock.
+  SLOT_TIME = 20  # Display-only debounce, with at least three fresh observations.
+  SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
+                 ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
+                 ('RF_DETECT_DISTANCE', 'RF_DETECT_LATERAL', 'RF_DETECT'))
+
+  def __init__(self, left=3.0, right=3.0):
+    self.centers = [left, -right]
+    self.center_valid = [False, False]
+    self.center_frame = None
+    self.tracks = {}
+    self.display_slots = {}
+    self.display_selected = (None, None, None)
+
+  def stabilize_slots(self, values, selected, observations, frame, bypass=False):
+    """Debounce an object's vacant-slot crossing without changing raw selection."""
+    previous_display = self.display_selected
+    self.display_selected = selected
+    if bypass:
+      self.display_slots.clear()
+      # Stopped/approach memory owns its slots. Only a current crossing car
+      # may stay in an otherwise empty FF while its physical sign catches up.
+      for slot in (1, 2):
+        track_id = selected[slot]
+        saved = self.tracks.get(track_id)
+        observation = observations.get(track_id)
+        if (track_id is not None and previous_display[0] == track_id and selected[0] is None
+            and saved is not None and observation is not None and saved['birth'] == observation[0]
+            and frame - saved['frame'] <= 15 and saved['output'] * (1 if slot == 1 else -1) < 0):
+          distance, _, detect = self.SLOT_FIELDS[slot]
+          if values['FF_DETECT'] == 0 and values[detect] != 0:
+            values['FF_DISTANCE'], values['FF_LATERAL'], values['FF_DETECT'] = values[distance], -saved['output'], values[detect]
+            values[detect] = 0
+            destinations = list(selected)
+            destinations[0], destinations[slot] = track_id, None
+            self.display_selected = tuple(destinations)
+      return
+    snapshots = [tuple(values[key] for key in fields) for fields in self.SLOT_FIELDS]
+    active = {}
+    destinations = list(selected)
+    for slot, track_id in enumerate(selected):
+      observation = observations.get(track_id)
+      if observation is None:
+        continue
+      birth, stamp = observation[:2]
+      saved = self.display_slots.get(track_id)
+      if saved is None or saved['birth'] != birth or not 0 <= frame - saved['frame'] <= 15:
+        saved = dict(birth=birth, slot=slot, pending=None, stamp=stamp, count=0, start=stamp)
+      old = saved['slot']
+      distance, lateral, detect = snapshots[slot]
+      common_y = -lateral if slot in (0, 2) else lateral
+      correction = self.tracks.get(track_id)
+      # Side CAN coordinates are unsigned. Preserve the physical coordinate
+      # while a vacant FF still carries a crossing car on the opposite side.
+      if correction and 'output' in correction:
+        common_y = min(max(correction['output'], -5.4), 5.4) if slot else correction['output']
+      aligned_y = correction['samples'][-1][2] if correction and correction['samples'] else common_y
+      representable = old == 0 or (old == 1 and min(common_y, aligned_y) >= 0) or (old == 2 and max(common_y, aligned_y) <= 0)
+      if old == slot or selected[old] is not None or not representable:
+        saved['slot'], saved['pending'] = slot, None
+      else:
+        if saved['pending'] != slot:
+          saved.update(pending=slot, start=stamp, count=1, stamp=stamp)
+        elif stamp != saved['stamp']:
+          saved['stamp'] = stamp
+          saved['count'] += 1
+        destination_ready = slot == 0 or common_y * (1 if slot == 1 else -1) >= 0
+        if destination_ready and stamp - saved['start'] >= self.SLOT_TIME and saved['count'] >= 3:
+          saved['slot'], saved['pending'] = slot, None
+      destination = saved['slot']
+      if destination != slot:
+        destinations[slot], destinations[destination] = None, track_id
+        values[self.SLOT_FIELDS[slot][2]] = 0
+        mapped_y = -common_y if destination in (0, 2) else common_y
+        for key, value in zip(self.SLOT_FIELDS[destination], (distance, mapped_y, detect)):
+          values[key] = value
+      saved['frame'] = frame
+      active[track_id] = saved
+    self.display_slots = active
+    self.display_selected = tuple(destinations)
+
+  def update_centers(self, left, right, frame, tracks):
+    dt = 0.0 if self.center_frame is None else max(0.0, min(0.15, (frame - self.center_frame) * 0.01))
+    self.center_frame = frame
+    for side, target in enumerate((left, -right if right is not None else None)):
+      self.center_valid[side] = target is not None and math.isfinite(target)
+      if self.center_valid[side]:
+        step = (target - self.centers[side]) * -math.expm1(-dt / self.CENTER_TAU)
+        limit = dt * self.CENTER_RATE
+        self.centers[side] += min(max(step, -limit), limit)
+    self.tracks = {key: saved for key, saved in self.tracks.items()
+                   if key in tracks and tracks[key][0] == saved['birth']}
+
+  def apply(self, point, aligned_y, filtered_y, slot, reference, bounds, observation, frame, reliable=True):
+    if observation is None:
+      return filtered_y
+    birth, stamp = observation[:2]
+    center = 0.0 if slot == 0 else self.centers[slot - 1]
+    # A boundary-straddling or lane-free target must retain its measured position.
+    inside = (bounds is not None and bounds[1] + 0.35 <= aligned_y <= bounds[0] - 0.35
+              and bounds[1] + 0.35 <= center <= bounds[0] - 0.35)
+    saved = self.tracks.get(point.trackId)
+    if saved is None or saved['birth'] != birth or not 0 <= frame - saved['frame'] <= 15:
+      saved = dict(birth=birth, frame=frame, stamp=None, samples=deque(), settling=deque(),
+                   locked=inside and reliable, following=not (inside and reliable), valid_frame=-1000,
+                   output=filtered_y, slot=slot, reference=reference, fast=deque(maxlen=6), fast_speed=0.0)
+      self.tracks[point.trackId] = saved
+    samples = saved['samples']
+    if slot != saved['slot'] or reference != saved['reference']:
+      # Keep the physical output, but never compare different geometry references.
+      samples.clear()
+      if reference != saved['reference']:
+        saved['fast'].clear()
+        saved['fast_speed'] = 0.0
+      saved['settling'].clear()
+      saved['valid_frame'] = -1000
+      if slot != saved['slot']:
+        saved['locked'] = False
+    saved['slot'], saved['reference'] = slot, reference
+    fresh = getattr(point, 'ccnc_fresh', True)
+    if inside and reliable and fresh:
+      saved['valid_frame'] = frame
+    # Temporary uncertainty changes the output mode without proving actual motion.
+    forced_follow = not inside or (not reliable and frame - saved['valid_frame'] > self.GEOMETRY_HOLD)
+    saved['following'] = not saved['locked'] or forced_follow
+    if stamp != saved['stamp'] and fresh:
+      saved['stamp'] = stamp
+      fast = saved['fast']
+      if fast:
+        last, raw, aligned = fast[-1]
+        elapsed = (stamp - last) * .01
+        geometry = (aligned_y - point.yRel) - (aligned - raw)
+        if not 0 < elapsed <= .15 or abs(geometry) > .04 + 3 * elapsed:
+          fast.clear()
+      fast.append((stamp, point.yRel, aligned_y))
+      saved['fast_speed'] = 0.0
+      if len(fast) >= 3 and stamp - fast[0][0] >= 10:
+        span = (stamp - fast[0][0]) * .01
+        nets = [fast[-1][i] - fast[0][i] for i in (1, 2)]
+        steps = [[b[i] - a[i] for a, b in zip(fast, list(fast)[1:])] for i in (1, 2)]
+        if nets[0] * nets[1] > 0 and all(
+            .8 <= abs(net) / span <= 15 and abs(net) >= .4 and abs(net) >= .8 * sum(abs(s) for s in changes)
+            and max(abs(s) for s in changes) <= .7 * abs(net) for net, changes in zip(nets, steps)):
+          saved['fast_speed'] = abs(nets[1]) / span
+          saved['locked'], saved['following'] = False, True
+      if samples:
+        last, raw, aligned = samples[-1]
+        dt = (stamp - last) * 0.01
+        raw_step = point.yRel - raw
+        geometry_step = (aligned_y - point.yRel) - (aligned - raw)
+        # Exclude isolated jumps before a median/filter can turn them into a ramp.
+        if not 0 < dt <= 0.15:
+          saved['settling'].clear()
+        if (not 0 < dt <= 0.15 or abs(raw_step) > 0.04 + 2.0 * dt
+            or abs(geometry_step) > 0.04 + 3.0 * dt):
+          samples.clear()
+      samples.append((stamp, point.yRel, aligned_y))
+      while len(samples) > 1 and stamp - samples[1][0] >= self.SETTLE_TIME:
+        samples.popleft()
+      moving = [sample for sample in samples if stamp - sample[0] <= 70]
+      if len(moving) >= 5 and stamp - moving[0][0] >= self.MOVE_TIME:
+        span = (stamp - moving[0][0]) * 0.01
+        nets = [moving[-1][i] - moving[0][i] for i in (1, 2)]
+        steps = [[b[i] - a[i] for a, b in zip(moving, moving[1:])] for i in (1, 2)]
+        # Both raw and road-aligned motion must agree; curves alone cannot unlock.
+        if (nets[0] * nets[1] > 0.0 and all(
+            abs(net) >= max(self.MOVE_DISTANCE, self.MOVE_SPEED * span)
+            and abs(net) >= 0.8 * sum(abs(step) for step in changes)
+            and max(abs(step) for step in changes) <= 0.5 * abs(net)
+            for net, changes in zip(nets, steps))):
+          saved['following'] = True
+          saved['locked'] = False
+      # Curves move raw yRel even when a vehicle keeps its lane. Isolated spikes
+      # must not erase all evidence that its road-relative position has settled.
+      settling = saved['settling']
+      settling.append((stamp, point.yRel, aligned_y, filtered_y, inside))
+      while len(settling) > 1 and stamp - settling[1][0] >= self.SETTLE_TIME:
+        settling.popleft()
+      if (saved['following'] and inside and reliable and len(settling) >= 5
+          and stamp - settling[0][0] >= self.SETTLE_TIME):
+        span = (stamp - settling[0][0]) * 0.01
+        evidence = list(settling)
+        values = [s[3] for s in evidence]
+        ordered = sorted(values)
+        trim = max(1, len(values) // 10)
+        edge = max(2, len(values) // 3)
+        start, end = (float(np.median(v)) for v in (values[:edge], values[-edge:]))
+        trends = [float(np.median([s[i] for s in evidence[-edge:]]))
+                  - float(np.median([s[i] for s in evidence[:edge]])) for i in (1, 2)]
+        moving_trend = trends[0] * trends[1] > 0.0 and min(abs(v) for v in trends) > self.SETTLE_SPEED * span
+        # Opposing trends suggest geometry drift; they cannot prove lane keeping.
+        geometry_drift = trends[0] * trends[1] < 0.0 and min(abs(v) for v in trends) > self.SETTLE_SPEED * span
+        settled = (ordered[-trim - 1] - ordered[trim] <= self.SETTLE_RANGE
+                   and abs(end - start) <= self.SETTLE_SPEED * span)
+        if ((settled or geometry_drift) and not moving_trend
+            and sum(s[4] for s in evidence) >= 0.8 * len(evidence)):
+          saved['following'] = False
+          saved['locked'] = True
+    dt = max(0.0, min(0.15, (frame - saved['frame']) * 0.01))
+    saved['frame'] = frame
+    target = filtered_y if saved['following'] else center
+    rate = self.FOLLOW_RATE if saved['following'] else self.CENTER_RATE
+    if saved['following'] and saved['fast_speed'] > 0 and fresh:
+      target = aligned_y
+      rate = min(15.0, max(rate, 1.4 * saved['fast_speed'] + 1.0))
+    saved['output'] += min(max(target - saved['output'], -rate * dt), rate * dt)
+    return saved['output']
 
 class _CcncRadarLaneSelector:
   """Keep a usable reference lane until the other is clearly better for 0.3s."""
@@ -1274,6 +1757,9 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     lf_center = _ccnc_side_lane_center(md, 0)
     rf_center = _ccnc_side_lane_center(md, 1)
 
+    if display_tracker.position_correction is not None:
+      display_tracker.position_correction.update_centers(lf_center, rf_center, frame, display_tracker.tracks)
+
     if lf_center is not None:
       state.lf_center.apply(lf_center)
 
@@ -1297,6 +1783,8 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
 
       for point_index, ((lead, dRel, yRel, vRel, vLead), (left_y, right_y)) in enumerate(zip(display_tracker._points, projected)):
         if lead.trackId in display_tracker.boundary_rejected:
+          continue
+        if display_tracker.temporal is not None and not display_tracker.stable(lead.trackId):
           continue
         velocity = vLead * ms_to_kph
         # FF와 저속 측면 예외까지 모두 탈락하는 점은 보간 전에 제외합니다.
@@ -1427,6 +1915,14 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     if ff_lead is not normal_ff:
       ff_uses_lane = True
 
+    references = [('lane', selected_lane_is_left) if ff_uses_lane else ('path', False),
+                  ('lane', selected_lane_is_left), ('lane', selected_lane_is_left)]
+    if display_tracker.temporal is not None:
+      (ff_lead, lf_lead, rf_lead), (ff_yRel, lf_yRel, rf_yRel), references = display_tracker.temporal.select(
+        [ff_lead, lf_lead, rf_lead], [ff_yRel, lf_yRel, rf_yRel], references, frame,
+        bypass=display_tracker.stopped or display_tracker.approaching or display_tracker.live is None,
+        rejected=display_tracker.boundary_rejected)
+
     # A retained FF must not also occupy a side slot during lane recovery.
     if ff_lead is not None:
       if lf_lead is not None and lf_lead.trackId == ff_lead.trackId:
@@ -1434,12 +1930,15 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
       if rf_lead is not None and rf_lead.trackId == ff_lead.trackId:
         rf_lead = None
     # Shared physical coordinates and filter history follow the ID across LF/FF/RF.
+    corrected = display_tracker.position_correction is not None
     filtered_positions = []
-    for point, aligned, is_lane in ((ff_lead, ff_yRel, ff_uses_lane),
-                                    (lf_lead, lf_yRel, True), (rf_lead, rf_yRel, True)):
-      reference = ("lane", selected_lane_is_left) if is_lane else ("path", False)
-      filtered_positions.append(display_tracker.filter_position(point, aligned, reference, frame)
-                                if point is not None else (0.0, 0.0))
+    for slot, (point, aligned, is_lane) in enumerate(((ff_lead, ff_yRel, ff_uses_lane),
+                                                    (lf_lead, lf_yRel, True), (rf_lead, rf_yRel, True))):
+      reference = references[slot]
+      distance, lateral = display_tracker.filter_position(point, aligned, reference, frame) if point is not None else (0.0, 0.0)
+      if corrected and point is not None:
+        lateral = display_tracker.correct_position(point, aligned, lateral, slot, reference, frame)
+      filtered_positions.append((distance, lateral))
     ff_yRel = filtered_positions[0][1]
     lf_yRel = min(max(float(filtered_positions[1][1]), -5.4), 5.4)
     rf_yRel = min(max(float(filtered_positions[2][1]), -5.4), 5.4)
@@ -1448,7 +1947,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     # 전방(FF) 차량 정보 업데이트
     if ff_lead:
       values["FF_DISTANCE"] = filtered_positions[0][0] * 0.8
-      values["FF_LATERAL"] = apply_curved_deadband(-ff_yRel, 0, 0.7, 1)
+      values["FF_LATERAL"] = -ff_yRel if corrected else apply_curved_deadband(-ff_yRel, 0, 0.7, 1)
       values["FF_DETECT"] = 2 if ff_lead.vLead < 3 else state.ff_detect.apply(ff_lead.vRel)
     else:
       values["FF_DETECT"] = 0 # 순정 디텍션 제거
@@ -1456,19 +1955,23 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     # 전방 좌측(LF) 차량 정보 업데이트
     if lf_lead:
       values["LF_DETECT_DISTANCE"] = filtered_positions[1][0] * 0.8
-      values["LF_DETECT_LATERAL"] = min(max(float(apply_curved_deadband(lf_yRel, state.lf_center.value, 0.9, 2)), 0.0), 12.7)
+      values["LF_DETECT_LATERAL"] = min(max(float(lf_yRel if corrected else apply_curved_deadband(lf_yRel, state.lf_center.value, 0.9, 2)), 0.0), 12.7)
       values["LF_DETECT"] = state.lf_detect.apply(lf_lead.vRel)
     else:
       values["LF_DETECT"] = 0
     # 전방 우측(RF) 차량 정보 업데이트
     if rf_lead:
       values["RF_DETECT_DISTANCE"] = filtered_positions[2][0] * 0.8
-      values["RF_DETECT_LATERAL"] = min(max(float(apply_curved_deadband(-rf_yRel, state.rf_center.value, 0.9, 2)), 0.0), 12.7)
+      values["RF_DETECT_LATERAL"] = min(max(float(-rf_yRel if corrected else apply_curved_deadband(-rf_yRel, state.rf_center.value, 0.9, 2)), 0.0), 12.7)
       values["RF_DETECT"] = state.rf_detect.apply(rf_lead.vRel)
     else:
       values["RF_DETECT"] = 0
 
     display_tracker.stopped_display(values, (lf_lead, rf_lead), frame)
+    if corrected:
+      display_tracker.position_correction.stabilize_slots(
+        values, display_tracker.selected, display_tracker.tracks, frame,
+        bypass=display_tracker.stopped or display_tracker.approaching or bool(display_tracker.approach_holds))
 
     center_lane_offset = (state.r_lane_f.value - state.l_lane_f.value) / 2 if model_lanes else 0.0
 
@@ -1514,9 +2017,9 @@ state = SimpleNamespace()
 _options = None
 
 
-def configure(lane_color, model_lanes, radar_vehicles):
+def configure(lane_color, model_lanes, radar_vehicles, position_correction=False):
   global _options
-  options = (lane_color, model_lanes, radar_vehicles)
+  options = (lane_color, model_lanes, radar_vehicles, position_correction)
   if options == _options:
     return
   if _options is None or lane_color != _options[0]:
@@ -1527,6 +2030,11 @@ def configure(lane_color, model_lanes, radar_vehicles):
     reset_lanes()
   if _options is None or radar_vehicles != _options[2]:
     reset_vehicles()
+  if _options is None or radar_vehicles != _options[2] or position_correction != _options[3]:
+    state.radar_display_tracker.position_correction = (
+      _CcncVehiclePositionCorrection(state.lf_center.value, state.rf_center.value)
+      if radar_vehicles and position_correction else None)
+    state.radar_display_tracker.temporal = _CcncTemporalTracks() if radar_vehicles and position_correction else None
   _options = options
 
 

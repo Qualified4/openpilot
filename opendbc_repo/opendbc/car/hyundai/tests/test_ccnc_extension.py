@@ -10,11 +10,13 @@ from opendbc.car.hyundai import hyundaicanfd as main, hyundaicanfd_ccnc_extensio
 from opendbc.car.hyundai.values import HyundaiFlags
 
 KEYS = ("CcncLaneColor", "CcncModelLanes", "CcncRadarVehicles")
+POSITION_KEY = "CcncVehiclePositionCorrection"
 
 
 @pytest.fixture
 def display(monkeypatch):
   params = dict.fromkeys(KEYS, False)
+  params[POSITION_KEY] = False
   monkeypatch.setattr(main, "Params", lambda: N(get_bool=lambda key: params[key], get_int=lambda key: 0, get=lambda key: "0"))
   monkeypatch.setattr(ccnc_extension, "Params", lambda: N(get_int=lambda key: 3))
   monkeypatch.delattr(main.create_ccnc_messages, "_display_options", raising=False)
@@ -112,6 +114,68 @@ def test_option_refresh_only_resets_related_state(display):
   send(300)
   assert ccnc_extension.state.radar_display_tracker is not tracker
   assert not ccnc_extension.state.radar_display_tracker.approach_holds
+
+
+@pytest.mark.parametrize('radar,correction,hda2', list(product((False, True), repeat=3)))
+def test_position_correction_requires_hda1_radar_display(display, radar, correction, hda2):
+  params, _, send = display
+  params[KEYS[2]] = radar
+  params[POSITION_KEY] = correction
+  send(1, flags=HyundaiFlags.CAMERA_SCC.value | (HyundaiFlags.CANFD_HDA2.value if hda2 else 0))
+  enabled = ccnc_extension.state.radar_display_tracker.position_correction is not None
+  assert enabled == (radar and correction and not hda2)
+
+
+def test_live_position_option_preserves_selection_and_existing_filters(display):
+  params, _, send = display
+  params[KEYS[2]] = True
+  send(1)
+  tracker = ccnc_extension.state.radar_display_tracker
+  tracker.selected = (42, None, None)
+  tracker.positions[42] = 'existing filter history'
+  tracker.approach_holds[37] = 'existing stop history'
+  params[POSITION_KEY] = True
+  send(99)
+  assert tracker.position_correction is None
+  send(100)
+  correction = tracker.position_correction
+  assert correction is not None and ccnc_extension.state.radar_display_tracker is tracker
+  assert tracker.selected == (42, None, None)
+  assert tracker.positions[42] == 'existing filter history'
+  assert tracker.approach_holds[37] == 'existing stop history'
+  send(200)
+  assert tracker.position_correction is correction
+  params[POSITION_KEY] = False
+  send(300)
+  assert tracker.position_correction is None and ccnc_extension.state.radar_display_tracker is tracker
+  assert tracker.selected == (42, None, None)
+
+
+@pytest.mark.parametrize('correction', [False, True])
+def test_position_correction_changes_lateral_display_only(display, correction):
+  params, cs, send = display
+  params[KEYS[2]], params[POSITION_KEY] = True, correction
+  cs.out.vEgo = 15.
+  md = cs.modelV2
+  md.laneLines = [N(x=[0., 100.], y=[y, y]) for y in (-4.5, -1.5, 1.5, 4.5)]
+  md.roadEdges = [N(x=[0., 100.], y=[y, y]) for y in (-6., 6.)]
+  cs.ccnc_0x162 = dict.fromkeys(CANPacker('hyundai_canfd_generated').dbc.name_to_msg['CCNC_0x162'].sigs, 0)
+  points = [N(trackId=i, radarSource='frontRadar', dRel=20., yRel=y, vRel=0., vLead=15.)
+            for i, y in enumerate((.5, 3.5, -3.5), 1)]
+  for frame in range(0, 251, 5):
+    cs.live_tracks = N(points=points)
+    md.timestampEof = frame
+    values = dict(send(frame))['CCNC_0x162']
+  assert ccnc_extension.state.radar_display_tracker.selected == (1, 2, 3)
+  assert [p.yRel for p in points] == [.5, 3.5, -3.5]
+  assert values['FF_DISTANCE'] == values['LF_DETECT_DISTANCE'] == values['RF_DETECT_DISTANCE'] == 16.
+  assert (values['FF_DETECT'], values['LF_DETECT'], values['RF_DETECT']) == (3, 3, 3)
+  if correction:
+    assert (values['FF_LATERAL'], values['LF_DETECT_LATERAL'], values['RF_DETECT_LATERAL']) == pytest.approx((0., 3., 3.))
+  else:
+    assert values['FF_LATERAL'] == pytest.approx(ccnc_extension.apply_curved_deadband(-.5, 0., .7, 1))
+    assert values['LF_DETECT_LATERAL'] == values['RF_DETECT_LATERAL'] == pytest.approx(
+      ccnc_extension.apply_curved_deadband(3.5, 3., .9, 2))
 
 
 def test_color_only_does_not_need_model(display):

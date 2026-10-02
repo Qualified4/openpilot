@@ -409,7 +409,8 @@
             "HDPuse",
             "CcncLaneColor",
             "CcncModelLanes",
-            "CcncRadarVehicles"
+            "CcncRadarVehicles",
+            "CcncVehiclePositionCorrection"
           ]
         },
         {
@@ -1940,6 +1941,22 @@
     },
     {
       "group": "시작",
+      "name": "CcncVehiclePositionCorrection",
+      "title": "CCNC 차량 위치 보정",
+      "descr": "HDA1 레이더 차량 표시를 켠 경우, 차선을 유지하는 차량의 표시를 차선 중앙으로 부드럽게 모으고 작은 좌우 흔들림을 억제합니다. 차선 중심의 변화도 천천히 따라갑니다. 확인된 차량은 순간적인 거리·좌우 위치·속도 오류를 분리해 검토하고, 짧은 미검출은 마지막 정상 위치 관측부터 최대 0.3초 예측 표시합니다. 새 차량은 여러 번 확인한 뒤 표시하며, 잠시 사라진 차량은 위치·속도가 맞고 후보가 하나이며 두 번 연속 관측될 때만 기존 표시를 이어갑니다. 빠르고 일관된 횡이동은 더 빨리 추종합니다. 같은 방향의 지속 횡이동은 측정 위치를 따라가고, 차선 안에서 다시 안정되면 순간적인 좌표 튐에 복귀 판단이 끊기지 않도록 중앙 표시로 돌아갑니다. 기존 중앙 유지는 유효한 경계 안에서 신규 고정보다 낮은 차선 신뢰도를 허용하며 추가 신뢰 저하를 최대 0.5초 동안 견딥니다. 일시적인 불확실성이 끝나면 기존 중앙 유지로 복귀하고 실제 지속 이동 후에는 안정 판정을 기다립니다. 일반 주행 중 경계의 짧은 표시 슬롯 변경은 최소 0.2초 확인하며 최신 위치와 거리는 계속 갱신합니다. 다른 차량이 이전 슬롯에 나타나면 즉시 전환하고 정차·정차 접근 표시는 기존 처리를 유지합니다. 경계에 걸치거나 차선 정보가 사라지면 측정 위치를 따라가며 불확실한 정보만으로 새 중앙 표시를 시작하지 않습니다. HDA2와 후측방 사각지대 아이콘에는 적용되지 않습니다. 끄면 기존 위치 표시를 사용합니다. 기본은 꺼짐이며 변경은 약 1초 이내에 반영됩니다.",
+      "egroup": "START",
+      "etitle": "CCNC vehicle position correction",
+      "edescr": "When HDA1 radar vehicle display is enabled, smoothly centers lane-keeping vehicle icons and suppresses small lateral fluctuations. Changes in lane centers are followed gradually. Confirmed vehicles receive separate distance, lateral-position and speed checks; brief detection gaps use predicted display positions for up to 0.3 seconds after the last accepted position. New vehicles require repeated observations. A briefly missing vehicle resumes its previous display only when position and speed fit a unique candidate in two consecutive observations. Fast, consistent lateral motion is followed sooner. Sustained lateral motion releases centering to follow the measured position; centering resumes once the vehicle settles inside a lane without isolated spikes erasing all settling evidence. An existing center lock accepts lower lane confidence than a new lock inside valid boundaries, with up to 0.5 seconds of tolerance for a further confidence drop. The previous lock resumes after temporary uncertainty; confirmed sustained motion still requires settling. During ordinary driving, brief boundary slot changes receive at least 0.2 seconds of confirmation while current position and distance continue to update. A different vehicle in the previous slot causes an immediate transition; stopped and stopping-approach displays retain their existing handling. Boundary crossings or missing geometry use measured tracking; uncertain information cannot start a new center lock. Does not apply to HDA2 or rear-side blind-spot icons. Turn off to use the existing position display. Off by default; changes appear within about one second.",
+      "cgroup": "启动设置",
+      "ctitle": "CCNC 车辆位置修正",
+      "cdescr": "开启 HDA1 雷达车辆显示时，将保持车道的车辆图标平滑移向车道中央，抑制轻微的左右晃动，并缓慢跟随车道中心的变化。对已确认车辆分别检查距离、横向位置和速度的瞬时异常；短暂漏检时，从最后一次有效位置观测起最多预测显示 0.3 秒。新车辆需经过多次确认；短暂消失后，仅在连续两次观测中位置和速度匹配且候选唯一时延续原有显示。快速且一致的横向移动会更早得到跟随。确认持续横向移动后跟随测量位置；车辆在车道内重新稳定后恢复居中，瞬间坐标跳变不会清空全部稳定判断记录。已有居中状态在有效边界内可接受比新建居中更低的车道置信度，进一步下降时最多容忍 0.5 秒。暂时的不确定状态结束后恢复原有居中；确认持续移动后仍需等待稳定判断。正常行驶中边界附近短暂的显示槽位变化需至少 0.2 秒确认，期间持续更新当前位置和距离。其他车辆占据原槽位时立即切换；停车和停车接近显示保留原有处理。位于车道边界或车道几何信息消失时跟随测量位置，不会仅凭不确定信息建立新的居中状态。不适用于 HDA2 或后侧方盲区图标。关闭后使用原有位置显示。默认关闭，更改约在一秒内生效。",
+      "min": 0,
+      "max": 1,
+      "default": 0,
+      "unit": 1
+    },
+    {
+      "group": "시작",
       "name": "HDPuse",
       "title": "HDP 사용(CCNC)",
       "descr": "1:APN사용시\n2:항상",
@@ -2223,13 +2240,13 @@
       "group": "화면",
       "name": "ShowDebugUI",
       "title": "디버그정보 표시",
-      "descr": "",
+      "descr": "주행 화면의 진단 정보를 표시합니다. C4에서는 우측 정보를 DM 카메라 영역 위에 작은 글씨로 정렬합니다.",
       "egroup": "DISP",
       "etitle": "Show Debug Info",
-      "edescr": "",
+      "edescr": "Shows diagnostic information on the driving screen. On C4, right-aligned information uses smaller text above the DM camera inset.",
       "cgroup": "显示设置",
       "ctitle": "显示调试信息",
-      "cdescr": "",
+      "cdescr": "在驾驶画面上显示诊断信息。在 C4 上，右对齐的信息以较小字体排列在驾驶员监控摄像头画面上方。",
       "min": 0,
       "max": 2,
       "default": 1,

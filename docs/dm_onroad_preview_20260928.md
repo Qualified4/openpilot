@@ -87,3 +87,25 @@ at both sizes. Evidence: `.analysis/archive/2026-09-29/dm-ui-sound/`.
 
 No physical-device display or speaker measurement has been performed. Gain 1.0
 means software unity gain, not guaranteed hardware loudness or sound pressure.
+
+## October 2 HUD placement follow-up
+
+On `ccnc-hda1`, restore the C4 steering-wheel icon to the upper-left placement
+used by `carrot-wip` (`e76de14a`), independent of the BSD/ShareData option. The
+clock stays beside the wheel. Existing color, torque scaling and icon overlays
+are retained. Compact right-aligned diagnostics use 14px text at 16px spacing,
+starting at content-relative y=59. The fifth row ends at y=137 (139 including
+its outline), above the unchanged DM inset starting at y=144.
+
+Eight combinations of BSD on/off, normal/critical wheel and content offsets
+match the reference wheel positions. All five diagnostic values retain their
+order and right alignment. Catalog/Wiki checks (27 tests), user-documentation
+validation and a Pillow layout reference with the actual icon/font passed.
+The reference uses schematic surroundings; Raylib and physical-device rendering
+were not validated. Reproduction and reference image are archived locally in
+`.analysis/archive/2026-10-02/hud-layout/`.
+
+The subsequent requested restoration also reinstates `carrot-wip`'s wheel
+opacity filter: initialized at zero, 0.05s time constant, updated toward
+`255 * 0.95` each draw. Active/inactive wheel colors use the filtered opacity.
+Upper-left placement and the compact diagnostic layout remain as above.

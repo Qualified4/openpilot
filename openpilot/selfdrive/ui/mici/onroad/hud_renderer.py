@@ -208,6 +208,8 @@ class HudRenderer(Widget):
     # Bottom-left speed panel background
     self._txt_speed_bg: rl.Texture = gui_app.texture('images/speed_bg.png', 307, 115)
 
+    self._wheel_alpha_filter = FirstOrderFilter(0, 0.05, 1 / gui_app.target_fps)
+
     self._set_speed_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
 
     self._set_speed_override = SetSpeedOverride()
@@ -399,21 +401,15 @@ class HudRenderer(Widget):
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
 
+    self._wheel_alpha_filter.update(255 * 0.95)
+
     margin_x = 18
     margin_y = 18
+    wheel_pos_x = int(rect.x + margin_x + wheel_txt.width / 2)
     pos_y = int(rect.y + margin_y + wheel_txt.height / 2)
-    time_x = int(rect.x + margin_x)
+    time_x = wheel_pos_x + wheel_txt.width / 2 + 15
 
-    if ui_state.share_data:
-      wheel_pos_x = int(rect.x + margin_x + wheel_txt.width / 2)
-      wheel_pos_y = pos_y
-      time_x = wheel_pos_x + wheel_txt.width / 2 + 15
-    else:
-      # Keep the lane-mode icon inside the right margin.
-      wheel_pos_x = int(rect.x + rect.width - margin_x - wheel_txt.width / 2 - 2)
-      wheel_pos_y = int(rect.y + rect.height - margin_y - wheel_txt.height / 2)
-
-    self._draw_steering_wheel_icon(wheel_txt, wheel_pos_x, wheel_pos_y)
+    self._draw_steering_wheel_icon(wheel_txt, wheel_pos_x, pos_y)
     self._draw_wheel_side_info(wheel_txt, time_x, pos_y, rect)
 
 
@@ -440,12 +436,12 @@ class HudRenderer(Widget):
 
     if ui_state.lat_active:
       # 토크 정도에 따라 녹색 -> 주황색 블렌딩
-      green_color = rl.Color(0, 255, 0, 242)
-      orange_color = rl.Color(255, 115, 0, 242)
+      green_color = rl.Color(0, 255, 0, int(self._wheel_alpha_filter.x))
+      orange_color = rl.Color(255, 115, 0, int(self._wheel_alpha_filter.x))
       blend_factor = float(np.clip((torque_val - 0.75) * 4.0, 0.0, 1.0))
       wheel_color = blend_colors(green_color, orange_color, blend_factor)
     else:
-      wheel_color = rl.Color(230, 230, 230, 242)
+      wheel_color = rl.Color(230, 230, 230, int(self._wheel_alpha_filter.x))
 
     rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, wheel_color)
     # 당근맨은 틴팅 없이 덧대서 그리기
@@ -605,8 +601,9 @@ class HudRenderer(Widget):
     self._draw_infos(int(rect.x + rect.width - 18), rect.y)
 
   def _draw_infos(self, pos_x: int, top_y: float):
-    FONT_SIZE = 18
-    LINE_HEIGHT = FONT_SIZE + 4
+    # Five lines end at y+137, above the C4 DM inset starting at y+144.
+    FONT_SIZE = 14
+    LINE_HEIGHT = FONT_SIZE + 2
 
     cpu_text = self._get_cpu_temp_text()
 
@@ -636,7 +633,7 @@ class HudRenderer(Widget):
 
     info_lines = (cpu_text, ld_text, sr_text, af_text, fr_text)
     for line_index, info_text in enumerate(info_lines):
-      draw_text_ui_style(info_text, pos_x, top_y + 15 + LINE_HEIGHT * 2 + line_index * LINE_HEIGHT, FONT_SIZE, rl.Color(230, 230, 230, 255), font=self._font_display, border_width=2.0, shadow_offset=0, align="right_top", y_offset=0.0)
+      draw_text_ui_style(info_text, pos_x, top_y + 59 + line_index * LINE_HEIGHT, FONT_SIZE, rl.Color(230, 230, 230, 255), font=self._font_display, border_width=2.0, shadow_offset=0, align="right_top", y_offset=0.0)
 
   def _get_gear_text(self) -> str:
     sm = ui_state.sm

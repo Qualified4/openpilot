@@ -250,7 +250,7 @@ On supported Tesla vehicles with the additional vehicle bus detected, the device
 <a id="vehicle-hardware"></a>
 ## Vehicle and hardware
 
-This category contains 19 menu settings and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. The three CCNC instrument cluster options let you choose display features as described below.
+This category contains 20 menu settings and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. The four CCNC instrument cluster options let you choose display features as described below.
 
 | Group | Parameters | Purpose |
 |---|---|---|
@@ -259,6 +259,7 @@ This category contains 19 menu settings and one search-only driver-monitoring ex
 | [CCNC display](#ccnc-display) | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes and lane-change animation · Default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Default OFF (0) |
+| [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | CCNC vehicle position correction · Default OFF (0) |
 | Radar | `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC radar, front-track orientation, corner radar, and Carrot Radar processing and cut-in sensitivity |
 | Driver monitoring | `DriverMonitoringEnabled` (search only), `DriverMonitoringMode`, `CarrotVisionEnabled`, `MuteDoor`, `MuteSeatbelt` | Driver monitoring and selected vehicle alerts |
 | Vehicle assistance | `MaxAngleFrames`, `SpeedFromPCM` | Steering-angle frames and stock-SCC speed control |
@@ -295,7 +296,7 @@ In modes `EnableRadarTracks=1`–`3`, a confirmed departing front lead can recei
 <a id="ccnc-display"></a>
 ### CCNC instrument cluster display
 
-Under **Vehicle and hardware → CAN FD/HDA**, each of the three options can be switched independently. All are off by default, and changes appear within about one second. These settings adjust the instrument cluster display.
+Under **Vehicle and hardware → CAN FD/HDA**, each of the four options can be switched independently. All are off by default, and changes appear within about one second. These settings adjust the instrument cluster display.
 
 #### CCNC acceleration/mode lane color
 
@@ -317,6 +318,16 @@ If lane markings briefly disappear, previously detected side vehicles that remai
 
 Rear-side vehicle icons indicate blind-spot detection, not actual distance or precise position. Do not use icon spacing to judge following distance or whether a lane change is safe.
 
+#### CCNC vehicle position correction
+
+Applies when **CCNC HDA1 radar vehicles** is enabled. Smoothly centers lane-keeping vehicles ahead and in adjacent lanes, suppressing small lateral fluctuations and isolated coordinate jumps. Changes in adjacent-lane centers are followed gradually.
+
+Sustained lateral motion in one direction releases the center lock to follow the measured position. Once the vehicle settles inside a lane, its icon returns smoothly to that lane's center; isolated coordinate spikes no longer erase all settling evidence. An existing center lock can use lower lane confidence than a new lock while valid boundaries still place the vehicle inside its lane, with up to 0.5 seconds of tolerance for a further confidence drop. Boundary crossings or missing geometry use measured tracking. Once temporary uncertainty ends, the previous center lock can resume; confirmed sustained motion still requires settling first. During ordinary driving, brief changes in display slots at a boundary receive at least 0.2 seconds of confirmation while current measured position and distance continue to update. A different vehicle occupying the previous slot causes an immediate transition. Stopped and stopping-approach displays retain their existing handling, and uncertain information cannot start a new center lock.
+
+Distance, lateral position and speed of confirmed vehicles are checked separately for continuity. Brief detection gaps or position errors use predicted positions for up to 0.3 seconds after the last accepted position; predictions do not extend confirmation or stopped-vehicle memory. New vehicles require repeated observations. A briefly missing vehicle resumes its previous display only when position and speed fit a unique candidate in two consecutive observations. Fast, consistent lateral motion is followed sooner. This can also change the selected display vehicle, displayed distance and detection state.
+
+Turn off to use the existing position display. Does not apply to HDA2 or rear-side blind-spot icons, and does not change lead selection, steering or acceleration control. Corrected icons do not represent precise lateral positions within a lane. Display quality on the physical instrument cluster has not yet been validated in a vehicle.
+
 ## Display
 
 Display contains 34 settings. External-HUD settings control the layout and output of separate display hardware.
@@ -327,6 +338,8 @@ Display contains 34 settings. External-HUD settings control the layout and outpu
 | Path | `ShowPathMode`, `ShowPathColor`, `ShowPathColorCruiseOff`, `ShowPathModeLane`, `ShowPathColorLane` | Path shape and color by driving state |
 | Brightness/on-road view | `ShowCustomBrightness`, `ShowModelView`, `ShowCameraWithCluster` | Brightness, camera/model composition, and the on-device camera while the external HUD is connected |
 | External HUD | `ClusterHud`, `ClusterHudBrightness`, `ClusterHudOrientation`, and related `ClusterHud*` settings | Supported TURZX HUD layout, live brightness, screen rotation, camera, radar, and encoder options |
+
+On C4, the steering-wheel icon stays at the upper left regardless of the BSD display option. The right-aligned diagnostics shown with `ShowDebugUI=1` use smaller text and line spacing to fit above the DM camera inset.
 
 USB external HUD output is fixed at **10 FPS**; while the eGPU is active, rendering, encoding, and USB output switch to **5 FPS**. Changes to eGPU activity apply automatically; changing the H.264 encoder rate restarts the HUD. `ClusterNaviMapFps` remains a separate setting for Android map input.
 

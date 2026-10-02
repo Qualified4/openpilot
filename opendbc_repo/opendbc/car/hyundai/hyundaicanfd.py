@@ -903,12 +903,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
       create_ccnc_messages._display_options = (
         params.get_bool("CcncLaneColor"), params.get_bool("CcncModelLanes"),
         params.get_bool("CcncRadarVehicles"),
+        params.get_bool("CcncVehiclePositionCorrection"),
       )
-    lane_color_enabled, model_lanes, radar_vehicles = create_ccnc_messages._display_options
+    lane_color_enabled, model_lanes, radar_vehicles, position_correction = create_ccnc_messages._display_options
   else:
     lane_color_enabled = model_lanes = radar_vehicles = extended_ccnc
+    position_correction = False
   radar_vehicles = radar_vehicles and not (CP.flags & HyundaiFlags.CANFD_HDA2.value)
-  ccnc_extension.configure(lane_color_enabled, model_lanes, radar_vehicles)
+  ccnc_extension.configure(lane_color_enabled, model_lanes, radar_vehicles, position_correction)
   interlock_active = longitudinal_interlock_active(CS)
   display_lead = _display_lead(getattr(CS, "radarState", None))
   lead_visible = display_lead is not None

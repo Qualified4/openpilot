@@ -12,16 +12,18 @@ import pytest
 
 def load_helpers():
   path = Path(os.environ.get('CCNC_TEST_SOURCE', Path(__file__).resolve().parents[2] / 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_extension.py'))
-  names = {'_ccnc_valid_boundary', '_ccnc_side_lane_center', '_CcncRadarDisplayTracker', '_CcncRadarPositionFilter', 'NoiseFilter', 'apply_curved_deadband'}
+  names = {'_ccnc_valid_boundary', '_ccnc_side_lane_center', '_CcncRadarDisplayTracker', '_CcncRadarPositionFilter',
+           '_CcncVehiclePositionCorrection', '_CcncTemporalTracks', 'NoiseFilter', 'apply_curved_deadband'}
   nodes = [n for n in ast.parse(path.read_text(encoding='utf8')).body
            if isinstance(n, (ast.ClassDef, ast.FunctionDef)) and n.name in names]
-  env = dict(math=math, np=np, deque=deque, CV=N(MS_TO_KPH=3.6))
+  env = dict(math=math, np=np, deque=deque, SimpleNamespace=N, CV=N(MS_TO_KPH=3.6))
   exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec'), env)
   return env
 
 
 H = load_helpers()
 Tracker = H['_CcncRadarDisplayTracker']
+Temporal = H['_CcncTemporalTracks']
 
 
 @pytest.mark.parametrize('side', [0, 1])
@@ -1301,3 +1303,632 @@ def test_unknown_nearest_boundary_does_not_hide_new_stationary_side_vehicle():
     md.timestampEof = frame
     selected = step(md, N(live_tracks=N(points=[q])), frame, 0., 0.)
   assert selected[2] is q
+
+
+Correction = H['_CcncVehiclePositionCorrection']
+
+
+def corrected_sample(correction, tracker, frame, raw, aligned=None, slot=0, bounds=(1.8, -1.8),
+                     reference=('lane', True), track_id=1, reliable=True):
+  aligned = raw if aligned is None else aligned
+  p = point(track_id, x=20., y=raw)
+  tracker.observe(N(points=[p]), frame)
+  correction.update_centers(3., 3., frame, tracker.tracks)
+  _, filtered = tracker.filter_position(p, aligned, reference, frame)
+  output = correction.apply(p, aligned, filtered, slot, reference, bounds, tracker.tracks[track_id], frame, reliable)
+  return output
+
+
+@pytest.mark.parametrize('sign', [-1, 1])
+def test_correction_holds_center_despite_jitter_and_isolated_jump(sign):
+  c, t = Correction(), Tracker()
+  for frame in range(0, 401, 5):
+    raw = sign * (.4 + (.8 if frame == 100 else .03 if frame % 10 else -.03))
+    output = corrected_sample(c, t, frame, raw)
+    assert not c.tracks[1]['following']
+  assert output == pytest.approx(0.)
+
+
+@pytest.mark.parametrize('sign', [-1, 1])
+@pytest.mark.parametrize('cadence', [5, 7, 10])
+def test_correction_follows_sustained_motion_then_returns_after_fresh_settling(sign, cadence):
+  c, t = Correction(), Tracker()
+  outputs = []
+  for frame in range(0, 140, cadence):
+    outputs.append(corrected_sample(c, t, frame, sign * frame * .005))
+    if frame < 60:
+      assert not c.tracks[1]['following']
+  assert c.tracks[1]['following']
+  assert abs(outputs[-1]) > .4
+  assert outputs[-1] == pytest.approx(t.positions[1][-1].value)
+  final_raw = sign * (frame * .005)
+  for frame in range(frame + cadence, 500, cadence):
+    output = corrected_sample(c, t, frame, final_raw)
+  assert not c.tracks[1]['following']
+  assert output == pytest.approx(0.)
+  assert max(abs(b - a) for a, b in zip(outputs, outputs[1:])) <= 1.5 * cadence * .01 + 1e-9
+
+
+@pytest.mark.parametrize('kind', ['oscillation', 'slow_drift', 'geometry', 'curve_cancellation', 'step'])
+def test_correction_does_not_treat_noise_or_curve_as_lane_change(kind):
+  c, t = Correction(), Tracker()
+  for frame in range(0, 201, 5):
+    raw = .4
+    aligned = raw
+    if kind == 'oscillation':
+      raw = aligned = .4 + .18 * math.sin(frame * .1)
+    elif kind == 'slow_drift':
+      raw = aligned = frame * .001
+    elif kind == 'geometry':
+      aligned += frame * .005
+    elif kind == 'curve_cancellation':
+      raw += frame * .005
+    elif kind == 'step' and frame >= 50:
+      raw = aligned = 1.1
+    corrected_sample(c, t, frame, raw, aligned)
+    assert not c.tracks[1]['following']
+
+
+@pytest.mark.parametrize('side', [0, 1])
+@pytest.mark.parametrize('cadence', [1, 5, 10])
+def test_correction_lane_centers_have_time_based_smoothing_and_rate_limit(side, cadence):
+  c = Correction()
+  outputs = []
+  for frame in range(0, 301, cadence):
+    left, right = (5., 3.) if side == 0 else (3., 5.)
+    c.update_centers(left, right, frame, {})
+    outputs.append(c.centers[side])
+  assert abs(outputs[-1]) == pytest.approx(3.9)
+  assert max(abs(b - a) for a, b in zip(outputs, outputs[1:])) <= .3 * cadence * .01 + 1e-9
+  previous = c.centers[:]
+  c.update_centers(None, math.nan, 305, {})
+  assert c.centers == previous
+  assert c.center_valid == [False, False]
+
+
+def test_correction_center_spike_recovers_without_unlocking_stationary_side_track():
+  c, t = Correction(), Tracker()
+  p = point(y=3.)
+  for frame in range(0, 301, 5):
+    t.observe(N(points=[p]), frame)
+    c.update_centers(4. if frame == 100 else 3., 3., frame, t.tracks)
+    output = c.apply(p, 3., 3., 1, ('lane', True), (4.8, 1.8), t.tracks[1], frame)
+    assert abs(output - 3.) <= .015001
+    assert not c.tracks[1]['following']
+  assert output == pytest.approx(3., abs=.003)
+
+
+@pytest.mark.parametrize('reason', ['boundary', 'no_lanes', 'wrong_lane', 'invalid_bounds'])
+def test_correction_does_not_force_uncertain_positions_to_center(reason):
+  c, t = Correction(), Tracker()
+  bounds = (1.8, -1.8)
+  raw = 1.65
+  if reason == 'no_lanes': bounds = None
+  if reason == 'wrong_lane': raw = 3.
+  if reason == 'invalid_bounds': bounds = (-1.8, 1.8)
+  for frame in range(0, 201, 5):
+    output = corrected_sample(c, t, frame, raw, bounds=bounds)
+  assert c.tracks[1]['following']
+  assert output == pytest.approx(raw)
+
+
+def test_correction_duplicate_publications_cannot_confirm_or_settle_motion():
+  c, t = Correction(), Tracker()
+  for frame in range(0, 71, 5):
+    corrected_sample(c, t, frame, frame * .005)
+  assert c.tracks[1]['following']
+  p = t.tracks[1][3]
+  live = t.live
+  sample_count = len(c.tracks[1]['samples'])
+  settling_count = len(c.tracks[1]['settling'])
+  for frame in range(71, 250):
+    t.observe(live, frame)
+    c.update_centers(3., 3., frame, t.tracks)
+    c.apply(p, p.yRel, p.yRel, 0, ('lane', True), (1.8, -1.8), t.tracks[1], frame)
+  assert c.tracks[1]['following']
+  assert len(c.tracks[1]['samples']) == sample_count
+  assert len(c.tracks[1]['settling']) == settling_count
+
+
+def test_correction_preserves_output_across_slots_and_reference_changes():
+  c, t = Correction(), Tracker()
+  for frame in range(0, 161, 5):
+    output = corrected_sample(c, t, frame, 3. - frame * .006, slot=1, bounds=(4.8, 1.8))
+  saved = c.tracks[1]
+  # Cross from LF to FF without inheriting an old slot center or resetting output.
+  previous = output
+  output = corrected_sample(c, t, 165, 1.6)
+  assert c.tracks[1] is saved and saved['following']
+  assert abs(output - previous) <= .075001
+  previous = output
+  output = corrected_sample(c, t, 170, 1.55, aligned=-.4, reference=('path', False), bounds=None)
+  assert c.tracks[1] is saved and saved['following']
+  assert abs(output - previous) <= .075001
+  assert len(saved['samples']) == 1
+  assert len(saved['settling']) == 1
+
+
+@pytest.mark.parametrize('sign', [-1, 1])
+@pytest.mark.parametrize('kind', ['radar', 'geometry'])
+def test_correction_settles_despite_repeated_isolated_spikes(sign, kind):
+  c, t = Correction(), Tracker()
+  for frame in range(0, 105, 5):
+    corrected_sample(c, t, frame, sign * frame * .005)
+  assert c.tracks[1]['following']
+  for frame in range(105, 501, 5):
+    spike = .2 if frame % 40 == 30 else 0.
+    raw = sign * (.5 + (spike if kind == 'radar' else 0.))
+    aligned = sign * (.5 + (spike if kind == 'radar' else spike * 2))
+    output = corrected_sample(c, t, frame, raw, aligned)
+  assert not c.tracks[1]['following']
+  assert output == pytest.approx(0.)
+  assert c.tracks[1]['settling'][-1][0] - c.tracks[1]['settling'][0][0] >= 100
+  assert len(c.tracks[1]['samples']) < len(c.tracks[1]['settling'])
+
+
+@pytest.mark.parametrize('sign', [-1, 1])
+def test_correction_recaptures_center_when_curve_motion_opposes_raw_motion(sign):
+  c, t = Correction(), Tracker()
+  for frame in range(0, 105, 5):
+    corrected_sample(c, t, frame, sign * frame * .005)
+  assert c.tracks[1]['following']
+  for frame in range(105, 401, 5):
+    raw = sign * (.5 + (frame - 100) * .005)
+    aligned = sign * (.5 - (frame - 100) * .002)
+    output = corrected_sample(c, t, frame, raw, aligned)
+  assert not c.tracks[1]['following']
+  assert output == pytest.approx(0.)
+
+
+@pytest.mark.parametrize('sign', [-1, 1])
+def test_correction_does_not_recapture_ongoing_motion_with_spikes(sign):
+  c, t = Correction(), Tracker()
+  for frame in range(0, 251, 5):
+    raw = sign * (frame * .005 + (.2 if frame >= 105 and frame % 40 == 30 else 0.))
+    corrected_sample(c, t, frame, raw)
+    if frame >= 70:
+      assert c.tracks[1]['following']
+
+
+def test_correction_bridges_only_short_confidence_dips_after_a_valid_lock():
+  c, t = Correction(), Tracker()
+  corrected_sample(c, t, 0, .3)
+  for frame in range(5, 55, 5):
+    corrected_sample(c, t, frame, .3, reliable=False)
+    assert not c.tracks[1]['following']
+  corrected_sample(c, t, 55, .3, reliable=False)
+  assert c.tracks[1]['following']
+  for frame in range(60, 201, 5):
+    corrected_sample(c, t, frame, .3, reliable=False)
+    assert c.tracks[1]['following']
+  corrected_sample(c, t, 205, .3)
+  assert not c.tracks[1]['following']
+
+
+def test_correction_weak_geometry_never_hides_a_boundary_crossing_or_new_target():
+  c, t = Correction(), Tracker()
+  corrected_sample(c, t, 0, .3, reliable=False)
+  assert c.tracks[1]['following']
+  for frame in range(5, 401, 5):
+    corrected_sample(c, t, frame, .9)
+  assert not c.tracks[1]['following']
+  saved = c.tracks[1]
+  corrected_sample(c, t, 405, 1.55, reliable=False)
+  assert c.tracks[1] is saved and saved['following']
+
+
+def test_correction_duplicate_radar_data_does_not_extend_confidence_hold():
+  c, t = Correction(), Tracker()
+  corrected_sample(c, t, 0, .3)
+  p, live = t.tracks[1][3], t.live
+  for frame in range(1, 61):
+    t.observe(live, frame)
+    c.update_centers(3., 3., frame, t.tracks)
+    c.apply(p, .3, .3, 0, ('lane', True), (1.8, -1.8), t.tracks[1], frame, False)
+    assert c.tracks[1]['following'] == (frame > c.GEOMETRY_HOLD)
+  assert len(c.tracks[1]['settling']) == 1
+
+
+@pytest.mark.parametrize('uncertainty', ['boundary', 'reference', 'confidence'])
+def test_correction_resumes_known_center_after_temporary_uncertainty(uncertainty):
+  c, t = Correction(), Tracker()
+  corrected_sample(c, t, 0, .3)
+  for frame in range(5, 65, 5):
+    corrected_sample(c, t, frame, .3,
+                     bounds=(.5, -1.8) if uncertainty == 'boundary' else None if uncertainty == 'reference' else (1.8, -1.8),
+                     reference=('path', False) if uncertainty == 'reference' else ('lane', True),
+                     reliable=uncertainty != 'confidence')
+  assert c.tracks[1]['following'] and c.tracks[1]['locked']
+  corrected_sample(c, t, 65, .3)
+  assert not c.tracks[1]['following']
+
+
+def test_correction_confirmed_motion_cannot_resume_center_after_boundary():
+  c, t = Correction(), Tracker()
+  for frame in range(0, 71, 5):
+    corrected_sample(c, t, frame, frame * .005)
+  assert not c.tracks[1]['locked']
+  corrected_sample(c, t, 75, .4, bounds=(.5, -1.8))
+  corrected_sample(c, t, 80, .4)
+  assert c.tracks[1]['following']
+
+
+@pytest.mark.parametrize('slot', [0, 1, 2])
+@pytest.mark.parametrize('reason', ['retained', 'new', 'gap', 'birth', 'boundary', 'below_retention'])
+def test_correction_lower_confidence_retains_only_a_continuous_known_center(slot, reason):
+  c, t = Correction(), Tracker()
+  t.position_correction = c
+  y = (0., 3., -3.)[slot]
+  def sample(frame, probability, raw=y):
+    p = point(y=raw)
+    t.observe(N(points=[p]), frame)
+    md = lane_model(frame + 1)
+    md.laneLineProbs = [probability] * 4
+    t.lane_probabilities(md)
+    t.lane_projection(t.live)
+    c.update_centers(H['_ccnc_side_lane_center'](md, 0), H['_ccnc_side_lane_center'](md, 1), frame, t.tracks)
+    t.correct_position(p, raw, raw, slot, ('lane', True), frame)
+  sample(0, .9)
+  assert not c.tracks[1]['following']
+  if reason == 'new':
+    c.tracks.clear()
+  if reason == 'birth':
+    c.tracks[1]['birth'] = -10
+  for frame in range(20 if reason == 'gap' else 5, 81, 5):
+    sample(frame, .29 if reason == 'below_retention' else .4,
+           (1.4, 1.6, -1.6)[slot] if reason == 'boundary' else y)
+  assert c.tracks[1]['following'] == (reason != 'retained')
+
+
+def slot_sample(c, selected, frame, stamp=None, birth=0, y=-1., bypass=False):
+  values = {key: 0 for fields in c.SLOT_FIELDS for key in fields}
+  observations = {}
+  for slot, track_id in enumerate(selected):
+    if track_id is None:
+      continue
+    distance, lateral, detect = c.SLOT_FIELDS[slot]
+    values.update({distance: 10. + frame + track_id, lateral: -y if slot in (0, 2) else y, detect: 2})
+    observations[track_id] = (birth, frame if stamp is None else stamp)
+  c.stabilize_slots(values, selected, observations, frame, bypass)
+  return values
+
+
+def test_display_slot_debounce_cancels_boundary_flicker_and_confirms_real_transition():
+  c = Correction()
+  slot_sample(c, (None, None, 1), 0)
+  values = slot_sample(c, (1, None, None), 5)
+  assert c.display_selected == (None, None, 1)
+  assert values['FF_DETECT'] == 0 and values['RF_DETECT_DISTANCE'] == 16.
+  assert values['RF_DETECT_LATERAL'] == 1.
+  slot_sample(c, (None, None, 1), 10)
+  assert c.display_selected == (None, None, 1)
+  for frame in (15, 20, 25, 30):
+    slot_sample(c, (1, None, None), frame)
+    assert c.display_selected == (None, None, 1)
+  slot_sample(c, (1, None, None), 35)
+  assert c.display_selected == (1, None, None)
+
+
+def test_display_slot_debounce_needs_distinct_radar_publications():
+  c = Correction()
+  slot_sample(c, (None, None, 1), 0)
+  for frame in range(5, 55, 5):
+    slot_sample(c, (1, None, None), frame, stamp=5)
+    assert c.display_selected == (None, None, 1)
+  slot_sample(c, (1, None, None), 55, stamp=55)
+  assert c.display_selected == (None, None, 1)
+  slot_sample(c, (1, None, None), 60, stamp=60)
+  assert c.display_selected == (1, None, None)
+
+
+@pytest.mark.parametrize('side', [1, 2])
+def test_display_slot_debounce_transfers_current_fields_without_overwriting_another_vehicle(side):
+  c = Correction()
+  old = [None, None, None]
+  old[side] = 1
+  old[0] = 2
+  slot_sample(c, tuple(old), 0, y=1. if side == 1 else -1.)
+  raw = [1, None, None]
+  raw[3 - side] = 2
+  values = slot_sample(c, tuple(raw), 5, y=1. if side == 1 else -1.)
+  assert c.display_selected[side] == 1 and c.display_selected[3 - side] == 2
+  assert c.display_selected[0] is None
+  assert values[c.SLOT_FIELDS[side][0]] == 16.
+  assert values[c.SLOT_FIELDS[3 - side][0]] == 17.
+
+
+def test_display_slot_debounce_releases_when_current_measurement_crosses_sign_before_filtered_output():
+  c = Correction()
+  slot_sample(c, (None, None, 1), 0)
+  c.tracks[1] = dict(samples=deque([(5, .1, .1)]))
+  slot_sample(c, (1, None, None), 5, y=-.2)
+  assert c.display_selected == (1, None, None)
+
+
+@pytest.mark.parametrize('reason', ['collision', 'sign', 'missing', 'birth', 'gap', 'bypass'])
+def test_display_slot_debounce_does_not_hide_new_tracks_or_retain_ghosts(reason):
+  c = Correction()
+  slot_sample(c, (None, None, 1), 0)
+  selected = (1, None, 2) if reason == 'collision' else (None, None, None) if reason == 'missing' else (1, None, None)
+  slot_sample(c, selected, 20 if reason == 'gap' else 5,
+              birth=5 if reason == 'birth' else 0, y=.1 if reason == 'sign' else -1., bypass=reason == 'bypass')
+  assert c.display_selected == selected
+  if reason in ('missing', 'bypass'):
+    assert not c.display_slots
+
+
+@pytest.mark.parametrize('reason', ['missing', 'gap', 'reused_id'])
+def test_correction_drops_old_motion_when_track_continuity_ends(reason):
+  c, t = Correction(), Tracker()
+  for frame in range(0, 101, 5):
+    corrected_sample(c, t, frame, frame * .005)
+  assert c.tracks[1]['following']
+  old = c.tracks[1]
+  if reason == 'missing':
+    t.observe(None, 105)
+    c.update_centers(3., 3., 105, t.tracks)
+    assert not c.tracks
+  if reason == 'reused_id':
+    t.observe(N(points=[point(x=70.)]), 105)
+    c.update_centers(3., 3., 105, t.tracks)
+    assert not c.tracks
+  corrected_sample(c, t, 125 if reason == 'gap' else 110, 0.)
+  assert c.tracks[1] is not old
+  assert not c.tracks[1]['following']
+
+def temporal_points(t):
+  return [row[0] for row in t._points]
+
+
+def temporal_tracker(points=None):
+  t = Tracker()
+  t.temporal = Temporal()
+  observe(t, points or [point(x=30., y=-3.4)])
+  t.selected = (None, None, 1)
+  return t
+
+
+def test_temporal_jump_keeps_confirmed_birth_and_raw_input():
+  t = temporal_tracker()
+  raw = point(x=17., y=-.5)
+  raw.vRel = 8.
+  before = vars(raw).copy()
+  t.observe(N(points=[raw]), 25)
+  assert vars(raw) == before
+  assert t.tracks[1][0] == 0 and t.tracks[1][1] == 20
+  assert temporal_points(t)[0].dRel == 30. and temporal_points(t)[0].yRel == -3.4
+  assert not temporal_points(t)[0].ccnc_fresh
+  t.observe(N(points=[point(x=30., y=-3.3)]), 30)
+  assert t.stable(1) and t.tracks[1][0] == 0
+  assert temporal_points(t)[0].yRel == -3.3
+
+
+def test_temporal_velocity_outlier_does_not_discard_position():
+  t = temporal_tracker()
+  raw = point(x=30.1, y=-3.3)
+  raw.vRel, raw.vLead = -15., -5.
+  t.observe(N(points=[raw]), 25)
+  p = temporal_points(t)[0]
+  assert (p.dRel, p.yRel, p.vRel, p.vLead) == (30.1, -3.3, 0., 10.)
+  assert p.ccnc_fresh and t.stable(1)
+
+
+def test_temporal_missing_coasts_without_confirmation_or_deadline_extension():
+  t = temporal_tracker()
+  count = t.tracks[1][2]
+  for frame in range(25, 51, 5):
+    t.observe(N(points=[]), frame)
+    assert t.tracks[1][:3] == (0, 20, count)
+    assert not temporal_points(t)[0].ccnc_fresh
+  t.observe(N(points=[]), 55)
+  assert not temporal_points(t)
+
+
+@pytest.mark.parametrize('new_id', [1, 99])
+def test_temporal_reacquires_after_three_missing_publications(new_id):
+  t = temporal_tracker()
+  for frame in (25, 30, 35):
+    t.observe(N(points=[]), frame)
+  t.observe(N(points=[point(new_id, x=30.1, y=-3.3)]), 40)
+  if new_id != 1:
+    assert temporal_points(t)[0].ccnc_source_id == 1
+    t.observe(N(points=[point(new_id, x=30.1, y=-3.3)]), 45)
+  assert len(temporal_points(t)) == 1
+  assert temporal_points(t)[0].trackId == 1 and temporal_points(t)[0].ccnc_source_id == new_id
+  assert t.stable(1) and t.tracks[1][0] == 0
+
+
+def test_temporal_ghost_never_earns_coasting():
+  t = Tracker()
+  t.temporal = Temporal()
+  t.observe(N(points=[point()]), 0)
+  t.selected = (1, None, None)
+  t.observe(N(points=[]), 5)
+  assert not temporal_points(t) and not t.stable(1)
+
+
+@pytest.mark.parametrize('reason', ['none', 'stale', 'gap'])
+def test_temporal_whole_stream_loss_does_not_coast(reason):
+  t = temporal_tracker()
+  raw = t.temporal.raw
+  t.observe(None if reason == 'none' else raw if reason == 'stale' else N(points=[]),
+            25 if reason == 'none' else 40)
+  assert not temporal_points(t)
+  if reason == 'stale':
+    t.observe(raw, 45)
+    assert not temporal_points(t)
+
+
+def test_temporal_ambiguous_id_reconnection_does_not_merge_cars():
+  t = temporal_tracker([point(1, x=30., y=-3.4), point(2, x=30.3, y=-3.5)])
+  t.selected = (1, None, 2)
+  t.observe(N(points=[]), 25)
+  t.observe(N(points=[point(99, x=30.1, y=-3.4)]), 30)
+  assert {p.trackId for p in temporal_points(t)} == {1, 2, 99}
+  assert not t.stable(99)
+
+
+def test_temporal_identity_swap_does_not_teleport_or_steal_present_neighbor():
+  t = temporal_tracker([point(1, x=20., y=-3.4), point(2, x=35., y=-3.4)])
+  t.observe(N(points=[point(1, x=35., y=-3.4), point(2, x=35.1, y=-3.4)]), 25)
+  assert {p.trackId: p.dRel for p in temporal_points(t)} == {1: 20., 2: 35.1}
+  t.observe(N(points=[point(1, x=20., y=-3.4), point(2, x=35.2, y=-3.4)]), 30)
+  assert t.stable(1)
+
+
+def test_temporal_sustained_far_relocation_requires_new_confirmation():
+  t = temporal_tracker()
+  for frame in (25, 30, 35):
+    t.observe(N(points=[point(1, x=60., y=-3.4)]), frame)
+  new = next(p for p in temporal_points(t) if p.dRel == 60.)
+  assert new.trackId != 1 and not t.stable(new.trackId)
+
+
+def test_temporal_sustained_lateral_motion_releases_outlier_gate():
+  t = temporal_tracker()
+  for frame, y in zip(range(25, 51, 5), (-2.9, -2.4, -1.9, -1.4, -.9, -.4)):
+    t.observe(N(points=[point(x=30., y=y)]), frame)
+  assert temporal_points(t)[0].trackId == 1
+  assert temporal_points(t)[0].yRel == pytest.approx(-.4)
+  assert t.tracks[1][0] == 0
+
+
+def test_temporal_selection_hold_expires_even_with_continuous_observations():
+  t = temporal_tracker()
+  t.observe(N(points=[point(x=30., y=-3.4)]), 25)
+  engine = t.temporal
+  refs = [('lane', True)] * 3
+  engine.select([None, None, temporal_points(t)[0]], [0., 0., -3.4], refs[:], 25)
+  for frame in range(30, 61, 5):
+    t.observe(N(points=[point(x=30., y=-3.4)]), frame)
+    leads, _, _ = engine.select([None] * 3, [0.] * 3, refs[:], frame)
+    assert (leads[2] is not None) == (frame <= 55)
+
+
+def test_correction_fast_coherent_crossing_releases_before_slow_motion_window():
+  c, t = Correction(), Tracker()
+  for frame in range(0, 31, 5):
+    corrected_sample(c, t, frame, frame * .02)
+  assert c.tracks[1]['following']
+  assert c.tracks[1]['output'] > .4
+
+
+def test_correction_unsigned_side_waits_for_physical_coordinate_to_cross():
+  c = Correction()
+  slot_sample(c, (1, None, None), 0, y=.6)
+  c.tracks[1] = dict(samples=deque([(5, -.1, -.1)]), output=.5)
+  for frame in range(5, 31, 5):
+    values = slot_sample(c, (None, None, 1), frame, y=0.)
+    assert c.display_selected == (1, None, None)
+    assert values['FF_LATERAL'] == -.5
+  c.tracks[1]['output'] = -.1
+  slot_sample(c, (None, None, 1), 35, y=-.1)
+  assert c.display_selected == (None, None, 1)
+
+def test_temporal_selection_cannot_restore_point_excluded_from_current_view():
+  t = temporal_tracker()
+  t.observe(N(points=[point(x=30., y=-3.4)]), 25)
+  refs = [('lane', True)] * 3
+  t.temporal.select([None, None, temporal_points(t)[0]], [0., 0., -3.4], refs[:], 25)
+  t.temporal.view = N(points=[])
+  leads, _, _ = t.temporal.select([None]*3, [0.]*3, refs[:], 30)
+  assert leads == [None]*3
+
+
+def test_temporal_curve_coasting_does_not_confuse_raw_lateral_with_lane_offset():
+  t = temporal_tracker([point(x=70., y=14.)])
+  t.observe(N(points=[]), 25)
+  assert temporal_points(t)[0].yRel == 14.
+  assert not temporal_points(t)[0].ccnc_fresh
+
+
+def test_temporal_prediction_uses_relative_speed_for_fast_longitudinal_motion():
+  t = Tracker()
+  t.temporal = Temporal()
+  for frame in range(0, 61, 5):
+    p = point(x=30. + frame * .2 + (1. if frame >= 25 else 0.), y=-3.)
+    p.vRel = 20.
+    t.observe(N(points=[p]), frame)
+  assert temporal_points(t)[0].dRel == pytest.approx(43.)
+  assert t.tracks[1][0] == 0
+
+
+def test_correction_stopped_crossing_keeps_signed_position_without_slot_debounce():
+  c = Correction()
+  slot_sample(c, (1, None, None), 0, y=.6, bypass=True)
+  c.tracks[1] = dict(birth=0, frame=5, output=.5)
+  values = slot_sample(c, (None, None, 1), 5, y=0., bypass=True)
+  assert c.display_selected == (1, None, None)
+  assert values['FF_LATERAL'] == -.5 and values['RF_DETECT'] == 0
+  assert not c.display_slots
+
+@pytest.mark.parametrize('approaching', [False, True])
+def test_temporal_predictions_cannot_finish_stationary_confirmation(approaching):
+  t = Tracker()
+  t.temporal = Temporal()
+  values = {'LF_DETECT': 1, 'LF_DETECT_DISTANCE': 8., 'LF_DETECT_LATERAL': 3.}
+  for frame in range(0, 76, 5):
+    p = point(x=10. - (frame * .01 if approaching else 0.), y=3., speed=0.)
+    p.vRel = -1. if approaching else 0.
+    t.observe(N(points=[p] if frame <= 45 else []), frame)
+    t.selected = (None, 1, None)
+    t.update_stop(3.6 if approaching else 0., frame, -1.)
+    q = temporal_points(t)[0] if temporal_points(t) else None
+    t.stopped_display(values.copy(), (q, None), frame)
+  assert not t.stop_holds and not t.approach_holds
+
+
+def test_temporal_repeated_publication_does_not_advance_confirmation():
+  t = Tracker()
+  t.temporal = Temporal()
+  live = N(points=[point()])
+  for frame in range(16):
+    t.observe(live, frame)
+  assert t.tracks[1][:3] == (0, 0, 1)
+  assert not t.stable(1)
+
+
+@pytest.mark.parametrize('closer', [False, True])
+def test_temporal_selection_prefers_closer_vehicle_and_confirms_other_replacement(closer):
+  t = temporal_tracker([point(1, x=30., y=-3.4), point(2, x=25. if closer else 31., y=-3.5)])
+  t.observe(N(points=[point(1, x=30., y=-3.4), point(2, x=25. if closer else 31., y=-3.5)]), 25)
+  refs = [('lane', True)] * 3
+  t.temporal.select([None, None, temporal_points(t)[0]], [0., 0., -3.4], refs[:], 25)
+  for frame in (30, 35, 40, 45):
+    t.observe(N(points=[point(1, x=30., y=-3.4), point(2, x=25. if closer else 31., y=-3.5)]), frame)
+    leads, _, _ = t.temporal.select([None, None, temporal_points(t)[1]], [0., 0., -3.5], refs[:], frame)
+    assert leads[2].trackId == (2 if closer or frame >= 45 else 1)
+
+def test_temporal_single_frame_reconnection_candidate_cannot_take_identity():
+  t = temporal_tracker()
+  t.observe(N(points=[]), 25)
+  t.observe(N(points=[point(99, x=30.1, y=-3.4)]), 30)
+  assert len(temporal_points(t)) == 1
+  assert temporal_points(t)[0].ccnc_source_id == 1
+  t.observe(N(points=[]), 35)
+  assert temporal_points(t)[0].ccnc_source_id == 1
+  assert t.temporal.entries[1]['good'] == 20
+
+
+def test_predicted_current_vehicle_is_not_replaced_by_old_stationary_memory():
+  t = temporal_tracker()
+  t.observe(N(points=[]), 25)
+  t.stopped = True
+  t.stop_holds[0] = (9, 50., 3., (2, 40., 3.), 0)
+  p = temporal_points(t)[0]
+  values = {'LF_DETECT': 1, 'LF_DETECT_DISTANCE': 24., 'LF_DETECT_LATERAL': 2.}
+  t.stopped_display(values, (p, None), 25)
+  assert values['LF_DETECT_DISTANCE'] == 24.
+  assert values['LF_DETECT_LATERAL'] == 2.
+
+
+def test_fast_motion_history_survives_slot_change_with_same_geometry_reference():
+  c, t = Correction(), Tracker()
+  for frame in range(0, 31, 5):
+    corrected_sample(c, t, frame, 1. - frame * .04)
+  assert c.tracks[1]['fast_speed'] > 0
+  previous = c.tracks[1]['output']
+  p = point(x=20., y=-.4)
+  t.observe(N(points=[p]), 35)
+  out = c.apply(p, -.4, .8, 2, ('lane', True), (-1.8,-5.4), t.tracks[1], 35)
+  assert out < previous
