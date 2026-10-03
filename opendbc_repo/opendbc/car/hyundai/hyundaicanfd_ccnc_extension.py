@@ -354,7 +354,8 @@ class _CcncRadarDisplayTracker:
     self.stop_motion = {key: value for key, value in self.stop_motion.items()
                         if key in self.tracks and value['birth'] == self.tracks[key][0]}
     for track_id, (birth, stamp, _, p, _) in self.tracks.items():
-      if not getattr(p, 'ccnc_fresh', True):
+      # Freshness metadata exists only on the temporal tracker's display copies.
+      if self.temporal is not None and not getattr(p, 'ccnc_fresh', True):
         continue
       history = self.stop_motion.get(track_id)
       if history is None:
@@ -394,7 +395,7 @@ class _CcncRadarDisplayTracker:
     for side, lead in enumerate(leads):
       prefix = 'LF' if side == 0 else 'RF'
       keys = (prefix + '_DETECT', prefix + '_DETECT_DISTANCE', prefix + '_DETECT_LATERAL')
-      if self.approaching and lead is not None and getattr(lead, 'ccnc_fresh', True):
+      if self.approaching and lead is not None and (self.temporal is None or getattr(lead, 'ccnc_fresh', True)):
         pending = self.approach_pending.get(side)
         world_x = lead.dRel + self.stop_distance
         if abs(lead.vLead) > (3.0 if side in self.approach_holds else 2.0) / 3.6:
@@ -468,7 +469,7 @@ class _CcncRadarDisplayTracker:
         if invalid:
           self.stop_holds.pop(side, None)
           held = None
-      if lead is not None and getattr(lead, 'ccnc_fresh', True):
+      if lead is not None and (self.temporal is None or getattr(lead, 'ccnc_fresh', True)):
         pending = self.stop_pending.get(side)
         stationary = (abs(lead.vLead) <= 2.0 / 3.6 and abs(lead.vRel) <= 2.0 / 3.6
                       and not self.stop_motion.get(lead.trackId, {}).get('blocked', False))
@@ -539,7 +540,7 @@ class _CcncRadarDisplayTracker:
     projected = [np.interp(distances, *data[0]), np.interp(distances, *data[1])]
     if all(math.isfinite(prob) and prob >= 0.6 for prob in self._lane_probs):
       for (p, d, y, _, _), left_y, right_y in zip(self._points, *projected):
-        if not getattr(p, 'ccnc_fresh', True):
+        if self.temporal is not None and not getattr(p, 'ccnc_fresh', True):
           continue
         if not (max(data[0][0][0], data[1][0][0]) <= d <= min(data[0][0][-1], data[1][0][-1])
                 and right_y > left_y):
@@ -706,7 +707,7 @@ class _CcncRadarDisplayTracker:
                                if key in self.tracks and value['birth'] == self.tracks[key][0]}
     curves = None
     for track_id, (birth, stamp, _, p, _) in self.tracks.items():
-      if not getattr(p, 'ccnc_fresh', True):
+      if self.temporal is not None and not getattr(p, 'ccnc_fresh', True):
         continue
       admission = self.boundary_admission.get(track_id)
       if admission is None:
@@ -1190,7 +1191,8 @@ class _CcncVehiclePositionCorrection:
       while len(samples) > 1 and stamp - samples[1][0] >= self.SETTLE_TIME:
         samples.popleft()
       moving = [sample for sample in samples if stamp - sample[0] <= 70]
-      if len(moving) >= 5 and stamp - moving[0][0] >= self.MOVE_TIME:
+      # Fast evidence has already unlocked following in this publication.
+      if saved['fast_speed'] == 0.0 and len(moving) >= 5 and stamp - moving[0][0] >= self.MOVE_TIME:
         span = (stamp - moving[0][0]) * 0.01
         nets = [moving[-1][i] - moving[0][i] for i in (1, 2)]
         steps = [[b[i] - a[i] for a, b in zip(moving, moving[1:])] for i in (1, 2)]

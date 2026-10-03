@@ -634,3 +634,61 @@ PC의 동일 14,430개 관측 helper 비교에서 중앙값은 OFF 13.4µs / 이
 종료 검증은 관련 전체 630개 및 display 270개 통과다. 추가 regression 5case는 수정 전 4fail/1pass다. 기존 20개 동일 입력 replay에서 rejected history 4,124→0, rejected y 이후 vy 변경 993→0, detect 공백 사건232→231이지만 detect=0 샘플은5개 늘었다. 5샘플 감사는 정상 변화3/확정 regression0/판단 불가2이며 무회귀 증명이 아니다. paired PC 평균0.122218→0.121327ms, p990.297300→0.296500ms 기록을 유지한다.
 
 볼라드/정차차량 구분 precision 및 source-level ground truth가 부족하므로 production rejection 개발은 중단한다. scene density 신호를 객체 정답으로 취급하지 않는다. shadow 코드/테스트와 중복 연구 문서는 로컬 archive로 퇴역했다. [최종 검증·실험별 비채택 사유·도구 정리·한계](ccnc_research_cycle_close_20261003.md), [5샘플 상세 감사](ccnc_stage1_detect_gap_audit_20261003.md)를 보존한다. 원래 연구 append와 원문은 `.analysis/archive/2026-10-03/ccnc-cycle-close/`에 있다. 커밋하지 않았다.
+
+## 옵션 추가 전·OFF·ON 비용 재검증 (2026-10-04)
+
+사용자가 OFF 상태 검사만으로 큰 비용이 발생하고 ON이 더 빠르다는 설명에 이의를 제기해, 옵션 추가 전 `3f1846dd`를 포함하여 같은 주행 로그 4개·4,155회 표시 출력을 다시 비교했다. 현재 생산 파일 SHA-256은 `1768c1b1caec9164b90f64deef486e8801e5cb078b740f76e3226afc88034633`이며 기존 미커밋 변경을 보존했다. 이번 재검증에서 생산 코드는 수정하지 않았다.
+
+**원인은 옵션 BOOL 검사 한 번이 아니라, temporal 기능 추가 시 공통 OFF 경로에도 들어간 `getattr(point, 'ccnc_fresh', True)`다.** 옵션 추가 전에는 이 조회가 없다. OFF의 점은 원본 Cap’n Proto reader라서 `ccnc_fresh`가 스키마에 없고, pycapnp는 C++ 필드 조회 실패를 `KjException`에서 `AttributeError`로 바꾼 후에야 getattr의 기본값 True를 반환한다. 설치된 pycapnp 2.2.2의 `capnp.pyx`에서 이 경로를 확인했고 실제 예외 메시지도 `struct has no such member; name = ccnc_fresh`였다. ON은 temporal tracker에서 점을 `SimpleNamespace`로 복사하며 이 속성을 명시적으로 채우므로 같은 조회가 예외를 만들지 않는다. 실제 `card`→`CarInterface.apply`도 reader를 그대로 전달하므로 이번 raw reader 입력은 인위적으로 만든 다른 자료형이 아니다. 다만 Windows 예외 처리 시간의 크기를 ARM 장치에 적용할 수는 없다.
+
+아래는 모든 비교 경로를 같은 호출마다 순환 순서로 실행한 한 번의 전체 재생이다. 측정 범위는 dictionary 준비를 포함한 `update_lanes + update_vehicles`이며 CAN packing·로그 해석·schema 준비는 제외했다. Params 조회와 configure도 timer 밖이므로 이 비용 역전을 옵션 읽기나 BOOL 검사 비용으로 설명할 수 없다.
+
+| 경로 | 평균(ms) | p99(ms) |
+|---|---:|---:|
+| 옵션 추가 전 `3f1846dd` | 0.505786 | 1.007516 |
+| 현재 OFF | 14.892558 | 31.264130 |
+| 현재 ON | 0.691774 | 1.336132 |
+| OFF에서 해당 metadata 조회만 생략한 비교용 코드 | 0.518500 | 1.008176 |
+| 같은 비교용 코드의 ON | 0.663459 | 1.296968 |
+
+비교용 코드는 `_CcncRadarDisplayTracker`의 `update_stop_motion`, `approaching_display`, `stopped_display`, `lane_projection`, `update_boundary_admission` 다섯 곳에 `self.temporal is None or getattr(...)`를 적용했다. temporal OFF에서는 기존 의미대로 fresh=True를 사용하고, ON에서는 기존 fresh 검사를 그대로 수행한다. 상태·임계값·선택·geometry 계산을 변경하지 않았다. 추가 전/현재 OFF, 현재 OFF/비교용 OFF, 현재 ON/비교용 ON의 표시 값과 생성 0x162 CAN 바이트는 각각 **4,155회 불일치 0회**다. broad fallback이 오류를 숨기지 못하도록 재생 모듈에서는 예외를 다시 발생시켰다. 비교용 소스에 기존 display 테스트 **270개**도 통과했다.
+
+별도 최초 200회 profile에서 현재 OFF는 raw reader의 `ccnc_fresh`를 2,456회 조회했고 추가 전과 비교용 OFF는 0회였다. ON은 같은 이름을 Python namespace에서 2,456회 조회했다. OFF profile 시간의 97.02%는 builtins.getattr self time이었다. 별도 500회 micro 측정에서 raw reader의 없는 필드 조회 평균은 594.037µs, 정상 dRel 조회는 0.577µs, Python namespace의 없는 속성 조회는 0.143µs, runtime None 비교로 raw 조회를 건너뛴 경로는 0.115µs였다. 마지막 비교는 상수 True가 아니라 실제 temporal=None 속성 비교다.
+
+비용 원인을 제거한 경로를 1회 워밍업 후 7회 반복한 실행별 평균의 중앙값은 추가 전 **0.477054ms**, 비교용 OFF **0.476137ms**, 현재 ON **0.617351ms**다. 추가 전과 비교용 OFF의 차이는 −0.19%로 실행 변동 수준이고, ON은 추가 전보다 **29.41% 더 많은 시간**을 사용했다. 따라서 앞선 OFF/ON만의 약 95% 감소 수치는 ON 알고리즘의 효율 개선 근거가 아니다. 이번 PC 결과는 **OFF에 추가된 불필요한 예외 처리 비용**과, 이를 제외한 ON의 추가 계산 비용을 분리한다. 실제 C3/C4 시간·CPU 사용률과 차량 표시 품질은 이번 측정으로 검증하지 않았다.
+
+소스 스냅샷·입력 해시·재현 스크립트·전체 timing/profile/micro 결과와 비교용 변경은 로컬 `.analysis/archive/2026-10-04/ccnc-off-recheck/INDEX.json`에 보존했다. 비교용 수정은 scratch/archive에만 있으며 생산 코드·커밋·푸시·배포는 변경하지 않았다.
+
+### OFF 경로 비용 수정 적용 (2026-10-04)
+
+사용자의 수정 요청으로 위 다섯 공통 경로에 temporal 활성 여부를 먼저 확인하도록 적용했다. OFF는 원본 reader의 없는 `ccnc_fresh` 필드를 조회하지 않으며 ON의 기존 freshness 검사와 예측 갱신 제한은 유지한다. 기존 fast/slow 중복 연산 생략 변경도 보존했다. 이번 수정은 HDA1 계기판 표시의 조회 비용에 한정하며 실제 radar/liveTracks 생산·주행 제어·임계값·CPU 배치·설정 의미를 변경하지 않는다. 생산 파일 SHA-256은 `88a4fbaeaa7e17a5346bf6ba7541db44753df9396f139a6565133efafa7cd850`이다.
+
+원본 점의 freshness 조회를 금지하고 다섯 호출 경로의 정상 이력 갱신을 확인하는 회귀 테스트 한 개를 추가했다. 이 테스트는 수정 전 소스에서 실패하며 수정 후 통과한다. 기존 ON 예측·freshness 회귀를 포함한 전체 CCNC 테스트 **631개**가 통과했다.
+
+실제 수정본으로 같은 주행 로그 4개·4,155회를 다시 재생했다. 추가 전/수정 전 OFF/수정 후 OFF의 차선·차량 표시 값과 생성 0x162 CAN, 수정 전/후 ON의 같은 비교는 모두 **불일치 0회**다. broad fallback은 재생에서 예외를 다시 발생시키도록 처리했다. 같은 전체 비교 실행에서 OFF 평균은 수정 전 **15.204166ms→수정 후 0.559348ms**, p99는 **31.898440ms→1.102260ms**다. 별도 1회 워밍업 후 7회 반복한 실행별 평균의 중앙값은 추가 전 **0.491276ms**, 수정 후 OFF **0.492316ms**, 수정 후 ON **0.640574ms**다. OFF의 비용이 추가 전 수준으로 복구됐다. 측정 범위는 앞선 재검증과 같은 dictionary 준비 포함 표시 계산이며 CAN packing과 로그 해석은 제외한다. PC wall-clock 결과이고 ARM 장치·실차 부하 검증은 아니다.
+
+재현 스크립트·수정본 스냅샷·입력 해시·반복 시간과 테스트 결과는 로컬 `.analysis/archive/2026-10-04/ccnc-off-fix/INDEX.json`에 보존한다. 현재 `ccnc-hda1` 작업 트리에 적용했으며 커밋·푸시·차량 배포는 수행하지 않았다.
+
+### 네 표시 옵션의 OFF/ON 계산 비용 (2026-10-04)
+
+사용자의 요청으로 OFF 조회 비용을 고친 생산 소스에서 `CcncLaneColor`, `CcncModelLanes`, `CcncRadarVehicles`, `CcncVehiclePositionCorrection`의 16개 조합을 비교했다. 동일한 로그 4개·4,155회 표시 갱신을 1회 워밍업 후 7회 반복했으며, 호출 순서는 매 갱신·반복마다 순환/반전했다. 옵션별 독립 상태를 사용하고 연속 segment의 이력만 이어갔다. 아래는 실행별 평균 및 p99의 중앙값이다. 기능 전환 시 초기화 비용은 제외한다.
+
+이번 측정 범위는 HDA1 CAMERA_SCC의 실제 `create_ccnc_messages` 호출과 0x161/0x162 CAN 생성이다. 앞선 `update_lanes + update_vehicles`만의 측정과 범위가 다르다. Windows x86-64, Python 3.12.2, NumPy 1.26.4, pycapnp 2.2.2, **Python CAN packing backend**에서 측정했다. 시간은 PC wall-clock이며 차량 CPU 사용률이나 ARM 실행시간이 아니다.
+
+| 비교 옵션 | OFF 평균(ms) | ON 평균(ms) | 평균 증가(ms) | ON p99(ms) |
+|---|---:|---:|---:|---:|
+| CcncLaneColor | 0.184525 | 0.191991 | 0.007465 | 0.356084 |
+| CcncModelLanes | 0.184525 | 0.216047 | 0.031522 | 0.396892 |
+| CcncRadarVehicles | 0.184525 | 0.632881 | 0.448356 | 1.185174 |
+| CcncVehiclePositionCorrection (레이더 차량 표시 ON) | 0.632881 | 0.785463 | 0.152582 | 1.455802 |
+| 네 옵션 전부 | 0.184525 | 0.821526 | 0.637000 | 1.561704 |
+
+첫 세 행은 나머지 옵션을 OFF로 고정했다. 위치 보정은 레이더 표시가 전제이므로 `0010→0011`을 비교한다. 색상·모델 차선·레이더를 모두 켠 상태에서 위치 보정 OFF→ON은 **0.668986→0.821526ms**, 증가 **0.152540ms**로 비슷했다. 실행별 평균 증가 범위는 색상 5.65–9.18µs, 모델 차선 30.19–34.56µs, 레이더 426.50–454.38µs, 위치 보정 141.86–156.11µs다. percentile 차이를 개별 함수의 percentile로 해석하거나 합산하지 않는다.
+
+별도의 함수 계측 재생에서 기능 함수만의 평균은 색상 단독 `update_lanes` **6.883µs**, 모델 차선 단독의 차선·속도 제한·아이콘 함수 합 **32.021µs**, 레이더 `update_vehicles` **479.799µs**, 레이더+위치 보정 **630.760µs**였다. 모든 옵션 ON에서는 차선/아이콘 등 34.658µs와 차량 처리 627.952µs로 기능 함수 합 662.610µs다. 레이더 ON은 기본 선행차 표시 처리를 대체하므로 순증 비용과 기능 함수 전체 시간은 같지 않다. CAN packing은 약 104–110µs/갱신이었다. 계측 wrapper를 쓴 이 재생은 위 전체 시간 재생과 별도 실행이며 숫자를 서로 정확히 합산하지 않는다.
+
+모두 OFF이면 네 기능의 처리 함수 호출은 **0회**이고 기본 표시·선행차·CAN 생성은 계속한다. 공통 configure 평균은 별도 계측에서 약 0.45–0.63µs였다. 각 옵션은 ON/OFF와 무관하게 100 제어 프레임마다 조회되며 이번 4,155회 갱신에서 각각 208회 읽었다. 색상 ON의 MyDrivingMode 읽기는 204회였다. **Params는 고정값을 반환하는 메모리 대체 객체를 사용했으므로 실제 설정 파일 I/O 비용은 측정하지 않았다.** HDPuse의 기존 매 갱신 조회도 대체 객체 비용만 포함한다.
+
+실제 기록의 carState/carControl/modelV2/liveTracks/radarState reader를 사용했고, 모델 유효 입력이 없는 갱신 447회와 latActive 1,960회를 포함한다. 전체는 주행 기어였다. stock 0x161/0x162 입력은 중립값 dictionary이며 optional 0x200/0x1ea 및 버튼 전송은 제외했다. trailer OFF, metric ON, paddle/softHold 없음, HDPuse/LaneLineCheck=0, MyDrivingMode=3으로 고정했다. 기록 frame 위상을 20Hz 표시 갱신에 맞췄으며 표시 갱신 사이의 100Hz 호출은 측정하지 않았다. 따라서 전체 card 실행시간이나 원본 순정 CAN 상태를 완전히 재현한 결과는 아니다.
+
+계측 유무의 CAN 결과는 16조합×4,155회 = **66,480회 비교 불일치 0회**였다. 레이더 OFF에서 보정 OFF/ON은 네 조합×4,155회 = **16,620회 비교 불일치 0회**이며 기능 호출 경로도 같았다. 이 비활성 보정 조합 사이의 약 1.9–3.8µs 시간 차이는 측정 변동으로 취급하며 ON의 속도 개선으로 주장하지 않는다. 모든 조합의 원시 집계, 함수/Params 호출 수, 입력·생산 소스 해시, 재현 스크립트와 CAN 검증 결과는 `.analysis/archive/2026-10-04/ccnc-option-cost/INDEX.json`에 보존했다. 이번 비교에서 생산 코드와 기존 미커밋 수정은 변경하지 않았다.

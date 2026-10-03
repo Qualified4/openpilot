@@ -1688,6 +1688,30 @@ def temporal_tracker(points=None):
   return t
 
 
+def test_temporal_off_does_not_query_raw_point_freshness():
+  class RawPoint(N):
+    def __getattr__(self, name):
+      if name == 'ccnc_fresh':
+        raise AssertionError('Raw radar points have no temporal freshness metadata')
+      raise AttributeError(name)
+
+  t = Tracker()
+  p = RawPoint(**vars(point(x=10., y=3., speed=0.)))
+  t.observe(N(points=[p]), 0)
+  t.update_stop_motion()
+  md = lane_model()
+  t.update_boundary_admission(md)
+  t.lane_probabilities(md)
+  t.lane_projection(t.live)
+  values = {'LF_DETECT': 1, 'LF_DETECT_DISTANCE': 8., 'LF_DETECT_LATERAL': 3.}
+  t.stopped = True
+  t.stopped_display(values, (p, None), 0)
+  t.stopped, t.approaching = False, True
+  t.approaching_display(values, (p, None), 0)
+  assert 1 in t.stop_motion and 1 in t.boundary_admission and 1 in t.lane_sides
+  assert t.stop_pending[0][0] == 1 and t.approach_pending[0][0] == 1
+
+
 def test_temporal_jump_keeps_confirmed_birth_and_raw_input():
   t = temporal_tracker()
   raw = point(x=17., y=-.5)
