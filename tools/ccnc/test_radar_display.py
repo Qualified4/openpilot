@@ -1793,6 +1793,76 @@ def test_temporal_sustained_lateral_motion_releases_outlier_gate():
   assert t.tracks[1][0] == 0
 
 
+@pytest.mark.parametrize('moving', [False, True])
+def test_temporal_rejected_lateral_evidence_does_not_change_prediction(moving):
+  t = temporal_tracker()
+  for frame in (25, 30, 35):
+    y = -3.4 + (frame - 20) * .02 if moving else -3.4
+    t.observe(N(points=[point(x=30., y=y)]), frame)
+  e = t.temporal.entries[1]
+  history, vy, good = list(e['lateral']), e['vy'], e['good']
+  assert vy == pytest.approx(2. if moving else 0.)
+  last_y = e['point'].yRel
+  for frame, extra in ((40, .5), (45, 1.)):
+    y = last_y + vy * (frame - 35) * .01 + extra
+    t.observe(N(points=[point(x=30., y=y)]), frame)
+    assert not temporal_points(t)[0].ccnc_fresh
+    assert len(e['pending'][1]) == (frame - 35) // 5
+    assert list(e['lateral']) == history
+    assert e['vy'] == pytest.approx(vy)
+  t.observe(N(points=[]), 50)
+  assert temporal_points(t)[0].yRel == pytest.approx(last_y + vy * .15)
+  assert e['good'] == good
+
+
+def test_temporal_single_lateral_spike_does_not_poison_history():
+  t = temporal_tracker()
+  t.observe(N(points=[point(x=30., y=-3.4)]), 25)
+  e = t.temporal.entries[1]
+  history = list(e['lateral'])
+  t.observe(N(points=[point(x=30., y=-1.)]), 30)
+  assert not temporal_points(t)[0].ccnc_fresh
+  assert list(e['lateral']) == history and e['vy'] == 0.
+  t.observe(N(points=[point(x=30., y=-3.4)]), 35)
+  assert temporal_points(t)[0].ccnc_fresh
+  assert e['vy'] == 0. and not e['pending'][1]
+  assert all(y == -3.4 for _, y in e['lateral'])
+
+
+def test_temporal_pending_lateral_motion_accepts_latest_after_existing_confirmation():
+  t = temporal_tracker()
+  t.observe(N(points=[point(x=30., y=-3.4)]), 25)
+  for frame, y in ((30, -2.9), (35, -2.4), (40, -1.9)):
+    t.observe(N(points=[point(x=30., y=y)]), frame)
+    assert temporal_points(t)[0].ccnc_fresh == (frame == 40)
+  e = t.temporal.entries[1]
+  assert e['point'].yRel == pytest.approx(-1.9)
+  assert e['good'] == 40 and e['lateral'][-1] == (40, -1.9)
+  assert all(frame not in (30, 35) for frame, _ in e['lateral'])
+  for frame, y in ((45, -1.4), (50, -.9), (55, -.4)):
+    t.observe(N(points=[point(x=30., y=y)]), frame)
+    assert temporal_points(t)[0].ccnc_fresh
+    assert temporal_points(t)[0].yRel == pytest.approx(y)
+  assert e['vy'] == pytest.approx(10.)
+  assert t.tracks[1][0] == 0
+
+
+def test_temporal_accepted_lateral_velocity_coasts_without_renewing_good():
+  t = temporal_tracker()
+  for frame in (25, 30, 35):
+    t.observe(N(points=[point(x=30., y=-3.4 + (frame - 20) * .02)]), frame)
+  e = t.temporal.entries[1]
+  assert e['vy'] == pytest.approx(2.)
+  history, good, count = list(e['lateral']), e['good'], t.tracks[1][2]
+  for frame in (40, 45, 50):
+    t.observe(N(points=[]), frame)
+    assert temporal_points(t)[0].yRel == pytest.approx(-3.4 + (frame - 20) * .02)
+    assert not temporal_points(t)[0].ccnc_fresh
+    assert e['vy'] == pytest.approx(2.)
+    assert list(e['lateral']) == history and e['good'] == good
+    assert t.tracks[1][2] == count
+
+
 def test_temporal_selection_hold_expires_even_with_continuous_observations():
   t = temporal_tracker()
   t.observe(N(points=[point(x=30., y=-3.4)]), 25)

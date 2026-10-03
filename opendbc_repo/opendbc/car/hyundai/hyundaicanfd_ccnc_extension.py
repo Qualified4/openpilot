@@ -204,17 +204,19 @@ class _CcncTemporalTracks:
         result.measured = result.measured and result.ccnc_fresh
         if result.ccnc_fresh:
           e['good'] = frame
-        if accepted[0] and accepted[2]:
-          e['lateral'].append((frame, p.yRel))
-        else:
-          e['lateral'].clear()
-        history = e['lateral']
-        e['vy'] = 0.0
-        if self.coherent(history, 1):
-          span = (history[-1][0] - history[0][0]) * .01
-          net = history[-1][1] - history[0][1]
-          steps = [b[1] - a[1] for a, b in zip(history, list(history)[1:])]
-          e['vy'] = net / span if max(abs(s) for s in steps) <= .7 * abs(net) else 0.0
+        # Pending lateral evidence must not drive the accepted coast velocity.
+        if accepted[1]:
+          if accepted[0] and accepted[2]:
+            e['lateral'].append((frame, p.yRel))
+          else:
+            e['lateral'].clear()
+          history = e['lateral']
+          e['vy'] = 0.0
+          if self.coherent(history, 1):
+            span = (history[-1][0] - history[0][0]) * .01
+            net = history[-1][1] - history[0][1]
+            steps = [b[1] - a[1] for a, b in zip(history, list(history)[1:])]
+            e['vy'] = net / span if max(abs(s) for s in steps) <= .7 * abs(net) else 0.0
         if not result.ccnc_fresh and frame - e['good'] > self.HOLD:
           e['source'] = None
           e = self.new(p, frame)

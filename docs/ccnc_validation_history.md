@@ -626,3 +626,11 @@ PC의 동일 14,430개 관측 helper 비교에서 중앙값은 OFF 13.4µs / 이
 사용자의 명시적 요청으로 칼만 추정, 전체 최적 일대일 매칭, 존재 log-odds 신뢰도 및 촘촘한 시설물 배열 제외를 함께 제거했다. 해당 추가 테스트와 KO/EN/ZH 설정 설명도 직전 상태로 복원했다. 생산 소스는 전후 비교에 보존한 이전 파일과 바이트 단위로 같으며 SHA-256은 `3db9dcb8695980bc3615d8a69d18e49fb43ca11e2da05b0a34b10d28bf9cf984`다. 앞서 구현한 표시 전용 시간 연속성 검증·300ms 예측 유지·유일 후보 두 관측 ID 재연결·빠른 횡이동 추종·중앙 위치 보정은 유지한다. 폐기한 구현과 비용 분석 자료는 재현 이력으로 로컬 archive에 보존했다.
 
 롤백 후 회귀 테스트 625개와 합성 입력 3,200회 옵션 OFF 값·CAN 바이트 동등성이 통과했다. KO/EN 사용자 문서 및 KO/EN/ZH 설정 생성 검사, diff 공백 검사도 통과했다. 생산 소스가 이전에 12개 로그로 검증한 파일과 정확히 같으므로 해당 재생 결과를 복원 기준으로 사용하며, 이번 롤백에서 전체 주행 로그를 다시 재생하지 않았다.
+
+## 2026-10-03 — 횡이력 연구 사이클 종료
+
+최종 채택은 accepted/pending 횡이력 격리 1단계뿐이다. rejected y는 pending에만 남기고 accepted history/vy를 보존한다. threshold, confirmation, hold, 후보 선택 및 slot은 변경하지 않았다. C/D output policy와 fixed-object rejection 연구는 production에 채택하지 않았다.
+
+종료 검증은 관련 전체 630개 및 display 270개 통과다. 추가 regression 5case는 수정 전 4fail/1pass다. 기존 20개 동일 입력 replay에서 rejected history 4,124→0, rejected y 이후 vy 변경 993→0, detect 공백 사건232→231이지만 detect=0 샘플은5개 늘었다. 5샘플 감사는 정상 변화3/확정 regression0/판단 불가2이며 무회귀 증명이 아니다. paired PC 평균0.122218→0.121327ms, p990.297300→0.296500ms 기록을 유지한다.
+
+볼라드/정차차량 구분 precision 및 source-level ground truth가 부족하므로 production rejection 개발은 중단한다. scene density 신호를 객체 정답으로 취급하지 않는다. shadow 코드/테스트와 중복 연구 문서는 로컬 archive로 퇴역했다. [최종 검증·실험별 비채택 사유·도구 정리·한계](ccnc_research_cycle_close_20261003.md), [5샘플 상세 감사](ccnc_stage1_detect_gap_audit_20261003.md)를 보존한다. 원래 연구 append와 원문은 `.analysis/archive/2026-10-03/ccnc-cycle-close/`에 있다. 커밋하지 않았다.
