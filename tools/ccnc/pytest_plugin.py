@@ -7,7 +7,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 # carrot-wip revision matching the merged, unmodified upstream tests.
-BASELINE = "abe1a232d81fd5b0f8db4b7212587952514e0274"
+BASELINE = "39157c1cf1f3c8e0b921019fdbe413c08b2c3759"
 
 
 @pytest.fixture(scope="session")
