@@ -1,5 +1,9 @@
 # Repository memory
 
+- On 2026-10-04, the user established the CCNC branch merge direction:
+  always merge the latest `carrot-wip` changes into `ccnc-hda1`, never the
+  reverse, when requesting this integration. Preserve the current CCNC work.
+
 - On 2026-10-03, the user requested a manual compatibility option for intermittent
   cluster warnings: HyundaiCanfdClusterDirectTx defaults OFF on every vehicle,
   including EV6. In CAN-FD CAMERA_SCC only, enabling it at startup selects the

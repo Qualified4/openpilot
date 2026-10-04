@@ -20,14 +20,14 @@ def _ccnc_valid_boundary(x, y):
   xs, ys = np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
   return bool(np.isfinite(xs).all() and np.isfinite(ys).all() and (xs[1:] > xs[:-1]).all())
 
-def _ccnc_side_lane_center(md, side, curve=None):
+def _ccnc_side_lane_center(md, side, curve=None, min_probability=0.6):
   inner_idx = 1 if side == 0 else 2
   outer_idx = 0 if side == 0 else 3
 
   if md is None or len(md.laneLines) < 4 or len(md.laneLineProbs) < 4:
     return None
 
-  if not all(math.isfinite(md.laneLineProbs[i]) and md.laneLineProbs[i] >= 0.6
+  if not all(math.isfinite(md.laneLineProbs[i]) and md.laneLineProbs[i] >= min_probability
              for i in (inner_idx, outer_idx)):
     return None
 
@@ -548,7 +548,9 @@ class _CcncRadarDisplayTracker:
       md = self._model
       data = list(self._inner_data)
       flags = []
-      for use, index in ((md.laneLineProbs[0] > 0.1, 0), (md.laneLineProbs[3] > 0.1, 3), (True, 4), (True, 5)):
+      outer_valid = [md.laneLineProbs[i] >= self.position_correction.MIN_LANE_PROBABILITY
+                     if self.position_correction is not None else md.laneLineProbs[i] > 0.1 for i in (0, 3)]
+      for use, index in ((outer_valid[0], 0), (outer_valid[1], 3), (True, 4), (True, 5)):
         xs, ys, valid = self._curve(md, index) if use else (None, None, False)
         data.append((xs, ys) if use else None)
         flags.append(valid)
@@ -1019,10 +1021,48 @@ class _CcncRadarDisplayTracker:
       self.recent_front[ff.trackId] = (self.tracks[ff.trackId][0], frame)
     return ff_y, changed
 
+  def align_display_position(self, point, aligned_y, reference, changing=False):
+    """Use one road center for display correction, independently of lane selection."""
+    if reference[0] != 'lane' or self._model is None:
+      return aligned_y, reference
+    curves = []
+    for index, probability in zip((1, 2), self._lane_probs):
+      xs, ys, valid = self._curve(self._model, index)
+      if (valid and math.isfinite(probability) and probability >= self.position_correction.MIN_LANE_PROBABILITY
+          and xs[0] <= 0 <= point.dRel <= xs[-1]):
+        curves.append((index, xs, ys))
+    if len(curves) == 2:
+      widths = [float(np.interp(x, curves[1][1], curves[1][2]) - np.interp(x, curves[0][1], curves[0][2]))
+                for x in (0.0, min(20.0, point.dRel), point.dRel)]
+      if not all(2.3 <= width <= 4.8 for width in widths):
+        return aligned_y, reference
+    if not curves:
+      return aligned_y, reference
+    correction = sum(float(np.interp(point.dRel, xs, ys) - np.interp(0.0, xs, ys))
+                     for _, xs, ys in curves) / len(curves)
+    # Far lane polynomials can remain confident while disagreeing with the path.
+    # Do not substitute a maneuver trajectory or extrapolate uncertain position.
+    pos = getattr(self._model, 'position', None)
+    if not changing and point.dRel > 40.0 and pos is not None:
+      xs, ys = np.asarray(pos.x), np.asarray(pos.y)
+      std = np.asarray(getattr(pos, 'yStd', ()))
+      if (_ccnc_valid_boundary(xs, ys) and len(std) == len(xs) and np.isfinite(std).all()
+          and xs[0] <= 0 <= point.dRel <= xs[-1]
+          and np.max(std[xs <= point.dRel]) <= .8):
+        path = float(np.interp(point.dRel, xs, ys) - np.interp(0.0, xs, ys))
+        previous = self.positions.get(point.trackId)
+        using_path = previous is not None and previous[2] == ('lane', 'position')
+        if abs(path - correction) > (.35 if using_path else .75):
+          return point.yRel + path, ('lane', 'position')
+    return point.yRel + correction, ('lane', 'center' if len(curves) == 2 else curves[0][0] == 1)
+
   def correct_position(self, point, aligned_y, filtered_y, slot, reference, frame):
     correction = self.position_correction
     if correction is None:
       return filtered_y
+    position = self.positions.get(point.trackId)
+    if position is not None and position[1] == frame:
+      aligned_y = position[4]  # Use the same continuous geometry as the display filter.
     bounds = None
     if reference[0] == 'lane' and self._lane_data is not None:
       data, flags = self._lane_data
@@ -1031,13 +1071,13 @@ class _CcncRadarDisplayTracker:
       retained = (saved is not None and saved['locked'] and saved['slot'] == slot
                   and 0 <= frame - saved['frame'] <= 15
                   and self.tracks.get(point.trackId, (None,))[0] == saved['birth'])
-      reliable = (all(math.isfinite(p) and p >= 0.6 for p in self._lane_probs) if slot == 0
+      reliable = (all(math.isfinite(p) and p >= correction.MIN_LANE_PROBABILITY for p in self._lane_probs) if slot == 0
                   else correction.center_valid[slot - 1] and flags[slot - 1])
       # Confidence hysteresis retains only a continuous, previously qualified lock.
       if retained and self._model is not None:
         line_indices = ((1, 2), (0, 1), (2, 3))[slot]
         reliable = all(math.isfinite(self._model.laneLineProbs[i])
-                       and self._model.laneLineProbs[i] >= 0.3 for i in line_indices)
+                       and self._model.laneLineProbs[i] >= correction.MIN_LANE_PROBABILITY for i in line_indices)
       curves = [data[i] for i in indices]
       model = self._model
       valid = (model is not None and self._curve(model, 1)[2], model is not None and self._curve(model, 2)[2]) + flags[:2]
@@ -1051,6 +1091,7 @@ class _CcncRadarDisplayTracker:
 
 class _CcncVehiclePositionCorrection:
   """Display-only center lock; fresh radar motion releases it across slot changes."""
+  MIN_LANE_PROBABILITY = 0.1
   CENTER_TAU = 1.0
   CENTER_RATE = 0.3
   FOLLOW_RATE = 1.5
@@ -1061,6 +1102,15 @@ class _CcncVehiclePositionCorrection:
   SETTLE_SPEED = 0.1
   SETTLE_RANGE = 0.2
   GEOMETRY_HOLD = 50  # A short confidence dip may retain an existing center lock.
+  BOUNDARY_RELEASE_MARGIN = 0.35
+  BOUNDARY_RETURN_MARGIN = 0.55
+  FAST_TIME = 25  # At least 250 ms of distinct, coherent radar observations.
+  FAST_BOUNDARY_MARGIN = 0.6
+  ROAD_BOUNDARY_RELEASE_MARGIN = .15
+  ROAD_BOUNDARY_RETURN_MARGIN = .35
+  ROAD_SETTLE_RANGE = .35
+  ROAD_MOVE_DISTANCE = .35
+  ROAD_FAST_DISTANCE = .8
   SLOT_TIME = 20  # Display-only debounce, with at least three fresh observations.
   SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
@@ -1159,29 +1209,55 @@ class _CcncVehiclePositionCorrection:
     self.tracks = {key: saved for key, saved in self.tracks.items()
                    if key in tracks and tracks[key][0] == saved['birth']}
 
+  @staticmethod
+  def _ongoing_motion(samples, stamp, nets):
+    recent = [s for s in samples if stamp - s[0] <= 20]
+    if len(recent) < 3 or stamp - recent[0][0] < 10:
+      return False
+    span = (stamp - recent[0][0]) * .01
+    return all((recent[-1][i] - recent[0][i]) * net > 0
+               and abs(recent[-1][i] - recent[0][i]) >= max(.04, .15 * span)
+               for i, net in zip((1, 2), nets))
+
   def apply(self, point, aligned_y, filtered_y, slot, reference, bounds, observation, frame, reliable=True):
     if observation is None:
       return filtered_y
     birth, stamp = observation[:2]
     center = 0.0 if slot == 0 else self.centers[slot - 1]
     # A boundary-straddling or lane-free target must retain its measured position.
-    inside = (bounds is not None and bounds[1] + 0.35 <= aligned_y <= bounds[0] - 0.35
-              and bounds[1] + 0.35 <= center <= bounds[0] - 0.35)
+    clearance = (min(bounds[0] - aligned_y, aligned_y - bounds[1], bounds[0] - center, center - bounds[1])
+                 if bounds is not None and all(math.isfinite(v) for v in (*bounds, aligned_y, center)) else -math.inf)
+    common_road = reference == ('lane', 'center')
+    release_margin = self.ROAD_BOUNDARY_RELEASE_MARGIN if common_road else self.BOUNDARY_RELEASE_MARGIN
+    return_margin = self.ROAD_BOUNDARY_RETURN_MARGIN if common_road else self.BOUNDARY_RETURN_MARGIN
+    inside = clearance >= release_margin
     saved = self.tracks.get(point.trackId)
     if saved is None or saved['birth'] != birth or not 0 <= frame - saved['frame'] <= 15:
       saved = dict(birth=birth, frame=frame, stamp=None, samples=deque(), settling=deque(),
                    locked=inside and reliable, following=not (inside and reliable), valid_frame=-1000,
-                   output=filtered_y, slot=slot, reference=reference, fast=deque(maxlen=6), fast_speed=0.0)
+                   output=filtered_y, slot=slot, reference=reference, slot_frame=-1000, boundary_follow=not inside,
+                   fast=deque(maxlen=8), fast_speed=0.0)
       self.tracks[point.trackId] = saved
+    bounds_valid = bounds is not None and all(math.isfinite(v) for v in bounds) and bounds[0] > bounds[1]
+    center_valid = bounds_valid and bounds[1] <= center <= bounds[0]
+    if center_valid and not inside:
+      saved['boundary_follow'] = True
+    elif clearance >= return_margin:
+      saved['boundary_follow'] = False
+    inside = inside and not saved['boundary_follow']
     samples = saved['samples']
     if slot != saved['slot'] or reference != saved['reference']:
+      same_road = (reference in (('lane', 'center'), ('lane', 'position'))
+                   and saved['reference'] in (('lane', 'center'), ('lane', 'position')))
+      saved['slot_frame'] = frame if slot != saved['slot'] and reference == saved['reference'] else -1000
       # Keep the physical output, but never compare different geometry references.
       samples.clear()
       if reference != saved['reference']:
         saved['fast'].clear()
         saved['fast_speed'] = 0.0
       saved['settling'].clear()
-      saved['valid_frame'] = -1000
+      if slot != saved['slot'] or not same_road:
+        saved['valid_frame'] = -1000
       if slot != saved['slot']:
         saved['locked'] = False
     saved['slot'], saved['reference'] = slot, reference
@@ -1189,7 +1265,9 @@ class _CcncVehiclePositionCorrection:
     if inside and reliable and fresh:
       saved['valid_frame'] = frame
     # Temporary uncertainty changes the output mode without proving actual motion.
-    forced_follow = not inside or (not reliable and frame - saved['valid_frame'] > self.GEOMETRY_HOLD)
+    geometry_hold = (saved['locked'] and not center_valid
+                     and 0 <= frame - saved['valid_frame'] <= self.GEOMETRY_HOLD)
+    forced_follow = (not inside and not geometry_hold) or (not reliable and frame - saved['valid_frame'] > self.GEOMETRY_HOLD)
     saved['following'] = not saved['locked'] or forced_follow
     if stamp != saved['stamp'] and fresh:
       saved['stamp'] = stamp
@@ -1201,14 +1279,25 @@ class _CcncVehiclePositionCorrection:
         if not 0 < elapsed <= .15 or abs(geometry) > .04 + 3 * elapsed:
           fast.clear()
       fast.append((stamp, point.yRel, aligned_y))
+      continuing_fast = saved['fast_speed'] > 0.0
       saved['fast_speed'] = 0.0
-      if len(fast) >= 3 and stamp - fast[0][0] >= 10:
+      if len(fast) >= 3 and stamp - fast[0][0] >= self.FAST_TIME:
         span = (stamp - fast[0][0]) * .01
         nets = [fast[-1][i] - fast[0][i] for i in (1, 2)]
         steps = [[b[i] - a[i] for a, b in zip(fast, list(fast)[1:])] for i in (1, 2)]
-        if nets[0] * nets[1] > 0 and all(
-            .8 <= abs(net) / span <= 15 and abs(net) >= .4 and abs(net) >= .8 * sum(abs(s) for s in changes)
-            and max(abs(s) for s in changes) <= .7 * abs(net) for net, changes in zip(nets, steps)):
+        boundary_valid = center_valid
+        approaching_boundary = (boundary_valid
+                                and (not bounds[1] <= aligned_y <= bounds[0]
+                                     or abs((bounds[0] if nets[1] > 0 else bounds[1]) - aligned_y)
+                                     <= self.FAST_BOUNDARY_MARGIN))
+        recent_crossing = 0 <= frame - saved['slot_frame'] <= 30
+        crossing = boundary_valid and not bounds[1] <= aligned_y <= bounds[0]
+        minimum_fast_distance = (self.ROAD_FAST_DISTANCE if common_road and not (crossing or recent_crossing or continuing_fast)
+                                 else .4)
+        if (boundary_valid and reliable and self._ongoing_motion(fast, stamp, nets)
+            and (approaching_boundary or continuing_fast or recent_crossing) and nets[0] * nets[1] > 0 and all(
+            .8 <= abs(net) / span <= 15 and abs(net) >= minimum_fast_distance and abs(net) >= .8 * sum(abs(s) for s in changes)
+            and max(abs(s) for s in changes) <= .7 * abs(net) for net, changes in zip(nets, steps))):
           saved['fast_speed'] = abs(nets[1]) / span
           saved['locked'], saved['following'] = False, True
       if samples:
@@ -1232,8 +1321,8 @@ class _CcncVehiclePositionCorrection:
         nets = [moving[-1][i] - moving[0][i] for i in (1, 2)]
         steps = [[b[i] - a[i] for a, b in zip(moving, moving[1:])] for i in (1, 2)]
         # Both raw and road-aligned motion must agree; curves alone cannot unlock.
-        if (nets[0] * nets[1] > 0.0 and all(
-            abs(net) >= max(self.MOVE_DISTANCE, self.MOVE_SPEED * span)
+        if (center_valid and reliable and self._ongoing_motion(moving, stamp, nets) and nets[0] * nets[1] > 0.0 and all(
+            abs(net) >= max(self.ROAD_MOVE_DISTANCE if common_road else self.MOVE_DISTANCE, self.MOVE_SPEED * span)
             and abs(net) >= 0.8 * sum(abs(step) for step in changes)
             and max(abs(step) for step in changes) <= 0.5 * abs(net)
             for net, changes in zip(nets, steps))):
@@ -1259,7 +1348,7 @@ class _CcncVehiclePositionCorrection:
         moving_trend = trends[0] * trends[1] > 0.0 and min(abs(v) for v in trends) > self.SETTLE_SPEED * span
         # Opposing trends suggest geometry drift; they cannot prove lane keeping.
         geometry_drift = trends[0] * trends[1] < 0.0 and min(abs(v) for v in trends) > self.SETTLE_SPEED * span
-        settled = (ordered[-trim - 1] - ordered[trim] <= self.SETTLE_RANGE
+        settled = (ordered[-trim - 1] - ordered[trim] <= (self.ROAD_SETTLE_RANGE if common_road else self.SETTLE_RANGE)
                    and abs(end - start) <= self.SETTLE_SPEED * span)
         if ((settled or geometry_drift) and not moving_trend
             and sum(s[4] for s in evidence) >= 0.8 * len(evidence)):
@@ -1270,7 +1359,9 @@ class _CcncVehiclePositionCorrection:
     target = filtered_y if saved['following'] else center
     rate = self.FOLLOW_RATE if saved['following'] else self.CENTER_RATE
     if saved['following'] and saved['fast_speed'] > 0 and fresh:
-      target = aligned_y
+      # Keep ordinary smoothing until a physical boundary is actually crossed.
+      if bounds is not None and (not bounds[1] <= aligned_y <= bounds[0] or 0 <= frame - saved['slot_frame'] <= 30):
+        target = aligned_y
       rate = min(15.0, max(rate, 1.4 * saved['fast_speed'] + 1.0))
     saved['output'] += min(max(target - saved['output'], -rate * dt), rate * dt)
     return saved['output']
@@ -1927,8 +2018,10 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     selected_lane_prob = left_prob if selected_lane_is_left else right_prob
 
     # LF/RF deadband 중심은 차량 존재 여부와 무관하게 인접 차선 geometry로 계속 갱신합니다.
-    lf_center = _ccnc_side_lane_center(md, 0, display_tracker._curve)
-    rf_center = _ccnc_side_lane_center(md, 1, display_tracker._curve)
+    center_probability = (display_tracker.position_correction.MIN_LANE_PROBABILITY
+                          if display_tracker.position_correction is not None else 0.6)
+    lf_center = _ccnc_side_lane_center(md, 0, display_tracker._curve, center_probability)
+    rf_center = _ccnc_side_lane_center(md, 1, display_tracker._curve, center_probability)
 
     if display_tracker.position_correction is not None:
       display_tracker.position_correction.update_centers(lf_center, rf_center, frame, display_tracker.tracks)
@@ -2108,6 +2201,10 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     for slot, (point, aligned, is_lane) in enumerate(((ff_lead, ff_yRel, ff_uses_lane),
                                                     (lf_lead, lf_yRel, True), (rf_lead, rf_yRel, True))):
       reference = references[slot]
+      if corrected and point is not None:
+        changing = (CS.out.leftBlinker or CS.out.rightBlinker
+                    or (md is not None and str(getattr(md.meta, 'laneChangeState', None)) != 'off'))
+        aligned, reference = display_tracker.align_display_position(point, aligned, reference, changing)
       distance, lateral = display_tracker.filter_position(point, aligned, reference, frame) if point is not None else (0.0, 0.0)
       if corrected and point is not None:
         lateral = display_tracker.correct_position(point, aligned, lateral, slot, reference, frame)

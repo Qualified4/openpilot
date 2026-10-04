@@ -528,6 +528,55 @@ def lane_model(stamp=1, offset=0.):
            roadEdges=[curve(-7.), curve(7.)])
 
 
+@pytest.mark.parametrize('side', [0., 3.5, -3.5])
+@pytest.mark.parametrize('probabilities', [(0.9, 0.2), (0.2, 0.9)])
+def test_display_road_center_cancels_bend_without_selecting_a_boundary(side, probabilities):
+  tracker = Tracker()
+  tracker.position_correction = H['_CcncVehiclePositionCorrection']()
+  md = lane_model()
+  md.laneLines[1].y = [-1.5, -1.4, -.6]
+  md.laneLines[2].y = [1.5, 1.7, 3.3]
+  md.laneLineProbs[1:3] = probabilities
+  tracker.lane_probabilities(md)
+  p = point(x=30., y=side-1.35)
+  value, reference = tracker.align_display_position(p, 99., ('lane', True))
+  assert value == pytest.approx(side)
+  assert reference == ('lane', 'center')
+
+
+def test_display_road_center_single_boundary_and_invalid_width_fallback():
+  tracker = Tracker()
+  tracker.position_correction = H['_CcncVehiclePositionCorrection']()
+  md = lane_model(offset=.4)
+  md.laneLineProbs[2] = .099
+  tracker.lane_probabilities(md)
+  p = point(x=30., y=-.8)
+  value, reference = tracker.align_display_position(p, 7., ('lane', False))
+  assert value == pytest.approx(0.) and reference == ('lane', True)
+  md = lane_model()
+  md.laneLines[2].y[-1] = 8.
+  tracker.lane_probabilities(md)
+  assert tracker.align_display_position(p, 7., ('lane', True)) == (7., ('lane', True))
+  assert tracker.align_display_position(p, 7., ('path', False)) == (7., ('path', False))
+
+
+@pytest.mark.parametrize('reject', [None, 'maneuver', 'uncertainty', 'domain'])
+def test_far_display_uses_certain_position_only_outside_maneuvers(reject):
+  tracker = Tracker()
+  tracker.position_correction = H['_CcncVehiclePositionCorrection']()
+  md = lane_model()
+  for line, origin in zip(md.laneLines, (-5., -1.5, 1.5, 5.)):
+    line.x = [0., 30., 60., 90.]
+    line.y = [origin + .002*x*x for x in line.x]
+  md.position = N(x=[0., 30., 60., 90.], y=[0., .5, 1.5, 3.], yStd=[.2]*4)
+  if reject == 'uncertainty':md.position.yStd[1] = .81
+  if reject == 'domain':md.position.x[-2:] = [45., 50.]
+  tracker.lane_probabilities(md)
+  value, reference = tracker.align_display_position(point(x=60., y=-1.5), 99., ('lane', True), reject == 'maneuver')
+  assert value == pytest.approx(0. if reject is None else 5.7)
+  assert reference == ('lane', 'position' if reject is None else 'center')
+
+
 def boundary_step(tracker, p, frame, md=None, ego_kph=0.):
   tracker.observe(N(points=[p]), frame)
   tracker.update_stop(ego_kph, frame)
@@ -1381,6 +1430,88 @@ def test_correction_does_not_treat_noise_or_curve_as_lane_change(kind):
     assert not c.tracks[1]['following']
 
 
+def test_common_road_short_in_lane_oscillation_keeps_center_lock():
+  c, t = Correction(), Tracker()
+  for frame in range(0, 301, 5):
+    raw = .8 + .28 * math.sin(frame*.12)
+    corrected_sample(c, t, frame, raw, reference=('lane', 'center'))
+    assert not c.tracks[1]['following']
+    assert c.tracks[1]['fast_speed'] == 0.
+
+
+@pytest.mark.parametrize('reference', [('lane', True), ('lane', 'center')])
+def test_stopped_short_motion_cannot_unlock_from_old_samples(reference):
+  c, t = Correction(), Tracker()
+  for frame in range(0, 201, 5):
+    corrected_sample(c, t, frame, .5 + min(frame, 30)*.014, reference=reference)
+    assert not c.tracks[1]['following']
+
+
+def test_recent_continuous_motion_still_unlocks_without_crossing():
+  c, t = Correction(), Tracker()
+  for frame in range(0, 66, 5):
+    corrected_sample(c, t, frame, .5 + frame*.006, reference=('lane', 'center'))
+  assert c.tracks[1]['following'] and not c.tracks[1]['locked']
+
+
+def test_missing_boundary_briefly_holds_only_an_existing_qualified_center():
+  c, t = Correction(), Tracker()
+  corrected_sample(c, t, 0, .5)
+  for frame in range(5, 51, 5):
+    corrected_sample(c, t, frame, .5, bounds=None, reliable=False)
+    assert not c.tracks[1]['following'] and not c.tracks[1]['boundary_follow']
+  corrected_sample(c, t, 55, .5, bounds=None, reliable=False)
+  assert c.tracks[1]['following']
+  corrected_sample(c, t, 60, .5)
+  assert not c.tracks[1]['following']
+  corrected_sample(c, t, 65, 2.1)
+  assert c.tracks[1]['following']
+
+
+def test_road_reference_change_keeps_short_hold_when_center_geometry_is_invalid():
+  c, t = Correction(), Tracker()
+  corrected_sample(c, t, 0, .4, reference=('lane', 'center'))
+  corrected_sample(c, t, 5, .4, aligned=-.5, reference=('lane', 'position'), bounds=(-.2, -2.))
+  assert not c.tracks[1]['following']
+  corrected_sample(c, t, 10, .4, reference=('lane', 'center'))
+  assert not c.tracks[1]['following']
+
+
+def test_motion_and_boundary_use_continuous_geometry_before_measurement_smoothing(monkeypatch):
+  t = Tracker()
+  t.position_correction = Correction()
+  p = point(x=20., y=.2)
+  live = N(points=[p])
+  t.observe(live, 0)
+  t.lane_probabilities(lane_model())
+  t.lane_projection(live)
+  t.filter_position(p, .2, ('lane', 'center'), 0)
+  t.observe(live, 5)
+  _, filtered = t.filter_position(p, .8, ('lane', 'position'), 5)
+  monkeypatch.setattr(t.position_correction, 'apply', lambda point, aligned, *args: aligned)
+  value = t.correct_position(p, .8, filtered, 0, ('lane', 'position'), 5)
+  assert value == pytest.approx(.35)
+
+
+def test_common_road_boundary_recovery_does_not_require_legacy_clearance():
+  c, t = Correction(), Tracker()
+  corrected_sample(c, t, 0, 1.4, reference=('lane', 'center'))
+  corrected_sample(c, t, 5, 1.7, reference=('lane', 'center'))
+  assert c.tracks[1]['following']
+  corrected_sample(c, t, 10, 1.45, reference=('lane', 'center'))
+  assert not c.tracks[1]['following']
+  corrected_sample(c, t, 15, 1.9, reference=('lane', 'center'))
+  assert c.tracks[1]['following']
+
+
+def test_common_road_fast_crossing_still_unlocks_before_slot_crossing():
+  c, t = Correction(), Tracker()
+  for frame in range(0, 26, 5):
+    output = corrected_sample(c, t, frame, .8 + frame*.04, reference=('lane', 'center'))
+  assert c.tracks[1]['following'] and c.tracks[1]['fast_speed'] > 0.
+  assert output > .8
+
+
 @pytest.mark.parametrize('side', [0, 1])
 @pytest.mark.parametrize('cadence', [1, 5, 10])
 def test_correction_lane_centers_have_time_based_smoothing_and_rate_limit(side, cadence):
@@ -1567,7 +1698,7 @@ def test_correction_confirmed_motion_cannot_resume_center_after_boundary():
 
 @pytest.mark.parametrize('slot', [0, 1, 2])
 @pytest.mark.parametrize('reason', ['retained', 'new', 'gap', 'birth', 'boundary', 'below_retention'])
-def test_correction_lower_confidence_retains_only_a_continuous_known_center(slot, reason):
+def test_correction_point_one_confidence_allows_new_and_retained_centers(slot, reason):
   c, t = Correction(), Tracker()
   t.position_correction = c
   y = (0., 3., -3.)[slot]
@@ -1578,7 +1709,8 @@ def test_correction_lower_confidence_retains_only_a_continuous_known_center(slot
     md.laneLineProbs = [probability] * 4
     t.lane_probabilities(md)
     t.lane_projection(t.live)
-    c.update_centers(H['_ccnc_side_lane_center'](md, 0), H['_ccnc_side_lane_center'](md, 1), frame, t.tracks)
+    c.update_centers(H['_ccnc_side_lane_center'](md, 0, min_probability=c.MIN_LANE_PROBABILITY),
+                     H['_ccnc_side_lane_center'](md, 1, min_probability=c.MIN_LANE_PROBABILITY), frame, t.tracks)
     t.correct_position(p, raw, raw, slot, ('lane', True), frame)
   sample(0, .9)
   assert not c.tracks[1]['following']
@@ -1587,9 +1719,9 @@ def test_correction_lower_confidence_retains_only_a_continuous_known_center(slot
   if reason == 'birth':
     c.tracks[1]['birth'] = -10
   for frame in range(20 if reason == 'gap' else 5, 81, 5):
-    sample(frame, .29 if reason == 'below_retention' else .4,
+    sample(frame, .099 if reason == 'below_retention' else .1,
            (1.4, 1.6, -1.6)[slot] if reason == 'boundary' else y)
-  assert c.tracks[1]['following'] == (reason != 'retained')
+  assert c.tracks[1]['following'] == (reason in ('boundary', 'below_retention'))
 
 
 def slot_sample(c, selected, frame, stamp=None, birth=0, y=-1., bypass=False):
@@ -1914,7 +2046,7 @@ def test_temporal_selection_hold_expires_even_with_continuous_observations():
 def test_correction_fast_coherent_crossing_releases_before_slow_motion_window():
   c, t = Correction(), Tracker()
   for frame in range(0, 31, 5):
-    corrected_sample(c, t, frame, frame * .02)
+    corrected_sample(c, t, frame, .8 + frame * .02)
   assert c.tracks[1]['following']
   assert c.tracks[1]['output'] > .4
 
@@ -2031,10 +2163,45 @@ def test_predicted_current_vehicle_is_not_replaced_by_old_stationary_memory():
 def test_fast_motion_history_survives_slot_change_with_same_geometry_reference():
   c, t = Correction(), Tracker()
   for frame in range(0, 31, 5):
-    corrected_sample(c, t, frame, 1. - frame * .04)
+    corrected_sample(c, t, frame, -.8 - frame * .04)
   assert c.tracks[1]['fast_speed'] > 0
   previous = c.tracks[1]['output']
-  p = point(x=20., y=-.4)
+  p = point(x=20., y=-2.2)
   t.observe(N(points=[p]), 35)
-  out = c.apply(p, -.4, .8, 2, ('lane', True), (-1.8,-5.4), t.tracks[1], 35)
+  out = c.apply(p, -2.2, previous - .1, 2, ('lane', True), (-1.8,-5.4), t.tracks[1], 35)
   assert out < previous
+
+
+def test_correction_short_coherent_oscillation_inside_lane_keeps_center():
+  c, t = Correction(), Tracker()
+  for frame in range(0, 201, 5):
+    raw = .55 * math.sin(frame * math.pi / 40.)
+    corrected_sample(c, t, frame, raw)
+    assert c.tracks[1]['fast_speed'] == 0.0
+    assert not c.tracks[1]['following']
+
+
+def test_correction_boundary_follow_needs_extra_clearance_before_return():
+  c, t = Correction(), Tracker()
+  corrected_sample(c, t, 0, 1.4)
+  corrected_sample(c, t, 5, 1.5)
+  assert c.tracks[1]['following']
+  for frame in range(10, 101, 5):
+    corrected_sample(c, t, frame, 1.4 if frame % 10 else 1.5)
+    assert c.tracks[1]['following']
+  corrected_sample(c, t, 105, 1.2)
+  assert not c.tracks[1]['following']
+
+
+@pytest.mark.parametrize('sign', [-1, 1])
+def test_correction_fast_crossing_finishes_evidence_after_entering_front_slot(sign):
+  c, t = Correction(), Tracker()
+  side = 1 if sign > 0 else 2
+  bounds = (4.8, 1.8) if sign > 0 else (-1.8, -4.8)
+  for frame in range(0, 31, 5):
+    raw = sign * (3. - frame * .1)
+    crossed = abs(raw) <= 1.8
+    output = corrected_sample(c, t, frame, raw, slot=0 if crossed else side,
+                              bounds=(1.8, -1.8) if crossed else bounds)
+  assert c.tracks[1]['fast_speed'] > 0
+  assert abs(output) < 1.8
