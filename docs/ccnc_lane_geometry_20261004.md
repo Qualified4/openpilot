@@ -385,3 +385,72 @@ Refined name nor replay parity guarantees greater physical road accuracy.
 Private scripts/snapshots/results are retained in
 `.analysis/archive/2026-10-04/ccnc-model-selector/`. No commit or vehicle/UI
 hardware validation is implied.
+
+### Curvature computation cleanup after selector commit 5dc6bf5d
+
+The cleanup retains the existing algorithms, guards, thresholds and temporal
+state. It separates interpolation from fitting five samples, reuses each inner
+lane's samples for both width and curvature, computes fit residual only for the
+quadratic-maneuver bypass that actually consumes it, and reuses fixed sample
+coordinates. Dynamic five-point positions are formed directly with the same
+spacing/endpoints instead of allocating linspace for every fit. The impossible
+two-lane-loop length check is removed. No new geometry or fallback rule is added.
+
+Entire update_lanes output dictionaries, animation state and curvature targets
+match before/after across all 105 segments/124,896 actual-reader updates in both
+Basic and Refined. Basic still matches original 6334db9d curvature. There are
+zero output mismatches/errors and zero maximum target difference. An additional
+2,000 seeded noisy-path/interval fit comparisons are numerically identical;
+739 existing CCNC checks pass without test changes.
+
+Three alternating-order same-input desktop timing passes measure lane update
+only, excluding CAN packing and radar vehicles:
+
+| Segment / observations | Original median ms | Refined before ms | Refined after ms | Reduction |
+|---|---:|---:|---:|---:|
+| Sustained right bend, all | 0.0227 | 0.06495 | 0.0432 | 33.5% |
+| Straight/change segment, all | 0.0228 | 0.0649 | 0.0432 | 33.4% |
+| Curved/change segment, all | 0.0237 | 0.0743 | 0.0468 | 37.0% |
+| Curved/change, automatic-change observations | 0.0253 | 0.2502 | 0.1314 | 47.5% |
+| Straight/change, automatic-change observations | 0.0246 | 0.23205 | 0.1257 | 45.8% |
+| Pre-U-turn segment, all | 0.0128 | 0.0626 | 0.0453 | 27.6% |
+
+Refined still costs more than original: approximately 5.2x during the measured
+curved change instead of 9.9x in these same passes. Basic with current common
+animation costs 0.0245 ms overall and 0.0550 ms during that change; it is not the
+original animation implementation. Small Basic before/after timing differences
+are measurement variation; its curvature code is unchanged.
+
+Disabled lateral control still advances Refined curvature history, preserving
+its first re-enabled output. Skipping this history entirely would be a behavior
+change and was not included. The cleanup nevertheless reduces the measured
+pre-U-turn overall cost while retaining outputs. This is desktop computation
+evidence, not target-device CPU or new curvature-accuracy validation. Named
+selector descriptions retain no total-display OFF cost claim because this
+benchmark is not that measurement. Private reproducible scripts, snapshots,
+outputs and timings are in `.analysis/archive/2026-10-04/ccnc-refactor/`.
+
+### Requested single-segment check on 2026-10-05
+
+The explicitly requested 35f/1 log and corresponding road video were compared
+against original, Basic, Refined before cleanup and Refined after cleanup.
+All 1,201 updates have lateral enabled, with no automatic or blinker-based
+lane-change observations. Basic curvature equals original throughout; Refined
+before/after complete lane-output dictionaries are identical. Original and
+Refined curve codes differ on 245 observations, which is not an improvement
+count. Video at the curve exit shows Refined reducing bend earlier (about 22 s:
+original -8 / Refined -5); the later right bend grows earlier/stronger (about
+54 s: -1 / -3; 56 s: -9 / -11). Both keep the rightward direction. Exact amplitude
+cannot be ranked from this road-video comparison alone.
+
+Seven passes with reversed pass order and rotated per-input policy order give
+mean lane-update times original 0.022325 ms, Basic 0.024828 ms, Refined before
+0.064786 ms and Refined after 0.043659 ms. Cleanup reduces Refined mean 32.61%;
+Basic is 11.21% above original and Refined after is 95.56% above original. These
+are same-input desktop timings excluding CAN packing and radar vehicles, not
+OFF-relative whole-display costs or device CPU. The first 20 updates are omitted
+from timing summaries, while output comparison covers the whole segment.
+Two comparison clips (18–26 s and 52–60 s) decode all 319 frames successfully.
+This log cannot assess the cleanup's lane-change performance/accuracy because
+it contains no change. Private evidence is in
+`.analysis/archive/2026-10-05/ccnc-35f-1/`; no production changes were made.

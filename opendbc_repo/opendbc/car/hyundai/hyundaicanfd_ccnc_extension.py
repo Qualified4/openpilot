@@ -1665,6 +1665,9 @@ def update_lfa_icon(values, CS, lat_enabled, lat_active, hdp_active):
 
 class _CcncLaneGeometry:
   """Display geometry only; prediction is bounded and never identifies radar objects."""
+  _fit_coordinates = np.linspace(-1., 1., 5)
+  _near_distances = np.linspace(0., 30., 5)
+
   def __init__(self):
     self.last_time = None
     self.model = self.stamp = None
@@ -1681,13 +1684,21 @@ class _CcncLaneGeometry:
     self.progress = 0.0
 
   @staticmethod
-  def fit_curve(xs, ys, start, end):
-    y = np.interp(np.linspace(start, end, 5), xs, ys)
-    half = (end - start) * .5
+  def fit_curve(xs, ys, start, end, with_residual=True):
+    step = (end - start) * .25
+    distances = (start, start + step, start + 2*step, start + 3*step, end)
+    y = np.interp(distances, xs, ys)
+    return _CcncLaneGeometry.fit_samples(y, end - start, with_residual)
+
+  @staticmethod
+  def fit_samples(y, span, with_residual=False):
+    half = span * .5
     quadratic = (4*y[0] - 2*y[1] - 4*y[2] - 2*y[3] + 4*y[4]) / 7.0
     slope = (-y[0] - .5*y[1] + .5*y[3] + y[4]) / (2.5 * half)
     curvature = float(-3600 * quadratic / (half**2 * (1 + slope*slope)**1.5))
-    t = np.linspace(-1., 1., 5)
+    if not with_residual:
+      return curvature, None
+    t = _CcncLaneGeometry._fit_coordinates
     fitted = np.mean(y) - quadratic*.5 + slope*half*t + quadratic*t*t
     return curvature, float(np.max(np.abs(y - fitted)))
 
@@ -1718,7 +1729,7 @@ class _CcncLaneGeometry:
     if end - start < 20.0:
       return None
     fit = _CcncLaneGeometry.fit_curve
-    target = min(max(fit(xs, ys, start, end)[0], -15.0), 15.0)
+    target = min(max(fit(xs, ys, start, end, with_residual=False)[0], -15.0), 15.0)
     if not changing or xs[0] > 0:
       return target
     # A consistent quadratic bend is not maneuver evidence just because nearby
@@ -1735,15 +1746,14 @@ class _CcncLaneGeometry:
       lx, ly = np.asarray(getattr(line, 'x', ())), np.asarray(line.y)
       if not _ccnc_valid_boundary(lx, ly) or lx[0] > 0 or lx[-1] < 30:
         return target
-      samples.append(np.interp(np.linspace(0, 30, 5), lx, ly))
-      curves.append(fit(lx, ly, 0, 30)[0])
-    if len(curves) != 2:
-      return target
+      y = np.interp(_CcncLaneGeometry._near_distances, lx, ly)
+      samples.append(y)
+      curves.append(_CcncLaneGeometry.fit_samples(y, 30.)[0])
     widths = samples[1] - samples[0]
     if not np.all((widths >= 2.3) & (widths <= 4.8)) or abs(curves[1] - curves[0]) > 3:
       return target
     local = sum(curves) * .5
-    if abs(fit(xs, ys, 0, 30)[0] - local) > .5:
+    if abs(fit(xs, ys, 0, 30, with_residual=False)[0] - local) > .5:
       # Compare the same near-road interval. When the path differs, use that
       # road bend directly instead of clipping a different, farther interval.
       return min(max(local, -15.0), 15.0)
