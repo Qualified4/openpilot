@@ -727,6 +727,18 @@ def test_projection_cache_refreshes_for_new_model_and_reused_point_objects():
   assert t.lane_projection(next_live)[2][0][0] == -.5
 
 
+def test_model_boundaries_convert_once_per_model_message():
+  t = Tracker()
+  md = lane_model()
+  t.lane_probabilities(md)
+  cached = t._curve(md, 1)
+  assert cached[2] and t._curve(md, 1) is cached and t._curve(md, 4)[1][0] == -7.
+  changed = lane_model(2)
+  changed.laneLines[1].y[0] = float('nan')
+  assert t.lane_probabilities(changed)[0] == 0. and not t._curve(changed, 1)[2]
+  assert t._curve(md, 1) is not cached  # Only the tracker's current model message is cached.
+
+
 def test_cached_path_cannot_reuse_maturity_after_control_gap():
   t = Tracker()
   p = point()

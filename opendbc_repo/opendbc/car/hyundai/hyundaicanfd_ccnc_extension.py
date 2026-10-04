@@ -20,7 +20,7 @@ def _ccnc_valid_boundary(x, y):
   xs, ys = np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
   return bool(np.isfinite(xs).all() and np.isfinite(ys).all() and (xs[1:] > xs[:-1]).all())
 
-def _ccnc_side_lane_center(md, side):
+def _ccnc_side_lane_center(md, side, curve=None):
   inner_idx = 1 if side == 0 else 2
   outer_idx = 0 if side == 0 else 3
 
@@ -31,20 +31,24 @@ def _ccnc_side_lane_center(md, side):
              for i in (inner_idx, outer_idx)):
     return None
 
-  inner = md.laneLines[inner_idx]
-  outer = md.laneLines[outer_idx]
-
-  if not (_ccnc_valid_boundary(inner.x, inner.y) and _ccnc_valid_boundary(outer.x, outer.y)):
+  if curve is None:
+    inner, outer = md.laneLines[inner_idx], md.laneLines[outer_idx]
+    inner_xs, inner_ys, outer_xs, outer_ys = inner.x, inner.y, outer.x, outer.y
+    valid = _ccnc_valid_boundary(inner_xs, inner_ys) and _ccnc_valid_boundary(outer_xs, outer_ys)
+  else:
+    (inner_xs, inner_ys, inner_valid), (outer_xs, outer_ys, outer_valid) = curve(md, inner_idx), curve(md, outer_idx)
+    valid = inner_valid and outer_valid
+  if not valid:
     return None
 
   x = 20.0
 
-  if not (inner.x[0] <= x <= inner.x[-1]
-          and outer.x[0] <= x <= outer.x[-1]):
+  if not (inner_xs[0] <= x <= inner_xs[-1]
+          and outer_xs[0] <= x <= outer_xs[-1]):
     return None
 
-  inner_y = float(np.interp(x, inner.x, inner.y))
-  outer_y = float(np.interp(x, outer.x, outer.y))
+  inner_y = float(np.interp(x, inner_xs, inner_ys))
+  outer_y = float(np.interp(x, outer_xs, outer_ys))
 
   # Model y is positive to the right; reversed boundaries are not a valid lane.
   width = (inner_y - outer_y) if side == 0 else (outer_y - inner_y)
@@ -52,7 +56,7 @@ def _ccnc_side_lane_center(md, side):
   if not 2.3 <= width <= 4.8:
     return None
 
-  center = abs(inner.y[0]) + width * 0.5
+  center = abs(float(inner_ys[0])) + width * 0.5
   return center if math.isfinite(center) else None
 
 class _CcncTemporalTracks:
@@ -121,8 +125,16 @@ class _CcncTemporalTracks:
       e['confirmed'] |= previous is not None and previous[2] >= 3 and previous[1] - previous[0] >= 15
       if key in selected and e['confirmed']:
         e['selected'] = frame
-    raw = {p.trackId: p for p in live.points if str(p.radarSource) == 'frontRadar' and p.dRel >= 1
-           and all(math.isfinite(v) for v in (p.dRel, p.yRel, p.vRel, p.vLead))}
+    raw = {}
+    for q in live.points:
+      if str(q.radarSource) != 'frontRadar':
+        continue
+      dRel, yRel, vRel, vLead = q.dRel, q.yRel, q.vRel, q.vLead
+      if dRel >= 1 and math.isfinite(dRel) and math.isfinite(yRel) and math.isfinite(vRel) and math.isfinite(vLead):
+        track_id = q.trackId
+        raw[track_id] = SimpleNamespace(trackId=track_id, dRel=dRel, yRel=yRel, vRel=vRel, vLead=vLead,
+                                        yvRel=getattr(q, 'yvRel', 0.0), measured=getattr(q, 'measured', True),
+                                        trackState=getattr(q, 'trackState', 0))
     by_source = {e['source']: key for key, e in self.entries.items() if e['source'] is not None}
     matches = {source: by_source[source] for source in raw if source in by_source}
     # Only reconnect absent sources, with a unique candidate in both directions.
@@ -315,6 +327,7 @@ class _CcncRadarDisplayTracker:
     self._projection = None
     self._path_data = None
     self._path_live = self._path_points = None
+    self._curves = {}
 
   def update_stop(self, speed_kph, frame, acceleration_kph=0.0):
     previous = self.stop_last_frame
@@ -501,17 +514,29 @@ class _CcncRadarDisplayTracker:
     self._inner_data = self._lane_probs = self._lane_data = self._projection = self._path_data = None
     self._projection_live = None
     self._path_live = self._path_points = None
+    self._curves = {}
+
+  def _curve(self, md, index):
+    # Lane lines 0-3, road edges 4-5: one conversion and validation per model message.
+    cached = self._curves.get(index) if md is self._model else None
+    if cached is None:
+      line = md.laneLines[index] if index < 4 else md.roadEdges[index - 4]
+      xs, ys = np.asarray(line.x, dtype=np.float64), np.asarray(line.y, dtype=np.float64)
+      cached = xs, ys, _ccnc_valid_boundary(xs, ys)
+      if md is self._model:
+        self._curves[index] = cached
+    return cached
 
   def lane_probabilities(self, md):
     self._update_model(md)
     if self._lane_probs is None:
       left = right = 0.0
       if md is not None and len(md.laneLineProbs) >= 3 and len(md.laneLines) >= 3:
-        self._inner_data = tuple((np.asarray(line.x, dtype=np.float64), np.asarray(line.y, dtype=np.float64))
-                                 for line in (md.laneLines[1], md.laneLines[2]))
-        if _ccnc_valid_boundary(*self._inner_data[0]):
+        inner = self._curve(md, 1), self._curve(md, 2)
+        self._inner_data = inner[0][:2], inner[1][:2]
+        if inner[0][2]:
           left = md.laneLineProbs[1]
-        if _ccnc_valid_boundary(*self._inner_data[1]):
+        if inner[1][2]:
           right = md.laneLineProbs[2]
       self._lane_probs = left, right
     return self._lane_probs
@@ -521,12 +546,13 @@ class _CcncRadarDisplayTracker:
       return self._projection
     if self._lane_data is None:
       md = self._model
-      lines, edges = md.laneLines, md.roadEdges
       data = list(self._inner_data)
-      for valid, line in ((md.laneLineProbs[0] > 0.1, lines[0]), (md.laneLineProbs[3] > 0.1, lines[3]),
-                          (True, edges[0]), (True, edges[1])):
-        data.append((np.asarray(line.x, dtype=np.float64), np.asarray(line.y, dtype=np.float64)) if valid else None)
-      flags = tuple(item is not None and _ccnc_valid_boundary(*item) for item in data[2:])
+      flags = []
+      for use, index in ((md.laneLineProbs[0] > 0.1, 0), (md.laneLineProbs[3] > 0.1, 3), (True, 4), (True, 5)):
+        xs, ys, valid = self._curve(md, index) if use else (None, None, False)
+        data.append((xs, ys) if use else None)
+        flags.append(valid)
+      flags = tuple(flags)
       self._saved_side = [None, None]
       for side in (0, 1):
         if flags[side] and self._lane_probs[side] >= 0.1:
@@ -662,31 +688,32 @@ class _CcncRadarDisplayTracker:
           continue
         points.append((p, dRel, yRel, vRel, vLead))
         start, count = frame, 1
-        previous = self.tracks.get(p.trackId)
+        track_id = p.trackId
+        previous = self.tracks.get(track_id)
         if self.temporal is not None:
           if not p.ccnc_continuous:
             previous = None
           elif previous is not None:
             first, last, n = previous[:3]
-            current[p.trackId] = (first, p.ccnc_stamp, n + int(p.ccnc_fresh), p, (dRel, yRel, vRel))
+            current[track_id] = (first, p.ccnc_stamp, n + int(p.ccnc_fresh), p, (dRel, yRel, vRel))
             continue
         if previous is not None:
           first, last, n, _, (old_d, old_y, old_v) = previous
           dt = (frame - last) * 0.01
           if (0 < frame - last <= 15
-              and abs(p.dRel - old_d - old_v * dt) <= 1.0 + 2.0 * dt):
+              and abs(dRel - old_d - old_v * dt) <= 1.0 + 2.0 * dt):
             dy = abs(yRel - old_y)
             if dy <= 0.5 + 5.0 * dt:
               start, count = first, n + 1
-            elif (p.trackId in self.selected[1:] and n >= 3 and last - first >= 15
+            elif (track_id in self.selected[1:] and n >= 3 and last - first >= 15
                   and dy <= 0.75 + 5.0 * dt and abs(vRel - old_v) <= 1.0
-                  and frame - self.lateral_grace.get(p.trackId, -1000) >= 30):
+                  and frame - self.lateral_grace.get(track_id, -1000) >= 30):
               # One small lateral discontinuity may keep an established side target.
               # Reset coordinate smoothing, not its selection eligibility.
               start, count = first, n + 1
-              self.lateral_grace[p.trackId] = frame
-              self.positions.pop(p.trackId, None)
-        current[p.trackId] = (start, frame, count, p, (p.dRel, p.yRel, p.vRel))
+              self.lateral_grace[track_id] = frame
+              self.positions.pop(track_id, None)
+        current[track_id] = (start, frame, count, p, (dRel, yRel, vRel))
     self.lateral_grace = {key: stamp for key, stamp in self.lateral_grace.items()
                           if key in current and current[key][0] <= stamp}
     self.tracks = current
@@ -735,13 +762,14 @@ class _CcncRadarDisplayTracker:
         elif (stamp - moving[0] >= (50 if admission['status'] == 'blocked' else 15)
               and sum((a - b) * d for a, b, d in zip(position, moving[1], moving[2])) >= 0.5):
           admission['status'] = 'allowed'
-      if admission['status'] == 'pending':
+      if admission['status'] == 'pending' and stationary:
         if curves is None:
           curves = []
           if md is not None:
-            for line, probability in zip(md.laneLines, md.laneLineProbs):
-              if _ccnc_valid_boundary(line.x, line.y):
-                curves.append((np.asarray(line.x), np.asarray(line.y), probability))
+            for index, probability in zip(range(min(4, len(md.laneLines))), md.laneLineProbs):
+              xs, ys, valid = self._curve(md, index)
+              if valid:
+                curves.append((xs, ys, probability))
         boundaries = [(abs(p.yRel + float(np.interp(p.dRel, xs, ys))), probability)
                       for xs, ys, probability in curves if xs[0] <= p.dRel <= xs[-1]]
         gap, probability = min(boundaries, default=(math.inf, 0.0))
@@ -1011,8 +1039,9 @@ class _CcncRadarDisplayTracker:
         reliable = all(math.isfinite(self._model.laneLineProbs[i])
                        and self._model.laneLineProbs[i] >= 0.3 for i in line_indices)
       curves = [data[i] for i in indices]
-      if all(c is not None and _ccnc_valid_boundary(*c)
-             and c[0][0] <= point.dRel <= c[0][-1] for c in curves):
+      model = self._model
+      valid = (model is not None and self._curve(model, 1)[2], model is not None and self._curve(model, 2)[2]) + flags[:2]
+      if all(valid[i] and curves[n][0][0] <= point.dRel <= curves[n][0][-1] for n, i in enumerate(indices)):
         bounds = tuple(-float(np.interp(point.dRel, *c)) + aligned_y - point.yRel for c in curves)
     else:
       reliable = False
@@ -1044,6 +1073,12 @@ class _CcncVehiclePositionCorrection:
     self.tracks = {}
     self.display_slots = {}
     self.display_selected = (None, None, None)
+
+  @staticmethod
+  def _median(values):
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
 
   def stabilize_slots(self, values, selected, observations, frame, bypass=False):
     """Debounce an object's vacant-slot crossing without changing raw selection."""
@@ -1218,9 +1253,9 @@ class _CcncVehiclePositionCorrection:
         ordered = sorted(values)
         trim = max(1, len(values) // 10)
         edge = max(2, len(values) // 3)
-        start, end = (float(np.median(v)) for v in (values[:edge], values[-edge:]))
-        trends = [float(np.median([s[i] for s in evidence[-edge:]]))
-                  - float(np.median([s[i] for s in evidence[:edge]])) for i in (1, 2)]
+        start, end = (float(self._median(v)) for v in (values[:edge], values[-edge:]))
+        trends = [float(self._median([s[i] for s in evidence[-edge:]]))
+                  - float(self._median([s[i] for s in evidence[:edge]])) for i in (1, 2)]
         moving_trend = trends[0] * trends[1] > 0.0 and min(abs(v) for v in trends) > self.SETTLE_SPEED * span
         # Opposing trends suggest geometry drift; they cannot prove lane keeping.
         geometry_drift = trends[0] * trends[1] < 0.0 and min(abs(v) for v in trends) > self.SETTLE_SPEED * span
@@ -1758,8 +1793,8 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     selected_lane_prob = left_prob if selected_lane_is_left else right_prob
 
     # LF/RF deadband 중심은 차량 존재 여부와 무관하게 인접 차선 geometry로 계속 갱신합니다.
-    lf_center = _ccnc_side_lane_center(md, 0)
-    rf_center = _ccnc_side_lane_center(md, 1)
+    lf_center = _ccnc_side_lane_center(md, 0, display_tracker._curve)
+    rf_center = _ccnc_side_lane_center(md, 1, display_tracker._curve)
 
     if display_tracker.position_correction is not None:
       display_tracker.position_correction.update_centers(lf_center, rf_center, frame, display_tracker.tracks)
