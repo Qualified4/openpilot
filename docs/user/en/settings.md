@@ -307,6 +307,8 @@ Both enabled modes display lane positions and lane-change direction with highlig
 
 Refined does not discard curvature solely because of low lane confidence during a lane change. When the driving path is stale or unusable, it briefly retains the last curvature and then gradually returns the curve display toward straight. A longer lane reassignment can still pause the position display in both modes.
 
+Compute cost: in seven PC replay passes over eight logs with the other three options off, Basic increased average total display-processing time by about 21% (0.168 ms → 0.202 ms) versus OFF, and Refined by about 39% (0.168 ms → 0.234 ms). These times include CAN message generation and packing, not an increase in whole-device CPU usage.
+
 Turn off to use the default lane and icon display. Trailer-related lane-change restrictions take priority. Nearby vehicle display is controlled separately by the next option.
 
 #### CCNC HDA1 radar vehicles

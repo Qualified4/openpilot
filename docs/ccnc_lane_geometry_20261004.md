@@ -454,3 +454,72 @@ Two comparison clips (18–26 s and 52–60 s) decode all 319 frames successfull
 This log cannot assess the cleanup's lane-change performance/accuracy because
 it contains no change. Private evidence is in
 `.analysis/archive/2026-10-05/ccnc-35f-1/`; no production changes were made.
+
+### Large-Position curvature comparison and corrected interpretation on 2026-10-05
+
+A newly supplied segment outside the previous 105-segment corpus has 1,199
+display updates, all lateral-enabled, and no automatic or blinker-based lane
+change. Near its end, road video shows a left-side entrance and the lead vehicle
+moving left. Position departs
+strongly left from the inner-lane corridor. The video/logs cannot separate the
+entrance's influence from the lead vehicle's influence on model inference.
+
+Original and Basic curvature remain identical. In the 56–60 s window their
+maximum is +4 versus Refined +8. At about58.37 s Refined target is +9.86 and its
+filtered display +8, while inner-lane estimates are +0.73/+0.50 with probabilities
+0.886/0.886. At about58.01 s both inner-lane geometries are valid, their five
+sample widths are approximately2.69–2.73 m and their mean curvature is +0.25,
+but Position target is +8.49 and display +6. At59.02 s original/Basic display0
+while Refined still displays+6 after its trusted span falls below20 m and the
+existing hold/decay retains earlier curvature.
+
+The initial review treated the lane/Position difference as an unnecessary bend.
+The user reviewed the road video/log and considers the stronger Refined turn
+appropriate. That earlier error classification is withdrawn. This segment is
+a large-curvature preservation case, not a confirmed false-bend regression;
+nearby lane disagreement alone cannot establish which road representation is
+correct. Numerical curvature amplitude still lacks independent ground truth.
+
+`road_curve` returns the Position target immediately outside lane changes, so
+the near-lane check is not reached here. This explains the output difference,
+but does not demonstrate that the stronger turn should be suppressed. Any
+future road/maneuver discrimination must preserve this case together with
+upcoming genuine bends and uncertain-lane fallback, rather than universally
+replacing Position with near lanes. No production code was changed in this
+validation. Aligned video, trusted/untrusted path plots and replay scripts are local in
+`.analysis/archive/2026-10-05/ccnc-39d-7/` and should accompany the existing true
+curve and lane-change cases in any follow-up evaluation.
+
+### Selector cost descriptions measured against OFF on 2026-10-05
+
+Current committed production (1b112e66) was benchmarked through the real
+create_ccnc_messages caller and Python CANPacker, with independent extension,
+caller-cache and packer state for Off/Basic/Refined. Lane color, radar vehicles
+and position correction were OFF in all modes. Eight logs cover normal/large
+curves, straight and curved lane changes, lateral-disabled driving and the new
+large-Position case. A fixed CAMERA_SCC display fixture generates ADRV_0x161 and
+CCNC_0x162; optional stock0x200/0x1ea inputs are absent. This is the same class
+of total-display comparison as the earlier boolean measurement, not curvature
+alone, device CPU or wire timing. Recorded model/carState/carControl readers
+are retained; typed Params values/storage are substituted on desktop, so real
+device storage I/O is not measured.
+
+The experiment uses one warmup pass followed by seven measured passes. Mode
+order is reversed between passes and rotated each input; every mode receives
+the same inputs. There are8,952 replayed calls/pass, with the first20 calls of
+each segment excluded from timing, leaving8,792 measured calls/mode/pass.
+Report the median of the seven per-pass mean times:
+
+| Mode | Mean total ms | Increase versus Off |
+|---|---:|---:|
+| Off | 0.167754 | 0% |
+| Basic | 0.202221 | 20.55% |
+| Refined | 0.233741 | 39.34% |
+
+Korean/English/Chinese catalog descriptions now show approximately21%
+(0.168 ->0.202 ms) for Basic and39% (0.168 ->0.234 ms) for Refined. The localized
+guides carry the same values and measurement scope. Other three option
+descriptions are unchanged. Raw timings, source snapshots, input hashes and
+reproduction script are local in
+`.analysis/archive/2026-10-05/ccnc-mode-total-cost/`. Existing CCNC/catalog checks
+and Web catalog/choice checks verify the descriptions integrate normally.
