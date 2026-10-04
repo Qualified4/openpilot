@@ -354,3 +354,142 @@ def test_stock_corner_visibility_does_not_override_extension_hiding(display, mon
     assert values[f"{side}_DETECT"] == (0 if radar and not hda2 else 3)
     assert values[f"{side}_DETECT_DISTANCE"] == 20.
     assert cs.ccnc_0x162[f"{side}_DETECT"] == 0
+
+
+def lane_geometry_model(stamp=1, offset=0., heading=0., bend=0.):
+  xs = [float(x) for x in range(0, 101, 5)]
+  def line(y):
+    return N(x=xs, y=[y + offset + heading*x + .5*bend*x*x for x in xs])
+  return N(timestampEof=stamp, laneLines=[line(y) for y in (-5.4, -1.8, 1.8, 5.4)],
+           laneLineProbs=[.9]*4, roadEdges=[line(-8.), line(8.)], roadEdgeStds=[.1, .1],
+           position=N(x=xs, y=[offset + heading*x for x in xs], yStd=[0.]*len(xs)),
+           meta=N(laneChangeAvailableLeft=True, laneChangeAvailableRight=True))
+
+
+@pytest.mark.parametrize('heading', [-.15, 0., .15])
+@pytest.mark.parametrize('offset', [-3.6, 0., 3.6])
+def test_lane_curvature_rejects_translation_and_heading(heading, offset):
+  md = lane_geometry_model(offset=offset, heading=heading)
+  assert ccnc_extension._CcncLaneGeometry.road_curve(md, 90.) == pytest.approx(0., abs=1e-10)
+
+
+@pytest.mark.parametrize('bend', [-.004, .004])
+@pytest.mark.parametrize('source', ['inner', 'outer', 'edges'])
+def test_lane_curvature_keeps_real_bend_and_fallback(bend, source):
+  md = lane_geometry_model(bend=bend)
+  if source != 'inner': md.laneLineProbs[1:3] = [0., 0.]
+  if source == 'edges': md.laneLineProbs = [0.]*4
+  value = ccnc_extension._CcncLaneGeometry.road_curve(md, 90.)
+  length = 30 + (90-20)/80*50
+  expected = -1800*bend / (1+(bend*length/2)**2)**1.5
+  assert value == pytest.approx(expected, rel=.005)  # Sparse samples require linear interpolation.
+
+
+@pytest.mark.parametrize('bad', ['nan', 'short', 'reverse', 'conflict', 'confidence'])
+def test_lane_curvature_rejects_bad_geometry(bad):
+  md = lane_geometry_model()
+  md.laneLineProbs[0] = md.laneLineProbs[3] = 0.
+  md.roadEdgeStds = [2., 2.]
+  for line in md.laneLines[1:3]:
+    if bad == 'nan': line.y[3] = float('nan')
+    if bad == 'short': line.y.pop()
+    if bad == 'reverse': line.x = line.x[::-1]
+  if bad == 'confidence': md.laneLineProbs[1:3] = [float('nan'), 0.]
+  if bad == 'conflict': md.laneLines[1] = lane_geometry_model(bend=.01).laneLines[1]
+  assert ccnc_extension._CcncLaneGeometry.road_curve(md, 90.) is None
+
+
+def test_stale_model_does_not_renew_curvature_and_recovers():
+  g = ccnc_extension._CcncLaneGeometry()
+  md = lane_geometry_model(bend=.004)
+  for i in range(20): g.update(lane_geometry_model(stamp=i, bend=.004), 90, i*.05)
+  before = g.curvature
+  g.update(md, 90, 1.)
+  for i in range(21, 61): g.update(md, 90, i*.05)
+  assert round(g.curvature) == 0 and g.target is None and abs(before) > 5.
+  g.update(lane_geometry_model(stamp=100, bend=.004), 90, 3.05)
+  assert g.fresh and g.curvature < 0.
+
+
+@pytest.mark.parametrize('duration', [0., .2, .4, 1.])
+@pytest.mark.parametrize('start', [-.3, 0., .3])
+@pytest.mark.parametrize('left', [False, True])
+def test_straight_lane_change_sweep_has_no_false_curve(display, duration, start, left):
+  _, cs, _ = display
+  sign = 1 if left else -1
+  cs.out.leftBlinker, cs.out.rightBlinker = left, not left
+  for frame in range(0, 801, 5):
+    t = frame*.01
+    offset = sign * 3.6 * min(max(t/6, 0.), 1.)
+    sweep_start = 3. + start
+    fraction = float(t >= sweep_start) if duration == 0 else min(max((t-sweep_start)/duration, 0.), 1.)
+    md = lane_geometry_model(stamp=frame+1, offset=offset-sign*3.6*fraction, heading=sign*.05)
+    values = {}
+    ccnc_extension.update_lanes(values, cs, md, 90., 0., 3 if left else 4, True, False, True, frame)
+    assert values['LANELINE_CURVATURE'] == 0
+    assert 0 <= ccnc_extension.state.lane_geometry.progress <= .25
+    assert all(0 <= values['LANELINE_'+side+'_POSITION'] <= 30 for side in ('LEFT','RIGHT'))
+
+
+@pytest.mark.parametrize('bad', ['none', 'reverse', 'single_jump', 'disagree', 'stale'])
+def test_hold_prediction_requires_bounded_coherent_prior_motion(bad):
+  g = ccnc_extension._CcncLaneGeometry()
+  samples = [(i*.05, -.8+i*.04, 2.8+i*.04) for i in range(8)]
+  if bad == 'reverse': samples = [(t,-x,-y) for t,x,y in samples]
+  if bad == 'single_jump': samples = [(t,-.8+(i==7)*.3,2.8+(i==7)*.3) for i,(t,x,y) in enumerate(samples)]
+  if bad == 'disagree': samples = [(t,x,2.8) for t,x,y in samples]
+  g.motion.extend(samples)
+  g.start_hold(1. if bad == 'stale' else .4)
+  if bad == 'none':
+    assert g.hold_speed == pytest.approx(.8)
+    assert g.hold_progress(.5) > 0
+    assert g.hold_progress(1.) == pytest.approx(.12)
+    assert g.hold_progress(100.) == pytest.approx(.12)
+  else: assert g.hold_speed == 0.
+
+
+def test_prediction_resets_on_cancel_and_direction_change():
+  g = ccnc_extension._CcncLaneGeometry()
+  g.direction = True
+  g.hold_speed, g.progress, g.hold_start = 1., .1, 0.
+  g.observe_motion(None, False, False, False, .1)
+  assert g.progress == 0 and g.hold_speed == 0 and g.hold_start is None
+
+
+def test_duplicate_model_cannot_release_hold(display):
+  _, cs, _ = display
+  cs.out.leftBlinker = True
+  md = lane_geometry_model(offset=1.75)
+  ccnc_extension.update_lanes({}, cs, md, 90, 0, 3, True, False, True, 0)
+  assert ccnc_extension.state.hold_lane
+  md2 = lane_geometry_model(stamp=2, offset=-1.6)
+  for frame in (5,10,15):
+    ccnc_extension.update_lanes({}, cs, md2, 90, 0, 3, True, False, True, frame)
+  assert ccnc_extension.state.hold_lane
+  assert ccnc_extension.state.hold_lane_escape_count < 2
+
+
+def test_lane_filter_gain_ramps_and_preserves_output_on_cancel(display):
+  _, cs, _ = display
+  cs.out.leftBlinker = True
+  alphas=[]
+  for frame in range(0, 26, 5):
+    ccnc_extension.update_lanes({}, cs, lane_geometry_model(stamp=frame+1), 90, 0, 3, True, False, True, frame)
+    alphas.append(ccnc_extension.state.lane_geometry.lane_alpha)
+  assert alphas[-1] == pytest.approx(.6)
+  assert all(0 <= b-a <= .100001 for a,b in zip(alphas,alphas[1:]))
+  before=ccnc_extension.state.l_lane_f.value
+  cs.out.leftBlinker=False
+  ccnc_extension.update_lanes({}, cs, lane_geometry_model(stamp=31), 90, 0, 0, True, False, True, 30)
+  assert ccnc_extension.state.lane_geometry.lane_alpha == pytest.approx(.5)
+  assert abs(ccnc_extension.state.l_lane_f.value-before) < .1
+
+
+def test_control_gap_clears_pending_lane_transition(display):
+  _, cs, _ = display
+  cs.out.leftBlinker=True
+  ccnc_extension.update_lanes({},cs,lane_geometry_model(offset=1.75),90,0,3,True,False,True,0)
+  assert ccnc_extension.state.hold_lane
+  ccnc_extension.update_lanes({},cs,lane_geometry_model(stamp=2),90,0,3,True,False,True,100)
+  assert not ccnc_extension.state.hold_lane
+  assert ccnc_extension.state.lane_geometry.hold_start is None

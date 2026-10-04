@@ -1572,7 +1572,137 @@ def update_lfa_icon(values, CS, lat_enabled, lat_active, hdp_active):
     # 횡컨 OFF -> 아이콘 숨김
     values["LFA_ICON"] = 0
 
-def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane_color=True, model_lanes=True):
+class _CcncLaneGeometry:
+  """Display geometry only; prediction is bounded and never identifies radar objects."""
+  def __init__(self):
+    self.last_time = None
+    self.model = self.stamp = None
+    self.fresh = False
+    self.dt = 0.05
+    self.curvature = 0.0
+    self.lane_alpha = .2
+    self.valid_time = -math.inf
+    self.target = None
+    self.motion = deque(maxlen=8)
+    self.direction = None
+    self.hold_start = None
+    self.hold_speed = 0.0
+    self.progress = 0.0
+
+  @staticmethod
+  def road_curve(md, speed, curve=None):
+    if md is None:
+      return None
+    end = 30.0 + min(max((speed - 20.0) / 80.0, 0.0), 1.0) * 50.0
+    for indices in ((1, 2), (0, 3), (4, 5)):
+      estimates = []
+      for index in indices:
+        if index < 4:
+          if len(md.laneLines) <= index or len(md.laneLineProbs) <= index:
+            continue
+          probability = md.laneLineProbs[index]
+          if not math.isfinite(probability) or probability < 0.6:
+            continue
+          line = md.laneLines[index]
+        else:
+          edges, stds = getattr(md, 'roadEdges', ()), getattr(md, 'roadEdgeStds', ())
+          if len(edges) <= index - 4 or len(stds) <= index - 4:
+            continue
+          std = stds[index - 4]
+          if not math.isfinite(std) or not 0 <= std <= 0.3:
+            continue
+          line = edges[index - 4]
+        if len(getattr(line, 'x', ())) < 2:
+          continue
+        if curve is None:
+          xs, ys = np.asarray(getattr(line, 'x', ()), dtype=np.float64), np.asarray(line.y, dtype=np.float64)
+          valid = _ccnc_valid_boundary(xs, ys)
+        else:
+          xs, ys, valid = curve(md, index)
+        if not valid or xs[0] > 0 or xs[-1] < 20:
+          continue
+        length = min(end, xs[-1])
+        y = np.interp(np.linspace(0, length, 5), xs, ys)
+        # Least-squares quadratic at five equally spaced points. Translation and
+        # linear heading cancel; the denominator converts y'' to geometric curvature.
+        half = length * 0.5
+        quadratic = (4*y[0] - 2*y[1] - 4*y[2] - 2*y[3] + 4*y[4]) / 7.0
+        slope = (-y[0] - .5*y[1] + .5*y[3] + y[4]) / (2.5 * half)
+        estimates.append(float(-1800.0 * 2 * quadratic / (half**2 * (1 + slope*slope)**1.5)))
+      if estimates:
+        if max(estimates) - min(estimates) > 3.0:
+          return None  # Conflicting boundaries cannot establish a road bend.
+        return min(max(sum(estimates) / len(estimates), -15.0), 15.0)
+    return None
+
+  def update(self, md, speed, now, curve=None):
+    elapsed = None if self.last_time is None else now - self.last_time
+    if elapsed is None or not 0 <= elapsed <= .15:
+      self.__init__()
+    self.dt = min(.15, max(0.0, elapsed)) if elapsed is not None and elapsed >= 0 else .05
+    self.last_time = now
+    stamp = getattr(md, 'timestampEof', None) if md is not None else None
+    self.fresh = md is not None and (md is not self.model or stamp != self.stamp)
+    self.model, self.stamp = md, stamp
+    if self.fresh:
+      self.target = self.road_curve(md, speed, curve)
+      if self.target is not None:
+        self.valid_time = now
+    if md is None or now - self.valid_time > .35:
+      self.target = None
+    target = self.curvature if self.target is None and now - self.valid_time <= .35 else self.target or 0.0
+    step = (target - self.curvature) * -math.expm1(-self.dt / .25)
+    self.curvature += min(max(step, -10.0 * self.dt), 10.0 * self.dt)
+    return round(self.curvature)
+
+  def observe_motion(self, md, left, active, holding, now):
+    if not active or self.direction != left or md is None:
+      self.motion.clear()
+      self.hold_start = None
+      self.hold_speed = self.progress = 0.0
+    self.direction = left if active else None
+    if not active or holding or not self.fresh:
+      return
+    lines = md.laneLines
+    if len(lines) < 3 or not len(lines[1].y) or not len(lines[2].y):
+      self.motion.clear()
+      return
+    sign = 1 if left else -1
+    lane = sign * lines[1 if left else 2].y[0]
+    opposite = sign * lines[2 if left else 1].y[0]
+    if not (math.isfinite(lane) and math.isfinite(opposite) and 2.3 <= opposite - lane <= 4.8):
+      self.motion.clear()
+      return
+    self.motion.append((now, lane, opposite))
+
+  def start_hold(self, now):
+    self.hold_start, self.hold_speed, self.progress = now, 0.0, 0.0
+    # Both inner boundaries must have moved coherently before the trigger.
+    # This is NOT proof of physical motion: a common model sweep can fool it.
+    # Its only use is a short, bounded display continuation, never a new identity.
+    samples = list(self.motion)
+    if len(samples) < 4 or now - samples[-1][0] > .15 or samples[-1][0] - samples[0][0] < .15:
+      return
+    if any(not 0 < b[0] - a[0] <= .15 for a, b in zip(samples, samples[1:])):
+      return
+    span = samples[-1][0] - samples[0][0]
+    speeds = [(samples[-1][i] - samples[0][i]) / span for i in (1, 2)]
+    for i in (1, 2):
+      steps = [b[i] - a[i] for a, b in zip(samples, samples[1:])]
+      if (i == 1 and sum(steps) < .8 * sum(abs(s) for s in steps)) or max(abs(s) for s in steps) > .2:
+        return
+    if all(.1 <= s <= 1.5 for s in speeds) and abs(speeds[0] - speeds[1]) <= .4:
+      self.hold_speed = min(speeds)
+
+  def hold_progress(self, now):
+    if self.hold_start is not None:
+      # Velocity fades to zero, never extrapolates indefinitely through a cancellation.
+      t = min(.3, max(0.0, now - self.hold_start))
+      self.progress = min(.25, self.hold_speed * (t - t*t / .6))
+    return self.progress
+
+
+def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane_color=True, model_lanes=True, frame=None):
   # 주행 기어에서만 가속도·드라이브 모드에 따른 차로 색 변경
   if lane_color and CS.out.gearShifter == structs.CarState.GearShifter.drive:
     now = time.monotonic()
@@ -1596,47 +1726,21 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
   if not model_lanes:
     return
 
+  now = time.monotonic() if frame is None else frame * .01
+  geometry = state.lane_geometry
+  if geometry.last_time is not None and not 0 <= now - geometry.last_time <= .15:
+    state.draw_center = state.hold_lane = False
+    state.hold_lane_escape_count = 0
+    state.lane_phase_min = 10.0
+    state.l_lane_f.reset_alpha()
+    state.r_lane_f.reset_alpha()
   try:
     if lat_enabled:
-      # 스칼라 np.interp 오버헤드 제거 (선형 보간 수식 직접 계산: 20~100 kph -> 30~80 m)
-      max_lookahead_x = 30.0 + min(max((v_ego_kph - 20.0) / 80.0, 0.0), 1.0) * 50.0
-
-      # 객체 속성 접근 오버헤드 캐싱 (루프 내 다중 점근 방지)
-      pos = md.position
-      pos_x, pos_y, pos_y_std = pos.x, pos.y, pos.yStd
-
-      trust_threshold = 0.8
-      max_y_abs = 0.0
-      peak_idx = 0
-      start_search_idx = 0
-      start_found = not is_currently_lane_changing
-      min_calc_dist = 20.0 if is_currently_lane_changing else 0.0
-
-      for i in range(1, len(pos_x)):
-        x = pos_x[i]
-
-        if not start_found and x >= min_calc_dist:
-          start_search_idx = i
-          start_found = True
-
-        if pos_y_std[i] > trust_threshold or x > max_lookahead_x:
-          break
-
-        y_abs = abs(pos_y[i])
-        if y_abs > max_y_abs:
-          max_y_abs = y_abs
-          peak_idx = i
-
-      if start_search_idx != peak_idx and pos_x[peak_idx] >= (20.0 + min_calc_dist):
-        x_dist = pos_x[peak_idx]
-        y_diff = pos_y[peak_idx] - pos_y[start_search_idx]
-        # 곡률 공식: (2y / x^2) * 1800 -> (3600 * y) / x^2
-        max_curve_val = (3600.0 * y_diff) / (x_dist * x_dist)
-      else:
-        max_curve_val = 0.0
-
-      curvature = round(state.lane_curv.apply(-max_curve_val))
+      tracker = state.radar_display_tracker
+      tracker._update_model(md)
+      curvature = geometry.update(md, v_ego_kph, now, tracker._curve)
     else:
+      geometry.update(None, v_ego_kph, now)
       curvature = round(CS.out.steeringAngleDeg / 3)
 
   except:
@@ -1653,14 +1757,13 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
     r_prob = md.laneLineProbs[2]
 
     # --- 차선 변경 상태 관리 및 알파값 조정 ---
-    if is_currently_lane_changing != state._is_lane_change_active:
-      if is_currently_lane_changing:
-        state.l_lane_f.update_alpha(0.6)
-        state.r_lane_f.update_alpha(0.6)
-      else:
-        state.l_lane_f.reset_alpha()
-        state.r_lane_f.reset_alpha()
-      state._is_lane_change_active = is_currently_lane_changing
+    target_alpha = .6 if is_currently_lane_changing else .2
+    next_alpha = geometry.lane_alpha + min(max(target_alpha - geometry.lane_alpha, -2*geometry.dt), 2*geometry.dt)
+    if next_alpha != geometry.lane_alpha:
+      state.l_lane_f.update_alpha(next_alpha)
+      state.r_lane_f.update_alpha(next_alpha)
+      geometry.lane_alpha = next_alpha
+    state._is_lane_change_active = is_currently_lane_changing
 
     leftlaneraw = abs(md.laneLines[1].y[0])
     rightlaneraw = abs(md.laneLines[2].y[0])
@@ -1676,7 +1779,12 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
       rightlaneraw = state.last_known_lane_width - leftlaneraw
 
     if is_currently_lane_changing:
-      is_moving_left = CS.out.leftBlinker or desire == 3
+      is_moving_left = desire == 3 if is_auto_lane_changing else CS.out.leftBlinker
+      if geometry.direction is not None and geometry.direction != is_moving_left:
+        geometry.observe_motion(md, is_moving_left, False, False, now)
+        state.draw_center = state.hold_lane = False
+        state.lane_phase_min = 10.0
+        state.hold_lane_escape_count = 0
       # 위상 변화 시 차선 강조 변경
       if not state.draw_center:
 
@@ -1686,6 +1794,7 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
         state.lane_phase_min = min(state.lane_phase_min, lane_raw)
 
         if is_phase_shifted:
+          geometry.start_hold(now)
           state.draw_center = state.hold_lane = True
           state.lane_phase_min = 6.0
           state.hold_lane_escape_count = 0
@@ -1706,13 +1815,13 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
 
         # 최솟값 대비 0.1m 이상 반등하면 작아지다 커지는 위상으로 판단
         if swapped_lane_position - state.lane_phase_min > 0.1:
-          state.hold_lane_escape_count += 1
+          state.hold_lane_escape_count += int(geometry.fresh)
           if state.hold_lane_escape_count >= 2:
             state.hold_lane = False
         else:
           state.hold_lane_escape_count = 0
 
-        holding_factor = state.hold_lane_escape_count * 0.1
+        holding_factor = geometry.hold_progress(now)
         if is_moving_left:
           current_l_target = state.l_lane_f.reset(state.last_known_lane_width - holding_factor)
           current_r_target = state.r_lane_f.reset(holding_factor)
@@ -1720,7 +1829,7 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
           current_l_target = state.l_lane_f.reset(holding_factor)
           current_r_target = state.r_lane_f.reset(state.last_known_lane_width - holding_factor)
       elif state.draw_center:
-        MAX_STEP = 0.15  # 한 루프(프레임)당 최대 허용 변화량 (m단위, 부드러움 조절용)
+        MAX_STEP = 3.0 * geometry.dt
         prev_l = state.l_lane_f.value
         prev_r = state.r_lane_f.value
         # 실제 값과 이전 값의 차이를 MAX_STEP 이내로 제한 (클리핑)
@@ -1743,7 +1852,9 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
         state.draw_center = state.hold_lane = False
         state.hold_lane_escape_count = 0
         state.lane_phase_min = 10.0
+      geometry.observe_motion(md, is_moving_left, True, state.draw_center, now)
     else:
+      geometry.observe_motion(md, False, False, False, now)
       state.draw_center = state.hold_lane = False
       state.hold_lane_escape_count = 0
       state.lane_phase_min = 10.0
@@ -2078,8 +2189,8 @@ def configure(lane_color, model_lanes, radar_vehicles, position_correction=False
 
 
 def reset_lanes():
+  state.lane_geometry = _CcncLaneGeometry()
   state.sla_active_time = 0
-  state.lane_curv = NoiseFilter(3, 0, alpha_range=0.5)
   state._is_lane_change_active = False
   state.draw_center = state.hold_lane = False
   state.hold_lane_escape_count = 0

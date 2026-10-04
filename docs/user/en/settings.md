@@ -301,7 +301,9 @@ A driving-mode change may take about one second to appear in the lane color. Lan
 
 #### CCNC model lanes and lane-change animation
 
-Displays detected lane curves and left/right positions, with highlights and transition animation showing lane-change direction. Also adjusts set-speed and speed-limit indications and steering-assistance icons, and hides lanes when steering assistance is inactive.
+Derives road curvature from detected lane geometry instead of lateral movement in the driving path. Displays lane positions and lane-change direction with highlights and transition animation. During lane reassignment, briefly continues a consistent prior movement; otherwise holds position. Also adjusts set-speed and speed-limit indications and steering-assistance icons, and hides lanes when steering assistance is inactive.
+
+When reliable road geometry is unavailable, briefly retains the last curvature and then gradually returns the curve display toward straight. A longer lane reassignment can still pause the position display.
 
 Turn off to use the default lane and icon display. Trailer-related lane-change restrictions take priority. Nearby vehicle display is controlled separately by the next option.
 

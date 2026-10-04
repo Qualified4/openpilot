@@ -1093,7 +1093,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           if lane_color_enabled or model_lanes:
             ccnc_extension.update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled,
-                                     lane_color_enabled, model_lanes)
+                                     lane_color_enabled, model_lanes, frame)
 
         _apply_driver_monitoring_alert(values, hud_control, CS.adrv_0x161)
         ret.append(packer.make_can_msg("ADRV_0x161", CAN.ECAN, values, rx_counter = rx_counter))
