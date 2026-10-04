@@ -1,5 +1,85 @@
 # CCNC lane-change display geometry (2026-10-04)
 
+## Applied sequential runtime and curvature revision (2026-10-04)
+
+Following the five-perspective review, the user authorized implementing and
+comparing the stages in order. Both cereal-incompatible slices in `road_curve`
+and `observe_motion` now use integer indices. An absent inner-lane pair retains
+the Position estimate. A fresh model's expected data/calculation exception now
+sets `target=None`, retains the existing bounded 0.35 s curvature hold/decay,
+and cannot renew `valid_time` or leave a stale target marked as a new result.
+The explicit disabled-lateral steering-based output remains unchanged.
+
+Original, pre-fix, runtime-only and five estimator candidates were compared on
+105 unique segments /124,896 ADRV_0x161 updates with actual cereal readers.
+The pre-fix source raises 2,904 road-curve and 5,265 motion exceptions; both
+counts are zero in the runtime-only and final variants. These are exception
+invocations, not distinct faulty display frames. The runtime repair restores
+motion history and removes recognition-data-present position backups caused
+by slicing.
+
+The final estimator keeps Position as its primary source and retains the
+existing two-second farther search, uncertainty limit, quadratic safeguard,
+time filter and curve cap. During a maneuver, when near Position and both
+geometrically consistent inner lanes disagree by >0.5 code over the same
+0–30 m interval, use the near road curve directly, capped at +/-15. The old
+clamp of a farther estimate to local +/-one code is removed. Lane probabilities
+do not gate this comparison. Normal non-maneuver calculation is unchanged;
+the existing filter may carry a revised target briefly past maneuver end.
+
+Removing the farther search is rejected: synthetic straight-road lane-change
+residual grows from at most0.624 to5.591 codes in the tested speed/duration
+cases. Removing the quadratic safeguard, or always using near lanes, is also
+rejected because confidently bending Position with wrong straight lanes becomes
+zero; always using lanes additionally loses a genuinely upcoming bend.
+
+Across 2,201 model-reported start/finish observations in19 segments, mean code
+disagreement with the near-lane model proxy decreases0.652 ->0.500 from the
+runtime-only baseline. This proxy is not independent road ground truth. In
+lat-enabled near-straight observations, outputs exceeding one code decrease
+13 ->6; in near-curved observations, zero outputs decrease488 ->277. Outputs
+must still be checked against physical road/cluster behavior rather than
+optimizing this model-derived agreement alone.
+
+Actual-object regressions cover builder and serialized reader, curve/motion
+paths, failed fresh-model hold/expiry/recovery and same-interval maneuver
+selection, in addition to existing synthetic geometry and option checks.
+728 tests pass. Final-source replay matches the selected candidate on all
+124,896 updates, including stock/default startup-field retention. ModelLanes
+OFF ADRV_0x161 packets are byte-identical, and runtime-only/final output fields
+other than the two curvature fields are identical on all those updates.
+Three alternating-order desktop timing passes measure lane-update-only median
+0.1083 ->0.2555 ms in the target automatic maneuver: restored calculation is
+more expensive than the former exception shortcut. The estimator change after
+runtime repair adds only0.0015 ms in that measurement. No device-CPU claim follows.
+Private stages, source snapshots, samples, candidate rejection evidence and
+comparisons are archived in
+`.analysis/archive/2026-10-04/ccnc-geometry-stages/`. The review below documents
+the pre-fix discovery; its statements about no production edits apply to that
+earlier review stage.
+
+## Real cereal object review correction (2026-10-04)
+
+A subsequent curved-road lane-change review found that `road_curve()` uses
+`md.laneLines[1:3]`, but cereal's `_DynamicListReader` does not support Python
+slicing. The resulting TypeError is caught by `update_lanes()`, which emits
+steering-angle-based curvature. Previous namespace/list-based replay and mock
+tests did not exercise this runtime behavior. Their successful estimator output
+must not be treated as validation of real-object execution.
+
+Actual-object replay against original `6334db9d` confirms that nonzero curvature
+alone does not establish correct road-curve retention: steering fallback can
+weaken the late-maneuver display. An analysis-only indexed-access variant retains
+nonzero model curvature, while the farther Position fit and local +/-one-code
+guard can still produce a weaker curve than the original. The original estimator
+also includes heading/maneuver effects, so matching its amplitude is not proof
+of road accuracy. No production code is changed by this review. Fix list access
+and add real cereal-object coverage before evaluating further estimator changes.
+
+Private source snapshots, actual-object replay, road-video alignment, comparison
+plots and the Korean report are retained in
+`.analysis/archive/2026-10-04/ccnc-3c2-curvature/`. Raw captures stay outside Git.
+
 ## Follow-up correction after synchronized road-video review
 
 The first lane-only implementation (29ad072d, merged in d5f14561) could turn a
@@ -160,3 +240,148 @@ Final scripts, source snapshots, summaries, output rows and seven synchronized
 comparison images are local in `.analysis/archive/2026-10-04/ccnc-refine/`.
 Earlier snapshots remain unchanged in `ccnc-revision/`. No raw capture is
 committed or uploaded. Physical cluster animation remains unvalidated.
+
+### Road-video comparison: unresolved trusted-prefix rejection
+
+Subsequent review compared original `6334db9d`, pre-sequential-fix `7f004d68`
+and the current working tree against road-video frames. Of 105 unique replayed
+segments, 102 have corresponding video; 25 videos and 29 selected windows were
+visually compared, not all available videos in full. Seven overlaid comparison
+clips were rendered and all 981 encoded frames decoded successfully. These
+are replay outputs over road video, not recordings of the physical cluster.
+
+Some lane-change windows restore the original bend direction or reduce false
+curvature, but a sustained right bend still becomes straight in both the
+pre-sequential and current versions while the original retains its bend.
+`road_curve` validates monotonic x over the entire Position before truncating
+it by uncertainty. In this case untrusted distant points fold in x while the
+trusted approximately 35–40 m prefix remains valid and strongly curved. The
+whole-path rejection loses that usable prefix; bounded hold then decays to zero.
+This is an unresolved regression from the earlier geometry revision, not a
+low-lane-probability event or a new direct-local lane-change regression.
+
+A follow-up should validate the trusted prefix in the display-only curvature
+path before rejecting its geometry, preserving uncertainty, minimum-span and
+invalid-prefix rejection. Do not broadly relax shared boundary validation.
+Compare a valid prefix with an untrusted folded tail against prefix-only input,
+and retain rejection for genuinely invalid trusted geometry. No additional
+production change was made during this video review. Video supports bend
+direction and straightening observations, not exact curvature amplitude.
+
+Private case details, synchronized clips, posters, diagnosis and scripts are in
+`.analysis/archive/2026-10-04/ccnc-video-review/`. The current revision cannot yet
+be described as uniformly better than the original; physical cluster behavior
+and numerical road-curvature accuracy remain unvalidated.
+
+### Trusted-prefix fix and full-log verification
+
+The display curvature path now checks array dimensions/lengths and finite
+uncertainty, truncates Position before its first yStd >0.8 sample, then validates
+only that trusted prefix. Invalid trusted geometry still rejects. Shared lane
+and radar boundary validation, minimum fit span, curvature caps and filtering
+are unchanged. Regression checks cover folded/nonfinite untrusted tails in
+normal and lane-change modes, prefix-only equivalence and rejection of a
+nonincreasing trusted prefix. The complete CCNC check runner passes 732 tests.
+
+Same-input actual-cereal replay of all 105 unique segments (124,896 display
+updates) changes 336 curvature outputs across four segments, with zero runtime
+errors, zero lane-position differences and zero curvature differences during
+automatic laneChangeStarting/laneChangeFinishing observations. There are 90
+enabled-control observations where previous zero becomes magnitude >1, and
+none in the reverse direction. These counts measure output changes, not a
+ground-truth accuracy percentage.
+
+All 78 previously identified original-curved/current-zero observations in the
+sustained tight bend recover to -15, matching original 6334db9d. A second road
+bend previously weakened to -7 also recovers to the original -15. Seven updated
+road-video comparison clips were rendered and all 981 frames decoded; selected
+tight-bend frames visibly retain the road's right turn. Exact road curvature
+amplitude and physical cluster appearance remain unvalidated.
+
+Three alternating-order desktop lane-update timing passes give median
+0.0639 ->0.0632 ms for the curved lane-change segment overall and
+0.2347 ->0.2314 ms during its automatic change; the pre-U-turn segment gives
+0.0592 ->0.0596 ms overall. These small differences do not establish a speed
+improvement or target-device CPU cost.
+
+Private source snapshots, replay outputs, scripts, tests, comparisons and
+videos are in `.analysis/archive/2026-10-04/ccnc-trusted-prefix/`.
+
+### Direct original-versus-current cost and direction audit
+
+Three alternating-order same-input desktop passes now compare original
+6334db9d directly with current production, rather than an intermediate revision.
+The measurement covers update_lanes (curvature plus lane-position animation),
+excluding CAN packing and radar vehicles; it cannot isolate curvature-only cost
+or establish target-device whole-process CPU impact.
+
+| Segment / observations | Original median ms | Current median ms | Increase |
+|---|---:|---:|---:|
+| Sustained right bend, all | 0.0236 | 0.0681 | 188.6% |
+| Straight/change segment, all | 0.0228 | 0.0636 | 178.9% |
+| Curved/change segment, all | 0.0224 | 0.0631 | 181.7% |
+| Pre-U-turn segment, all | 0.0126 | 0.0613 | 386.5% |
+| Straight/change, automatic-change observations | 0.02415 | 0.22515 | 832.3% |
+| Curved/change, automatic-change observations | 0.02390 | 0.22770 | 852.7% |
+
+Current geometry updates even when lateral control is disabled, maintaining
+filter history; original skips model curvature then. This contributes to the
+larger pre-U-turn overhead. Restored cereal-compatible lane geometry, multiple
+five-point fits and near-lane consistency, and qualified animation motion all
+contribute to the automatic-change cost. The latest trusted-prefix fix alone
+did not create this overall increase.
+
+An explicit selected-window road-video direction audit uses four visually
+right-curved windows (461 enabled-control observations) and three approximately
+straight windows (148 observations). Original/current correct curve direction
+is 448/461 versus 461/461 (97.18% ->100%, +2.82 percentage points, +2.90% relative).
+Original has six zero and seven opposite-direction outputs in these curve
+windows, all in one lane-change window. Straight-window magnitude >1 outputs
+are 21/148 versus 0/148 (14.19% ->0%). The one-code tolerance is explicit;
+these selected problem windows are neither independent statistical trials nor
+an unbiased full-route accuracy measure. They do not validate curvature size.
+The tight-bend prefix fix restores original behavior, not a gain over original.
+
+Across all 105 segments current differs from original on 17,918/86,010 enabled
+observations and 1,549/2,201 automatic-change observations. Output difference
+alone cannot classify improvements. Whole-log curve-detection improvement
+remains unknown without independent road labels. The architecture adds input
+validity boundaries, fitting intervals, maneuver/road ambiguity guards and
+temporal state that the original simple peak-displacement loop lacked; fixes
+must address these underlying boundaries rather than accumulate case-specific
+exceptions. Private raw measurements/scripts are retained in
+`.analysis/archive/2026-10-04/ccnc-original-cost/`. No further production change
+was made during this audit.
+
+### CcncModelLanes selector
+
+The parameter is now an integer selector: 0 Off, 1 Basic (기본), 2 Refined
+(정밀). Default remains 0. Existing saved ON bytes represent 1 and now select
+Basic; there is no automatic migration to Refined. The existing roughly
+one-second poll applies changes without reboot. Unsupported integer values
+select Off. The internal explicit extended_ccnc=True compatibility override
+continues to select Refined.
+
+Basic restores original 6334db9d peak-displacement curvature and its original
+three-sample median/0.5 low-pass filter. It skips refined road_curve computation
+while updating the timestamps/freshness needed by the shared animation. Refined
+retains the current trusted-prefix curvature, maneuver guard and temporal
+filter. Both enabled modes retain current lane positions, hold/motion animation,
+icons and speed indications. Switching modes resets lane history, including both
+curvature filters, but leaves radar selection/history independent.
+
+Actual-cereal replay across 105 segments/124,896 updates finds zero Basic
+curvature differences against the original, zero Refined replay-row differences
+against the pre-selector improved snapshot, and zero Basic/Refined differences
+in positions, hold, draw, hold speed or progress. No runtime errors occur.
+739 CCNC/catalog checks and 22 existing Web control/catalog/choice checks pass.
+The catalog uses the existing named select control in Korean, English and
+Chinese; localized guides describe the modes and saved-value behavior.
+
+Previous boolean OFF/ON cost estimates are removed from this setting's
+description because they do not describe the new Basic mode with shared current
+animation. Per-mode total cost versus OFF has not been measured. Neither the
+Refined name nor replay parity guarantees greater physical road accuracy.
+Private scripts/snapshots/results are retained in
+`.analysis/archive/2026-10-04/ccnc-model-selector/`. No commit or vehicle/UI
+hardware validation is implied.

@@ -1,4 +1,5 @@
 from itertools import product
+import math
 from types import SimpleNamespace as N
 
 import pytest
@@ -18,7 +19,7 @@ POSITION_KEY = "CcncVehiclePositionCorrection"
 def display(monkeypatch):
   params = dict.fromkeys(KEYS, False)
   params[POSITION_KEY] = False
-  monkeypatch.setattr(main, "Params", lambda: N(get_bool=lambda key: params[key], get_int=lambda key: 0, get=lambda key: "0"))
+  monkeypatch.setattr(main, "Params", lambda: N(get_bool=lambda key: bool(params[key]), get_int=lambda key: int(params.get(key, 0)), get=lambda key: "0"))
   monkeypatch.setattr(ccnc_extension, "Params", lambda: N(get_int=lambda key: 3))
   monkeypatch.delattr(main.create_ccnc_messages, "_display_options", raising=False)
   monkeypatch.setattr(ccnc_extension, "state", N())
@@ -49,7 +50,7 @@ def display(monkeypatch):
   return params, cs, send
 
 
-@pytest.mark.parametrize("options", list(product((False, True), repeat=3)))
+@pytest.mark.parametrize("options", list(product((False, True), (0, 1, 2), (False, True))))
 def test_three_independent_options(display, monkeypatch, options):
   params, cs, send = display
   params.update(zip(KEYS, options))
@@ -59,6 +60,7 @@ def test_three_independent_options(display, monkeypatch, options):
   cs.ccnc_0x162 = dict.fromkeys(CANPacker("hyundai_canfd_generated").dbc.name_to_msg["CCNC_0x162"].sigs, 0)
   cs.ccnc_0x162.update(SPEEDLIMIT=0, FF_DETECT=0, LF_DETECT=0, RF_DETECT=0, LR_DETECT=0, RR_DETECT=0)
   color, geometry, radar = options
+  geometry = bool(geometry)
   for frame in (0, 5, 10, 15):
     values = dict(send(frame))["ADRV_0x161"]
   assert (values["LANE_HIGHLIGHT_DISTANCE"] > 0) == color
@@ -240,6 +242,41 @@ def test_model_toggle_resets_sla_timer(display):
   assert ccnc_extension.state.sla_active_time == 0
 
 
+def test_model_mode_polling_switches_and_resets_filter_history(display):
+  params, cs, send = display
+  params['CcncModelLanes'] = 1
+  send(0)
+  basic = ccnc_extension.state.lane_geometry
+  assert ccnc_extension.state.lane_curve_mode == 1
+  params['CcncModelLanes'] = 2
+  send(5)
+  assert ccnc_extension.state.lane_geometry is basic
+  send(100)
+  precise = ccnc_extension.state.lane_geometry
+  assert precise is not basic and ccnc_extension.state.lane_curve_mode == 2
+  send(105)
+  assert ccnc_extension.state.lane_geometry is precise
+  params['CcncModelLanes'] = 0
+  send(200)
+  assert ccnc_extension.state.lane_curve_mode == 0
+  assert ccnc_extension.state.lane_curv.value == 0
+
+
+@pytest.mark.parametrize('mode,expected', [(1, [0, -3, -5]), (2, [0, 0, 0])])
+def test_basic_uses_original_heading_sensitive_curve_precise_removes_heading(display, monkeypatch, mode, expected):
+  _, cs, _ = display
+  ccnc_extension.configure(False, True, False, model_lane_mode=mode)
+  cs.modelV2 = lane_geometry_model(heading=.1)
+  if mode == 1:
+    monkeypatch.setattr(ccnc_extension._CcncLaneGeometry, 'road_curve', lambda *args: pytest.fail('Basic ran precise curve'))
+  curves = []
+  for frame in (0, 5, 10):
+    values = {}
+    ccnc_extension.update_lanes(values, cs, cs.modelV2, 60., 0., 0, True, False, True, frame)
+    curves.append(-(values['LANELINE_CURVATURE'] + 1) if values['LANELINE_CURVATURE_DIRECTION'] else values['LANELINE_CURVATURE'])
+  assert curves == expected
+
+
 
 def test_driving_mode_cache_refresh_and_reenable(display, monkeypatch):
   params, cs, send = display
@@ -401,6 +438,24 @@ def test_lane_curvature_rejects_bad_geometry(bad):
   assert ccnc_extension._CcncLaneGeometry.road_curve(md, 90.) is None
 
 
+@pytest.mark.parametrize('changing', [False, True])
+@pytest.mark.parametrize('tail', ['fold', 'nan'])
+def test_curvature_uses_valid_trusted_prefix_before_rejecting_distant_tail(changing, tail):
+  md = lane_geometry_model(bend=.004)
+  md.position.yStd[61:] = [1.]*40
+  prefix = lane_geometry_model(bend=.004)
+  prefix.position = N(x=md.position.x[:61], y=md.position.y[:61], yStd=[0.]*61)
+  if tail == 'fold':
+    md.position.x[61:] = md.position.x[61:][::-1]
+  else:
+    md.position.y[61] = float('nan')
+  curve = ccnc_extension._CcncLaneGeometry.road_curve
+  assert curve(md, 90., changing) == pytest.approx(curve(prefix, 90., changing))
+  assert abs(curve(md, 90., changing)) > 1.
+  md.position.x[30] = md.position.x[29]
+  assert curve(md, 90., changing) is None
+
+
 def test_stale_model_does_not_renew_curvature_and_recovers():
   g = ccnc_extension._CcncLaneGeometry()
   md = lane_geometry_model(bend=.004)
@@ -411,6 +466,62 @@ def test_stale_model_does_not_renew_curvature_and_recovers():
   assert round(g.curvature) == 0 and g.target is None and abs(before) > 5.
   g.update(lane_geometry_model(stamp=100, bend=.004), 90, 3.05)
   assert g.fresh and g.curvature < 0.
+
+
+@pytest.mark.parametrize('reader', [False, True])
+def test_actual_cereal_lane_change_computes_curve_and_motion(display, reader):
+  from openpilot.cereal import log
+  _, cs, _ = display
+  model = lane_geometry_model(heading=.03, bend=.001)
+  # Exercise the nonquadratic maneuver branch, not its early bypass.
+  model.position.y = [y + .4*math.sin(x/20) for x, y in zip(model.position.x, model.position.y)]
+  builder = log.ModelDataV2.new_message(
+    timestampEof=1, position=vars(model.position), laneLines=[vars(line) for line in model.laneLines],
+    laneLineProbs=model.laneLineProbs,
+    meta=dict(laneChangeAvailableLeft=True, laneChangeAvailableRight=True))
+  if reader:
+    # Use a serialized reader as well as a live builder.
+    with log.ModelDataV2.from_bytes(builder.to_bytes()) as md:
+      _check_actual_lane_change(cs, md)
+  else:
+    _check_actual_lane_change(cs, builder)
+
+
+def _check_actual_lane_change(cs, md):
+  g = ccnc_extension.state.lane_geometry
+  assert g.road_curve(md, 85., True) is not None
+  g.fresh = True
+  g.observe_motion(md, True, True, False, 0., 85.)
+  assert len(g.motion) == 1
+  cs.out.leftBlinker = True
+  values = {}
+  ccnc_extension.update_lanes(values, cs, md, 85., 0., 3, True, False, True, 5)
+  assert ccnc_extension.state.lane_geometry.target is not None
+  assert values.get('LFA_ICON') != 5
+  assert (values['LANELINE_LEFT_POSITION'], values['LANELINE_RIGHT_POSITION']) != (30, 30)
+  assert values.get('LANE_HIGHLIGHT') != 3
+
+
+def test_failed_fresh_curve_does_not_keep_a_stale_target(monkeypatch):
+  g = ccnc_extension._CcncLaneGeometry()
+  for i in range(20):
+    g.update(lane_geometry_model(stamp=i+1, bend=.004), 90., i*.05)
+  before, valid_time = g.curvature, g.valid_time
+  def fail(*args):
+    raise TypeError('malformed model')
+  monkeypatch.setattr(g, 'road_curve', fail)
+  failed = lane_geometry_model(stamp=21)
+  g.update(failed, 90., 1.)
+  assert g.fresh and g.target is None and g.valid_time == valid_time
+  assert g.curvature == before
+  g.update(failed, 90., 1.05)
+  assert not g.fresh and g.target is None
+  for i in range(22, 51):
+    g.update(failed, 90., i*.05)
+  assert round(g.curvature) == 0
+  monkeypatch.setattr(g, 'road_curve', ccnc_extension._CcncLaneGeometry.road_curve)
+  g.update(lane_geometry_model(stamp=22, bend=.004), 90., 2.55)
+  assert g.fresh and g.target is not None and g.curvature < 0
 
 
 @pytest.mark.parametrize('duration', [0., .2, .4, 1.])
@@ -508,6 +619,21 @@ def test_maneuver_guard_keeps_real_near_road_bend_at_zero_lane_confidence(bend):
     value = ccnc_extension._CcncLaneGeometry.road_curve(md, 60., True)
     expected = -1800*bend / (1+(bend*15)**2)**1.5
     assert abs(value-expected) < 1.1
+
+
+@pytest.mark.parametrize('bend', [-.002, .002])
+def test_disagreeing_maneuver_uses_same_interval_road_curve(bend):
+  md = lane_geometry_model(bend=bend)
+  xs = np.linspace(0., 250., 501)
+  u = np.clip(xs/(60/3.6)/4, 0., 1.)
+  md.position = N(x=xs, y=.5*bend*xs**2+3.6*(10*u**3-15*u**4+6*u**5), yStd=[0.]*len(xs))
+  md.laneLineProbs = [0.]*4
+  g = ccnc_extension._CcncLaneGeometry
+  local = sum(g.fit_curve(np.asarray(line.x), np.asarray(line.y), 0, 30)[0]
+              for line in md.laneLines[1:3])*.5
+  near_position = g.fit_curve(md.position.x, md.position.y, 0, 30)[0]
+  assert abs(near_position-local) > .5
+  assert g.road_curve(md, 60., True) == pytest.approx(local)
 
 
 def test_unqualified_motion_keeps_original_two_release_steps(display):

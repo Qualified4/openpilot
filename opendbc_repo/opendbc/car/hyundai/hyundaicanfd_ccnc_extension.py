@@ -1697,16 +1697,18 @@ class _CcncLaneGeometry:
       return None
     pos = md.position
     xs, ys = np.asarray(pos.x, dtype=np.float64), np.asarray(pos.y, dtype=np.float64)
-    if not _ccnc_valid_boundary(xs, ys):
-      return None
     stds = np.asarray(pos.yStd, dtype=np.float64)
-    if len(stds) != len(xs) or not np.all(np.isfinite(stds)):
+    if xs.ndim != 1 or ys.ndim != 1 or stds.ndim != 1 or len(ys) != len(xs) or len(stds) != len(xs) or not np.all(np.isfinite(stds)):
       return None
     # Keep the original position uncertainty limit, independent of lane probability.
     uncertain = np.flatnonzero(stds > .8)
-    available = xs[int(uncertain[0]) - 1] if len(uncertain) and uncertain[0] else xs[-1]
-    if len(uncertain) and uncertain[0] == 0:
+    trusted = int(uncertain[0]) if len(uncertain) else len(xs)
+    xs, ys = xs[:trusted], ys[:trusted]
+    # Distant untrusted points can fold in x on a tight bend. Validate only
+    # the prefix used for curvature; invalid trusted geometry still rejects.
+    if not _ccnc_valid_boundary(xs, ys):
       return None
+    available = xs[-1]
     end = 30.0 + min(max((speed - 20.0) / 80.0, 0.0), 1.0) * 50.0
     # Look beyond the near lateral transition, without trusting low-probability
     # lane polynomials to describe the distant road. This is not exact removal
@@ -1725,8 +1727,11 @@ class _CcncLaneGeometry:
       return target
     # Near geometry can expose a maneuver bend in the path without requiring
     # distant lane polynomials (or lane probabilities) to describe the road.
+    if len(md.laneLines) < 3:
+      return target
     curves, samples = [], []
-    for line in md.laneLines[1:3]:
+    for index in (1, 2):
+      line = md.laneLines[index]
       lx, ly = np.asarray(getattr(line, 'x', ())), np.asarray(line.y)
       if not _ccnc_valid_boundary(lx, ly) or lx[0] > 0 or lx[-1] < 30:
         return target
@@ -1739,13 +1744,12 @@ class _CcncLaneGeometry:
       return target
     local = sum(curves) * .5
     if abs(fit(xs, ys, 0, 30)[0] - local) > .5:
-      # Keep an independently straight near road straight; retain a one-code
-      # tolerance for a bend. This is a display guard, not exact separation.
-      margin = 0.0 if abs(local) < .5 else 1.0
-      return min(max(target, local - margin), local + margin)
+      # Compare the same near-road interval. When the path differs, use that
+      # road bend directly instead of clipping a different, farther interval.
+      return min(max(local, -15.0), 15.0)
     return target
 
-  def update(self, md, speed, now, changing=False):
+  def update(self, md, speed, now, changing=False, compute_curve=True):
     elapsed = None if self.last_time is None else now - self.last_time
     if elapsed is None or not 0 <= elapsed <= .15:
       self.__init__()
@@ -1754,8 +1758,14 @@ class _CcncLaneGeometry:
     stamp = getattr(md, 'timestampEof', None) if md is not None else None
     self.fresh = md is not None and (stamp != self.stamp if stamp is not None and stamp > 0 else md is not self.model)
     self.model, self.stamp = md, stamp
+    if not compute_curve:
+      return 0
     if self.fresh:
-      self.target = self.road_curve(md, speed, changing)
+      try:
+        self.target = self.road_curve(md, speed, changing)
+      except (AttributeError, IndexError, TypeError, ValueError):
+        # This model was consumed, but cannot renew the previous target.
+        self.target = None
       if self.target is not None:
         self.valid_time = now
     if md is None or now - self.valid_time > .35:
@@ -1782,7 +1792,8 @@ class _CcncLaneGeometry:
       self.motion.clear()
       return
     velocities = []
-    for line in lines[1:3]:
+    for index in (1, 2):
+      line = lines[index]
       xs, ys = np.asarray(line.x), np.asarray(line.y)
       if not _ccnc_valid_boundary(xs, ys) or xs[0] > 0 or xs[-1] < 5:
         self.motion.clear()
@@ -1814,6 +1825,27 @@ class _CcncLaneGeometry:
       t = min(.6, max(0.0, now - self.hold_start))
       self.progress = min(.45, self.hold_speed * (t - t*t / 1.2))
     return self.progress
+
+
+def _ccnc_basic_curve(md, speed, changing):
+  # Original 6334db9d peak-displacement curvature, including its search limits.
+  end = 30.0 + min(max((speed - 20.0) / 80.0, 0.0), 1.0) * 50.0
+  pos = md.position
+  xs, ys, stds = pos.x, pos.y, pos.yStd
+  maximum, peak, start = 0.0, 0, 0
+  start_found = not changing
+  minimum = 20.0 if changing else 0.0
+  for i in range(1, len(xs)):
+    x = xs[i]
+    if not start_found and x >= minimum:
+      start, start_found = i, True
+    if stds[i] > .8 or x > end:
+      break
+    if abs(ys[i]) > maximum:
+      maximum, peak = abs(ys[i]), i
+  if start != peak and xs[peak] >= 20.0 + minimum:
+    return -3600.0 * (ys[peak] - ys[start]) / (xs[peak] * xs[peak])
+  return 0.0
 
 
 def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane_color=True, model_lanes=True, frame=None):
@@ -1849,8 +1881,11 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
     state.l_lane_f.reset_alpha()
     state.r_lane_f.reset_alpha()
   try:
-    curvature = geometry.update(md, v_ego_kph, now, is_currently_lane_changing)
-    if not lat_enabled:
+    precise = state.lane_curve_mode == 2
+    curvature = geometry.update(md, v_ego_kph, now, is_currently_lane_changing, compute_curve=precise)
+    if lat_enabled and not precise:
+      curvature = round(state.lane_curv.apply(_ccnc_basic_curve(md, v_ego_kph, is_currently_lane_changing)))
+    elif not lat_enabled:
       curvature = round(CS.out.steeringAngleDeg / 3)
 
   except:
@@ -2287,17 +2322,18 @@ state = SimpleNamespace()
 _options = None
 
 
-def configure(lane_color, model_lanes, radar_vehicles, position_correction=False):
+def configure(lane_color, model_lanes, radar_vehicles, position_correction=False, model_lane_mode=2):
   global _options
-  options = (lane_color, model_lanes, radar_vehicles, position_correction)
+  options = (lane_color, model_lanes, radar_vehicles, position_correction, model_lane_mode)
   if options == _options:
     return
   if _options is None or lane_color != _options[0]:
     state.drive_lane_color = LaneHighlightStateMachine()
     state.drive_mode = 3
     state.drive_mode_refresh = -math.inf
-  if _options is None or model_lanes != _options[1]:
+  if _options is None or model_lanes != _options[1] or model_lane_mode != _options[4]:
     reset_lanes()
+  state.lane_curve_mode = model_lane_mode
   if _options is None or radar_vehicles != _options[2]:
     reset_vehicles()
   if _options is None or radar_vehicles != _options[2] or position_correction != _options[3]:
@@ -2310,6 +2346,7 @@ def configure(lane_color, model_lanes, radar_vehicles, position_correction=False
 
 def reset_lanes():
   state.lane_geometry = _CcncLaneGeometry()
+  state.lane_curv = NoiseFilter(3, 0, alpha_range=0.5)
   state.sla_active_time = 0
   state._is_lane_change_active = False
   state.draw_center = state.hold_lane = False

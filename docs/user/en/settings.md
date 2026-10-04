@@ -250,7 +250,7 @@ This category contains 21 menu settings and one search-only driver-monitoring ex
 | Hyundai/Kia | `HyundaiCameraSCC`, `IsLdwsCar`, `HapticFeedbackWhenSpeedCamera` | SCC connection, LDWS behavior, and speed-event haptics |
 | CAN FD/HDA | `CanfdHDA2`, `HyundaiCanfdClusterDirectTx`, `CanfdDebug`, `HDPuse` | HDA2 selection, cluster direct send, CAN FD diagnostics, and HDP |
 | [CCNC display](#ccnc-display) | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
-| [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes and lane-change animation · Default OFF (0) |
+| [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes and lane-change animation · Off (0) / Basic (1) / Refined (2), default 0 |
 | [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | CCNC vehicle position correction · Default OFF (0) |
 | Radar | `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC radar, front-track orientation, corner radar, and Carrot Radar processing and cut-in sensitivity |
@@ -301,9 +301,11 @@ A driving-mode change may take about one second to appear in the lane color. Lan
 
 #### CCNC model lanes and lane-change animation
 
-Uses the predicted driving path together with nearby lane geometry for road curvature while reducing the effect of lane-change translation and heading. Displays lane positions and lane-change direction with highlights and transition animation. During lane reassignment, briefly continues movement estimated from the preceding lane heading; otherwise holds position. Also adjusts set-speed and speed-limit indications and steering-assistance icons, and hides lanes when steering assistance is inactive.
+Choose Off (0), Basic (1), or Refined (2). Basic uses the original lightweight path-displacement curvature calculation. Refined uses path shape over an interval and nearby inner lanes to reduce lane-change translation and heading artifacts; it does not guarantee higher accuracy on every road. Existing ON (1) becomes Basic; select Refined to use the current improved curvature. Defaults to Off, with changes applied within about one second.
 
-Low lane confidence alone does not discard curvature during a lane change. When the driving path is stale or unusable, briefly retains the last curvature and then gradually returns the curve display toward straight. A longer lane reassignment can still pause the position display.
+Both enabled modes display lane positions and lane-change direction with highlights and transition animation. During lane reassignment, briefly continue movement estimated from the preceding lane heading; otherwise hold position. Both also adjust set-speed and speed-limit indications and steering-assistance icons, and hide lanes when steering assistance is inactive.
+
+Refined does not discard curvature solely because of low lane confidence during a lane change. When the driving path is stale or unusable, it briefly retains the last curvature and then gradually returns the curve display toward straight. A longer lane reassignment can still pause the position display in both modes.
 
 Turn off to use the default lane and icon display. Trailer-related lane-change restrictions take priority. Nearby vehicle display is controlled separately by the next option.
 

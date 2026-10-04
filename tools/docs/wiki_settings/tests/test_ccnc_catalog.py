@@ -20,7 +20,7 @@ class CcncCatalogTest(unittest.TestCase):
     self.assertEqual(len(result.pages), len(settings) * 3 + 2)
     params = {item["name"]: item for item in json.loads(CATALOG.read_text(encoding="utf-8"))["params"]}
     for key in KEYS:
-      self.assertEqual((params[key]["min"], params[key]["max"], params[key]["default"]), (0, 1, 0))
+      self.assertEqual((params[key]["min"], params[key]["max"], params[key]["default"]), (0, 2 if key == 'CcncModelLanes' else 1, 0))
       for field in ("descr", "edescr", "cdescr"):
         for internal in ("liveTracks", "radarState", "leadOne", "leadTwo", "Params", "carrot-wip", "ccnc-hda1"):
           self.assertNotIn(internal, params[key][field])
@@ -29,6 +29,8 @@ class CcncCatalogTest(unittest.TestCase):
         self.assertEqual(VALIDATOR.validate_wiki_markdown(page), [])
         field = {"ko": "descr", "en": "edescr", "zh": "cdescr"}[locale]
         self.assertIn(params[key][field], page)
+    self.assertEqual(params['CcncModelLanes']['control'], 'select')
+    self.assertEqual(params['CcncModelLanes']['options']['ko'], ['끄기', '기본', '정밀'])
 
   def test_current_catalog_ci_report(self):
     with tempfile.TemporaryDirectory() as temp:

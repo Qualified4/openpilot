@@ -901,16 +901,19 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
     if not hasattr(create_ccnc_messages, '_display_options') or frame % 100 == 0:
       params = Params()
       create_ccnc_messages._display_options = (
-        params.get_bool("CcncLaneColor"), params.get_bool("CcncModelLanes"),
+        params.get_bool("CcncLaneColor"), params.get_int("CcncModelLanes"),
         params.get_bool("CcncRadarVehicles"),
         params.get_bool("CcncVehiclePositionCorrection"),
       )
-    lane_color_enabled, model_lanes, radar_vehicles, position_correction = create_ccnc_messages._display_options
+    lane_color_enabled, model_lane_mode, radar_vehicles, position_correction = create_ccnc_messages._display_options
+    model_lane_mode = model_lane_mode if model_lane_mode in (0, 1, 2) else 0
+    model_lanes = model_lane_mode != 0
   else:
     lane_color_enabled = model_lanes = radar_vehicles = extended_ccnc
+    model_lane_mode = 2 if model_lanes else 0
     position_correction = False
   radar_vehicles = radar_vehicles and not (CP.flags & HyundaiFlags.CANFD_HDA2.value)
-  ccnc_extension.configure(lane_color_enabled, model_lanes, radar_vehicles, position_correction)
+  ccnc_extension.configure(lane_color_enabled, model_lanes, radar_vehicles, position_correction, model_lane_mode)
   interlock_active = longitudinal_interlock_active(CS)
   display_lead = _display_lead(getattr(CS, "radarState", None))
   lead_visible = display_lead is not None
