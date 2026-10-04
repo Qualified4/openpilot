@@ -1,94 +1,162 @@
 # CCNC lane-change display geometry (2026-10-04)
 
-`CcncModelLanes` now separates the displayed road bend from lateral motion in
-the model driving path. The cluster accepts a single curvature code, not a
-continuous trajectory. The previous peak-position calculation could interpret
-lane-change translation and heading as a road bend.
+## Follow-up correction after synchronized road-video review
 
-## Implementation
+The first lane-only implementation (29ad072d, merged in d5f14561) could turn a
+real road bend into a straight display when lane probabilities dropped during
+lane changes. Reduced curvature amplitude in the initial three-log replay did
+not establish improved road accuracy. This revision restores the model driving
+path as the curvature source and corrects the lane-position transition.
 
-- Estimate a quadratic from five equally spaced samples over the existing
-  speed-dependent 30–80 m lookahead, shortened to available geometry (at least
-  20 m). Remove the constant/linear components and account for slope in the
-  geometric curvature denominator. Retain the previous 1800 display scale,
-  sign convention and CAN encoding. This scale is not a calibrated cluster
-  road-radius measurement.
-- Prefer inner lanes, then outer lanes, then road edges. Require finite,
-  increasing coordinates; lane probability >=0.6 or edge standard deviation
-  <=0.3. Reject conflicting estimates differing by more than three display
-  units. Reuse the existing per-model curve conversion/validation cache.
-- Apply a 0.25 s time constant and 10 display units/s maximum change. Missing,
-  weak or repeated stale geometry can retain curvature for 0.35 s from the
-  last valid fresh observation, then fade toward straight. Therefore weak
-  geometry on a real bend can temporarily underrepresent that bend. Do not
-  claim exact cancellation of vehicle rotation on arbitrary road shapes.
-- Retain the existing phase/hold/release decisions. Release evidence counts
-  distinct model observations rather than repeated calls. Reset transition
-  evidence on a direction change or a control-call gap greater than 150 ms.
-- Before the hold trigger, collect at most eight observations of the two
-  inner boundaries. Require a 150 ms history, coherent approaching-boundary
-  movement, bounded individual steps, positive net speeds in 0.1–1.5 m/s and
-  agreement within 0.4 m/s. The opposite boundary may contain bounded jitter.
-  These conditions do not establish physical identity: an early common sweep
-  can contaminate this history.
-- Only inside the existing hold, integrate that prior speed with a linear
-  decay to zero over 0.3 s. Cap predicted displacement at 0.25 m (the speed
-  bound currently gives an effective maximum of 0.225 m). Never renew the
-  prediction with observations from the hold. Without adequate history,
-  retain position. This deliberately does not eliminate all pauses.
-- Ramp lane filter alpha between 0.2 and 0.6 at 2/s and keep the existing
-  post-transition position limiter at 3 m/s, expressed using elapsed control
-  time instead of a fixed 0.15 m per call. Preserve filter values at cancellation.
+### Curvature
 
-The setting defaults, live polling, lane colors, warning/trailer precedence,
-vehicle selection and control algorithms are unchanged. Road curvature now
-uses lane geometry throughout active model-lane display, including ordinary
-driving, to avoid switching estimators at lane-change entry/exit. Normal curve
-appearance can consequently differ from the previous driving-path display.
+- Fit a quadratic to five equally spaced position samples. Constant lateral
+  offset and linear heading cancel; the slope denominator retains geometric
+  curvature scaling. Preserve the 1800 scale, sign and CAN encoding.
+- Normal driving uses the existing speed-dependent 30–80 m horizon. During a
+  lane change, extend it by two seconds of measured travel and fit its farther
+  half, starting at least 20 m ahead. Clip the horizon to available trustworthy
+  position data. This reduces near maneuver contributions; it does not exactly
+  separate arbitrary lane-change curvature from road curvature.
+- Preserve the original position yStd limit of 0.8. Lane probability and road
+  edge uncertainty do not gate this estimator, including during lane changes.
+- Keep the 0.25 s filter, maximum 10 codes/s, and bounded retention for missing,
+  stale or unusable position data. Ordinary low lane confidence no longer
+  triggers decay toward straight.
 
-## Verification and limitations
+### Lane-position transition
 
-Baseline: `6334db9d`. The user-provided local log folder contains three
-explicitly grouped lane-change segments with 3,600 valid model observations.
-One segment contains left and right lane changes. During these maneuvers,
-lane probabilities fall almost to zero and lane indices are reassigned over
-multiple observations. Road edges, particularly in the left maneuver, are
-too uncertain to use as a generally reliable physical-motion reference.
+- Evaluate model freshness even when lateral control is disabled. The previous
+  implementation passed None to the geometry tracker in that mode, preventing
+  fresh-model release evidence from accumulating although position inputs arrived.
+  The disabled-lateral curvature still comes from the steering angle as before.
+- Retain phase detection and the two-distinct-model release condition. Require
+  a preceding boundary distance below 0.5 m for the rebound-trigger branch;
+  a distance below 0.1 m still directly triggers. A distant recognition rebound
+  alone must not reassign displayed lanes. Early physical index reassignment
+  without a near-boundary observation remains ambiguous.
+- Estimate pre-trigger lateral motion from the two inner lanes' near tangents
+  multiplied by measured speed, rather than differences between relabelled
+  lateral offsets. Use a quadratic tangent estimate at 0/2.5/5 m. A parallel
+  sweep changes offsets without changing this heading estimate; deformed lane
+  shapes can still corrupt it.
+- Collect at most eight fresh observations with at least 150 ms of history.
+  Require bounded observation gaps, median approaching speeds of 0.1–1.5 m/s,
+  side-to-side agreement within 0.4 m/s, and within-window speed spread <=0.6 m/s.
+  Reversed, stale or inconsistent evidence gives no continuation.
+- Continue only inside the existing hold, fading speed to zero over 0.6 s and
+  limiting displacement to 0.45 m. Never update the prediction with hold data.
+  The revised bound covers the observed 0.30–0.55 s automatic holds; it is not
+  permission to extrapolate indefinitely through recognition loss or cancellation.
+- Preserve gain ramping, post-transition 3 m/s limiter, direction/gap resets,
+  cancellation handling and CAN position limits. Saturation/quantization and
+  insufficient history can still produce a visible pause.
 
-Same-input display replay (signed cluster curvature units):
+### Same-input comparison
 
-| Maneuver | Previous range | New range |
+Input: 27 rlog/qcamera segment pairs supplied for the follow-up review. All were
+recorded on d5f14561. Comparison variants are original 6334db9d, the committed
+lane-only version, and this revision. There are no separate before/after vehicle
+runs. Replay uses the latest valid model within 0.5 s, matching card's model
+alive budget, and calls the display at recorded 0x161 send times. Packet-sampling
+and event-order differences prevent claiming bit-exact reconstruction of the
+recorded full vehicle session.
+
+Eight model-reported automatic lane changes cover 850 display samples. A change
+across consecutive segments19/20 is counted once. Seven representative videos
+have 1,200 frames and 1,200 encode indices each; relative timing disagreement is
+less than0.012 ms. Display values are compared with the synchronized road video,
+not footage of the physical cluster or independently measured road curvature.
+
+| Check | Committed lane-only version | Revision |
 |---|---:|---:|
-| Left change | -1 to 3 | 0 to 1 |
-| Right change | -1 to 1 | 0 |
+| Curved-road change, A/3 around35 s | curve0 | curve-6 |
+| Same curve around36 s | curve0 | curve-5 |
+| Curved-road change, B/16 around52 s | curve0 | curve-2 |
+| Hold continuation in8 automatic changes | 0/8 | 7/8 |
+| Qualified continuation displacement | 0 m | 0.162–0.279 m |
+| B/24 before U-turn: hold around21.85 s | 5.95 s | 0.30 s |
 
-The hold state still occupies 17 left-change observations and two right-change
-observations. Left-change continuation reaches 0.102 m; right-change evidence
-does not qualify. These are deliberately conservative results, not evidence
-that physical display pauses have been eliminated. The two adjacent segments
-also change curvature ranges (-1..8 to -1..2 and -4..6 to -4..5); no road-shape
-ground truth is available to establish which normal-driving curve is more accurate.
+A/3 still has no motion history at its trigger and retains a short hold. B/19
+had a premature distant-boundary rebound transition; the revision delays it
+until near the actual crossing and obtains 0.170 m of continuation. Normal
+curve A/12 around57 s remains-13; around59 s it is-10 versus the committed-8
+and original-10. These are display codes, not calibrated road-radius estimates.
 
-- 686 focused CCNC/settings/Wiki tests pass, including synthetic straight-road
-  translations, headings and 24 left/right sweep schedules (0–1 s duration,
-  -0.3/0/+0.3 s onset), real quadratic bends, invalid geometry, stale input,
-  bounded prediction, cancellation, filter-gain transition and control gaps.
-- On the separate 4,155-frame input set, all eight combinations with model
-  lanes OFF preserve complete CCNC CAN output (33,240 comparisons). All 16
-  combinations preserve the vehicle-display packet (66,480 comparisons).
-- Windows paired replay of the complete CCNC call, with Python CAN packing:
-  model lanes add approximately 72–75 us with radar OFF and 42–53 us with
-  radar ON versus the previous implementation in the measured runs. These
-  are desktop costs, not measured ARM/device CPU effects.
-- Korean/English guides and Korean/English/Chinese catalog descriptions are
-  updated; current-catalog generated Wiki validation and user-doc checks pass.
+### Validation and remaining limits
 
-Replay forces the display path enabled to compare the same model/car inputs;
-it does not reconstruct vehicle response, independently measure road curvature,
-or establish actual cluster appearance. Longer, early and common-mode sweeps
-remain ambiguous. Do not widen prediction limits solely to remove a visible
-pause. Physical-cluster validation remains necessary before claiming the
-perceived smoothness is resolved.
+- 699 focused CCNC/settings/Wiki tests pass, covering malformed and stale path
+  data, zero lane confidence, distant straight lane polynomials on a curved path,
+  affine translation/heading,24 parallel sweep schedules, near-heading motion,
+  cancellation/gaps, disabled-lateral release and distant recognition rebounds.
+- Added smooth quintic lateral-maneuver checks on straight roads: residual raw
+  curvature maxima are approximately0.624 codes for90 km/h over6 s,0.049 for60 km/h
+  over4 s, and0 for50 km/h over3 s. Curved lane-change components therefore
+  remain; the earlier claim of exact straight-road cancellation applies only
+  to affine synthetic paths, not a full maneuver.
+- On the independent4,155-frame input set, complete CAN output with model lanes
+  OFF matches original 6334db9d in all8 combinations (33,240 comparisons).
+  Vehicle-display packets match in all16 combinations (66,480 comparisons).
+- B/24's model recognition error is not repaired. Its long display lock is
+  corrected, and disabled-lateral steering-based curvature remains unchanged.
+- No steering, radar classification, option defaults, trailer/warning precedence
+  or Panda forwarding policy is changed. Normal model-lane curvature does change.
+  Physical cluster animation, timing and road accuracy require vehicle validation.
 
-Local scripts, route references, samples and results are retained under
-`.analysis/archive/2026-10-04/ccnc-lanes/`; they are not committed route data.
+Private route mappings, scripts, source snapshots, summaries and comparison
+images are retained locally in `.analysis/archive/2026-10-04/ccnc-revision/`.
+Original first-revision evidence remains in `ccnc-lanes/`; the follow-up diagnosis
+is in `ccnc-road-review/`. Raw logs and videos are not committed or uploaded.
+
+### Final refinement and direct comparison against original 6334db9d
+
+Position remains the primary curvature source. During lane changes only, a
+nearby-lane consistency check limits residual maneuver curvature. Fit position
+and both inner lanes over 0–30 m; require valid increasing geometry, width
+2.3–4.8 m at all five samples and lane curvature agreement within three codes.
+Do not gate this check on lane probability. A full position quadratic fit with
+maximum residual <=0.02 m bypasses the guard, preserving consistent true bends
+even when nearby lanes incorrectly appear straight. Otherwise, when near
+position differs from mean local lane curvature by >0.5 code, bound the far
+estimate to local curvature +/- one code. For local magnitude <0.5 code, use
+local directly. Invalid or inconsistent lane evidence retains position curvature.
+
+This is a display heuristic, not exact maneuver/road separation. Incorrect
+nearby lanes with a nonquadratic position path remain ambiguous. A genuinely
+upcoming bend is retained when nearby position and lanes agree. Tests preserve
+true quadratic road bends with wrong straight lanes and zero-confidence curved
+maneuvers. The synthetic 90 km/h case can still quantize to one code.
+
+Hold progress now preserves the original 0.1/0.2 m release-evidence steps as a
+minimum, taking the greater of that progress and qualified prediction. Missing
+motion history therefore no longer delays the original release in A/3.
+
+| Check | Original | Final correction |
+|---|---:|---:|
+| A/3: first position movement after hold trigger | 0.256 s | 0.256 s |
+| A/9: first position movement | 0.449 s | 0.103 s |
+| A/18: first position movement | 0.496 s | 0.147 s |
+| B/24 before U-turn: first position movement | 0.255 s | 0.153 s |
+| B/24 hold duration | approximately0.30 s | approximately0.30 s |
+| A/3 lane-change curvature range | -5..+1 | -5..0 |
+| A/18 lane-change curvature range | -6..0 | -5..0 |
+| A/19–20 lane-change curvature range | -1..+1 | 0..+1 |
+| B/11 lane-change curvature range | 0..+5 | 0..+5 |
+| A/12 normal curve around57/59 s | -13 / -10 | -13 / -10 |
+
+A/3 release-position samples match the original around the transition. The
+opposite +1 in A/18 and +2 peak in A/19–20 from the earlier follow-up are gone.
+B/19's hold begins near the boundary instead of a premature distant recognition
+rebound, but lasts approximately0.55 s versus original0.50 s. B/24's recognition
+error is not repaired: the first revision's long lock is eliminated, restoring
+the original short hold. Curvature amplitude is not independently validated.
+
+Three paired desktop timing passes, including Python CAN packing, give median
+total call time215 ->259 microseconds with model lanes alone and612 ->653
+microseconds with model lanes plus radar vehicles. The correction costs about
+0.04 ms per call; these are not device timings.
+
+Final scripts, source snapshots, summaries, output rows and seven synchronized
+comparison images are local in `.analysis/archive/2026-10-04/ccnc-refine/`.
+Earlier snapshots remain unchanged in `ccnc-revision/`. No raw capture is
+committed or uploaded. Physical cluster animation remains unvalidated.

@@ -1590,62 +1590,81 @@ class _CcncLaneGeometry:
     self.progress = 0.0
 
   @staticmethod
-  def road_curve(md, speed, curve=None):
+  def fit_curve(xs, ys, start, end):
+    y = np.interp(np.linspace(start, end, 5), xs, ys)
+    half = (end - start) * .5
+    quadratic = (4*y[0] - 2*y[1] - 4*y[2] - 2*y[3] + 4*y[4]) / 7.0
+    slope = (-y[0] - .5*y[1] + .5*y[3] + y[4]) / (2.5 * half)
+    curvature = float(-3600 * quadratic / (half**2 * (1 + slope*slope)**1.5))
+    t = np.linspace(-1., 1., 5)
+    fitted = np.mean(y) - quadratic*.5 + slope*half*t + quadratic*t*t
+    return curvature, float(np.max(np.abs(y - fitted)))
+
+  @staticmethod
+  def road_curve(md, speed, changing=False):
     if md is None:
       return None
+    pos = md.position
+    xs, ys = np.asarray(pos.x, dtype=np.float64), np.asarray(pos.y, dtype=np.float64)
+    if not _ccnc_valid_boundary(xs, ys):
+      return None
+    stds = np.asarray(pos.yStd, dtype=np.float64)
+    if len(stds) != len(xs) or not np.all(np.isfinite(stds)):
+      return None
+    # Keep the original position uncertainty limit, independent of lane probability.
+    uncertain = np.flatnonzero(stds > .8)
+    available = xs[int(uncertain[0]) - 1] if len(uncertain) and uncertain[0] else xs[-1]
+    if len(uncertain) and uncertain[0] == 0:
+      return None
     end = 30.0 + min(max((speed - 20.0) / 80.0, 0.0), 1.0) * 50.0
-    for indices in ((1, 2), (0, 3), (4, 5)):
-      estimates = []
-      for index in indices:
-        if index < 4:
-          if len(md.laneLines) <= index or len(md.laneLineProbs) <= index:
-            continue
-          probability = md.laneLineProbs[index]
-          if not math.isfinite(probability) or probability < 0.6:
-            continue
-          line = md.laneLines[index]
-        else:
-          edges, stds = getattr(md, 'roadEdges', ()), getattr(md, 'roadEdgeStds', ())
-          if len(edges) <= index - 4 or len(stds) <= index - 4:
-            continue
-          std = stds[index - 4]
-          if not math.isfinite(std) or not 0 <= std <= 0.3:
-            continue
-          line = edges[index - 4]
-        if len(getattr(line, 'x', ())) < 2:
-          continue
-        if curve is None:
-          xs, ys = np.asarray(getattr(line, 'x', ()), dtype=np.float64), np.asarray(line.y, dtype=np.float64)
-          valid = _ccnc_valid_boundary(xs, ys)
-        else:
-          xs, ys, valid = curve(md, index)
-        if not valid or xs[0] > 0 or xs[-1] < 20:
-          continue
-        length = min(end, xs[-1])
-        y = np.interp(np.linspace(0, length, 5), xs, ys)
-        # Least-squares quadratic at five equally spaced points. Translation and
-        # linear heading cancel; the denominator converts y'' to geometric curvature.
-        half = length * 0.5
-        quadratic = (4*y[0] - 2*y[1] - 4*y[2] - 2*y[3] + 4*y[4]) / 7.0
-        slope = (-y[0] - .5*y[1] + .5*y[3] + y[4]) / (2.5 * half)
-        estimates.append(float(-1800.0 * 2 * quadratic / (half**2 * (1 + slope*slope)**1.5)))
-      if estimates:
-        if max(estimates) - min(estimates) > 3.0:
-          return None  # Conflicting boundaries cannot establish a road bend.
-        return min(max(sum(estimates) / len(estimates), -15.0), 15.0)
-    return None
+    # Look beyond the near lateral transition, without trusting low-probability
+    # lane polynomials to describe the distant road. This is not exact removal
+    # of an arbitrary lane-change trajectory.
+    end = min(end + (speed / 3.6 * 2.0 if changing else 0.0), available)
+    start = max(20.0, end * .5) if changing else max(0.0, xs[0])
+    if end - start < 20.0:
+      return None
+    fit = _CcncLaneGeometry.fit_curve
+    target = min(max(fit(xs, ys, start, end)[0], -15.0), 15.0)
+    if not changing or xs[0] > 0:
+      return target
+    # A consistent quadratic bend is not maneuver evidence just because nearby
+    # lanes are wrong. Preserve it even when those lanes incorrectly look straight.
+    if fit(xs, ys, 0, end)[1] <= .02:
+      return target
+    # Near geometry can expose a maneuver bend in the path without requiring
+    # distant lane polynomials (or lane probabilities) to describe the road.
+    curves, samples = [], []
+    for line in md.laneLines[1:3]:
+      lx, ly = np.asarray(getattr(line, 'x', ())), np.asarray(line.y)
+      if not _ccnc_valid_boundary(lx, ly) or lx[0] > 0 or lx[-1] < 30:
+        return target
+      samples.append(np.interp(np.linspace(0, 30, 5), lx, ly))
+      curves.append(fit(lx, ly, 0, 30)[0])
+    if len(curves) != 2:
+      return target
+    widths = samples[1] - samples[0]
+    if not np.all((widths >= 2.3) & (widths <= 4.8)) or abs(curves[1] - curves[0]) > 3:
+      return target
+    local = sum(curves) * .5
+    if abs(fit(xs, ys, 0, 30)[0] - local) > .5:
+      # Keep an independently straight near road straight; retain a one-code
+      # tolerance for a bend. This is a display guard, not exact separation.
+      margin = 0.0 if abs(local) < .5 else 1.0
+      return min(max(target, local - margin), local + margin)
+    return target
 
-  def update(self, md, speed, now, curve=None):
+  def update(self, md, speed, now, changing=False):
     elapsed = None if self.last_time is None else now - self.last_time
     if elapsed is None or not 0 <= elapsed <= .15:
       self.__init__()
     self.dt = min(.15, max(0.0, elapsed)) if elapsed is not None and elapsed >= 0 else .05
     self.last_time = now
     stamp = getattr(md, 'timestampEof', None) if md is not None else None
-    self.fresh = md is not None and (md is not self.model or stamp != self.stamp)
+    self.fresh = md is not None and (stamp != self.stamp if stamp is not None and stamp > 0 else md is not self.model)
     self.model, self.stamp = md, stamp
     if self.fresh:
-      self.target = self.road_curve(md, speed, curve)
+      self.target = self.road_curve(md, speed, changing)
       if self.target is not None:
         self.valid_time = now
     if md is None or now - self.valid_time > .35:
@@ -1655,7 +1674,7 @@ class _CcncLaneGeometry:
     self.curvature += min(max(step, -10.0 * self.dt), 10.0 * self.dt)
     return round(self.curvature)
 
-  def observe_motion(self, md, left, active, holding, now):
+  def observe_motion(self, md, left, active, holding, now, speed=0.0):
     if not active or self.direction != left or md is None:
       self.motion.clear()
       self.hold_start = None
@@ -1668,37 +1687,41 @@ class _CcncLaneGeometry:
       self.motion.clear()
       return
     sign = 1 if left else -1
-    lane = sign * lines[1 if left else 2].y[0]
-    opposite = sign * lines[2 if left else 1].y[0]
-    if not (math.isfinite(lane) and math.isfinite(opposite) and 2.3 <= opposite - lane <= 4.8):
+    if not 2.3 <= lines[2].y[0] - lines[1].y[0] <= 4.8:
       self.motion.clear()
       return
-    self.motion.append((now, lane, opposite))
+    velocities = []
+    for line in lines[1:3]:
+      xs, ys = np.asarray(line.x), np.asarray(line.y)
+      if not _ccnc_valid_boundary(xs, ys) or xs[0] > 0 or xs[-1] < 5:
+        self.motion.clear()
+        return
+      y = np.interp([0., 2.5, 5.], xs, ys)
+      # Near-road tangent removes constant offsets and quadratic road bending.
+      # A parallel index sweep cannot inject its y[0] jump into this velocity.
+      velocities.append(sign * speed / 3.6 * (-3*y[0] + 4*y[1] - y[2]) / 5.)
+    self.motion.append((now, *velocities))
 
   def start_hold(self, now):
     self.hold_start, self.hold_speed, self.progress = now, 0.0, 0.0
-    # Both inner boundaries must have moved coherently before the trigger.
-    # This is NOT proof of physical motion: a common model sweep can fool it.
-    # Its only use is a short, bounded display continuation, never a new identity.
+    # Use pre-trigger near-road heading, not the derivative of relabelled offsets.
+    # Distorted lane shapes remain ambiguous, so continuation is still bounded.
     samples = list(self.motion)
     if len(samples) < 4 or now - samples[-1][0] > .15 or samples[-1][0] - samples[0][0] < .15:
       return
     if any(not 0 < b[0] - a[0] <= .15 for a, b in zip(samples, samples[1:])):
       return
-    span = samples[-1][0] - samples[0][0]
-    speeds = [(samples[-1][i] - samples[0][i]) / span for i in (1, 2)]
-    for i in (1, 2):
-      steps = [b[i] - a[i] for a, b in zip(samples, samples[1:])]
-      if (i == 1 and sum(steps) < .8 * sum(abs(s) for s in steps)) or max(abs(s) for s in steps) > .2:
-        return
+    speeds = [float(np.median([s[i] for s in samples])) for i in (1, 2)]
+    if any(max(s[i] for s in samples) - min(s[i] for s in samples) > .6 for i in (1, 2)):
+      return
     if all(.1 <= s <= 1.5 for s in speeds) and abs(speeds[0] - speeds[1]) <= .4:
       self.hold_speed = min(speeds)
 
   def hold_progress(self, now):
     if self.hold_start is not None:
       # Velocity fades to zero, never extrapolates indefinitely through a cancellation.
-      t = min(.3, max(0.0, now - self.hold_start))
-      self.progress = min(.25, self.hold_speed * (t - t*t / .6))
+      t = min(.6, max(0.0, now - self.hold_start))
+      self.progress = min(.45, self.hold_speed * (t - t*t / 1.2))
     return self.progress
 
 
@@ -1735,12 +1758,8 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
     state.l_lane_f.reset_alpha()
     state.r_lane_f.reset_alpha()
   try:
-    if lat_enabled:
-      tracker = state.radar_display_tracker
-      tracker._update_model(md)
-      curvature = geometry.update(md, v_ego_kph, now, tracker._curve)
-    else:
-      geometry.update(None, v_ego_kph, now)
+    curvature = geometry.update(md, v_ego_kph, now, is_currently_lane_changing)
+    if not lat_enabled:
       curvature = round(CS.out.steeringAngleDeg / 3)
 
   except:
@@ -1790,7 +1809,9 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
 
         lane_raw = leftlaneraw if is_moving_left else rightlaneraw
 
-        is_phase_shifted = lane_raw < 0.1 or (lane_raw - state.lane_phase_min) > 0.3
+        # A rebound far from the vehicle is recognition jitter, not evidence of
+        # crossing a boundary (e.g. a turn signal before a U-turn).
+        is_phase_shifted = lane_raw < 0.1 or (state.lane_phase_min < .5 and lane_raw - state.lane_phase_min > .3)
         state.lane_phase_min = min(state.lane_phase_min, lane_raw)
 
         if is_phase_shifted:
@@ -1821,7 +1842,9 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
         else:
           state.hold_lane_escape_count = 0
 
-        holding_factor = geometry.hold_progress(now)
+        # Preserve the original release steps when no prior motion qualifies;
+        # a qualified continuation may already be farther along.
+        holding_factor = max(geometry.hold_progress(now), state.hold_lane_escape_count * .1)
         if is_moving_left:
           current_l_target = state.l_lane_f.reset(state.last_known_lane_width - holding_factor)
           current_r_target = state.r_lane_f.reset(holding_factor)
@@ -1852,7 +1875,7 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
         state.draw_center = state.hold_lane = False
         state.hold_lane_escape_count = 0
         state.lane_phase_min = 10.0
-      geometry.observe_motion(md, is_moving_left, True, state.draw_center, now)
+      geometry.observe_motion(md, is_moving_left, True, state.draw_center, now, v_ego_kph)
     else:
       geometry.observe_motion(md, False, False, False, now)
       state.draw_center = state.hold_lane = False
