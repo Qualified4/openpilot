@@ -754,3 +754,75 @@ Reproduction scripts, before/stage/final snapshots, input hashes, raw timing
 passes and exception counts are retained locally under
 `.analysis/archive/2026-10-05/ccnc-optimize/`. Raw logs remain outside Git.
 Production edits are on ccnc-hda1; this task does not commit, push or deploy them.
+
+### Projection reuse removed after review (2026-10-05)
+
+A follow-up review measured the inner-lane projection reuse (`inner_lane_y`
+and its lazy track index) at roughly 2-7 microseconds per display update in a
+synthetic replay with real cereal readers, within run-to-run variation. It
+also added a cache that stays correct only while every point change
+invalidates the projection. It is removed: selected-vehicle positions and
+bounds interpolate the cached inner-lane arrays directly again, as in d083f161.
+The per-model 0/20 m samples, shared lane arrays during lane changes and the
+scalar/bookkeeping items remain. The projection-reuse test is removed with it.
+
+Committed 32963c68 and this revision produce identical lane and vehicle
+outputs on 21,600 synthetic updates across six option combinations, with no
+measurable timing difference (0.5199 -> 0.5194 ms with correction,
+0.2979 -> 0.3004 ms radar only; lane and vehicle functions only, desktop).
+311 isolated display/catalog tests pass. The real-log replay and the 417
+vehicle tests were not rerun for this revision, and the timing table above
+still describes the version that included projection reuse.
+
+
+### Real-log verification of projection-reuse removal (2026-10-05)
+
+At the user's request, compare committed 32963c68 (projection reuse retained)
+with the user's uncommitted revision (direct selected-point interpolation).
+This comparison does not use the older pre-five-optimization baseline.
+Production code and tests were not edited during this verification. The 0/20 m
+sample cache, shared model arrays and the other optimization items remain.
+
+The Windows ASCII-schema/Params-substitution harness passes all 753 current
+CCNC, display and settings tests. Real cereal readers from the same eight
+segments cover seven option combinations and 8,952 updates per combination.
+All 62,664 comparisons have identical outgoing field dictionaries, CAN packets
+and selected IDs. Exception-handler counts also match: 447 missing-model
+fallbacks in each lane-enabled combination, zero in the others.
+
+Timing includes create_ccnc_messages and Python CAN packing with independent
+variant state. One warmup pass is excluded, then seven passes alternate and
+rotate variant order per input. The first 20 observations per segment are
+excluded from timings, leaving 8,792 measured calls per configuration/pass.
+The table gives medians of per-pass means and p99 values. Positive change
+means the user's revision takes longer; negative means less time.
+
+| Configuration | Before mean ms | After mean ms | Change | Before / after p99 ms |
+|---|---:|---:|---:|---:|
+| Refined + radar, correction OFF | 0.502939 | 0.503451 | +0.102% | 0.889600 / 0.903815 |
+| Refined + radar + correction | 0.627018 | 0.627955 | +0.149% | 1.004345 / 1.007744 |
+| Radar + correction, model lanes OFF | 0.569666 | 0.570572 | +0.159% | 0.925627 / 0.935209 |
+
+Correction OFF is a control: the removed projection lookup was not executed
+in that configuration. Small deltas must be interpreted alongside this control
+and the paired-pass ranges in the local results, rather than treated as proof
+of a whole-device CPU benefit. With correction enabled, paired per-pass mean
+changes range from -0.044% to +0.275% with Refined lanes (median +0.107%), and
+from +0.063% to +0.303% without model lanes (median +0.159%). The unchanged-path
+control ranges from -0.130% to +0.210% (median -0.036%). The medians in the table
+differ by less than one microsecond with correction enabled. Projection reuse
+therefore has no substantial demonstrated benefit in this workload; retaining
+the simpler direct-interpolation revision has no substantial measured penalty.
+This does not prove zero cost on all workloads or target devices.
+
+The replay uses neutral stock 0x161/0x162 fields,
+no optional 0x200/0x1ea/button inputs, HDA1 CAMERA_SCC, trailer OFF, metric ON,
+lane color OFF, fixed desktop Params and the recorded model/radar/control
+inputs. It excludes physical cluster behavior, device storage I/O, actual
+vehicle response and the intervening 100 Hz calls. No ARM performance claim
+follows from this Windows measurement.
+
+Source snapshots/hashes, input manifest, all paired passes and per-segment
+means, exception counts and Windows scripts are retained locally in
+`.analysis/archive/2026-10-05/ccnc-projection-compare/`. Raw logs remain outside
+Git. This task does not commit, push or deploy the user's revision.

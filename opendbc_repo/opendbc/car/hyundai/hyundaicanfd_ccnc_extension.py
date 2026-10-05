@@ -591,7 +591,6 @@ class _CcncRadarDisplayTracker:
     self._side_projection = [None, None]
     self._projection_live = live
     self._projection = float(data[0][1][0]), float(data[1][1][0]), tuple(zip(projected[0].tolist(), projected[1].tolist()))
-    self._projection_indices = None
     return self._projection
 
   def side_projection(self, side):
@@ -1030,16 +1029,6 @@ class _CcncRadarDisplayTracker:
       self.recent_front[ff.trackId] = (self.tracks[ff.trackId][0], frame)
     return ff_y, changed
 
-  def inner_lane_y(self, point, index, xs, ys):
-    # Projection is invalidated on every new model/radar publication and gap.
-    if self._projection is not None:
-      if self._projection_indices is None:
-        self._projection_indices = {p[0].trackId: i for i, p in enumerate(self._points)}
-      row = self._projection_indices.get(point.trackId)
-      if row is not None and self._projection_distances[row] == point.dRel:
-        return self._projection[2][row][index]
-    return float(np.interp(point.dRel, xs, ys))
-
   def align_display_position(self, point, aligned_y, reference, changing=False):
     """Use one road center for display correction, independently of lane selection."""
     if reference[0] != 'lane' or self._model is None:
@@ -1058,7 +1047,7 @@ class _CcncRadarDisplayTracker:
       if near is None:
         near = np.interp((0.0, 20.0), xs, ys)
         self._display_near[index] = near
-      end = self.inner_lane_y(point, index - 1, xs, ys)
+      end = float(np.interp(point.dRel, xs, ys))
       samples.append((near[0], near[1] if point.dRel >= 20.0 else end, end))
     if len(curves) == 2:
       widths = (right - left for left, right in zip(*samples))
@@ -1110,8 +1099,7 @@ class _CcncRadarDisplayTracker:
       model = self._model
       valid = (model is not None and self._curve(model, 1)[2], model is not None and self._curve(model, 2)[2]) + flags[:2]
       if all(valid[i] and curves[n][0][0] <= point.dRel <= curves[n][0][-1] for n, i in enumerate(indices)):
-        bounds = tuple(-(self.inner_lane_y(point, i, *c) if i < 2 else float(np.interp(point.dRel, *c)))
-                       + aligned_y - point.yRel for i, c in zip(indices, curves))
+        bounds = tuple(-float(np.interp(point.dRel, *c)) + aligned_y - point.yRel for c in curves)
     else:
       reliable = False
     return correction.apply(point, aligned_y, filtered_y, slot, reference, bounds,

@@ -811,31 +811,6 @@ def test_model_boundaries_convert_once_per_model_message():
   assert t._curve(md, 1) is not cached  # Only the tracker's current model message is cached.
 
 
-def test_display_reuses_projection_but_refreshes_after_radar_model_and_gap(monkeypatch):
-  t = Tracker()
-  p = point(x=10.)
-  live = N(points=[p])
-  t.observe(live, 0)
-  t.lane_probabilities(lane_model(1, 1.))
-  t.lane_projection(live)
-  assert t._projection_indices is None  # No index allocation until correction consumes it.
-  xs, ys, _ = t._curve(t._model, 1)
-  original = np.interp
-  with monkeypatch.context() as patch:
-    patch.setattr(np, 'interp', lambda *args: pytest.fail('recomputed current inner projection'))
-    assert t.inner_lane_y(p, 0, xs, ys) == -.5
-  # A reused point can move before another publication. Do not reuse old distance.
-  p.dRel = 20.
-  assert t.inner_lane_y(p, 0, xs, ys) == original(20., xs, ys)
-  for frame, md in ((5, lane_model(2, .5)), (30, lane_model(3, 2.))):
-    t.observe(live, frame)
-    t.lane_probabilities(md)
-    xs, ys, _ = t._curve(md, 1)
-    assert t.inner_lane_y(p, 0, xs, ys) == original(20., xs, ys)
-    t.lane_projection(live)
-    assert t.inner_lane_y(p, 0, xs, ys) == original(20., xs, ys)
-
-
 def test_display_near_samples_refresh_with_model():
   t = Tracker()
   t.position_correction = H['_CcncVehiclePositionCorrection']()
