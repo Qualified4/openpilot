@@ -502,6 +502,29 @@ def _check_actual_lane_change(cs, md):
   assert values.get('LANE_HIGHLIGHT') != 3
 
 
+def test_actual_reader_shares_lane_arrays_and_replaces_them_on_new_model(display):
+  from openpilot.cereal import log
+  _, cs, _ = display
+  cs.out.leftBlinker = True
+  previous = None
+  for stamp, heading in ((1, .03), (2, .06)):
+    model = lane_geometry_model(stamp=stamp, heading=heading, bend=.001)
+    model.position.y = [y + .4 * math.sin(x / 20) for x, y in zip(model.position.x, model.position.y)]
+    builder = log.ModelDataV2.new_message(
+      timestampEof=stamp, position=vars(model.position), laneLines=[vars(line) for line in model.laneLines],
+      laneLineProbs=model.laneLineProbs, meta=dict(laneChangeAvailableLeft=True, laneChangeAvailableRight=True))
+    with log.ModelDataV2.from_bytes(builder.to_bytes()) as md:
+      ccnc_extension.update_lanes({}, cs, md, 85., 0., 3, True, False, True, stamp * 5)
+      tracker = ccnc_extension.state.radar_display_tracker
+      assert set(tracker._curves) == {1, 2}
+      inner = tracker._curves[1]
+      assert inner is not previous
+      assert inner[1][10] == pytest.approx(model.laneLines[1].y[10])
+      tracker.lane_probabilities(md)
+      assert tracker._curve(md, 1) is inner
+      previous = inner
+
+
 def test_failed_fresh_curve_does_not_keep_a_stale_target(monkeypatch):
   g = ccnc_extension._CcncLaneGeometry()
   for i in range(20):

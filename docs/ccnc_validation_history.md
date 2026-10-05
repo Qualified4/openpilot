@@ -692,3 +692,65 @@ PC의 동일 14,430개 관측 helper 비교에서 중앙값은 OFF 13.4µs / 이
 실제 기록의 carState/carControl/modelV2/liveTracks/radarState reader를 사용했고, 모델 유효 입력이 없는 갱신 447회와 latActive 1,960회를 포함한다. 전체는 주행 기어였다. stock 0x161/0x162 입력은 중립값 dictionary이며 optional 0x200/0x1ea 및 버튼 전송은 제외했다. trailer OFF, metric ON, paddle/softHold 없음, HDPuse/LaneLineCheck=0, MyDrivingMode=3으로 고정했다. 기록 frame 위상을 20Hz 표시 갱신에 맞췄으며 표시 갱신 사이의 100Hz 호출은 측정하지 않았다. 따라서 전체 card 실행시간이나 원본 순정 CAN 상태를 완전히 재현한 결과는 아니다.
 
 계측 유무의 CAN 결과는 16조합×4,155회 = **66,480회 비교 불일치 0회**였다. 레이더 OFF에서 보정 OFF/ON은 네 조합×4,155회 = **16,620회 비교 불일치 0회**이며 기능 호출 경로도 같았다. 이 비활성 보정 조합 사이의 약 1.9–3.8µs 시간 차이는 측정 변동으로 취급하며 ON의 속도 개선으로 주장하지 않는다. 모든 조합의 원시 집계, 함수/Params 호출 수, 입력·생산 소스 해시, 재현 스크립트와 CAN 검증 결과는 `.analysis/archive/2026-10-04/ccnc-option-cost/INDEX.json`에 보존했다. 이번 비교에서 생산 코드와 기존 미커밋 수정은 변경하지 않았다.
+
+
+### Five display-only optimization items verified on 2026-10-05
+
+The user requested implementing the five reviewed optimization candidates.
+The final change reuses current inner-lane projections for selected vehicle
+positions/bounds and caches the 0/20 m samples per model. Projection indices
+are constructed only when correction consumes them; new model/radar input,
+gaps and changed distances cannot reuse an obsolete projection. Lane-change
+curvature and motion share converted/validated inner-lane arrays with the
+existing radar display cache. Ordinary non-maneuver lane updates do not add a
+cache refresh. Filters and temporal/selection histories remain independent.
+
+Temporal reconnection candidate multiplicities are counted once, and coherent
+motion checks reuse one history list and travel sum. Private raw snapshots and
+display-point copies remain separate. Scalar filter clipping uses scalar
+arithmetic, preserving NaN and infinite input behavior, and single-element
+median buffers skip sorting. The selected-car loop calculates lane-change
+state once; its unused loop field and write-only lane-change state are removed.
+No thresholds, timers, source policy, coordinate signs, actuator/safety code,
+CAN schedule, settings or control lead selection are changed.
+
+Validation uses the Windows workflow: identical schemas staged in an ASCII
+temporary path, real cereal readers and test-scoped Params substitution.
+417 vehicle and 310 isolated display tests pass (727 total). New coverage
+checks projection/near-sample invalidation, actual-reader cache sharing,
+ambiguous two-to-one reconnection, and scalar clipping/median edge cases.
+
+Each of the five initial stages matches the original on eight segments and
+seven option combinations. The final lazy-cache refinements are independently
+compared against the original on the same 8,952 updates per combination:
+62,664 final comparisons have identical entire outgoing field dictionaries,
+CAN messages and selected IDs. Exception-handler activity is also identical;
+expected missing-input fallbacks are counted rather than treated as successful
+model computation. No new exception is hidden by the broad display fallback.
+
+Timing uses the actual create_ccnc_messages caller and Python CAN packing,
+independent variant state, alternating/rotating order, one warmup pass and
+three measured passes. The first 20 updates per segment are excluded from
+timings but included in output comparisons. Values below are medians of the
+three per-pass means in milliseconds per display update.
+
+| Configuration | Before ms | Final ms | Reduction |
+|---|---:|---:|---:|
+| Basic lanes | 0.167437 | 0.164092 | 2.00% |
+| Refined lanes | 0.191826 | 0.189136 | 1.40% |
+| Refined + radar | 0.500774 | 0.494551 | 1.24% |
+| Refined + radar + correction | 0.628655 | 0.619794 | 1.41% |
+
+These are small desktop compute savings, not measured ARM/C3/C4 CPU savings.
+Lane color is OFF in this replay. The other fixed conditions are CAMERA_SCC
+HDA1, trailer OFF, metric ON, neutral stock 0x161/0x162 dictionaries, absent
+optional 0x200/0x1ea/button frames, HDPuse/LaneLineCheck=0 and MyDrivingMode=3.
+Real device Params I/O and the intervening 100 Hz caller updates are excluded;
+the replay is not physical cluster/vehicle validation. The preliminary eager
+index added work to correction-OFF, so the final version builds it lazily;
+preliminary timings are not the final performance result.
+
+Reproduction scripts, before/stage/final snapshots, input hashes, raw timing
+passes and exception counts are retained locally under
+`.analysis/archive/2026-10-05/ccnc-optimize/`. Raw logs remain outside Git.
+Production edits are on ccnc-hda1; this task does not commit, push or deploy them.

@@ -811,6 +811,62 @@ def test_model_boundaries_convert_once_per_model_message():
   assert t._curve(md, 1) is not cached  # Only the tracker's current model message is cached.
 
 
+def test_display_reuses_projection_but_refreshes_after_radar_model_and_gap(monkeypatch):
+  t = Tracker()
+  p = point(x=10.)
+  live = N(points=[p])
+  t.observe(live, 0)
+  t.lane_probabilities(lane_model(1, 1.))
+  t.lane_projection(live)
+  assert t._projection_indices is None  # No index allocation until correction consumes it.
+  xs, ys, _ = t._curve(t._model, 1)
+  original = np.interp
+  with monkeypatch.context() as patch:
+    patch.setattr(np, 'interp', lambda *args: pytest.fail('recomputed current inner projection'))
+    assert t.inner_lane_y(p, 0, xs, ys) == -.5
+  # A reused point can move before another publication. Do not reuse old distance.
+  p.dRel = 20.
+  assert t.inner_lane_y(p, 0, xs, ys) == original(20., xs, ys)
+  for frame, md in ((5, lane_model(2, .5)), (30, lane_model(3, 2.))):
+    t.observe(live, frame)
+    t.lane_probabilities(md)
+    xs, ys, _ = t._curve(md, 1)
+    assert t.inner_lane_y(p, 0, xs, ys) == original(20., xs, ys)
+    t.lane_projection(live)
+    assert t.inner_lane_y(p, 0, xs, ys) == original(20., xs, ys)
+
+
+def test_display_near_samples_refresh_with_model():
+  t = Tracker()
+  t.position_correction = H['_CcncVehiclePositionCorrection']()
+  p = point(x=10.)
+  live = N(points=[p])
+  t.observe(live, 0)
+  for stamp, offset in ((1, .5), (2, 1.)):
+    t.lane_probabilities(lane_model(stamp, offset))
+    t.lane_projection(live)
+    y, reference = t.align_display_position(p, 0., ('lane', True))
+    assert reference == ('lane', 'center')
+    assert y == pytest.approx(offset)
+
+
+@pytest.mark.parametrize('alpha', [-math.inf, -.1, .001, .2, 1., 2., math.inf, math.nan])
+def test_scalar_filter_clipping_preserves_numpy_nan_and_limits(alpha):
+  f = H['NoiseFilter'](1, 2., alpha)
+  expected = float(np.clip(alpha, .001, 1.))
+  f.update_alpha(alpha)
+  if math.isnan(expected):
+    assert math.isnan(f._a_min) and math.isnan(f._alpha) and math.isnan(f.apply(4.))
+  else:
+    assert f._a_min == expected and f._alpha == expected
+    assert f.apply(4.) == expected * 4. + (1. - expected) * 2.
+  # Reset starts with an empty buffer; the first observation must be used directly.
+  f.reset(3.)
+  assert f._get_median() == 3.
+  f._buffer.append(5.)
+  assert f._get_median() == 5.
+
+
 def test_cached_path_cannot_reuse_maturity_after_control_gap():
   t = Tracker()
   p = point()
@@ -1957,6 +2013,15 @@ def test_temporal_ambiguous_id_reconnection_does_not_merge_cars():
   t.observe(N(points=[point(99, x=30.1, y=-3.4)]), 30)
   assert {p.trackId for p in temporal_points(t)} == {1, 2, 99}
   assert not t.stable(99)
+
+
+def test_temporal_two_new_sources_cannot_both_reconnect_to_one_identity():
+  t = temporal_tracker()
+  t.observe(N(points=[]), 25)
+  t.observe(N(points=[point(99, x=30., y=-3.4), point(100, x=30.1, y=-3.4)]), 30)
+  assert {p.trackId for p in temporal_points(t)} == {1, 99, 100}
+  assert not t.temporal.reconnections
+  assert not t.stable(99) and not t.stable(100)
 
 
 def test_temporal_identity_swap_does_not_teleport_or_steal_present_neighbor():

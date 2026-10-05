@@ -93,13 +93,15 @@ class _CcncTemporalTracks:
   def coherent(samples, axis):
     if len(samples) < 3 or samples[-1][0] - samples[0][0] < 10:
       return False
-    steps = [b[1] - a[1] for a, b in zip(samples, list(samples)[1:])]
+    samples = list(samples)
+    steps = [b[1] - a[1] for a, b in zip(samples, samples[1:])]
+    travel = sum(abs(s) for s in steps)
     rates = (4.0, 15.0, 10.0)
     return (all(0 < b[0] - a[0] <= 15
                 and abs(b[1] - a[1] - (a[2] * (b[0] - a[0]) * .01 if axis == 0 else 0.0))
                 <= 0.15 + rates[axis] * (b[0] - a[0]) * .01
-                for a, b in zip(samples, list(samples)[1:]))
-            and (sum(abs(s) for s in steps) < .2 or abs(sum(steps)) >= .8 * sum(abs(s) for s in steps)))
+                for a, b in zip(samples, samples[1:]))
+            and (travel < .2 or abs(sum(steps)) >= .8 * travel))
 
   def update(self, live, frame, selected, observations):
     if live is None:
@@ -140,6 +142,7 @@ class _CcncTemporalTracks:
     # Only reconnect absent sources, with a unique candidate in both directions.
     # ponytail: small radar candidate set; ambiguous matches wait instead of global assignment.
     candidates = {}
+    candidate_counts = {}
     for source, p in raw.items():
       if source in matches:
         continue
@@ -153,10 +156,11 @@ class _CcncTemporalTracks:
             and abs(p.dRel - old.dRel - old.vRel * dt) <= 1.0 + 2.0 * dt
             and abs(p.yRel - old.yRel - e['vy'] * dt) <= .5 + 2.0 * dt and abs(p.vRel - old.vRel) <= 2.0):
           options.append(key)
+          candidate_counts[key] = candidate_counts.get(key, 0) + 1
       candidates[source] = options
     reconnecting, reconnected, pending_reconnections = set(), set(), {}
     for source, options in candidates.items():
-      if len(options) == 1 and sum(options[0] in others for others in candidates.values()) == 1:
+      if len(options) == 1 and candidate_counts[options[0]] == 1:
         key = options[0]
         pending = self.reconnections.get(source)
         if pending is not None and pending[0] == key and 0 < frame - pending[1] <= 15:
@@ -327,6 +331,7 @@ class _CcncRadarDisplayTracker:
     self._projection = None
     self._path_data = None
     self._display_path = None
+    self._display_near = {}
     self._path_live = self._path_points = None
     self._curves = {}
 
@@ -514,6 +519,7 @@ class _CcncRadarDisplayTracker:
     self._model, self._model_stamp = md, stamp
     self._inner_data = self._lane_probs = self._lane_data = self._projection = self._path_data = None
     self._display_path = None
+    self._display_near.clear()
     self._projection_live = None
     self._path_live = self._path_points = None
     self._curves = {}
@@ -585,6 +591,7 @@ class _CcncRadarDisplayTracker:
     self._side_projection = [None, None]
     self._projection_live = live
     self._projection = float(data[0][1][0]), float(data[1][1][0]), tuple(zip(projected[0].tolist(), projected[1].tolist()))
+    self._projection_indices = None
     return self._projection
 
   def side_projection(self, side):
@@ -1023,6 +1030,16 @@ class _CcncRadarDisplayTracker:
       self.recent_front[ff.trackId] = (self.tracks[ff.trackId][0], frame)
     return ff_y, changed
 
+  def inner_lane_y(self, point, index, xs, ys):
+    # Projection is invalidated on every new model/radar publication and gap.
+    if self._projection is not None:
+      if self._projection_indices is None:
+        self._projection_indices = {p[0].trackId: i for i, p in enumerate(self._points)}
+      row = self._projection_indices.get(point.trackId)
+      if row is not None and self._projection_distances[row] == point.dRel:
+        return self._projection[2][row][index]
+    return float(np.interp(point.dRel, xs, ys))
+
   def align_display_position(self, point, aligned_y, reference, changing=False):
     """Use one road center for display correction, independently of lane selection."""
     if reference[0] != 'lane' or self._model is None:
@@ -1035,9 +1052,16 @@ class _CcncRadarDisplayTracker:
         curves.append((index, xs, ys))
     if not curves:
       return aligned_y, reference
-    samples = [np.interp((0.0, min(20.0, point.dRel), point.dRel), xs, ys) for _, xs, ys in curves]
+    samples = []
+    for index, xs, ys in curves:
+      near = self._display_near.get(index)
+      if near is None:
+        near = np.interp((0.0, 20.0), xs, ys)
+        self._display_near[index] = near
+      end = self.inner_lane_y(point, index - 1, xs, ys)
+      samples.append((near[0], near[1] if point.dRel >= 20.0 else end, end))
     if len(curves) == 2:
-      widths = samples[1] - samples[0]
+      widths = (right - left for left, right in zip(*samples))
       if not all(2.3 <= width <= 4.8 for width in widths):
         return aligned_y, reference
     correction = sum(float(y[2] - y[0]) for y in samples) / len(curves)
@@ -1086,7 +1110,8 @@ class _CcncRadarDisplayTracker:
       model = self._model
       valid = (model is not None and self._curve(model, 1)[2], model is not None and self._curve(model, 2)[2]) + flags[:2]
       if all(valid[i] and curves[n][0][0] <= point.dRel <= curves[n][0][-1] for n, i in enumerate(indices)):
-        bounds = tuple(-float(np.interp(point.dRel, *c)) + aligned_y - point.yRel for c in curves)
+        bounds = tuple(-(self.inner_lane_y(point, i, *c) if i < 2 else float(np.interp(point.dRel, *c)))
+                       + aligned_y - point.yRel for i, c in zip(indices, curves))
     else:
       reliable = False
     return correction.apply(point, aligned_y, filtered_y, slot, reference, bounds,
@@ -1471,7 +1496,7 @@ class NoiseFilter:
 
     # 1. 알파 설정 (필수 입력값 정문화)
     norm_alpha = normalize_range(alpha_range, 1.0)
-    self._a_min, self._a_max = [np.clip(v, 0.001, 1.0) for v in norm_alpha]
+    self._a_min, self._a_max = [min(max(v, 0.001), 1.0) for v in norm_alpha]
 
     # 2. 에러 범위 및 전략 할당
     if error_range is not None:
@@ -1498,7 +1523,7 @@ class NoiseFilter:
     고정 알파 모드에서 알파 값을 업데이트합니다.
     """
     if self.apply == self._apply_fixed:
-      self._alpha = np.clip(new_alpha, 0.001, 1.0)
+      self._alpha = min(max(float(new_alpha), 0.001), 1.0)
 
   def reset_alpha(self):
     """
@@ -1511,6 +1536,8 @@ class NoiseFilter:
     buf_len = len(self._buffer)
     if buf_len == 0:
         return self._filtered_value # 버퍼가 비어있으면 현재 필터값 반환
+    if buf_len == 1:
+      return self._buffer[0]
     # 꽉 차지 않은 상태(초기 진입 시)에도 현재 데이터 개수 기준으로 중간값 산출
     return sorted(self._buffer)[buf_len // 2]
 
@@ -1707,7 +1734,7 @@ class _CcncLaneGeometry:
     return curvature, float(np.max(np.abs(y - fitted)))
 
   @staticmethod
-  def road_curve(md, speed, changing=False):
+  def road_curve(md, speed, changing=False, curve_cache=None):
     if md is None:
       return None
     pos = md.position
@@ -1746,9 +1773,15 @@ class _CcncLaneGeometry:
       return target
     curves, samples = [], []
     for index in (1, 2):
-      line = md.laneLines[index]
-      lx, ly = np.asarray(getattr(line, 'x', ())), np.asarray(line.y)
-      if not _ccnc_valid_boundary(lx, ly) or lx[0] > 0 or lx[-1] < 30:
+      cached = curve_cache.get(index) if curve_cache is not None else None
+      if cached is None:
+        line = md.laneLines[index]
+        lx, ly = np.asarray(getattr(line, 'x', ())), np.asarray(line.y)
+        cached = lx, ly, _ccnc_valid_boundary(lx, ly)
+        if curve_cache is not None:
+          curve_cache[index] = cached
+      lx, ly, valid = cached
+      if not valid or lx[0] > 0 or lx[-1] < 30:
         return target
       y = np.interp(_CcncLaneGeometry._near_distances, lx, ly)
       samples.append(y)
@@ -1763,7 +1796,7 @@ class _CcncLaneGeometry:
       return min(max(local, -15.0), 15.0)
     return target
 
-  def update(self, md, speed, now, changing=False, compute_curve=True):
+  def update(self, md, speed, now, changing=False, compute_curve=True, curve_cache=None):
     elapsed = None if self.last_time is None else now - self.last_time
     if elapsed is None or not 0 <= elapsed <= .15:
       self.__init__()
@@ -1776,7 +1809,7 @@ class _CcncLaneGeometry:
       return 0
     if self.fresh:
       try:
-        self.target = self.road_curve(md, speed, changing)
+        self.target = self.road_curve(md, speed, changing, curve_cache)
       except (AttributeError, IndexError, TypeError, ValueError):
         # This model was consumed, but cannot renew the previous target.
         self.target = None
@@ -1789,7 +1822,7 @@ class _CcncLaneGeometry:
     self.curvature += min(max(step, -10.0 * self.dt), 10.0 * self.dt)
     return round(self.curvature)
 
-  def observe_motion(self, md, left, active, holding, now, speed=0.0):
+  def observe_motion(self, md, left, active, holding, now, speed=0.0, curve_cache=None):
     if not active or self.direction != left or md is None:
       self.motion.clear()
       self.hold_start = None
@@ -1807,9 +1840,15 @@ class _CcncLaneGeometry:
       return
     velocities = []
     for index in (1, 2):
-      line = lines[index]
-      xs, ys = np.asarray(line.x), np.asarray(line.y)
-      if not _ccnc_valid_boundary(xs, ys) or xs[0] > 0 or xs[-1] < 5:
+      cached = curve_cache.get(index) if curve_cache is not None else None
+      if cached is None:
+        line = lines[index]
+        xs, ys = np.asarray(line.x), np.asarray(line.y)
+        cached = xs, ys, _ccnc_valid_boundary(xs, ys)
+        if curve_cache is not None:
+          curve_cache[index] = cached
+      xs, ys, valid = cached
+      if not valid or xs[0] > 0 or xs[-1] < 5:
         self.motion.clear()
         return
       y = np.interp([0., 2.5, 5.], xs, ys)
@@ -1896,7 +1935,12 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
     state.r_lane_f.reset_alpha()
   try:
     precise = state.lane_curve_mode == 2
-    curvature = geometry.update(md, v_ego_kph, now, is_currently_lane_changing, compute_curve=precise)
+    # Share only immutable model geometry, never filter or selection history.
+    curve_cache = None
+    if is_currently_lane_changing:
+      state.radar_display_tracker._update_model(md)
+      curve_cache = state.radar_display_tracker._curves
+    curvature = geometry.update(md, v_ego_kph, now, is_currently_lane_changing, compute_curve=precise, curve_cache=curve_cache)
     if lat_enabled and not precise:
       curvature = round(state.lane_curv.apply(_ccnc_basic_curve(md, v_ego_kph, is_currently_lane_changing)))
     elif not lat_enabled:
@@ -1922,7 +1966,6 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
       state.l_lane_f.update_alpha(next_alpha)
       state.r_lane_f.update_alpha(next_alpha)
       geometry.lane_alpha = next_alpha
-    state._is_lane_change_active = is_currently_lane_changing
 
     leftlaneraw = abs(md.laneLines[1].y[0])
     rightlaneraw = abs(md.laneLines[2].y[0])
@@ -2015,7 +2058,7 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
         state.draw_center = state.hold_lane = False
         state.hold_lane_escape_count = 0
         state.lane_phase_min = 10.0
-      geometry.observe_motion(md, is_moving_left, True, state.draw_center, now, v_ego_kph)
+      geometry.observe_motion(md, is_moving_left, True, state.draw_center, now, v_ego_kph, curve_cache)
     else:
       geometry.observe_motion(md, False, False, False, now)
       state.draw_center = state.hold_lane = False
@@ -2247,12 +2290,13 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     # Shared physical coordinates and filter history follow the ID across LF/FF/RF.
     corrected = display_tracker.position_correction is not None
     filtered_positions = []
-    for slot, (point, aligned, is_lane) in enumerate(((ff_lead, ff_yRel, ff_uses_lane),
-                                                    (lf_lead, lf_yRel, True), (rf_lead, rf_yRel, True))):
+    changing = False
+    if corrected and any(p is not None for p in (ff_lead, lf_lead, rf_lead)):
+      changing = (CS.out.leftBlinker or CS.out.rightBlinker
+                  or (md is not None and str(getattr(md.meta, 'laneChangeState', None)) != 'off'))
+    for slot, (point, aligned) in enumerate(((ff_lead, ff_yRel), (lf_lead, lf_yRel), (rf_lead, rf_yRel))):
       reference = references[slot]
       if corrected and point is not None:
-        changing = (CS.out.leftBlinker or CS.out.rightBlinker
-                    or (md is not None and str(getattr(md.meta, 'laneChangeState', None)) != 'off'))
         aligned, reference = display_tracker.align_display_position(point, aligned, reference, changing)
       distance, lateral = display_tracker.filter_position(point, aligned, reference, frame) if point is not None else (0.0, 0.0)
       if corrected and point is not None:
@@ -2362,7 +2406,6 @@ def reset_lanes():
   state.lane_geometry = _CcncLaneGeometry()
   state.lane_curv = NoiseFilter(3, 0, alpha_range=0.5)
   state.sla_active_time = 0
-  state._is_lane_change_active = False
   state.draw_center = state.hold_lane = False
   state.hold_lane_escape_count = 0
   state.lane_phase_min = 10.0
