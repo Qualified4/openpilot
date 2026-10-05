@@ -1193,3 +1193,20 @@ vision leads는 중앙 전방 차량에 대응해 측면 보호가 안 됐습니
 생산 코드는 변경하지 않았습니다. 이는 해당 로그 검토 결과이며 보편적인
 차량 누락 없음이나 인증된 분류 정확도를 뜻하지 않습니다. 로컬
 bollard-object-review/REPORT.md,semantic_review.json,INDEX.json을 갱신했습니다.
+
+
+## 2026-10-05: 볼라드 개선 커밋 및 carrot-wip 병합
+
+사용자 요청에 따라 현재3m 공간 배열 표시 필터,회귀시험,검증 이력을
+e60f1c8a에 커밋하고 origin/carrot-wip의 e6a62844를 ccnc-hda1에 병합했습니다.
+신규 upstream3개 커밋은 정차 차량 레이더 보강,단일 JotPluggler 로그의
+0초 시작,오프라인 부팅 시각 하한 보정입니다. 병합 충돌은 없습니다.
+
+병합 후 Windows에서 변경 없는 실제 cereal 스키마를 ASCII 임시 경로에
+두고 기존 시험용 Params 대체로 CCNC 표시334/차량418개,레이더 보강·
+예측·radard·SCC·cutout624개를 통과했습니다. 부팅 시각/launcher26개는
+WindowsApps Bash 실행 오류 뒤 설치된 Git Bash 경로로 다시 실행해 모두
+통과했고 launcher Bash 구문 검사도 통과했습니다. 합계1,402개 통과입니다.
+로그 재생과 성능 측정은 앞서 기록한 결과를 유지하며 병합 후 새 전체
+로그 재생은 하지 않았습니다. JotPluggler C++ 빌드와 실차 검증은 수행하지
+않았습니다. 로컬 원본/분석 archive는 커밋에서 제외하며 push는 하지 않습니다.
