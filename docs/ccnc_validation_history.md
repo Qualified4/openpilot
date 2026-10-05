@@ -826,3 +826,34 @@ Source snapshots/hashes, input manifest, all paired passes and per-segment
 means, exception counts and Windows scripts are retained locally in
 `.analysis/archive/2026-10-05/ccnc-projection-compare/`. Raw logs remain outside
 Git. This task does not commit, push or deploy the user's revision.
+
+## 2026-10-05: 접근 표시 기억의 3초 만료 제거
+
+사용자의 명시적 요청에 따라 `approaching_display()`의 마지막 관측 후
+300프레임(100Hz 기준3초) 만료 조건만 제거했습니다. −1m 미만 상대 위치,
+마지막 관측 후5m 초과 자차 이동, 접근 상태 종료·센서 소실·이동/위치
+불일치에 따른 해제와 기존 정차 전환·출발 해제는 유지합니다. 기억 생성,
+물체 선택, 원시 radar 입력과 주행 제어는 변경하지 않습니다.
+
+LF/RF 양쪽의 3초 이후 유지 및 늦은 정차 전환·출발 해제를 검증하는
+6개 회귀 사례를 추가하고, 기존3초 만료 기대 사례는 제거했습니다.
+Windows 표시 테스트314개와 관련 차량 테스트417개, 총731개가 통과했습니다.
+실제 cereal schema는 동일한 파일을 ASCII 임시 경로에 배치했고, native
+Params 저장소는 기존 Windows 테스트 대체를 사용했습니다.
+
+생산 소스는 앞서 동일 입력110개 segment /130,889회 출력으로 비교한
+시간 제한 제거 실험본과 정규화한 텍스트가 일치합니다. 그 재생에서는
+같은 정차 차량 사건의 연속2개 segment에서 LF624샘플이 추가됐고 나머지
+108개는 같았습니다. 추가 시각의 대응 영상622개 고유 프레임에 좌측
+은색 차량이 계속 보였습니다. 볼라드·가드레일131개 영상 확인창에서는
+출력과 접근/정차 기억의 변화가 없었습니다. 의미론적 구조물/source 정답이나
+전체 로그의 과거 옵션·CAN 출력 동등성을 확정한 검증은 아닙니다.
+
+구조물 의심점이 정지 차량과 같은 기억 조건을 통과한 뒤 소실되는 경우
+시간 제한 제거로 더 오래 남을 가능성은 있습니다. 정차 기억 자체는 기존부터
+시간 만료가 없어, 상대 차량만 출발하고 radar가 놓치는 상황은 별도 검증이
+필요합니다. 물리 클러스터 표시와 실차 행동은 검증하지 않았습니다.
+캡처·원시 입력·상세 재생 근거는 로컬 ignored
+`.analysis/archive/2026-10-05/approach-timeout-ab/`,
+`lf-added-object-check/`, `structure-hold-audit/`, `approach-timeout-apply/`에
+보존하며 Git에 포함하지 않습니다.

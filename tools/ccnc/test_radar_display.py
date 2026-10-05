@@ -1243,7 +1243,7 @@ def test_approach_hold_clamps_output_only(x, visible):
     assert t.approach_holds[0][1] - t.stop_distance == pytest.approx(x)
 
 
-@pytest.mark.parametrize('reason', ['timeout', 'travel', 'acceleration', 'sensor', 'motion'])
+@pytest.mark.parametrize('reason', ['travel', 'acceleration', 'sensor', 'motion'])
 def test_approach_hold_release(reason):
   t = Tracker()
   t.observe(N(points=[]), 0)
@@ -1259,9 +1259,44 @@ def test_approach_hold_release(reason):
   elif reason == 'motion':
     t.live = N(points=[point(99, x=10., y=2., speed=2.)])
   out = {'LF_DETECT': 0}
-  t.stopped_display(out, (None, None), 301 if reason == 'timeout' else 10)
+  t.stopped_display(out, (None, None), 10)
   assert out['LF_DETECT'] == 0
   assert not t.approach_holds
+
+
+@pytest.mark.parametrize('side', [0, 1])
+@pytest.mark.parametrize('frame', [301, 6000])
+def test_approach_hold_survives_elapsed_time(side, frame):
+  t = Tracker()
+  t.observe(N(points=[]), 0)
+  t.update_stop(5., 0, -1.)
+  t.stop_distance = .5
+  t.approach_holds[side] = (33, 3.35, 2. if side == 0 else -2., (1, 2.68, 2.), 0, 0., 0)
+  prefix = 'LF' if side == 0 else 'RF'
+  out = {prefix + '_DETECT': 0}
+  t.stopped_display(out, (None, None), frame)
+  assert out[prefix + '_DETECT'] == 1
+  assert out[prefix + '_DETECT_DISTANCE'] == pytest.approx(2.85 * .8)
+  assert side in t.approach_holds
+
+
+@pytest.mark.parametrize('side', [0, 1])
+def test_approach_transfers_to_stop_after_three_seconds(side):
+  t = Tracker()
+  t.observe(N(points=[]), 0)
+  t.update_stop(.5, 0, -1.)
+  t.approach_holds[side] = (33, 3.35, 2. if side == 0 else -2., (1, 2.68, 2.), 0, 0., 0)
+  prefix = 'LF' if side == 0 else 'RF'
+  for frame in range(5, 366, 5):
+    t.observe(N(points=[]), frame)
+    t.update_stop(0. if frame == 365 else .5, frame, -1.)
+    out = {prefix + '_DETECT': 0}
+    t.stopped_display(out, (None, None), frame)
+    assert out[prefix + '_DETECT'] == 1
+  assert not t.approach_holds
+  assert side in t.stop_holds
+  t.update_stop(1., 370, 1.)
+  assert not t.stop_holds
 
 
 @pytest.mark.parametrize('reused', [False, True])

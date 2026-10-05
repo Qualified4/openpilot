@@ -434,7 +434,7 @@ class _CcncRadarDisplayTracker:
         continue
       track_id, world_x, y, display, last_seen, last_distance, birth = held
       x = world_x - self.stop_distance  # Keep negative distance internally.
-      invalid = x < -1.0 or frame - last_seen > 300 or self.stop_distance - last_distance > 5.0
+      invalid = x < -1.0 or self.stop_distance - last_distance > 5.0
       for point in self.live.points:
         if (point.trackId == track_id and self.tracks.get(track_id, (None,))[0] == birth
             and str(point.radarSource) == 'frontRadar'
