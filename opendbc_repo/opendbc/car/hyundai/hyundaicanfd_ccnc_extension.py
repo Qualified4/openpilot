@@ -857,6 +857,34 @@ class _CcncRadarDisplayTracker:
           matches += 1
       return matches
 
+    def extend(region, row):
+      # Keep the original fixed frame: new anchors are placed relative to matched anchors.
+      available = list(region['anchors'])
+      pairs, extra = [], []
+      for x, y in row:
+        candidates = [(abs(x - a) + abs(y - b), i) for i, (a, b) in enumerate(available)
+                      if abs(x - a) <= 0.75 and abs(y - b) <= 0.35]
+        if candidates:
+          a, b = available.pop(min(candidates)[1])
+          pairs.append((x - a, y - b))
+        else:
+          extra.append((x, y))
+      if len(pairs) < 2 or not extra:
+        return
+      dx = sum(p[0] for p in pairs) / len(pairs)
+      dy = sum(p[1] for p in pairs) / len(pairs)
+      anchors = list(region['anchors'])
+      for x, y in extra:
+        x, y = x - dx, y - dy
+        gap = min(abs(x - a) for a, _ in anchors)
+        if (x < anchors[0][0] or x > anchors[-1][0]) and 0.6 <= gap <= 3.0 and len(anchors) < 16:
+          anchors.append((x, y))
+          anchors.sort()
+      anchors = [a for a in anchors if a[0] >= self.stop_distance - 3.0]
+      if len(anchors) != len(region['anchors']):
+        region['anchors'] = tuple(anchors)
+        region['extended'] = True
+
     regions = []
     for old in self.structure_regions:
       if 0 <= frame - old['last'] <= 15 and support(groups[old['side']], old['anchors']) >= 2:
@@ -878,9 +906,11 @@ class _CcncRadarDisplayTracker:
           intercept = row[0][1] - slope * row[0][0]
           if abs(slope) > 0.4 or max(abs(y - slope * x - intercept) for x, y in row) > 0.25:
             continue
-          if any(old['side'] == side and support(row, old['anchors']) >= 2 for old in regions):
+          owner = next((old for old in regions if old['side'] == side and support(row, old['anchors']) >= 2), None)
+          if owner is not None:
+            extend(owner, row)
             break  # Every extension retains these same matching prefix points.
-          regions.append(dict(side=side, start=frame, last=frame, anchors=tuple(row),
+          regions.append(dict(side=side, start=frame, last=frame, anchors=tuple(row[:16]),
                               slope=slope, intercept=intercept))
           break  # Longer rows would match the region just created.
     self.structure_regions = regions
@@ -905,7 +935,8 @@ class _CcncRadarDisplayTracker:
     return any(region['side'] == side and region['last'] - region['start'] >= 30
                and 0 <= frame - region['last'] <= 15
                and region['anchors'][0][0] - 0.75 <= x <= region['anchors'][-1][0] + 0.75
-               and abs(p.yRel - region['slope'] * x - region['intercept']) <= 0.35
+               and abs(p.yRel - (float(np.interp(x, [a for a, _ in region['anchors']], [b for _, b in region['anchors']]))
+                                 if region.get('extended') else region['slope'] * x + region['intercept'])) <= 0.35
                for region in self.structure_regions)
 
   def stable(self, track_id, frames=15):

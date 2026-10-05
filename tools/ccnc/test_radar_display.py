@@ -2390,3 +2390,79 @@ def test_confirmed_vehicle_evidence_protects_display(kind):
   elif kind=='vision':md.leadsV3=[N(prob=.9,x=[4.52],y=[-2.1])]
   else:t.boundary_admission[key]=dict(status='allowed',moving=(0,(3.,2.1),(1.,0.)))
   assert not t.structure_suppresses(0,md,40)
+
+
+def test_three_visible_points_extend_fixed_region_during_ego_travel():
+  t = Tracker()
+  for f in range(0, 161, 5):
+    t.stop_distance = f * .1
+    start = 3. + 2.5 * int(t.stop_distance / 2.5)
+    md = spatial_step(t, f, [point(i, x=start + i * 2.5 - t.stop_distance, y=2.1) for i in range(3)])
+    assert t.structure_suppresses(0, md, f) == (f >= 30)
+    assert t.structure_regions[0]['start'] == 0
+  assert t.structure_regions[0]['anchors'][-1][0] > 8.
+
+
+def test_extending_slowly_moving_array_does_not_follow_observed_drift():
+  t = Tracker()
+  for f in range(0, 101, 5):
+    offset = f * .04
+    start = 3. + 2.5 * (f // 5)
+    md = spatial_step(t, f, [point(i, x=start + i * 2.5 + offset, y=2.1) for i in range(3)])
+    assert not t.structure_suppresses(0, md, f)
+
+
+def test_new_anchor_is_corrected_to_original_region_frame():
+  t = Tracker()
+  for f in range(0, 41, 5):
+    spatial_step(t, f)
+  md = spatial_step(t, 45, [point(i, x=x, y=2.2) for i, x in enumerate((6., 8.5, 11.))])
+  region = t.structure_regions[0]
+  assert region['anchors'] == ((3., 2.1), (5.5, 2.1), (8., 2.1), (10.5, 2.1))
+  assert region['start'] == 0
+  for f in range(50, 81, 5):
+    t.update_structure_regions(md, f)
+  assert region['last'] == 45
+  assert not t.structure_suppresses(0, md, 65)
+
+
+def test_anchor_extension_cannot_bridge_gap_over_three_meters():
+  t = Tracker()
+  for f in range(0, 41, 5):
+    spatial_step(t, f)
+  spatial_step(t, 45, [point(i, x=x, y=2.1) for i, x in enumerate((5.5, 8., 11.01))])
+  assert t.structure_regions[0]['anchors'][-1][0] == 8.
+
+
+def test_anchor_extension_prunes_anchors_three_meters_behind_ego():
+  t = Tracker()
+  for f in range(0, 41, 5):
+    spatial_step(t, f)
+  spatial_step(t, 45, [point(i, x=x, y=2.1) for i, x in enumerate((5.5, 8., 10.5))])
+  spatial_step(t, 50, [point(i, x=x, y=2.1) for i, x in enumerate((8., 10.5, 13.))])
+  t.stop_distance = 9.
+  spatial_step(t, 55, [point(i, x=x - 9., y=2.1) for i, x in enumerate((10.5, 13., 15.5))])
+  assert t.structure_regions[0]['anchors'] == ((8., 2.1), (10.5, 2.1), (13., 2.1), (15.5, 2.1))
+
+
+def test_region_anchor_count_is_bounded_for_seeds_and_extensions():
+  t = Tracker()
+  md = spatial_step(t, 0, [point(i, x=3. + i * .7, y=2.1) for i in range(40)])
+  assert all(len(r['anchors']) <= 16 for r in t.structure_regions)
+  t = Tracker()
+  for f in range(0, 76, 5):
+    start = 3. + .7 * (f // 5)
+    md = spatial_step(t, f, [point(i, x=start + i * .7, y=2.1) for i in range(7)])
+    assert all(len(r['anchors']) <= 16 for r in t.structure_regions)
+  assert max(len(r['anchors']) for r in t.structure_regions) == 16
+
+
+@pytest.mark.parametrize('offset,hidden', [(0.34, True), (0.36, False)])
+def test_extended_region_uses_anchor_interval_lateral_interpolation(offset, hidden):
+  t = Tracker()
+  for f in range(0, 41, 5):
+    spatial_step(t, f)
+  md = spatial_step(t, 45, [point(i, x=x, y=y) for i, (x, y) in enumerate(((5.5, 2.1), (8., 2.1), (10.5, 2.4)))])
+  assert t.structure_regions[0]['extended']
+  md = spatial_step(t, 50, [point(999, x=9.25, y=2.25 + offset)])
+  assert t.structure_suppresses(0, md, 50) == hidden
