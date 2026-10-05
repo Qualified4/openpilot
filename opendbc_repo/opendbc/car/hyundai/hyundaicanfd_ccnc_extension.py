@@ -320,6 +320,8 @@ class _CcncRadarDisplayTracker:
     self.lane_sides = {}
     self.boundary_admission = {}
     self.boundary_rejected = set()
+    self.structure_regions = []
+    self._structure_live = None
     self.lane_ready = True
     self._model = None
     self._model_stamp = None
@@ -682,6 +684,8 @@ class _CcncRadarDisplayTracker:
       self.lane_sides.clear()
       self.boundary_admission.clear()
       self.boundary_rejected.clear()
+      self.structure_regions.clear()
+      self._structure_live = None
     self.last_frame = frame
     if live is self.live:
       return
@@ -801,6 +805,108 @@ class _CcncRadarDisplayTracker:
               and saved[-1] != self.tracks[saved[0]][0]):
             continue  # A reused radar slot cannot revoke an older physical display memory.
           del history[side]
+
+  def update_structure_regions(self, md, frame):
+    """Track a fixed spatial row across radar IDs; never change lead selection."""
+    rates = getattr(getattr(md, 'orientationRate', None), 'z', ())
+    changing = str(getattr(getattr(md, 'meta', None), 'laneChangeState', 'off')) != 'off'
+    uncertain = (self.live is None or md is None or changing or
+                 (not self.stopped and (not len(rates) or not math.isfinite(rates[0]) or abs(rates[0]) > 0.03)))
+    if uncertain:
+      self.structure_regions.clear()
+      self._structure_live = None
+      return
+    curves = []
+    for index in (1, 2):
+      if (index >= len(md.laneLines) or index >= len(md.laneLineProbs)
+          or not math.isfinite(md.laneLineProbs[index]) or md.laneLineProbs[index] < 0.3):
+        continue
+      xs, ys, valid = self._curve(md, index)
+      if valid:
+        curves.append((index, xs, ys))
+    if not curves:
+      self.structure_regions.clear()
+      self._structure_live = None
+      return
+    valid_sides = {index - 1 for index, _, _ in curves}
+    self.structure_regions = [region for region in self.structure_regions if region['side'] in valid_sides]
+    if self.live is self._structure_live:
+      return  # Only new radar data can extend spatial support.
+    self._structure_live = self.live
+    groups = {0: [], 1: []}
+    for p in self.live.points:
+      if (str(getattr(p, 'radarSource', 'frontRadar')) != 'frontRadar' or not getattr(p, 'measured', True)
+          or not math.isfinite(p.dRel) or not math.isfinite(p.yRel)
+          or not 0.2 <= p.dRel <= 50.0 or not 0.2 <= abs(p.yRel) <= 6.0):
+        continue
+      nearest = [(abs(p.yRel + float(np.interp(p.dRel, xs, ys))), index)
+                 for index, xs, ys in curves if xs[0] <= p.dRel <= xs[-1]]
+      gap, index = min(nearest, default=(math.inf, None))
+      if gap <= 1.5:
+        groups[index - 1].append((self.stop_distance + p.dRel, p.yRel))
+
+    def support(points, anchors):
+      available = list(anchors)
+      matches = 0
+      for x, y in points:
+        candidates = [(abs(x - a) + abs(y - b), i) for i, (a, b) in enumerate(available)
+                      if abs(x - a) <= 0.75 and abs(y - b) <= 0.35]
+        if candidates:
+          _, i = min(candidates)
+          available.pop(i)
+          matches += 1
+      return matches
+
+    regions = []
+    for old in self.structure_regions:
+      if 0 <= frame - old['last'] <= 15 and support(groups[old['side']], old['anchors']) >= 2:
+        regions.append(dict(old, last=frame))
+      elif 0 <= frame - old['last'] <= 15:
+        regions.append(old)  # Brief dropout does not establish new evidence.
+    for side, points in groups.items():
+      points.sort()
+      for first in range(len(points)):
+        for last in range(first + 2, len(points)):
+          row = points[first:last + 1]
+          length = row[-1][0] - row[0][0]
+          if length < 4.0:
+            continue
+          gaps = [b[0] - a[0] for a, b in zip(row, row[1:])]
+          if min(gaps) < 0.6 or max(gaps) > 3.0 or max(gaps) - min(gaps) > 0.75:
+            break  # Extending this row cannot remove an invalid existing gap.
+          slope = (row[-1][1] - row[0][1]) / length
+          intercept = row[0][1] - slope * row[0][0]
+          if abs(slope) > 0.4 or max(abs(y - slope * x - intercept) for x, y in row) > 0.25:
+            continue
+          if any(old['side'] == side and support(row, old['anchors']) >= 2 for old in regions):
+            break  # Every extension retains these same matching prefix points.
+          regions.append(dict(side=side, start=frame, last=frame, anchors=tuple(row),
+                              slope=slope, intercept=intercept))
+          break  # Longer rows would match the region just created.
+    self.structure_regions = regions
+
+  def structure_suppresses(self, side, md, frame):
+    key = self.selected[side + 1]
+    entry = self.tracks.get(key)
+    if entry is None:
+      return False
+    birth, _, _, p, _ = entry
+    admission = self.boundary_admission.get(key)
+    if admission is not None and admission['status'] == 'allowed' and admission['moving'] is not None:
+      return False  # Preserve observed vehicle motion, not reported speed alone.
+    if any(saved[0] == key and saved[-1] == birth
+           for holds in (self.stop_holds, self.approach_holds) for saved in holds.values()):
+      return False
+    for lead in getattr(md, 'leadsV3', ()):
+      if len(lead.x) and len(lead.y) and lead.prob >= 0.8:
+        if abs(p.dRel - (lead.x[0] - 1.52)) <= max(3.0, p.dRel * 0.2) and abs(p.yRel + lead.y[0]) <= 1.2:
+          return False
+    x = self.stop_distance + p.dRel
+    return any(region['side'] == side and region['last'] - region['start'] >= 30
+               and 0 <= frame - region['last'] <= 15
+               and region['anchors'][0][0] - 0.75 <= x <= region['anchors'][-1][0] + 0.75
+               and abs(p.yRel - region['slope'] * x - region['intercept']) <= 0.35
+               for region in self.structure_regions)
 
   def stable(self, track_id, frames=15):
     entry = self.tracks.get(track_id)
@@ -2318,11 +2424,19 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     else:
       values["RF_DETECT"] = 0
 
-    display_tracker.stopped_display(values, (lf_lead, rf_lead), frame)
+    display_tracker.update_structure_regions(md, frame)
+    structure_blocked = tuple(display_tracker.structure_suppresses(side, md, frame) for side in (0, 1))
+    display_tracker.stopped_display(values, (None if structure_blocked[0] else lf_lead,
+                                            None if structure_blocked[1] else rf_lead), frame)
     if corrected:
       display_tracker.position_correction.stabilize_slots(
         values, display_tracker.selected, display_tracker.tracks, frame,
         bypass=display_tracker.stopped or display_tracker.approaching or bool(display_tracker.approach_holds))
+
+    for side, prefix in enumerate(('LF', 'RF')):
+      if (structure_blocked[side] and side not in display_tracker.stop_holds
+          and side not in display_tracker.approach_holds):
+        values[prefix + '_DETECT'] = 0
 
     center_lane_offset = (state.r_lane_f.value - state.l_lane_f.value) / 2 if model_lanes else 0.0
 

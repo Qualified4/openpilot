@@ -746,3 +746,33 @@ def test_control_gap_clears_pending_lane_transition(display):
   ccnc_extension.update_lanes({},cs,lane_geometry_model(stamp=2),90,0,3,True,False,True,100)
   assert not ccnc_extension.state.hold_lane
   assert ccnc_extension.state.lane_geometry.hold_start is None
+
+
+def test_new_array_point_cannot_create_stop_or_approach_memory(display, monkeypatch):
+  ccnc_extension.reset();ccnc_extension.configure(True,True,True,True,model_lane_mode=2)
+  curve=lambda y:N(x=[0.,10.,30.],y=[y]*3)
+  md=N(timestampEof=0,laneLines=[curve(y) for y in (-5.,-1.5,1.5,5.)],laneLineProbs=[.9]*4,
+       roadEdges=[curve(-7.),curve(7.)],orientationRate=N(z=[0.]),leadsV3=[],meta=N(laneChangeState='off'))
+  fields=dict.fromkeys(CANPacker('hyundai_canfd_generated').dbc.name_to_msg['CCNC_0x162'].sigs,0)
+  cs=N(out=N(leftBlinker=False,rightBlinker=False,leftBlindspot=False,rightBlindspot=False),
+       radarState=None,ccnc_0x162=fields)
+  for frame in range(0,251,5):
+    monkeypatch.setattr(ccnc_extension,'time',N(monotonic=lambda:frame*.01))
+    cs.live_tracks=N(points=[N(trackId=i,dRel=x,yRel=2.1,vLead=0.,vRel=0.,yvRel=0.,
+                              measured=True,radarSource='frontRadar') for i,x in enumerate((3.,5.5,8.))])
+    values=ccnc_extension.update_vehicles(dict(fields),cs,md,frame,0.,0.,True)
+    assert values['FF_DETECT']!=7
+    if frame>=50:
+      assert values['LF_DETECT']==0
+      tr=ccnc_extension.state.radar_display_tracker
+      assert not tr.stop_pending and not tr.stop_holds
+      assert not tr.approach_pending and not tr.approach_holds
+  # A different/reused source must not blank an older valid physical memory.
+  tr.stop_holds[0]=(99,2.9,3.8,(2,2.32,3.8),-1)
+  monkeypatch.setattr(ccnc_extension,'time',N(monotonic=lambda:2.55))
+  cs.live_tracks=N(points=[N(trackId=i,dRel=x,yRel=2.1,vLead=0.,vRel=0.,yvRel=0.,
+                            measured=True,radarSource='frontRadar') for i,x in enumerate((3.,5.5,8.))])
+  values=ccnc_extension.update_vehicles(dict(fields),cs,md,255,0.,0.,True)
+  assert values['LF_DETECT']==2
+  assert values['LF_DETECT_DISTANCE']==2.32
+  assert tr.stop_holds[0][0]==99

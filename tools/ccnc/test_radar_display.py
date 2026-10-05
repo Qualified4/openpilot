@@ -2303,3 +2303,90 @@ def test_correction_fast_crossing_finishes_evidence_after_entering_front_slot(si
                               bounds=(1.8, -1.8) if crossed else bounds)
   assert c.tracks[1]['fast_speed'] > 0
   assert abs(output) < 1.8
+
+
+def spatial_step(t,frame,points=None,md=None):
+  md=lane_model(frame) if md is None else md
+  md.orientationRate=getattr(md,'orientationRate',N(z=[0.]))
+  points=[point(frame+i,x=x,y=2.1,speed=8.) for i,x in enumerate((3.,5.5,8.))] if points is None else points
+  t.observe(N(points=points),frame);t.update_stop(0.,frame)
+  t.selected=[None,points[0].trackId if points else None,None]
+  t.update_structure_regions(md,frame)
+  return md
+
+def test_ids_change_without_restarting_array_evidence():
+  t=Tracker()
+  for frame in range(0,41,5):
+    md=spatial_step(t,frame)
+    assert t.structure_suppresses(0,md,frame)==(frame>=30)
+  assert t.structure_regions[0]['start']==0
+
+@pytest.mark.parametrize('kind',['single','compact','irregular','wide'])
+def test_non_array_cannot_seed_suppression(kind):
+  t=Tracker()
+  specs={'single':[(3.,2.1)],'compact':[(3.,2.1),(4.,2.1),(5.,2.1)],'irregular':[(3.,2.1),(7.,2.1),(14.,2.1)],'wide':[(3.,2.1),(7.,2.8),(11.,2.1)]}
+  for f in range(0,61,5):
+    md=spatial_step(t,f,[point(i,x=x,y=y) for i,(x,y) in enumerate(specs[kind])])
+    assert not t.structure_suppresses(0,md,f)
+
+def test_cached_radar_cannot_age_array_confirmation():
+  t=Tracker();md=spatial_step(t,0)
+  for f in range(5,101,5):t.update_structure_regions(md,f)
+  assert not t.structure_suppresses(0,md,35)
+
+def test_dropout_cannot_finish_unconfirmed_array():
+  t=Tracker()
+  for f in range(0,21,5):spatial_step(t,f)
+  md=spatial_step(t,30,[point(999,x=3.,y=2.1)])
+  assert not t.structure_suppresses(0,md,30)
+
+def test_translating_array_without_fixed_anchors_is_not_stationary():
+  t=Tracker()
+  for f in range(0,101,5):
+    md=spatial_step(t,f,[point(i,x=x+f*.06,y=2.1) for i,x in enumerate((3.,5.5,8.))])
+    assert not t.structure_suppresses(0,md,f)
+
+def test_vehicle_scene_spacing_does_not_seed_dense_array():
+  t=Tracker()
+  for f in range(0,101,5):
+    md=spatial_step(t,f,[point(i,x=x,y=2.1) for i,x in enumerate((3.,6.45,9.85))])
+    assert not t.structure_suppresses(0,md,f)
+
+def test_ego_travel_keeps_fixed_array_evidence():
+  t=Tracker()
+  for f in range(0,41,5):
+    t.stop_distance=f*.05
+    md=spatial_step(t,f,[point(i,x=x-f*.05,y=2.1) for i,x in enumerate((3.,5.5,8.))])
+    assert t.structure_suppresses(0,md,f)==(f>=30)
+
+@pytest.mark.parametrize('kind',['model_loss','turn','lane_change','weak_geometry','missing_lines'])
+def test_uncertainty_clears_array(kind):
+  t=Tracker()
+  for f in range(0,41,5):md=spatial_step(t,f)
+  assert t.structure_suppresses(0,md,40)
+  t.stopped=False
+  if kind=='model_loss':md=None
+  elif kind=='turn':md.orientationRate.z=[.04]
+  elif kind=='lane_change':md.meta=N(laneChangeState='laneChangeStarting')
+  elif kind=='missing_lines':md.laneLines=[]
+  else:md.laneLineProbs=[.1]*4
+  t.update_structure_regions(md,45)
+  assert not t.structure_regions
+
+def test_cached_radar_new_weak_side_cannot_reuse_region():
+  t=Tracker()
+  for f in range(0,41,5):md=spatial_step(t,f)
+  md.laneLineProbs[1]=.1
+  t.update_structure_regions(md,45)
+  assert not t.structure_suppresses(0,md,45)
+
+@pytest.mark.parametrize('kind',['stop','approach','vision','motion'])
+def test_confirmed_vehicle_evidence_protects_display(kind):
+  t=Tracker()
+  for f in range(0,41,5):md=spatial_step(t,f)
+  key=t.selected[1];birth=t.tracks[key][0]
+  if kind=='stop':t.stop_holds[0]=(key,3.,2.1,(1,2.4,2.1),birth)
+  elif kind=='approach':t.approach_holds[0]=(key,3.,2.1,(1,2.4,2.1),40,0.,birth)
+  elif kind=='vision':md.leadsV3=[N(prob=.9,x=[4.52],y=[-2.1])]
+  else:t.boundary_admission[key]=dict(status='allowed',moving=(0,(3.,2.1),(1.,0.)))
+  assert not t.structure_suppresses(0,md,40)
