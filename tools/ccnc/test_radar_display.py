@@ -577,6 +577,29 @@ def test_far_display_uses_certain_position_only_outside_maneuvers(reject):
   assert reference == ('lane', 'position' if reject is None else 'center')
 
 
+@pytest.mark.parametrize('refresh', ['reader', 'timestamp', 'missing_timestamp'])
+def test_far_display_path_refreshes_with_model_publication(refresh):
+  tracker = Tracker()
+  tracker.position_correction = H['_CcncVehiclePositionCorrection']()
+  md = lane_model()
+  for line in md.laneLines:
+    line.x = [0., 30., 60.]
+  md.position = N(x=[0., 30., 60.], y=[0., 1., 2.], yStd=[.2]*3)
+  tracker.lane_probabilities(md)
+  p = point(x=60., y=-2.)
+  assert tracker.align_display_position(p, 99., ('lane', True)) == (0., ('lane', 'position'))
+  assert tracker.align_display_position(p, 99., ('lane', True)) == (0., ('lane', 'position'))
+  if refresh == 'reader':
+    md = N(**vars(md))
+  elif refresh == 'timestamp':
+    md.timestampEof += 1
+  else:
+    del md.timestampEof
+  md.position = N(x=[0., 30., 60.], y=[0., 2., 4.], yStd=[.2]*3)
+  tracker.lane_probabilities(md)
+  assert tracker.align_display_position(p, 99., ('lane', True)) == (2., ('lane', 'position'))
+
+
 def boundary_step(tracker, p, frame, md=None, ego_kph=0.):
   tracker.observe(N(points=[p]), frame)
   tracker.update_stop(ego_kph, frame)

@@ -326,6 +326,7 @@ class _CcncRadarDisplayTracker:
     self._projection_live = None
     self._projection = None
     self._path_data = None
+    self._display_path = None
     self._path_live = self._path_points = None
     self._curves = {}
 
@@ -512,6 +513,7 @@ class _CcncRadarDisplayTracker:
     self._side_width_cache.clear()
     self._model, self._model_stamp = md, stamp
     self._inner_data = self._lane_probs = self._lane_data = self._projection = self._path_data = None
+    self._display_path = None
     self._projection_live = None
     self._path_live = self._path_points = None
     self._curves = {}
@@ -1031,22 +1033,24 @@ class _CcncRadarDisplayTracker:
       if (valid and math.isfinite(probability) and probability >= self.position_correction.MIN_LANE_PROBABILITY
           and xs[0] <= 0 <= point.dRel <= xs[-1]):
         curves.append((index, xs, ys))
-    if len(curves) == 2:
-      widths = [float(np.interp(x, curves[1][1], curves[1][2]) - np.interp(x, curves[0][1], curves[0][2]))
-                for x in (0.0, min(20.0, point.dRel), point.dRel)]
-      if not all(2.3 <= width <= 4.8 for width in widths):
-        return aligned_y, reference
     if not curves:
       return aligned_y, reference
-    correction = sum(float(np.interp(point.dRel, xs, ys) - np.interp(0.0, xs, ys))
-                     for _, xs, ys in curves) / len(curves)
+    samples = [np.interp((0.0, min(20.0, point.dRel), point.dRel), xs, ys) for _, xs, ys in curves]
+    if len(curves) == 2:
+      widths = samples[1] - samples[0]
+      if not all(2.3 <= width <= 4.8 for width in widths):
+        return aligned_y, reference
+    correction = sum(float(y[2] - y[0]) for y in samples) / len(curves)
     # Far lane polynomials can remain confident while disagreeing with the path.
     # Do not substitute a maneuver trajectory or extrapolate uncertain position.
     pos = getattr(self._model, 'position', None)
     if not changing and point.dRel > 40.0 and pos is not None:
-      xs, ys = np.asarray(pos.x), np.asarray(pos.y)
-      std = np.asarray(getattr(pos, 'yStd', ()))
-      if (_ccnc_valid_boundary(xs, ys) and len(std) == len(xs) and np.isfinite(std).all()
+      if self._display_path is None:
+        xs, ys = np.asarray(pos.x), np.asarray(pos.y)
+        std = np.asarray(getattr(pos, 'yStd', ()))
+        self._display_path = xs, ys, std, (_ccnc_valid_boundary(xs, ys) and len(std) == len(xs) and np.isfinite(std).all())
+      xs, ys, std, valid = self._display_path
+      if (valid
           and xs[0] <= 0 <= point.dRel <= xs[-1]
           and np.max(std[xs <= point.dRel]) <= .8):
         path = float(np.interp(point.dRel, xs, ys) - np.interp(0.0, xs, ys))
