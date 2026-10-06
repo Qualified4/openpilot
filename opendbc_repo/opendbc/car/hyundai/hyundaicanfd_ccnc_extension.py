@@ -323,9 +323,6 @@ class _CcncRadarDisplayTracker:
     self.boundary_admission = {}
     self.boundary_rejected = set()
     self.structure_regions = []
-    self.structure_evidence = {}
-    self._structure_model = None
-    self._structure_model_stamp = None
     self._structure_live = None
     self.lane_ready = True
     self._model = None
@@ -690,7 +687,6 @@ class _CcncRadarDisplayTracker:
       self.boundary_admission.clear()
       self.boundary_rejected.clear()
       self.structure_regions.clear()
-      self.structure_evidence.clear()
       self._structure_live = None
     self.last_frame = frame
     if live is self.live:
@@ -812,64 +808,6 @@ class _CcncRadarDisplayTracker:
             continue  # A reused radar slot cannot revoke an older physical display memory.
           del history[side]
 
-  def update_structure_evidence(self, md, frame):
-    """Refresh display-only exemptions from measured positions and unique vision matches."""
-    model_stamp = getattr(md, 'timestampEof', None)
-    new_model = (model_stamp != self._structure_model_stamp if model_stamp is not None
-                 else md is not self._structure_model)
-    self._structure_model, self._structure_model_stamp = md, model_stamp
-    if self.live is self._structure_live and not new_model:
-      return
-    measured = {key: entry for key, entry in self.tracks.items()
-                if 0 <= frame - entry[1] <= 15
-                and (self.temporal is None or entry[3].ccnc_fresh)
-                and getattr(entry[3], 'measured', True)}
-    self.structure_evidence = {key: saved for key, saved in self.structure_evidence.items()
-                               if key in measured and saved['birth'] == measured[key][0]}
-    vision_matches = set()
-    for lead in getattr(md, 'leadsV3', ()):
-      if not (len(lead.x) and len(lead.y) and math.isfinite(lead.prob) and lead.prob >= 0.8
-              and math.isfinite(lead.x[0]) and math.isfinite(lead.y[0])):
-        continue
-      candidates = [key for key, entry in measured.items()
-                    if abs(entry[4][0] - (lead.x[0] - 1.52)) <= max(3.0, entry[4][0] * 0.2)
-                    and abs(entry[4][1] + lead.y[0]) <= 1.2]
-      if len(candidates) == 1:
-        vision_matches.add(candidates[0])
-    for key, (birth, stamp, _, p, position) in measured.items():
-      saved = self.structure_evidence.setdefault(key, dict(
-        birth=birth, samples=deque(), moving=False, vision=None, vision_model=None, vision_model_stamp=None))
-      samples = saved['samples']
-      if not samples or samples[-1][0] != stamp:
-        samples.append((stamp, self.stop_distance + position[0], position[1]))
-      while samples and stamp - samples[0][0] > 100:
-        samples.popleft()
-      saved['moving'] = False
-      if key not in self.selected[1:]:
-        saved['vision'] = None
-        continue
-      if len(samples) >= 3 and stamp - samples[0][0] >= 15:
-        dx, dy = samples[-1][1] - samples[0][1], samples[-1][2] - samples[0][2]
-        net = math.hypot(dx, dy)
-        steps = [math.hypot(b[1] - a[1], b[2] - a[2]) for a, b in zip(samples, list(samples)[1:])]
-        vy = getattr(p, 'yvRel', 0.0)
-        saved['moving'] = (net >= 0.5 and net >= 0.8 * sum(steps) and max(steps) <= 0.6 * net
-                           and math.isfinite(vy) and math.hypot(p.vLead, vy) > 2.0 / CV.MS_TO_KPH
-                           and dx * p.vLead + dy * vy > 0.0)
-      vision = saved['vision']
-      if vision is not None and not 0 <= frame - vision[1] <= 15:
-        saved['vision'] = vision = None
-      if key not in vision_matches:
-        saved['vision'] = None
-      elif (model_stamp != saved['vision_model_stamp'] if model_stamp is not None
-            else md is not saved['vision_model']) and (
-          vision is None or stamp != vision[2]):
-        saved['vision_model'], saved['vision_model_stamp'] = md, model_stamp
-        if vision is None:
-          saved['vision'] = (frame, frame, stamp, 1)
-        else:
-          saved['vision'] = (vision[0], frame, stamp, vision[3] + 1)
-
   def update_structure_regions(self, md, frame):
     """Track a fixed spatial row across radar IDs; never change lead selection."""
     rates = getattr(getattr(md, 'orientationRate', None), 'z', ())
@@ -878,7 +816,6 @@ class _CcncRadarDisplayTracker:
                  (not self.stopped and (not len(rates) or not math.isfinite(rates[0]) or abs(rates[0]) > 0.03)))
     if uncertain:
       self.structure_regions.clear()
-      self.structure_evidence.clear()
       self._structure_live = None
       return
     curves = []
@@ -891,17 +828,14 @@ class _CcncRadarDisplayTracker:
         curves.append((index, xs, ys))
     if not curves:
       self.structure_regions.clear()
-      self.structure_evidence.clear()
       self._structure_live = None
       return
     valid_sides = {index - 1 for index, _, _ in curves}
     self.structure_regions = [region for region in self.structure_regions if region['side'] in valid_sides]
-    self.update_structure_evidence(md, frame)
     if self.live is self._structure_live:
       return  # Only new radar data can extend spatial support.
     self._structure_live = self.live
     groups = {0: [], 1: []}
-    narrow_groups = {0: [], 1: []}
     for p in self.live.points:
       if (str(getattr(p, 'radarSource', 'frontRadar')) != 'frontRadar' or not getattr(p, 'measured', True)
           or not math.isfinite(p.dRel) or not math.isfinite(p.yRel)
@@ -910,10 +844,8 @@ class _CcncRadarDisplayTracker:
       nearest = [(abs(p.yRel + float(np.interp(p.dRel, xs, ys))), index)
                  for index, xs, ys in curves if xs[0] <= p.dRel <= xs[-1]]
       gap, index = min(nearest, default=(math.inf, None))
-      if gap <= 2.5:
+      if gap <= 1.5:
         groups[index - 1].append((self.stop_distance + p.dRel, p.yRel))
-        if gap <= 1.5:
-          narrow_groups[index - 1].append(groups[index - 1][-1])
 
     def support(points, anchors):
       available = list(anchors)
@@ -957,11 +889,7 @@ class _CcncRadarDisplayTracker:
 
     regions = []
     for old in self.structure_regions:
-      anchors = old['anchors']
-      supported = (support(narrow_groups[old['side']], anchors) >= 2 or
-                   (len(anchors) >= 5 and anchors[-1][0] - anchors[0][0] >= 8.0
-                    and support(groups[old['side']], anchors) >= 2))
-      if 0 <= frame - old['last'] <= 15 and supported:
+      if 0 <= frame - old['last'] <= 15 and support(groups[old['side']], old['anchors']) >= 2:
         regions.append(dict(old, last=frame))
       elif 0 <= frame - old['last'] <= 15:
         regions.append(old)  # Brief dropout does not establish new evidence.
@@ -980,9 +908,6 @@ class _CcncRadarDisplayTracker:
           intercept = row[0][1] - slope * row[0][0]
           if abs(slope) > 0.4 or max(abs(y - slope * x - intercept) for x, y in row) > 0.25:
             continue
-          # A single bus/truck can form a short row in the expanded corridor.
-          if (any(p not in narrow_groups[side] for p in row) and (len(row) < 5 or length < 8.0)):
-            continue
           owner = next((old for old in regions if old['side'] == side and support(row, old['anchors']) >= 2), None)
           if owner is not None:
             extend(owner, row)
@@ -998,15 +923,16 @@ class _CcncRadarDisplayTracker:
     if entry is None:
       return False
     birth, _, _, p, _ = entry
-    evidence = self.structure_evidence.get(key)
-    if evidence is not None and evidence['birth'] == birth and 0 <= frame - entry[1] <= 15:
-      vision = evidence['vision']
-      if evidence['moving'] or (vision is not None and vision[3] >= 3
-                                and vision[1] - vision[0] >= 20 and 0 <= frame - vision[1] <= 15):
-        return False
+    admission = self.boundary_admission.get(key)
+    if admission is not None and admission['status'] == 'allowed' and admission['moving'] is not None:
+      return False  # Preserve observed vehicle motion, not reported speed alone.
     if any(saved[0] == key and saved[-1] == birth
            for holds in (self.stop_holds, self.approach_holds) for saved in holds.values()):
       return False
+    for lead in getattr(md, 'leadsV3', ()):
+      if len(lead.x) and len(lead.y) and lead.prob >= 0.8:
+        if abs(p.dRel - (lead.x[0] - 1.52)) <= max(3.0, p.dRel * 0.2) and abs(p.yRel + lead.y[0]) <= 1.2:
+          return False
     x = self.stop_distance + p.dRel
     return any(region['side'] == side and region['last'] - region['start'] >= 30
                and 0 <= frame - region['last'] <= 15
