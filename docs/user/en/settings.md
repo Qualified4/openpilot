@@ -317,6 +317,8 @@ Displays up to one front-radar vehicle ahead and one in each adjacent lane. Adju
 
 Memory that retains side vehicles after detection is lost while stopped or approaching a stop is saved only within a radar longitudinal distance of 15 m. More distant vehicles remain displayed under the existing conditions while detected, but this stop memory does not extend their display.
 
+Regularly spaced reflections that remain in fixed positions across multiple observations are excluded from the side-vehicle display. Targets with sustained motion in recent observed positions, or repeated position agreement with a vision lead and only one radar candidate, are protected from this exclusion. Adjacent-lane vehicles not represented as vision leads receive no vision protection, and real vehicles may still be mistaken for structures.
+
 If lane markings briefly disappear, previously detected side vehicles that remain continuously detected may stay displayed for up to two seconds or 30 m of ego travel, whichever comes first. This continuation ends if detection is interrupted or the target changes. Switching this option on or off reassesses retained vehicle displays.
 
 Rear-side vehicle icons indicate blind-spot detection, not actual distance or precise position. Do not use icon spacing to judge following distance or whether a lane change is safe.

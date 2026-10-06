@@ -2403,6 +2403,7 @@ def test_uncertainty_clears_array(kind):
   else:md.laneLineProbs=[.1]*4
   t.update_structure_regions(md,45)
   assert not t.structure_regions
+  assert not t.structure_evidence
 
 def test_cached_radar_new_weak_side_cannot_reuse_region():
   t=Tracker()
@@ -2411,16 +2412,130 @@ def test_cached_radar_new_weak_side_cannot_reuse_region():
   t.update_structure_regions(md,45)
   assert not t.structure_suppresses(0,md,45)
 
-@pytest.mark.parametrize('kind',['stop','approach','vision','motion'])
+@pytest.mark.parametrize('kind',['stop','approach'])
 def test_confirmed_vehicle_evidence_protects_display(kind):
   t=Tracker()
   for f in range(0,41,5):md=spatial_step(t,f)
   key=t.selected[1];birth=t.tracks[key][0]
   if kind=='stop':t.stop_holds[0]=(key,3.,2.1,(1,2.4,2.1),birth)
   elif kind=='approach':t.approach_holds[0]=(key,3.,2.1,(1,2.4,2.1),40,0.,birth)
-  elif kind=='vision':md.leadsV3=[N(prob=.9,x=[4.52],y=[-2.1])]
-  else:t.boundary_admission[key]=dict(status='allowed',moving=(0,(3.,2.1),(1.,0.)))
   assert not t.structure_suppresses(0,md,40)
+
+
+@pytest.mark.parametrize('gap,hidden', [(2.49, True), (2.5, True), (2.51, False)])
+def test_structure_collection_covers_adjacent_corridor(gap, hidden):
+  t = Tracker()
+  for f in range(0, 41, 5):
+    md = spatial_step(t, f, [point(i, x=x, y=1.5+gap) for i, x in enumerate((3., 5.5, 8., 10.5, 13.))])
+  assert t.structure_suppresses(0, md, 40) == hidden
+
+
+@pytest.mark.parametrize('distances', [(3., 4.75, 6.5, 7.8), (3., 5.875, 7.825, 10.325),
+                                      (3., 4.5, 6., 7.5, 9.), (3., 5.7, 8.4, 11.1)])
+def test_short_or_sparse_vehicle_body_returns_do_not_seed_expanded_structure(distances):
+  t = Tracker()
+  for f in range(0, 101, 5):
+    md = spatial_step(t, f, [point(i, x=x, y=3.3) for i, x in enumerate(distances)])
+    assert not t.structure_suppresses(0, md, f)
+
+
+def test_short_narrow_region_cannot_be_extended_using_only_expanded_corridor_support():
+  t = Tracker()
+  for f in range(0, 41, 5):
+    md = spatial_step(t, f)
+  # Moving the lane boundary makes the same three reflections newly expanded evidence.
+  md.laneLines[1].y = [-.5]*3
+  for f in range(45, 66, 5):
+    spatial_step(t, f, [point(i, x=x, y=2.1) for i, x in enumerate((3., 5.5, 8.))], md)
+  assert not t.structure_suppresses(0, md, 65)
+
+
+@pytest.mark.parametrize('support', ['unique', 'ambiguous', 'weak', 'nan', 'cached_model', 'cached_radar'])
+def test_structure_vision_protection_requires_fresh_repeated_unique_matches(support):
+  t = Tracker()
+  cached = None
+  for f in range(0, 61, 5):
+    md = lane_model(0 if support == 'cached_model' else f)
+    # x=2m admits the first return at 3m, but not the next at 5.5m.
+    md.leadsV3 = [N(prob=.79 if support == 'weak' else .9,
+                    x=[math.nan if support == 'nan' else 4.52 if support == 'ambiguous' else 3.52], y=[-2.1])]
+    points = [point(i, x=x, y=2.1) for i, x in enumerate((3., 5.5, 8.))]
+    if support == 'cached_radar' and f >= 40:
+      t.update_structure_regions(md, f)
+    else:
+      spatial_step(t, f, points, md)
+    if f == 30:
+      cached = t.live
+      assert t.structure_suppresses(0, md, f) == (support != 'unique' and support != 'cached_radar')
+  if support == 'cached_radar':
+    assert t.live is not cached  # Last new radar observation was at 35, not 30.
+    assert 0 not in t.structure_evidence
+  else:
+    assert t.structure_suppresses(0, md, 60) == (support != 'unique')
+
+
+@pytest.mark.parametrize('loss', ['ambiguous', 'weak', 'reused_id', 'prediction', 'cached_inputs'])
+def test_structure_vision_protection_does_not_survive_lost_support(loss):
+  t = Tracker()
+  for f in range(0, 41, 5):
+    md = lane_model(f)
+    md.leadsV3 = [N(prob=.9, x=[3.52], y=[-2.1])]
+    spatial_step(t, f, [point(i, x=x, y=2.1) for i, x in enumerate((3., 5.5, 8.))], md)
+  assert not t.structure_suppresses(0, md, 40)
+  if loss == 'cached_inputs':
+    t.update_structure_regions(md, 56)
+    assert t.structure_suppresses(0, md, 56) is False  # Region itself also expires.
+    evidence = t.structure_evidence[0]
+    assert 56 - evidence['vision'][1] > 15
+    return
+  md = lane_model(45)
+  md.leadsV3 = [N(prob=.79 if loss == 'weak' else .9,
+                  x=[4.52 if loss == 'ambiguous' else 3.52], y=[-2.1])]
+  points = [point(i, x=x, y=2.1) for i, x in enumerate((3., 5.5, 8.))]
+  if loss == 'reused_id':
+    # A birth change must not inherit vision confirmation from the old identity.
+    t.observe(N(points=[]), 41)
+  spatial_step(t, 45, points, md)
+  if loss == 'prediction':
+    t.temporal = N()
+    for p in points:
+      p.ccnc_fresh = p.trackId != 0
+    md.timestampEof = 46
+    t.update_structure_regions(md, 46)
+  assert t.structure_suppresses(0, md, 45)
+
+
+def test_structure_motion_exemption_needs_recent_positions_not_old_admission_or_reported_speed():
+  t = Tracker()
+  for f in range(0, 41, 5):
+    md = spatial_step(t, f, [point(i, x=x, y=2.1) for i, x in enumerate((3., 5.5, 8.))])
+  t.boundary_admission[0] = dict(status='allowed', moving=(0, (3., 2.1), (1., 0.)))
+  assert t.structure_suppresses(0, md, 40)
+  for f in range(45, 91, 5):
+    md = spatial_step(t, f, [point(0, x=3.+(f-40)*.02, y=2.1, speed=2.),
+                             point(1, x=5.5, y=2.1), point(2, x=8., y=2.1)])
+  assert not t.structure_suppresses(0, md, 90)
+  # Even a nonzero reported speed cannot keep old position movement alive forever.
+  for f in range(95, 201, 5):
+    md = spatial_step(t, f, [point(0, x=4., y=2.1, speed=2.),
+                             point(1, x=5.5, y=2.1), point(2, x=8., y=2.1)])
+  assert t.structure_suppresses(0, md, 200)
+
+
+def test_structure_vision_pairs_asynchronous_model_then_radar_publications():
+  t = Tracker()
+  md = lane_model(0)
+  md.leadsV3 = [N(prob=.9, x=[3.52], y=[-2.1])]
+  spatial_step(t, 0, [point(i, x=x, y=2.1) for i, x in enumerate((3., 5.5, 8.))], md)
+  for f in range(5, 36, 5):
+    md = lane_model(f)
+    md.leadsV3 = [N(prob=.9, x=[3.52], y=[-2.1])]
+    count = t.structure_evidence[0]['vision'][3]
+    t.update_structure_regions(md, f)
+    assert t.structure_evidence[0]['vision'][3] == count
+    spatial_step(t, f+1, [point(i, x=x, y=2.1) for i, x in enumerate((3., 5.5, 8.))], md)
+    assert t.structure_evidence[0]['vision'][3] == count+1
+  assert not t.structure_suppresses(0, md, 36)
 
 
 def test_three_visible_points_extend_fixed_region_during_ego_travel():
