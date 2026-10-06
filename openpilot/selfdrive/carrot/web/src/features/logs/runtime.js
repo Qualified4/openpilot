@@ -44,6 +44,7 @@ import {
   screenrecordApiPath,
   screenrecordShouldLoadMore,
   screenrecordState,
+  showScreenrecordMenu,
 } from "./screenrecord.js";
 
 // Logs page — shared infra used by both the Dashcam and Screen Recording tabs.
@@ -949,6 +950,8 @@ function bindLogsPage() {
       if (actionEl.dataset.action === "download-screenrecord") {
         const id = actionEl.dataset.id || "";
         if (id) window.open(screenrecordApiPath("download", id), "_blank", "noopener");
+      } else if (actionEl.dataset.action === "screenrecord-menu") {
+        showScreenrecordMenu(actionEl.dataset.id || "", actionEl.dataset.name || "").catch(() => {});
       } else if (actionEl.dataset.action === "play-screenrecord") {
         openScreenrecordPlayer(actionEl.dataset.id || "", actionEl.dataset.name || "");
       }

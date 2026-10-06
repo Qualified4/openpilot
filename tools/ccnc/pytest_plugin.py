@@ -32,6 +32,7 @@ def ccnc_original_test_environment(request, monkeypatch):
     monkeypatch.setattr(module, "DEFAULT_CATALOG", catalog)
   elif path in (
     "opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_cluster.py",
+    "opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_counter.py",
     "opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_lead.py",
     "opendbc_repo/opendbc/car/hyundai/tests/test_alt2_adas_buttons.py",
     "opendbc_repo/opendbc/car/hyundai/tests/test_dm_cluster.py",

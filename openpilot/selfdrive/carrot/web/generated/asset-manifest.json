@@ -34,14 +34,14 @@
       "kind": "bundle",
       "source": "src/entries/tools.js",
       "path": "js/generated/tools.js",
-      "hash": "15d0f277db8992ef08bd93cf9ffb31adce64de5cc2067a371e2b10217d073d42"
+      "hash": "34a49e4e22d7b3f5aaaae49e84d39c483d4dd96f619a790d0a745d844c1d45f9"
     },
     {
       "id": "logs.runtime",
       "kind": "bundle",
       "source": "src/entries/logs.js",
       "path": "js/generated/logs.js",
-      "hash": "20e7fe4b823c8e15a008d159fb10cf76de9776cadff8d43d4d49cadffc7f6e60"
+      "hash": "0a082057fda575672b581e1d6470328c9934f65206f7cd599a472f7455e44956"
     },
     {
       "id": "terminal.runtime",
@@ -118,14 +118,14 @@
       "kind": "bundle",
       "source": "src/entries/tools.css",
       "path": "css/generated/tools.css",
-      "hash": "3506eec585857e901967a307037e848419b629f01d0a0630879d4dc4e4cd46ae"
+      "hash": "8a98dd79446a04730f69932896659c50b647d988ec3adba4df309b6e1d9e0cb1"
     },
     {
       "id": "logs.styles",
       "kind": "bundle",
       "source": "src/entries/logs.css",
       "path": "css/generated/logs.css",
-      "hash": "76729a94bf062fcb9dba117edadae02739adf0b16dfce393c928fcc3af8539c4"
+      "hash": "85dd1dfdd9bc83f387bcdb2eefa1f1b176938f0d088379cb42ecac8ac8590065"
     },
     {
       "id": "terminal.styles",
