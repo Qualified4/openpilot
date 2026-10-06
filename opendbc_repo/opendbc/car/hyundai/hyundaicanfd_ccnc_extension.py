@@ -293,6 +293,8 @@ class _CcncTemporalTracks:
 
 class _CcncRadarDisplayTracker:
   """Observation continuity and lane-free fallback for the CCNC display only."""
+  MAX_HOLD_DISTANCE = 15.0  # Radar longitudinal metres, before CAN display scaling.
+
   def __init__(self):
     self.approaching = False
     self.approach_pending = {}
@@ -426,7 +428,7 @@ class _CcncRadarDisplayTracker:
               or abs(world_x - pending[2]) > 1.0 or abs(lead.yRel - pending[3]) > 0.75):
             pending = (lead.trackId, frame, world_x, lead.yRel)
             self.approach_pending[side] = pending
-          if frame - pending[1] >= 50 and self.stable(lead.trackId, 50):
+          if lead.dRel <= self.MAX_HOLD_DISTANCE and frame - pending[1] >= 50 and self.stable(lead.trackId, 50):
             self.approach_holds[side] = (lead.trackId, world_x, lead.yRel,
                                         tuple(values[k] for k in keys), frame, self.stop_distance, self.tracks[lead.trackId][0])
       else:
@@ -502,7 +504,7 @@ class _CcncRadarDisplayTracker:
         if pending is None or pending[0] != lead.trackId or drifted:
           pending = (lead.trackId, frame, lead.dRel, lead.yRel)
           self.stop_pending[side] = pending
-        if (frame - pending[1] >= 50 and self.stable(lead.trackId, 50)
+        if (lead.dRel <= self.MAX_HOLD_DISTANCE and frame - pending[1] >= 50 and self.stable(lead.trackId, 50)
             and (held is None or lead.dRel <= held[1] + 1.0)):
           birth = self.tracks[lead.trackId][0]
           self.stop_holds[side] = (lead.trackId, lead.dRel, lead.yRel,

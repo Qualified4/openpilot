@@ -963,6 +963,37 @@ def test_stationary_side_entry_checks_two_extra_widths(side, near, far, limit, e
   assert t.side_entry_width(q, side)
 
 
+@pytest.mark.parametrize('side', [0, 1])
+@pytest.mark.parametrize('approaching', [False, True])
+@pytest.mark.parametrize('distance', [14.99, 15., 15.01, 27.25])
+def test_stationary_memory_requires_radar_distance_within_fifteen_metres(side, approaching, distance):
+  t = Tracker()
+  prefix = 'LF' if side == 0 else 'RF'
+  q = point(x=distance, y=3. if side == 0 else -3., speed=0.)
+  q.vRel = -1. / 3.6 if approaching else 0.
+  leads = (q, None) if side == 0 else (None, q)
+  displayed = {prefix+'_DETECT': 1, prefix+'_DETECT_DISTANCE': distance*.8,
+               prefix+'_DETECT_LATERAL': 3.}
+  for frame in range(0, 101, 5):
+    t.observe(N(points=[q]), frame)
+    t.update_stop(1. if approaching else 0., frame, -1.)
+    t.finish(None, *leads, 0., True, frame)
+    values = dict(displayed)
+    t.stopped_display(values, leads, frame)
+    assert values == displayed  # Live detections beyond 15m remain visible.
+  holds = t.approach_holds if approaching else t.stop_holds
+  assert (side in holds) == (distance <= 15.)
+  for frame in (105, 110):
+    t.observe(N(points=[]), frame)
+    # Also verify eligible approach memory transfers into stopped memory.
+    t.update_stop(1. if approaching and frame == 105 else 0., frame, -1.)
+    t.finish(None, None, None, 0., True, frame)
+    values = {prefix+'_DETECT': 0}
+    t.stopped_display(values, (None, None), frame)
+    assert bool(values[prefix+'_DETECT']) == (distance <= 15.)
+  assert (side in t.stop_holds) == (distance <= 15.)
+
+
 @pytest.mark.parametrize('exit_kind', ['departure', 'motion', 'sensor_loss', 'other_slot'])
 def test_stationary_display_hold_and_release(exit_kind):
   t = Tracker()
