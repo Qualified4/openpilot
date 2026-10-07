@@ -660,6 +660,60 @@ def test_boundary_check_uses_target_distance_and_does_not_extrapolate():
     assert bool(t.boundary_rejected) == expected
 
 
+@pytest.mark.parametrize('sign', [-1, 1])
+def test_stationary_boundary_representative_requires_fresh_sustained_geometry(sign):
+  t = Tracker()
+  edge = point(1, x=9., y=sign * 1.6, speed=0.)
+  interior = point(2, x=10., y=sign * 2.8, speed=0.)
+  # Admit both as interior first; the later boundary observation must be rechecked.
+  for frame in range(0, 41, 5):
+    t.observe(N(points=[edge, interior]), frame)
+    t.update_stop(0., frame)
+    t.update_boundary_admission(lane_model(frame, offset=sign * 1.))
+  assert t.boundary_admission[1]['status'] == 'allowed'
+  candidates = [(edge, edge.yRel, .1), (interior, interior.yRel, 1.3)]
+  live = None
+  for frame in range(45, 101, 5):
+    live = N(points=[edge, interior])
+    t.observe(live, frame)
+    t.update_stop(0., frame)
+    t.update_boundary_admission(lane_model(frame))
+    assert t.side_representative(candidates)[0].trackId == (1 if frame < 95 else 2)
+  assert not t.boundary_rejected  # This changes representation, not vehicle admission.
+  assert t.side_representative(candidates[:1])[0] is edge
+  for frame in range(101, 115):
+    t.observe(live, frame)
+    t.update_boundary_admission(lane_model(frame, offset=2.))
+  assert t.boundary_admission[1]['boundary_since'] == (45, 12)
+  # A fresh observation away from the boundary cancels the preference.
+  t.observe(N(points=[edge, interior]), 115)
+  t.update_boundary_admission(lane_model(115, offset=2.))
+  assert t.side_representative(candidates)[0] is edge
+
+
+@pytest.mark.parametrize('reason', ['distant', 'other_lane', 'moving', 'crossing', 'predicted',
+                                  'young', 'near_boundary', 'edge_predicted', 'edge_clear'])
+def test_boundary_representative_preserves_original_without_compatible_alternative(reason):
+  t = Tracker()
+  edge = point(1, x=9., y=-1.6, speed=0.)
+  interior = point(2, x=10., y=-2.8, speed=0.)
+  observe(t, [edge, interior])
+  t.last_frame = 100
+  t.tracks[2] = (0, 100, 21, interior, 0)
+  t.boundary_admission[1] = dict(frame=100, boundary_since=(40, 13))
+  gap, edge_gap = 1.3, .1
+  if reason == 'distant': interior.dRel = 10.51
+  elif reason == 'other_lane': interior.yRel = -3.11
+  elif reason == 'moving': interior.vLead = 1.
+  elif reason == 'crossing': interior.yvRel = 1.
+  elif reason == 'predicted': interior.ccnc_fresh = False
+  elif reason == 'young': t.tracks[2] = (80, 100, 5, interior, 0)
+  elif reason == 'near_boundary': gap = .59
+  elif reason == 'edge_predicted': edge.ccnc_fresh = False
+  elif reason == 'edge_clear': edge_gap = .31
+  assert t.side_representative([(edge, edge.yRel, edge_gap), (interior, interior.yRel, gap)])[0] is edge
+
+
 def test_same_radar_publication_cannot_confirm_boundary_start():
   t = Tracker()
   live = N(points=[point(y=1.5, speed=0.)])

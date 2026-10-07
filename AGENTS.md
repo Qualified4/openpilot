@@ -1,5 +1,27 @@
 # Repository memory
 
+- On 2026-10-07, the user instructed not to commit until explicitly told to do
+  so. This supersedes the 2026-10-05 interpretation that "작업해" or "진행해"
+  automatically includes committing and pushing. Keep completed changes local
+  and uncommitted unless the user explicitly authorizes a commit.
+
+- On 2026-10-07, the user requested improving CCNC boundary-point selection.
+  Keep motion-confirmed vehicles and existing admission; never blanket-reject
+  an allowed vehicle for later boundary proximity. For stationary admissions,
+  0.5s/7 fresh near-boundary observations may prefer a nearby eligible interior
+  stationary side point, preserving the original candidate if none exists.
+  This is display-only representative selection, not proven same-body grouping.
+  369 display tests and 79-segment/91,510-sample replay pass; only one segment's
+  RF representative changes, with all detection presence preserved. The separate
+  intersection RF flashes remain unresolved. Keep evidence local and preserve
+  the structure rollback, 15m memory limit and branch isolation. See
+  docs/ccnc_front_radar_detection.md.
+  The same-day full-local-log follow-up found 35 omitted segments: 123 files,
+  9 identical duplicates, 114 unique segments. ON/OFF each replay 133,504
+  eligible sends; 2,195 pre-input sends per mode are excluded. Only that same
+  RF representative and its stop memory change; other 113 segments are equal.
+  The early brief ID reversal predates this edit. No commit/push was made.
+
 - On 2026-10-05, the user clarified that instructions such as "작업해" or
   "진행해" include committing and pushing the completed task unless explicitly
   instructed otherwise. Commit only the task's changes; preserve unrelated work.

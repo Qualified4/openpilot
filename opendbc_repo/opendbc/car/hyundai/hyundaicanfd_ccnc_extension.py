@@ -757,13 +757,35 @@ class _CcncRadarDisplayTracker:
         admission = dict(birth=birth, frame=-1, status='pending', samples=0, near=0,
                          moving=None)
         self.boundary_admission[track_id] = admission
-      if admission['status'] == 'allowed':
-        continue
+      if admission['status'] == 'allowed' and admission['moving'] is not None:
+        continue  # Preserve a motion-confirmed vehicle that stops across a boundary.
       if admission['frame'] == stamp:
         continue
       admission['frame'] = stamp
       lateral_speed = getattr(p, 'yvRel', 0.0)
       stationary = abs(p.vLead) <= 2.0 / CV.MS_TO_KPH and abs(lateral_speed) <= 2.0 / CV.MS_TO_KPH
+      near, probability = False, 0.0
+      if stationary:
+        if curves is None:
+          curves = []
+          if md is not None:
+            for index, probability in zip(range(min(4, len(md.laneLines))), md.laneLineProbs):
+              xs, ys, valid = self._curve(md, index)
+              if valid:
+                curves.append((xs, ys, probability))
+        boundaries = [(abs(p.yRel + float(np.interp(p.dRel, xs, ys))), probability)
+                      for xs, ys, probability in curves if xs[0] <= p.dRel <= xs[-1]]
+        gap, probability = min(boundaries, default=(math.inf, 0.0))
+        near = stationary and probability > 0.1 and gap <= 0.3
+      if admission['status'] == 'allowed':
+        # A stationary admission is not proof of a vehicle center. Keep the target,
+        # but record fresh boundary proximity for optional side representative selection.
+        if near:
+          since, count = admission.get('boundary_since', (stamp, 0))
+          admission['boundary_since'] = (since, count + 1)
+        else:
+          admission.pop('boundary_since', None)
+        continue
       # Compensate longitudinal travel only; radar lateral position/speed are unmodified.
       position = (self.stop_distance + p.dRel, p.yRel)
       vx, vy = p.vLead, lateral_speed
@@ -779,17 +801,6 @@ class _CcncRadarDisplayTracker:
               and sum((a - b) * d for a, b, d in zip(position, moving[1], moving[2])) >= 0.5):
           admission['status'] = 'allowed'
       if admission['status'] == 'pending' and stationary:
-        if curves is None:
-          curves = []
-          if md is not None:
-            for index, probability in zip(range(min(4, len(md.laneLines))), md.laneLineProbs):
-              xs, ys, valid = self._curve(md, index)
-              if valid:
-                curves.append((xs, ys, probability))
-        boundaries = [(abs(p.yRel + float(np.interp(p.dRel, xs, ys))), probability)
-                      for xs, ys, probability in curves if xs[0] <= p.dRel <= xs[-1]]
-        gap, probability = min(boundaries, default=(math.inf, 0.0))
-        near = stationary and probability > 0.1 and gap <= 0.3
         # Missing/weak nearest geometry is not evidence that the point is interior.
         if stationary and (near or probability >= 0.3):
           admission['samples'] += 1
@@ -807,6 +818,29 @@ class _CcncRadarDisplayTracker:
               and saved[-1] != self.tracks[saved[0]][0]):
             continue  # A reused radar slot cannot revoke an older physical display memory.
           del history[side]
+
+  def side_representative(self, candidates):
+    """Choose among eligible (point, aligned lateral, inner clearance) candidates."""
+    if not candidates:
+      return None, 0.0
+    best = min(candidates, key=lambda item: item[0].dRel ** 2 + item[0].yRel ** 2)
+    point = best[0]
+    admission = self.boundary_admission.get(point.trackId, {})
+    since, count = admission.get('boundary_since', (self.last_frame, 0))
+    if (admission.get('frame', self.last_frame) - since < 50 or count < 7
+        or best[2] > 0.3 or not getattr(point, 'ccnc_fresh', True)):
+      return best[:2]
+    # This bounded preference does not merge IDs or establish same-body identity.
+    alternatives = [item for item in candidates
+                    if item[0].trackId != point.trackId
+                    and item[2] >= 0.6
+                    and abs(item[0].dRel - point.dRel) <= 1.5
+                    and abs(item[0].yRel - point.yRel) <= 1.5
+                    and abs(item[0].vLead) <= 2.0 / CV.MS_TO_KPH
+                    and abs(getattr(item[0], 'yvRel', 0.0)) <= 2.0 / CV.MS_TO_KPH
+                    and getattr(item[0], 'ccnc_fresh', True)
+                    and self.stable(item[0].trackId, 50)]
+    return min(alternatives, key=lambda item: item[0].dRel ** 2 + item[0].yRel ** 2)[:2] if alternatives else best[:2]
 
   def update_structure_regions(self, md, frame):
     """Track a fixed spatial row across radar IDs; never change lead selection."""
@@ -2263,7 +2297,8 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
       # 여러 차로의 후보를 허용하되, 보정 후 횡거리 5.4m 밖의 측면 점은 선택하지 않습니다.
       max_side_lateral = 5.4
       max_side_distance = 80.0
-      ff_min_dist = lf_min_dist = rf_min_dist = math.inf
+      ff_min_dist = math.inf
+      side_candidates = [[], []]
       left_projection = right_projection = None
 
       for point_index, ((lead, dRel, yRel, vRel, vLead), (left_y, right_y)) in enumerate(zip(display_tracker._points, projected)):
@@ -2306,7 +2341,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
         # 3. [왼쪽 차선 차량] - 좌측 외곽/도로경계선만 지연 계산 (우측 2회 interp 생략)
         elif left_inner_bound < yRel:
           if (dRel <= max_side_distance and display_tracker.stable(lead.trackId)
-              and abs(road_aligned_yRel) <= max_side_lateral and dist_score < lf_min_dist):
+              and abs(road_aligned_yRel) <= max_side_lateral):
 
             # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
             if (velocity > min_side_lead_speed
@@ -2334,12 +2369,12 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
                 left_width_bound = left_width_bound - 0.25
                 if (yRel < left_effective_bound and left_width_bound - left_inner_bound > 1.8
                     and display_tracker.side_entry_width(lead, 0)):
-                  lf_min_dist, lf_lead, lf_yRel = dist_score, lead, road_aligned_yRel
+                  side_candidates[0].append((lead, road_aligned_yRel, yRel - left_inner_bound))
 
         # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
         elif yRel < right_inner_bound:
           if (dRel <= max_side_distance and display_tracker.stable(lead.trackId)
-              and abs(road_aligned_yRel) <= max_side_lateral and dist_score < rf_min_dist):
+              and abs(road_aligned_yRel) <= max_side_lateral):
 
             # 속도 조건을 통과한 모든 후보에 외곽 차선/도로 경계 검사를 적용합니다.
             if (velocity > min_side_lead_speed
@@ -2367,7 +2402,10 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
                 right_width_bound = right_width_bound + 0.25
                 if (yRel > right_effective_bound and right_inner_bound - right_width_bound > 1.8
                     and display_tracker.side_entry_width(lead, 1)):
-                  rf_min_dist, rf_lead, rf_yRel = dist_score, lead, road_aligned_yRel
+                  side_candidates[1].append((lead, road_aligned_yRel, right_inner_bound - yRel))
+
+      lf_lead, lf_yRel = display_tracker.side_representative(side_candidates[0])
+      rf_lead, rf_yRel = display_tracker.side_representative(side_candidates[1])
 
     if CS.live_tracks is not None and (not ff_lane_mode or selected_lane_prob < 0.5):
       minimum_speed = min_front_lead_speed
