@@ -151,7 +151,7 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 
 | 세부 구역 | 파라미터 | 용도 |
 |---|---|---|
-| ONNX 차선·BSD | `ShareData`, `OnnxLaneThreshold`, `OnnxLaneIntervalMs`, `OnnxBsdThreshold`, `OnnxBsdSmoothingMs`, `OnnxBsdIntervalMs` | 장치의 차선 종류와 조건부 카메라 BSD 인식·세부 조정 |
+| ONNX 차선·BSD | `ShareData`, `OnnxLaneThreshold`, `OnnxLaneIntervalMs`, `OnnxBsdThreshold`, `OnnxBsdSmoothingMs`, `OnnxBsdIntervalMs` | 장치의 차선 종류, 카메라 BSD 감지 출처 표시와 세부 조정 |
 | 중앙 보정 | `PathOffset`, `CameraYawTrimDeg` | 레인모드 경로의 좌우 위치와 카메라 YAW 미세 보정 |
 | 조향감 | `SteerActuatorDelay`, `LatSmoothSec`, `LatSuspendAngleDeg`, `CustomSR`, `SteerRatioRate` | 조향 시점, 평활화, 일시중지 각도와 조향비 |
 | [차로 변경](lane-change.md)·자동 턴 | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneLineCheck`, `AutoTurnControl`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | 차로 변경 진입 조건과 ATC 동작 |
@@ -159,7 +159,7 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 | 고급 토크·토크 계수 | `LateralTorqueCustom`, `LateralTorqueAccelFactor`, `LateralTorqueFriction`, `LateralTorqueKpV`, `LateralTorqueKiV`, `LateralTorqueKf`, `LateralTorqueKd` | 커스텀 토크 제어 계수 |
 | 고급 토크·조향 제한 | `CustomSteerMax`, `CustomSteerDeltaUp`, `CustomSteerDeltaDown`, `CustomSteerDeltaUpLC`, `CustomSteerDeltaDownLC` | 최대 조향 토크와 토크 변화율 제한 |
 
-`ONNX 차선·BSD 인식`(`ShareData`)은 장치에서 실선·점선과 조건부 카메라 BSD를 계산하는 설정입니다. 상세 화면은 기능 토글을 맨 위에 유지하고, 바로 아래의 분리된 카드에 BSD 감지영역 편집기를 표시합니다. 좌우 선택, 영상 갱신, 점 되돌리기, 점 초기화와 영역 저장만 기본 화면에 두며, 영상 왼쪽 위의 사각형 점 목록은 `1(좌)`, `1(우)` 형식으로 표시됩니다. 선택된 점이 없을 때 빈 화면을 누르면 별도 모드 없이 점이 추가되고, 확대·화면 이동·영역 전체 이동 없이 선택된 점만 이동합니다. 4개 편집 버튼 바로 아래의 좌우 2열 버튼으로 도로·와이드 카메라 영상을 팝업에서 확인합니다. 실행 상태·좌우 신뢰도·처리 성능과 5개 세부값은 우측 아래의 **고급 설정 펼치기/접기** 텍스트로 봅니다. 편집기는 마지막 카메라 영상 한 장을 보관하고, 영상이 없으면 흐린 기본 주행 예시 화면을 표시합니다. 영역 저장은 현재 세션에서 실제 카메라 영상을 받은 뒤에만 가능합니다. 기본값은 꺼짐이며 저장한 세부값은 서비스 재시작 후에도 유지됩니다. 필요한 OpenCV는 업데이트에 포함되어 정상 시작 시 자동 준비됩니다. 켜져 있어도 onroad 초기화와 모델·CAN·Panda 준비가 완료되어 주행 준비 상태가 0.5초 유지된 뒤 시작합니다. 실제 크루즈 활성화는 필요하지 않습니다. Offroad에서는 종료하고 다음 onroad에서도 다시 기다립니다. [동작 조건과 세부값](lane-change.md#sharedata--onnx-차선bsd-인식)을 참고하세요.
+`ONNX 차선·BSD 인식`(`ShareData`)은 장치에서 실선·점선과 카메라 BSD를 계산하는 설정입니다. BSD는 모델이 추정한 차로 폭이 2m 이상인 설정된 좌우 영역을 번갈아 검사하며 속도나 차로 변경 방향을 실행 조건으로 사용하지 않습니다. 3개 클래스는 사각지대 위협, 근접 차량 없음, 멀거나 뒤쪽에 있는 차량을 구분합니다. 상세 화면은 기능 토글을 맨 위에 유지하고, 바로 아래의 분리된 카드에 BSD 감지영역 편집기를 표시합니다. 좌우 선택, 영상 갱신, 점 되돌리기, 점 초기화와 영역 저장만 기본 화면에 두며, 영상 왼쪽 위의 사각형 점 목록은 `1(좌)`, `1(우)` 형식으로 표시됩니다. 선택된 점이 없을 때 빈 화면을 누르면 별도 모드 없이 점이 추가되고, 확대·화면 이동·영역 전체 이동 없이 선택된 점만 이동합니다. 4개 편집 버튼 바로 아래의 좌우 2열 버튼으로 도로·와이드 카메라 영상을 팝업에서 확인합니다. 실행 상태·좌우 신뢰도·처리 성능과 5개 세부값은 우측 아래의 **고급 설정 펼치기/접기** 텍스트로 봅니다. 편집기는 마지막 카메라 영상 한 장을 보관하고, 영상이 없으면 흐린 기본 주행 예시 화면을 표시합니다. 영역 저장은 현재 세션에서 실제 카메라 영상을 받은 뒤에만 가능합니다. 기본값은 꺼짐이며 저장한 세부값은 서비스 재시작 후에도 유지됩니다. 필요한 OpenCV는 업데이트에 포함되어 정상 시작 시 자동 준비됩니다. 켜져 있어도 onroad 초기화와 모델·CAN·Panda 준비가 완료되어 주행 준비 상태가 0.5초 유지된 뒤 시작합니다. 실제 크루즈 활성화는 필요하지 않습니다. Offroad에서는 종료하고 다음 onroad에서도 다시 기다립니다. [동작 조건과 세부값](lane-change.md#sharedata--onnx-차선bsd-인식)을 참고하세요.
 
 `UseLaneLineSpeed`로 레인모드를 사용하더라도 모델 속도 궤적의 시작값이 실제 차속의 70% 미만이거나 끝값이 시작값의 70% 미만이면 일시적으로 레인리스로 전환합니다. 속도 조건이 약 1초간 연속으로 정상이고 기존 차선·속도 조건도 충족해야 레인모드로 복귀합니다.
 
@@ -368,7 +368,9 @@ Onroad에서는 본체 UI가 CPU 6번, 외부 HUD가 CPU 7번을 일반 스케�
 
 `ShowRouteInfo` 설명에 남아 있는 APN 표기는 경로 정보 입력 상태를 뜻합니다. 이를 CarrotMan 또는 CarrotLink 지원 안내로 해석하면 안 됩니다.
 
-`ShowCustomBrightness=0`은 주변 밝기에 따른 자동 조절이고, `ShowModelView`는 카메라와 모델 표시 조합을 선택합니다. `ShowCameraWithCluster=0`은 외부 HUD 연결 중 본체 카메라를 숨기는 기존 기본 동작이고, `1`은 본체 카메라 영상을 표시합니다. `ClusterHud` 계열은 지원되는 외부 HUD를 연결한 경우에만 사용하세요.
+`ShowCustomBrightness=0`은 주변 밝기에 따른 자동 조절입니다. `ShowCameraWithCluster=0`은 외부 HUD 연결 중 본체 카메라를 숨기는 기존 기본 동작이고, `1`은 본체 카메라 영상을 표시합니다. `ClusterHud` 계열은 지원되는 외부 HUD를 연결한 경우에만 사용하세요.
+
+`ShowModelView`(주행화면 구성)는 C4에서 `0` 카메라 + 차선·경로, `1` 카메라만, `2` 검은 배경에 차선·경로만, `3` 둘 다 숨김을 선택합니다. 차선·경로 그림에는 앞차 표시도 포함됩니다. 자동 밝기와 100%를 포함한 모든 밝기 설정에서 적용되며, 주행 시작 후 별도의 대기 시간은 없습니다. 주행 중 변경하면 재부팅 없이 약 5초 안에 반영됩니다. 속도·경고·운전자 상태는 계속 표시되고, 카메라 촬영·주행 판단·차량 제어는 바뀌지 않습니다. C3/C3X에는 적용되지 않습니다. 외부 HUD 연결 중 `ShowCameraWithCluster=0`이면 이 선택과 관계없이 본체의 카메라와 차선·경로를 모두 숨깁니다.
 
 `ClusterHudBrightness=0`은 카메라 노출값을 따르는 자동 밝기이고, `1~100`은 고정 밝기입니다. `ClusterHudOrientation`은 `0`(0도)과 `2`(180도)만 지원하며 `1`, `3`은 무시합니다. 실행 중인 TURZX 프로세스는 두 저장값을 100ms마다 확인합니다. 밝기는 실행 중 적용되고, 관리형 H.264의 회전값이 바뀌면 HUD가 자동 재시작되어 캡처와 동일한 스트림 설정 절차로 적용됩니다.
 
