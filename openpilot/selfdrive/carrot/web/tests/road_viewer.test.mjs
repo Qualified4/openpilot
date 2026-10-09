@@ -104,6 +104,7 @@ test("recent and individual log menus expose both destinations at the same level
   const calls = [];
   const context = {
     getUIText: (_key, fallback) => fallback,
+    dashcamState: { selected: new Set() },
     LOGS_MENU_SORT: "sort", LOGS_MENU_UPLOAD: "upload_recent", LOGS_RECENT_UPLOAD_LIMITS: [2, 5, 10],
     uploadRecentDashcamSegments: async (...args) => calls.push(args),
   };
@@ -135,4 +136,39 @@ test("recent and individual log menus expose both destinations at the same level
     await show("route", "route--1");
     assert.deepEqual(uploads, [{ segments: ["route--1"], destination: action === "upload" ? "web" : "road_viewer" }]);
   }
+});
+
+
+test("log menu sends the selection across routes, including collapsed routes", async () => {
+  const runtime = readFileSync(new URL("../src/features/logs/runtime.js", import.meta.url), "utf8");
+  const code = runtime.slice(runtime.indexOf("function logsMenuChoices()"), runtime.indexOf("async function openLogsMenu()"));
+  const selected = new Set(["00000395--0d0eda17c5--1", "00000396--0d0eda17c6--4"]);
+  const calls = [];
+  const menu = runInNewContext(`${code}; ({ choices: logsMenuChoices, run: runLogsMenuAction })`, {
+    dashcamState: { selected, routes: [], expanded: new Set() },
+    getUIText: (_key, fallback, values) => fallback.replace("{count}", values?.count),
+    LOGS_MENU_SORT: "sort", LOGS_MENU_UPLOAD: "upload_recent", LOGS_RECENT_UPLOAD_LIMITS: [2, 5, 10],
+    uploadDashcamSegments: async (segments, options) => calls.push({ segments: Array.from(segments), destination: options.destination }),
+  });
+  assert.equal(menu.choices().find((item) => item.value === "upload_selected_road_viewer").label,
+    "Send 2 selected segments to Road Viewer");
+  await menu.run("upload_selected_road_viewer");
+  assert.deepEqual(calls, [{ segments: Array.from(selected), destination: "road_viewer" }]);
+  selected.clear();
+  assert.ok(!menu.choices().some((item) => item.value === "upload_selected_road_viewer"));
+});
+
+
+test("Road Viewer rejects more than 50 selected segments before pairing or sending", async () => {
+  const source = readFileSync(new URL("../src/features/logs/dashcam.js", import.meta.url), "utf8");
+  const fn = source.slice(source.indexOf("async function uploadDashcamSegments("), source.indexOf("async function uploadRecentDashcamSegments("));
+  const messages = [];
+  const upload = runInNewContext(`${fn}; uploadDashcamSegments`, {
+    dashcamUploadActiveJobId: null, getRememberedDashcamUploadJob: () => null,
+    roadViewerError: (code) => code, showAppToast: (message) => messages.push(message),
+    ensureRoadViewerConnection: () => assert.fail("Oversized selection must not pair"),
+    postJson: () => assert.fail("Oversized selection must not send"),
+  });
+  await upload(Array.from({ length: 51 }, (_, i) => `route--${i}`), { destination: "road_viewer" });
+  assert.deepEqual(messages, ["invalid_segments"]);
 });

@@ -55,7 +55,13 @@ npm run build
 For a real device, open the existing Carrot Web log menu → **Road Viewer
 connection**, enter the configured HTTPS URL and a fresh pairing code generated
 by Road Viewer. Select completed segments, choose **Upload selected → Road
-Viewer**, and verify them in the Road Viewer list. Test network interruption and
+Viewer**, and verify them in the Road Viewer list. To combine different drives,
+check segments in each drive, then open the log menu and choose **Send N selected
+segments to Road Viewer**. The menu counts all checked segments, including those
+in collapsed drives. The existing per-drive send button still sends only that
+drive's selection. Each batch supports 1–50 segments; more than 50 is rejected
+before pairing or transfer. The summary lists the selected segments before
+confirmation, and retry retains the same batch selection. Test network interruption and
 **Resume upload**, cancel, device revocation, reconnect, and restart. Never paste
 credentials or pairing codes into shared logs.
 

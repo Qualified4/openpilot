@@ -142,6 +142,10 @@ function logsMenuChoices() {
       value: `${LOGS_MENU_UPLOAD}:${count}`,
     })),
     { heading: getUIText("rv_send", "Send to Road Viewer") },
+    ...(dashcamState.selected.size ? [{
+      label: getUIText("rv_send_selected", "Send {count} selected segments to Road Viewer", { count: dashcamState.selected.size }),
+      value: "upload_selected_road_viewer",
+    }] : []),
     ...LOGS_RECENT_UPLOAD_LIMITS.map((count) => ({
       label: getUIText("upload_recent_logs", "Upload recent {count}", { count }),
       value: `upload_recent_road_viewer:${count}`,
@@ -152,6 +156,9 @@ function logsMenuChoices() {
 async function runLogsMenuAction(selected) {
   const [action, argument] = String(selected || "").split(":");
   if (action === "road_viewer") await openRoadViewerSettings();
+  else if (action === "upload_selected_road_viewer") {
+    await uploadDashcamSegments(Array.from(dashcamState.selected), { destination: "road_viewer" });
+  }
   else if (action === LOGS_MENU_SORT) await setDashcamSort(argument === "desc" ? "desc" : "asc");
   else if (action === LOGS_MENU_UPLOAD) await uploadRecentDashcamSegments(Number(argument) || 0);
   else if (action === "upload_recent_road_viewer") await uploadRecentDashcamSegments(Number(argument) || 0, "road_viewer");

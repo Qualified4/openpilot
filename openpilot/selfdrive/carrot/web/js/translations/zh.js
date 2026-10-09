@@ -5,6 +5,7 @@ window.CarrotTranslations.register("zh", {
   nativeName: "中文",
   shortName: "ZH",
   strings: {
+    rv_send_selected: "将所选 {count} 个片段发送到 Road Viewer",
     rv_error_device_limit_reached: "Road Viewer 注册的设备过多，请移除不使用的设备后重新配对。",
     rv_settings: "Road Viewer 连接",
     rv_destination: "上传目标",

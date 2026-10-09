@@ -5,6 +5,7 @@ window.CarrotTranslations.register("ko", {
   nativeName: "한국어",
   shortName: "KO",
   strings: {
+    rv_send_selected: "선택한 {count}개 구간 Road Viewer로 전송",
     rv_error_device_limit_reached: "Road Viewer에 등록된 장치가 너무 많습니다. 사용하지 않는 장치를 제거한 후 연결하세요.",
     rv_settings: "Road Viewer 연결",
     rv_destination: "전송 대상",

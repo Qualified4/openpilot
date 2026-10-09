@@ -5,6 +5,7 @@ window.CarrotTranslations.register("en", {
   nativeName: "English",
   shortName: "EN",
   strings: {
+    rv_send_selected: "Send {count} selected segments to Road Viewer",
     rv_error_device_limit_reached: "Road Viewer has too many registered devices. Remove unused devices and pair again.",
     rv_settings: "Road Viewer connection",
     rv_destination: "Upload destination",

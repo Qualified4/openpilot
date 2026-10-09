@@ -66,7 +66,8 @@ def register(app):
           selected = body.get('segments', [body.get('segment')])
           if not isinstance(selected, list) or not 1 <= len(selected) <= 50:
             raise client.Error('invalid_segments')
-          segments = list(dict.fromkeys(await request_upload_segments(request)))
+          segments, _ = await request_upload_segments(request)
+          segments = list(dict.fromkeys(segments))
           credentials = await asyncio.to_thread(config.load)
           if not credentials:
             raise client.Error('disconnected')

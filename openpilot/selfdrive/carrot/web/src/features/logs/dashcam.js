@@ -1644,6 +1644,10 @@ async function uploadDashcamSegments(segments, options = {}) {
     showAppToast(getUIText("no_selected_segments", "No segments selected."), { tone: "error" });
     return;
   }
+  if (roadViewer && targets.length > 50) {
+    showAppToast(roadViewerError("invalid_segments"), { tone: "error" });
+    return;
+  }
   if (roadViewer && !await ensureRoadViewerConnection()) return;
   let uploadStats = {
     segments: targets.length,

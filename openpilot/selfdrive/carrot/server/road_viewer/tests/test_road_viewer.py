@@ -415,3 +415,48 @@ def test_carrot_routes_pair_upload_disconnect(server):
       assert not config.CREDENTIAL_PATH.exists()
       assert '_road_viewer' not in job
   asyncio.run(run())
+
+
+def test_carrot_multi_route_selection_summary_start_and_retry(monkeypatch):
+  from aiohttp import web
+  from aiohttp.test_utils import TestClient, TestServer
+
+  first = recording(0, video=False)
+  other = '00000396--0d0eda17c6--4'
+  other_dir = Path(paths.DASHCAM_ROOT) / other
+  other_dir.mkdir()
+  (other_dir / 'rlog.zst').write_bytes(b'other route')
+  monkeypatch.setattr(config, 'load', lambda: {'device_id': 'selected-device'})
+  started = []
+  monkeypatch.setattr(jobs, 'start_job', lambda job, runner: started.append(job))
+
+  async def run():
+    app = web.Application()
+    register(app)
+    async with TestClient(TestServer(app)) as browser:
+      response = await browser.post('/api/road-viewer/summary', json={'segments': [first, other, first]})
+      assert response.status == 200, await response.text()
+      summaries = (await response.json())['summaries']
+      assert [item['segment'] for item in summaries] == [first, other]
+      assert summaries[0]['route'] != summaries[1]['route']
+      response = await browser.post('/api/road-viewer/start', json={'segments': [first, other]})
+      assert response.status == 200, await response.text()
+      job = jobs.jobs()[(await response.json())['job_id']]
+      assert started == [job]
+      assert job['segments'] == [first, other]
+      assert job['upload_target'] == 'road_viewer'
+      job['status'] = 'failed'
+      job['_road_viewer'] = {'device_id': 'selected-device', 'manifest': {'batch_id': 'same-batch'}}
+      response = await browser.post('/api/road-viewer/start', json={
+        'segments': [first, other], 'retry_job_id': job['id'],
+      })
+      assert response.status == 200, await response.text()
+      retried = jobs.jobs()[(await response.json())['job_id']]
+      assert retried['segments'] == [first, other]
+      assert retried['_road_viewer'] == job['_road_viewer']
+      assert retried['_road_viewer'] is not job['_road_viewer']
+      for segments in ([], [first] * 51):
+        response = await browser.post('/api/road-viewer/summary', json={'segments': segments})
+        assert response.status == 400
+        assert (await response.json())['error'] == 'invalid_segments'
+  asyncio.run(run())
