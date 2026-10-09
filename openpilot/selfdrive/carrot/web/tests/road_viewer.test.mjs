@@ -35,7 +35,7 @@ test("cancelled pairing and status errors stop Road Viewer uploads", async (t) =
   assert.equal(await ensureRoadViewerConnection(), false);
 });
 
-test("direct upload goes straight to its confirmation and contacts only its destination", async () => {
+test("direct upload selects only its supported file scope and contacts only its destination", async () => {
   const source = readFileSync(new URL("../src/features/logs/dashcam.js", import.meta.url), "utf8");
   const fn = source.slice(source.indexOf("async function uploadDashcamSegments("), source.indexOf("async function uploadRecentDashcamSegments("));
   for (const destination of [undefined, "road_viewer"]) {
@@ -49,14 +49,19 @@ test("direct upload goes straight to its confirmation and contacts only its dest
       dashcamUploadConfirmHtml: () => "summary",
       getUIText: (_key, fallback) => fallback,
       appConfirm: async () => { calls.push("confirmation"); return false; },
-      openAppDialog: () => assert.fail("No destination picker before confirmation"),
+      openAppDialog: async (dialog) => {
+        assert.equal(destination, undefined);
+        assert.equal(dialog.choices.map((choice) => choice.value).join(","), "default,all");
+        calls.push("file-scope");
+        return "default";
+      },
       showAppToast: () => assert.fail("Unexpected upload error"),
     };
     const upload = runInNewContext(`${fn}; uploadDashcamSegments`, context);
     await upload(["route--0"], destination ? { destination } : {});
     assert.deepEqual(calls, destination
       ? ["connection", "/api/road-viewer/summary", "confirmation"]
-      : ["/api/dashcam/upload/summary", "confirmation"]);
+      : ["file-scope", "/api/dashcam/upload/summary", "confirmation"]);
   }
 });
 
