@@ -66,3 +66,24 @@ export async function ensureRoadViewerConnection() {
     return false;
   }
 }
+
+// Keep only user-selected originals. Hashing/upload runs on the device; no video conversion here.
+export async function chooseRoadViewerVideos() {
+  const options = { include_front: false, include_wide: false };
+  const choices = [
+    ['include_front', 'rv_high_quality_front', 'High-quality front video'],
+    ['include_wide', 'rv_wide_video', 'Wide video'],
+  ];
+  const result = openAppDialog({
+    mode: 'confirm', title: getUIText('rv_send', 'Send to Road Viewer'), html: true,
+    messageHtml: `<p>${escapeHtml(getUIText('rv_video_options_hint', 'rlog and qcamera are always included when available. Add optional original videos below. Missing videos are skipped. Large videos use more mobile data and take longer.'))}</p>` +
+      choices.map(([key, label, fallback]) => `<label style="display:flex;align-items:center;gap:12px;padding:12px 0"><input id="rv-${key}" type="checkbox">${escapeHtml(getUIText(label, fallback))}</label>`).join(''),
+    confirmLabel: getUIText('next', 'Next'),
+  });
+  // The dialog is mounted synchronously; capture choices before its close animation removes it.
+  for (const [key] of choices) {
+    const input = document.getElementById(`rv-${key}`);
+    input?.addEventListener('change', () => { options[key] = input.checked; });
+  }
+  return await result ? options : null;
+}

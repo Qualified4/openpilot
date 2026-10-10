@@ -71,7 +71,10 @@ def register(app):
           credentials = await asyncio.to_thread(config.load)
           if not credentials:
             raise client.Error('disconnected')
-          summaries = await asyncio.to_thread(uploader.discover, segments)
+          options = {key: body.get(key, False) for key in ('include_front', 'include_wide')}
+          if any(type(value) is not bool for value in options.values()):
+            raise client.Error('invalid_file')
+          summaries = await asyncio.to_thread(uploader.discover, segments, options)
           if action == 'summary':
             return web.json_response({'ok': True, 'summaries': summaries})
           running = jobs.running_job()
@@ -84,12 +87,14 @@ def register(app):
             if old.get('segments') != segments or not checkpoint or checkpoint['device_id'] != credentials['device_id']:
               raise client.Error('retry_unavailable')
             checkpoint = copy.deepcopy(checkpoint)
+            options = old.get('road_viewer_options', {})
             if old.get('error') in ('session_expired', 'session_not_found'):
               checkpoint['manifest']['batch_id'] = secrets.token_urlsafe(24)
               checkpoint.pop('session', None)
               checkpoint.pop('received', None)
           job = jobs.create_job(segments)
           job['upload_target'] = 'road_viewer'
+          job['road_viewer_options'] = options
           if checkpoint:
             job['_road_viewer'] = checkpoint
           jobs.start_job(job, runner=uploader.run_job)

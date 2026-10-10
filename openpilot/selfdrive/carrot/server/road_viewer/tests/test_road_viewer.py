@@ -272,7 +272,8 @@ def test_real_storage_errors_expiration_cancel_and_repair(server, monkeypatch):
       with pytest.raises(client.Error, match='insufficient_disk_space'):
         await client.begin(http, credentials, checkpoint['manifest'])
       policy.settings['policy'] = 'delete_oldest'
-      with pytest.raises(client.Error, match='no_deletable_logs'):
+      # Reservations never evict data to recover physical disk space.
+      with pytest.raises(client.Error, match='insufficient_disk_space'):
         await client.begin(http, credentials, checkpoint['manifest'])
       policy.settings = old
       monkeypatch.setattr(implementation.shutil, 'disk_usage', original_disk)
@@ -406,8 +407,14 @@ def test_carrot_routes_pair_upload_disconnect(server):
       segment = recording(video=False)
       response = await browser.post('/api/road-viewer/summary', json={'segments': [segment]})
       assert (await response.json())['summaries'][0]['files'][0]['name'] == 'rlog.zst'
-      response = await browser.post('/api/road-viewer/start', json={'segments': [segment]})
+      (Path(paths.segment_dir(segment)) / 'fcamera.hevc').write_bytes(b'\x00\x00\x01\x40\x01front')
+      response = await browser.post('/api/road-viewer/summary', json={'segments': [segment], 'include_front': 'yes'})
+      assert response.status == 400
+      response = await browser.post('/api/road-viewer/summary', json={'segments': [segment], 'include_front': True, 'include_wide': True})
+      assert [item['name'] for item in (await response.json())['summaries'][0]['files']] == ['rlog.zst', 'fcamera.hevc']
+      response = await browser.post('/api/road-viewer/start', json={'segments': [segment], 'include_front': True, 'include_wide': True})
       job = jobs.jobs()[(await response.json())['job_id']]
+      assert job['road_viewer_options'] == {'include_front': True, 'include_wide': True}
       await job['_task']
       assert job['status'] == 'done'
       response = await browser.post('/api/road-viewer/disconnect', json={})
@@ -459,4 +466,57 @@ def test_carrot_multi_route_selection_summary_start_and_retry(monkeypatch):
         response = await browser.post('/api/road-viewer/summary', json={'segments': segments})
         assert response.status == 400
         assert (await response.json())['error'] == 'invalid_segments'
+  asyncio.run(run())
+
+
+def test_optional_video_selection_and_manifest():
+  segment = recording()
+  directory = Path(paths.segment_dir(segment))
+  (directory / 'fcamera.hevc').write_bytes(b'front-video')
+  (directory / 'ecamera.hevc').write_bytes(b'wide-video')
+  default = uploader.discover([segment])[0]
+  assert [item['name'] for item in default['files']] == ['qcamera.ts', 'rlog.zst']
+  for front, wide in ((True, False), (False, True), (True, True)):
+    options = {'include_front': front, 'include_wide': wide}
+    summary = uploader.discover([segment], options)[0]
+    names = [item['name'] for item in summary['files']]
+    assert ('fcamera.hevc' in names) == front
+    assert ('ecamera.hevc' in names) == wide
+    assert summary['totalSize'] == default['totalSize'] + front * 11 + wide * 10
+    job = jobs.create_job([segment]);job['road_viewer_options'] = options
+    checkpoint = asyncio.run(uploader.prepare(job))
+    assert [item['kind'] for item in checkpoint['manifest']['segments'][0]['files']] == names
+  (directory / 'ecamera.hevc').unlink()
+  assert len(uploader.discover([segment], {'include_front': True, 'include_wide': True})[0]['files']) == 3
+  (directory / 'ecamera.hevc').symlink_to(directory / 'fcamera.hevc')
+  with pytest.raises(client.Error, match='file_not_allowed'):
+    uploader.discover([segment], {'include_wide': True})
+
+
+def test_optional_videos_over_real_https_resume(server, monkeypatch):
+  async def run():
+    await connect(server)
+    segment = recording();directory = Path(paths.segment_dir(segment))
+    payload = b'\x00\x00\x01\x40\x01' + b'hq' * uploader.BLOCK_SIZE
+    (directory / 'fcamera.hevc').write_bytes(payload)
+    (directory / 'ecamera.hevc').write_bytes(payload + b'wide')
+    original = client.session_request
+    lost = False
+    async def lose_chunk(http, url, session, method='GET', suffix='', data=None):
+      nonlocal lost
+      result = await original(http, url, session, method, suffix, data)
+      if method == 'PUT' and '/files/2?' in suffix and not lost:
+        lost = True
+        raise client.Error('unreachable')
+      return result
+    monkeypatch.setattr(client, 'session_request', lose_chunk)
+    job = jobs.create_job([segment]);job['road_viewer_options'] = {'include_front': True, 'include_wide': True}
+    await jobs.start_job(job, runner=uploader.run_job)
+    assert job['status'] == 'done', repr(job.get('result'))
+    assert lost
+    stored = list(server[0].recording_paths())
+    assert len(stored) == 1
+    for name in ('rlog.zst','qcamera.ts','fcamera.hevc','ecamera.hevc'):
+      assert (stored[0] / name).read_bytes() == (directory / name).read_bytes()
+    assert server[0].storage_policy.reserved() == 0
   asyncio.run(run())

@@ -19,7 +19,8 @@ BLOCK_SIZE = 256 * 1024
 ROUTE = re.compile(r'(?:[0-9a-fA-F]{8}--[0-9a-fA-F]{10}|\d{4}-\d{2}-\d{2}--\d{2}-\d{2}-\d{2})')
 
 
-def discover(segments):
+def discover(segments, options=None):
+  options = options or {}
   if not 1 <= len(segments) <= 50:
     raise client.Error('invalid_segments')
   summaries = []
@@ -32,6 +33,17 @@ def discover(segments):
     files = segment_file_summary(directory)
     if any(item['name'] not in ('rlog.zst', 'qcamera.ts') for item in files):
       raise client.Error('file_not_allowed')
+    for option, name in (('include_front', 'fcamera.hevc'), ('include_wide', 'ecamera.hevc')):
+      if not options.get(option):
+        continue
+      try:
+        info = os.stat(os.path.join(directory, name), follow_symlinks=False)
+      except FileNotFoundError:
+        continue
+      if not stat.S_ISREG(info.st_mode):
+        raise client.Error('file_not_allowed')
+      if info.st_size > 0:
+        files.append({'kind': name.split('.')[0], 'name': name, 'size': info.st_size, 'sizeLabel': file_size_label(info.st_size)})
     total = sum(item['size'] for item in files)
     summaries.append({'segment': segment, 'route': route_name(segment), 'segmentIndex': segment_index(segment),
                       'files': files, 'totalSize': total, 'totalSizeLabel': file_size_label(total)})
@@ -65,7 +77,7 @@ def open_source(item):
 
 
 async def prepare(job):
-  summaries = await asyncio.to_thread(discover, job['segments'])
+  summaries = await asyncio.to_thread(discover, job['segments'], job.get('road_viewer_options'))
   files = []
   manifest = {'batch_id': secrets.token_urlsafe(24), 'segments': []}
   for summary in summaries:

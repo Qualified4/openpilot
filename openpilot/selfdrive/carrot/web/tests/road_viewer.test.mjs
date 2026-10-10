@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { ensureRoadViewerConnection, openRoadViewerSettings, roadViewerError } from "../src/features/road_viewer/index.js";
+import { ensureRoadViewerConnection, openRoadViewerSettings, roadViewerError, chooseRoadViewerVideos } from "../src/features/road_viewer/index.js";
 
 function setup(t) {
   const previous = new Map();
@@ -44,7 +44,8 @@ test("direct upload selects only its supported file scope and contacts only its 
       dashcamUploadActiveJobId: null,
       getRememberedDashcamUploadJob: () => null,
       ensureRoadViewerConnection: async () => { calls.push("connection"); return true; },
-      postJson: async (url) => { calls.push(url); return { summaries: [{}] }; },
+      chooseRoadViewerVideos: async () => { calls.push('video-options'); return { include_front: true, include_wide: false }; },
+      postJson: async (url, body) => { if (destination) assert.equal(body.include_front, true); calls.push(url); return { summaries: [{}] }; },
       dashcamUploadStats: () => ({}),
       dashcamUploadConfirmHtml: () => "summary",
       getUIText: (_key, fallback) => fallback,
@@ -60,7 +61,7 @@ test("direct upload selects only its supported file scope and contacts only its 
     const upload = runInNewContext(`${fn}; uploadDashcamSegments`, context);
     await upload(["route--0"], destination ? { destination } : {});
     assert.deepEqual(calls, destination
-      ? ["connection", "/api/road-viewer/summary", "confirmation"]
+      ? ["connection", "video-options", "/api/road-viewer/summary", "confirmation"]
       : ["file-scope", "/api/dashcam/upload/summary", "confirmation"]);
   }
 });
@@ -171,4 +172,29 @@ test("Road Viewer rejects more than 50 selected segments before pairing or sendi
   });
   await upload(Array.from({ length: 51 }, (_, i) => `route--${i}`), { destination: "road_viewer" });
   assert.deepEqual(messages, ["invalid_segments"]);
+});
+
+test('video choices default off, can be selected independently, and cancel sends nothing', async (t) => {
+  const set = setup(t);
+  set('escapeHtml', value => value);
+  for (const mode of ['default', 'front', 'wide', 'cancel']) {
+    const inputs = new Map();
+    set('document', { getElementById: id => {
+      const input = { checked: false, addEventListener: (_name, fn) => { input.change = fn; } };
+      inputs.set(id, input); return input;
+    } });
+    set('openAppDialog', options => {
+      assert.equal((options.messageHtml.match(/type="checkbox"/g) || []).length, 2);
+      assert(!options.messageHtml.includes(' checked'));
+      return Promise.resolve().then(() => {
+        if (['front', 'wide'].includes(mode)) {
+          const input = inputs.get('rv-include_' + mode); input.checked = true; input.change();
+        }
+        return mode !== 'cancel';
+      });
+    });
+    assert.deepEqual(await chooseRoadViewerVideos(), mode === 'cancel' ? null : {
+      include_front: mode === 'front', include_wide: mode === 'wide',
+    });
+  }
 });

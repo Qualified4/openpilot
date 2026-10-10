@@ -5,6 +5,9 @@ window.CarrotTranslations.register("zh", {
   nativeName: "中文",
   shortName: "ZH",
   strings: {
+    rv_high_quality_front: "高清前视视频",
+    rv_wide_video: "广角视频",
+    rv_video_options_hint: "默认发送 rlog 和 qcamera。可选择附加原始视频，不存在的视频将跳过。高清视频会增加流量和传输时间。",
     rv_send_selected: "将所选 {count} 个片段发送到 Road Viewer",
     rv_error_device_limit_reached: "Road Viewer 注册的设备过多，请移除不使用的设备后重新配对。",
     rv_settings: "Road Viewer 连接",

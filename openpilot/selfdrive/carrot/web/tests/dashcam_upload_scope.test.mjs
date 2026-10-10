@@ -16,6 +16,7 @@ async function runUpload(scope, confirm = true, options = {}) {
     getUIText: (_key, fallback) => fallback,
     showAppToast: (message) => { throw new Error(message); },
     ensureRoadViewerConnection: async () => true,
+    chooseRoadViewerVideos: async () => ({ include_front: true, include_wide: false }),
     openAppDialog: async (dialog) => {
       assert.notEqual(options.destination, "road_viewer");
       assert.equal(dialog.choices[0].value, "default");
@@ -31,7 +32,7 @@ async function runUpload(scope, confirm = true, options = {}) {
         segment: "route--0",
         files: [
           { name: "qcamera.ts", size: 10 }, { name: "rlog.zst", size: 20 },
-          ...(body.includeAllFiles ? [{ name: "ecamera.hevc", size: 100 }, { name: "fcamera.hevc", size: 200 }] : []),
+          ...(body.includeAllFiles ? [{ name: "ecamera.hevc", size: 100 }, { name: "fcamera.hevc", size: 200 }] : body.include_front ? [{ name: "fcamera.hevc", size: 200 }] : []),
         ],
       }] };
       return { job_id: "job" };
@@ -77,5 +78,7 @@ test("Road Viewer keeps its file scope and retry destination", async () => {
   assert.equal(requests[1].url, "/api/road-viewer/start");
   assert.equal(requests[1].retry_job_id, "prior-job");
   assert.ok(requests.every((request) => !("includeAllFiles" in request)));
-  assert.equal(summaries[0].files, 2);
+  assert.equal(summaries[0].files, 3);
+  assert.equal(summaries[0].bytes, 230);
+  assert.ok(requests.every(request => request.include_front === true && request.include_wide === false));
 });

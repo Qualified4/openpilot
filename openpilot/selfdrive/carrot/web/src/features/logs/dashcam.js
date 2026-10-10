@@ -1,6 +1,6 @@
 "use strict";
 
-import { ensureRoadViewerConnection, roadViewerError } from "../road_viewer/index.js";
+import { ensureRoadViewerConnection, roadViewerError, chooseRoadViewerVideos } from "../road_viewer/index.js";
 
 import { dashcamReadStateStore } from "./dashcam_player_session.js";
 import { createLogsSegmentStatusTag } from "./player/components.js";
@@ -1658,7 +1658,12 @@ async function uploadDashcamSegments(segments, options = {}) {
     bytes: 0,
   };
   let includeAllFiles = false;
+  let roadViewerOptions = {};
   if (options.confirm !== false) {
+    if (roadViewer) {
+      roadViewerOptions = await chooseRoadViewerVideos();
+      if (!roadViewerOptions) return;
+    }
     if (!roadViewer) {
       const scope = await openAppDialog({
         mode: "choice",
@@ -1674,7 +1679,7 @@ async function uploadDashcamSegments(segments, options = {}) {
       includeAllFiles = scope === "all";
     }
     try {
-      const summary = await postJson(`${api}/summary`, { segments: targets, ...(!roadViewer ? { includeAllFiles } : {}) });
+      const summary = await postJson(`${api}/summary`, { segments: targets, ...(!roadViewer ? { includeAllFiles } : roadViewerOptions) });
       if (!Array.isArray(summary?.summaries) || summary.summaries.length !== targets.length) {
         throw new Error(getUIText("upload_summary_unavailable", "Upload information is unavailable."));
       }
@@ -1739,7 +1744,7 @@ async function uploadDashcamSegments(segments, options = {}) {
       progress: null,
     }, targets.length);
     if (cancelRequested) throw makeDashcamUploadCanceledError();
-    const started = await postJson(`${api}/start`, { segments: targets, ...(!roadViewer ? { includeAllFiles } : {}), ...(options.retryJobId ? { retry_job_id: options.retryJobId } : {}) });
+    const started = await postJson(`${api}/start`, { segments: targets, ...(!roadViewer ? { includeAllFiles } : roadViewerOptions), ...(options.retryJobId ? { retry_job_id: options.retryJobId } : {}) });
     jobId = started.job_id;
     rememberDashcamUploadJob(jobId);
     if (cancelRequested) {
