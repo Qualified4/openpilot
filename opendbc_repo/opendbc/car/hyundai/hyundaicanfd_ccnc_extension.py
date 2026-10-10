@@ -306,6 +306,7 @@ class _CcncRadarDisplayTracker:
     self.stop_pending = {}
     self.stop_holds = {}
     self.stop_motion = {}
+    self.moving_displays = {}
     self._saved_side = [None, None]
     self.live = None
     self.last_frame = -1
@@ -348,6 +349,7 @@ class _CcncRadarDisplayTracker:
     if gap or self.live is None or not (stopped or approaching):
       self.approach_pending.clear()
       self.approach_holds.clear()
+      self.moving_displays.clear()
     self.approaching = approaching
     if gap:
       self.saved_widths = [None, None]
@@ -413,6 +415,33 @@ class _CcncRadarDisplayTracker:
             if entry[0] == track_id and (saved is self.stop_pending or saved is self.approach_pending or entry[-1] == birth):
               del saved[side]
 
+  def stationary_side(self, lead):
+    lateral_speed = self.temporal.entries.get(lead.trackId, {}).get('vy', 0.0) if self.temporal is not None else 0.0
+    return (abs(lead.vLead) <= 2.0 / 3.6 and abs(getattr(lead, 'yvRel', 0.0)) <= 2.0 / 3.6
+            and abs(lateral_speed) <= 2.0 / 3.6 and not self.stop_motion.get(lead.trackId, {}).get('blocked', False))
+
+  def prefer_stop_memory(self, side, lead, held, distance):
+    """Arbitrate display only; the existing fresh stationary gate replaces memory."""
+    observation = self.tracks.get(lead.trackId) if lead is not None else None
+    if held is None or observation is None or (lead.trackId == held[0] and observation[0] == held[-1]):
+      self.moving_displays.pop(side, None)
+      return False
+    # Losing a nearby stopped return is not evidence that the vehicle departed.
+    # A farther return cannot displace that still-valid nearer memory.
+    if lead.dRel > distance + 1.0:
+      self.moving_displays.pop(side, None)
+      return True
+    birth, stamp = observation[:2]
+    displayed = self.moving_displays.get(side)
+    visible = displayed is not None and displayed[:2] == (lead.trackId, birth) and 0 <= stamp - displayed[2] <= 15
+    if not self.stationary_side(lead) or visible:
+      # A closer passing vehicle takes display priority, not ownership of the
+      # stationary memory. Its departure does not prove the remembered car left.
+      self.moving_displays[side] = (lead.trackId, birth, stamp)
+      return False
+    self.moving_displays.pop(side, None)
+    return True
+
   def approaching_display(self, values, leads, frame):
     # A stationary target lost just before ego stops is carried in odometry coordinates.
     for side, lead in enumerate(leads):
@@ -428,7 +457,10 @@ class _CcncRadarDisplayTracker:
               or abs(world_x - pending[2]) > 1.0 or abs(lead.yRel - pending[3]) > 0.75):
             pending = (lead.trackId, frame, world_x, lead.yRel)
             self.approach_pending[side] = pending
-          if lead.dRel <= self.MAX_HOLD_DISTANCE and frame - pending[1] >= 50 and self.stable(lead.trackId, 50):
+          old = self.approach_holds.get(side)
+          if (lead.dRel <= self.MAX_HOLD_DISTANCE and self.tracks[lead.trackId][1] - pending[1] >= 50
+              and self.stable(lead.trackId, 50)
+              and (old is None or world_x <= old[1] + 1.0)):
             self.approach_holds[side] = (lead.trackId, world_x, lead.yRel,
                                         tuple(values[k] for k in keys), frame, self.stop_distance, self.tracks[lead.trackId][0])
       else:
@@ -456,6 +488,11 @@ class _CcncRadarDisplayTracker:
         self.approach_holds.pop(side, None)
         continue
       display = (display[0], max(0.0, x) * 0.8, display[2])
+      if lead is not None and (lead.trackId != track_id or self.tracks[lead.trackId][0] != birth):
+        if self.prefer_stop_memory(side, lead, held, x):
+          values.update(zip(keys, display))
+      else:
+        self.moving_displays.pop(side, None)
       if self.stopped:
         old = self.stop_holds.get(side)
         if old is None or x < old[1]:
@@ -500,11 +537,14 @@ class _CcncRadarDisplayTracker:
                    and (abs(lead.dRel - pending[2]) > 1.0 or abs(lead.yRel - pending[3]) > 0.75))
         if not stationary:
           self.stop_pending.pop(side, None)
+          if held is not None and self.prefer_stop_memory(side, lead, held, held[1]):
+            values.update(zip(keys, held[3]))
           continue
         if pending is None or pending[0] != lead.trackId or drifted:
           pending = (lead.trackId, frame, lead.dRel, lead.yRel)
           self.stop_pending[side] = pending
-        if (lead.dRel <= self.MAX_HOLD_DISTANCE and frame - pending[1] >= 50 and self.stable(lead.trackId, 50)
+        if (lead.dRel <= self.MAX_HOLD_DISTANCE and self.tracks[lead.trackId][1] - pending[1] >= 50
+            and self.stable(lead.trackId, 50)
             and (held is None or lead.dRel <= held[1] + 1.0)):
           birth = self.tracks[lead.trackId][0]
           self.stop_holds[side] = (lead.trackId, lead.dRel, lead.yRel,
@@ -513,6 +553,9 @@ class _CcncRadarDisplayTracker:
         self.stop_pending.pop(side, None)
         if held is not None and lead is None:
           values.update(zip(keys, held[3]))
+      held = self.stop_holds.get(side)
+      if held is not None and self.prefer_stop_memory(side, lead, held, held[1]):
+        values.update(zip(keys, held[3]))
 
   def _update_model(self, md):
     # SubMaster model readers are immutable between publications; retain the reader itself.
@@ -824,6 +867,14 @@ class _CcncRadarDisplayTracker:
     if not candidates:
       return None, 0.0
     best = min(candidates, key=lambda item: item[0].dRel ** 2 + item[0].yRel ** 2)
+    if (self.stopped or self.approaching) and self.stationary_side(best[0]):
+      # Two stationary returns can coexist. Keep the qualified displayed one
+      # while it remains eligible; a moving nearer candidate still wins.
+      retained = next((item for item in candidates if item[0].trackId in self.selected[1:]
+                       and self.stationary_side(item[0])
+                       and getattr(item[0], 'ccnc_fresh', True)), None)
+      if retained is not None:
+        best = retained
     point = best[0]
     admission = self.boundary_admission.get(point.trackId, {})
     since, count = admission.get('boundary_since', (self.last_frame, 0))
@@ -2322,6 +2373,17 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
             or right_inner_bound >= left_inner_bound):
           continue
 
+        # Only a confirmed stationary memory may bridge inner-boundary noise.
+        # Do not prolong arbitrary low-speed returns at crossings or barriers.
+        retained_side = None
+        if (display_tracker.stopped or display_tracker.approaching) and display_tracker.stationary_side(lead):
+          for side, inside in enumerate((yRel > left_inner_bound - 0.2, yRel < right_inner_bound + 0.2)):
+            held = display_tracker.stop_holds.get(side) or display_tracker.approach_holds.get(side)
+            if (inside and lead.trackId == display_tracker.selected[side + 1] and held is not None
+                and held[0] == lead.trackId and held[-1] == display_tracker.tracks[lead.trackId][0]):
+              retained_side = side
+              break
+
         # 거리 순위만 필요하므로 원본 좌표의 제곱거리로 비교합니다.
         dist_score = dRel * dRel + yRel * yRel
 
@@ -2333,13 +2395,13 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
           boundary_front, boundary_front_y = lead, road_aligned_yRel
 
         # 2. [전방 주행 차선] - 외곽선/도로경계선 interp 4회 전부 생략
-        if right_inner_bound <= yRel <= left_inner_bound:
+        if right_inner_bound <= yRel <= left_inner_bound and retained_side is None:
           if dist_score < ff_min_dist:
             if velocity > min_front_lead_speed and display_tracker.front_admitted(lead, md):
               ff_min_dist, ff_lead, ff_yRel = dist_score, lead, road_aligned_yRel
 
         # 3. [왼쪽 차선 차량] - 좌측 외곽/도로경계선만 지연 계산 (우측 2회 interp 생략)
-        elif left_inner_bound < yRel:
+        elif left_inner_bound < yRel or retained_side == 0:
           if (dRel <= max_side_distance and display_tracker.stable(lead.trackId)
               and abs(road_aligned_yRel) <= max_side_lateral):
 
@@ -2372,7 +2434,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
                   side_candidates[0].append((lead, road_aligned_yRel, yRel - left_inner_bound))
 
         # 4. [오른쪽 차선 차량] - 우측 외곽/도로경계선만 지연 계산 (좌측 2회 interp 생략)
-        elif yRel < right_inner_bound:
+        elif yRel < right_inner_bound or retained_side == 1:
           if (dRel <= max_side_distance and display_tracker.stable(lead.trackId)
               and abs(road_aligned_yRel) <= max_side_lateral):
 

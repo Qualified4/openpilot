@@ -1174,10 +1174,158 @@ def test_stopped_hold_requires_fresh_stationary_identity(continuation):
       assert out['LF_DETECT'] == 1
     elif continuation == 'unselected':
       assert out['LF_DETECT'] == 1 and out['LF_DETECT_DISTANCE'] == 6.4
+    elif continuation == 'other_candidate':
+      # A farther passing car does not prove that the remembered nearer car left.
+      assert t.stop_holds
+      assert out['LF_DETECT'] == 1 and out['LF_DETECT_DISTANCE'] == 6.4
     else:
       # A one-frame discontinuity is a new identity, not proof of a crossing.
       assert t.stop_holds
       assert out['LF_DETECT'] == 1
+
+
+@pytest.mark.parametrize('side', [0, 1])
+@pytest.mark.parametrize('approaching', [False, True])
+@pytest.mark.parametrize('replacement', ['far_stationary', 'near_stationary', 'moving'])
+def test_stop_memory_replacement_preserves_near_car_and_retires_superseded_identity(side, approaching, replacement):
+  t = Tracker()
+  prefix, sign = ('LF', 1.) if side == 0 else ('RF', -1.)
+
+  def step(frame, q):
+    t.observe(N(points=[] if q is None else [q]), frame)
+    t.update_stop(.5 if approaching else 0., frame, -1.)
+    leads = (q, None) if side == 0 else (None, q)
+    t.finish(None, *leads, 0., True, frame)
+    out = {prefix+'_DETECT': int(q is not None), prefix+'_DETECT_DISTANCE': q.dRel*.8 if q else 0.,
+           prefix+'_DETECT_LATERAL': 3.}
+    t.stopped_display(out, leads, frame)
+    return out
+
+  for frame in range(0, 101, 5):
+    step(frame, point(1, x=10., y=sign*3., speed=0.))
+  holds = t.approach_holds if approaching else t.stop_holds
+  assert holds[side][0] == 1
+  x = 25. if replacement == 'far_stationary' else 7.
+  for frame in range(105, 181, 5):
+    out = step(frame, point(2, x=x, y=sign*3., speed=2. if replacement == 'moving' else 0.))
+    waiting = replacement == 'far_stationary' or (replacement == 'near_stationary' and frame < 155)
+    expected = pytest.approx(8., abs=.1) if waiting else x*.8
+    assert out[prefix+'_DETECT_DISTANCE'] == expected
+  out = step(185, None)
+  assert out[prefix+'_DETECT']
+  assert holds[side][0] == (2 if replacement == 'near_stationary' else 1)
+  assert out[prefix+'_DETECT_DISTANCE'] == pytest.approx(5.6 if replacement == 'near_stationary' else 8., abs=.1)
+  # A farther candidate cannot silently overwrite approach memory after 0.5s.
+  if replacement == 'far_stationary':
+    for frame in range(190, 291, 5):
+      out = step(frame, point(2, x=14., y=sign*3., speed=0.))
+      assert out[prefix+'_DETECT_DISTANCE'] < 8.1
+      assert holds[side][0] == 1
+
+
+@pytest.mark.parametrize('approaching', [False, True])
+def test_repeated_publication_cannot_replace_stationary_memory(approaching):
+  t = Tracker()
+  old, new = point(1, x=10., y=3., speed=0.), point(2, x=7., y=3., speed=0.)
+  for frame in range(0, 156, 5):
+    if frame <= 105:
+      live = N(points=[old, new])
+    q = old if frame <= 100 else new
+    t.observe(live, frame)
+    t.update_stop(.5 if approaching else 0., frame, -1.)
+    t.finish(None, q, None, 0., True, frame)
+    out = dict(LF_DETECT=1, LF_DETECT_DISTANCE=q.dRel*.8, LF_DETECT_LATERAL=3.)
+    t.stopped_display(out, (q, None), frame)
+  holds = t.approach_holds if approaching else t.stop_holds
+  assert holds[0][0] == 1
+  assert out['LF_DETECT_DISTANCE'] == pytest.approx(8., abs=.1)
+
+
+def test_moving_display_continuity_does_not_survive_reused_identity():
+  t = Tracker()
+  held = (1, 10., 3., (1, 8., 3.), 0)
+  q = point(2, x=7., y=3., speed=1.)
+  t.observe(N(points=[q]), 0)
+  assert not t.prefer_stop_memory(0, q, held, 10.)
+  q.vLead = 0.
+  assert not t.prefer_stop_memory(0, q, held, 10.)
+  t.tracks[2] = (5, 5, 1, q, 0.)
+  assert t.prefer_stop_memory(0, q, held, 10.)
+
+
+@pytest.mark.parametrize('approaching', [False, True])
+def test_displayed_moving_candidate_stops_without_flashing_previous_memory(approaching):
+  t = Tracker()
+  t.temporal = Temporal()
+  for frame in range(0, 201, 5):
+    q = point(1 if frame <= 100 else 2, x=10. if frame <= 100 else 7., y=3.,
+              speed=1. if 100 < frame <= 115 else 0.)
+    t.observe(N(points=[q]), frame)
+    t.update_stop(.5 if approaching else 0., frame, -1.)
+    t.finish(None, q, None, 0., True, frame)
+    out = dict(LF_DETECT=1, LF_DETECT_DISTANCE=q.dRel*.8, LF_DETECT_LATERAL=3.)
+    t.stopped_display(out, (q, None), frame)
+    assert out['LF_DETECT_DISTANCE'] == q.dRel*.8
+  holds = t.approach_holds if approaching else t.stop_holds
+  assert holds[0][0] == 2
+
+
+@pytest.mark.parametrize('sign', [-1., 1.])
+@pytest.mark.parametrize('release', ['crossing', 'moving', 'lateral_speed', 'ego_departure'])
+def test_stopped_side_boundary_hysteresis_releases_for_crossing_and_motion(sign, release):
+  step = display_step_for_test()
+  for frame in range(0, 101, 5):
+    selected = step(lane_model(frame), N(live_tracks=N(points=[point(y=sign*2., speed=0.)])), frame, 0., 0.)
+  slot = 1 if sign > 0 else 2
+  assert selected[slot] is not None
+  for frame in range(105, 156, 5):
+    selected = step(lane_model(frame), N(live_tracks=N(points=[point(y=sign*(1.45 if frame % 10 else 1.55), speed=0.)])), frame, 0., 0.)
+    assert selected[slot] is not None
+  # Crossing beyond the tolerance or current motion must leave the side slot.
+  q = point(y=sign*(1.25 if release == 'crossing' else 1.45), speed=1. if release == 'moving' else 0.)
+  q.yvRel = 1. if release == 'lateral_speed' else 0.
+  selected = step(lane_model(160), N(live_tracks=N(points=[q])), 160, 15. if release == 'ego_departure' else 0., 0.)
+  assert selected[slot] is None
+
+
+@pytest.mark.parametrize('memory', ['absent', 'other_target', 'old_birth'])
+def test_boundary_tolerance_requires_own_confirmed_stationary_memory(memory):
+  step = display_step_for_test()
+  for frame in range(0, 101, 5):
+    step(lane_model(frame), N(live_tracks=N(points=[point(y=2., speed=0.)])), frame, 0., 0.)
+  tracker = step.__globals__['state'].radar_display_tracker
+  held = tracker.stop_holds[0]
+  if memory == 'absent':
+    tracker.stop_holds.clear()
+  elif memory == 'other_target':
+    tracker.stop_holds[0] = (99, *held[1:])
+  else:
+    tracker.stop_holds[0] = (*held[:-1], held[-1] - 1)
+  selected = step(lane_model(105), N(live_tracks=N(points=[point(y=1.45, speed=0.)])), 105, 0., 0.)
+  assert selected[1] is None
+
+
+@pytest.mark.parametrize('motion', ['longitudinal', 'reported_lateral', 'observed_lateral', 'crossing_history'])
+def test_stopped_representative_keeps_live_identity_but_yields_to_moving_nearer_target(motion):
+  t = Tracker()
+  old, closer = point(1, x=13., y=-3., speed=0.), point(2, x=9., y=-3., speed=0.)
+  observe(t, [old, closer])
+  t.stopped = True
+  t.selected = (None, None, 1)
+  candidates = [(closer, -3., 1.5), (old, -3., 1.5)]
+  assert t.side_representative(candidates)[0] is old
+  if motion == 'longitudinal':
+    closer.vLead = 1.
+  elif motion == 'reported_lateral':
+    closer.yvRel = 1.
+  elif motion == 'observed_lateral':
+    t.temporal = Temporal()
+    t.temporal.entries[2] = dict(vy=1.)
+  else:
+    t.stop_motion[2] = dict(blocked=True)
+  assert t.side_representative(candidates)[0] is closer
+  closer.vLead = 0.
+  assert t.side_representative(candidates[:1])[0] is closer
 
 
 @pytest.mark.parametrize('confirmation,expected', [('none', False), ('vision', True), ('lane', True),
