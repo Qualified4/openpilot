@@ -1,5 +1,126 @@
 # Repository memory
 
+- On 2026-10-11, user explicitly authorized committing the current tested CCNC
+  snapshot before trying another method. Commit runtime d473d0fb4bd7 with its
+  existing tests/investigation notes; the failed 3-point/4m candidate stays private
+  and inactive. This authorization does not include pushing or deploying, or
+  committing subsequent alternative experiments without another request.
+
+- On 2026-10-11, user requested validating map rows at the existing detector's
+  3-point/4m minimum. Candidate 9f7ff5daeae2 remains analysis-only; runtime stays
+  the uncommitted d473d0fb4bd7, not HEAD 588e087d. Fresh 139-file SHA256 inventory
+  covers 130 unique segments; both fixed position-correction settings replay
+  152,695 eligible sends each. Reviewed 29 bollard scenes stay 6 residual sends
+  and 25 fully hidden scenes per setting. A separate divider scene gains 9 LF
+  removals only with position correction; two crosswalk RF removals per setting
+  have no certified object identity. No FF changes or LF/RF additions. Candidate
+  map-only checks pass 463/fail 1: moving positions with stationary speed reports
+  revisit old map cells and falsely establish a row. Combined original detector
+  already suppresses that synthetic input on HEAD/before/candidate alike; do not
+  claim a newly observed vehicle loss. Reject candidate, preserve runtime and
+  its 870 passing focused tests. Jitter confirmation is active, but residual
+  nearby candidates lack completed windows or exceed center variation/matching
+  bounds. The 0.6s confirmation was chosen as three 200ms windows, not fitted to
+  logs; do not portray it or the 15cm/10cm bounds as empirically established.
+  Preserve private trial evidence in ccnc-map-three archive; no commit/deploy.
+  See docs/ccnc_front_radar_detection.md for comparison scope and limitations.
+
+- On 2026-10-11, the user requested sequential jitter-map implementation and
+  suppression/compute validation. Keep the final d473d0fb4bd7 CCNC display trial:
+  fix matching-prefix extension/4m float rounding, record measured candidates
+  up to2.5m/s longitudinal/.6m/s lateral within1.5m of a qualified boundary,
+  but require bounded center/spread and three completed200ms windows for relaxed
+  static evidence. Preserve original strict anchors and existing confirmed
+  motion/vision/stop/approach vehicle guards; keep96 points,3s/15m and freshness.
+  New slow longitudinal motion needs consecutive advancing window centers.
+  The first center trial regressed db48 (10ON/4OFF reappearances); reject and
+  preserve it privately. Final 870 focused tests pass. Fresh SHA256 inventory
+  covers139 rlogs,9 identical duplicates,130 unique segments; ON/OFF each replay
+  152,695 eligible sends, excluding2,203 unready. Final adds23ON/24OFF LF
+  suppressions and1OFF RF suppression vs restored combined source, with no
+  added detections or FF changes; seven segments differ,123 are equal. Reviewed
+  images support structures but do not certify per-point identity; c1/23's RF
+  stays equal. In29 labelled windows each mode retains6 of196 sends (was10),
+  25 episodes clear;358/3,395/6,c1/21 at5.48s still retain LF. Do not claim all
+  bollards gone. Five-case three-repeat PC mean paired increment is.036-.167ms
+  per display update (5.0-19.2%); not whole CPU or vehicle measurement. Mixed
+  five-version timing has an11.13ms final outlier; standalone final max3.84ms,
+  baseline max3.14ms, with GC enabled. Outlier cause unresolved, no hard latency
+  guarantee. Keep changes local/uncommitted and CCNC-isolated; no deployment.
+  See docs/ccnc_front_radar_detection.md and private ccnc-jitter-stages archive.
+
+- On 2026-10-11, after the map-only replacement failed divider regressions,
+  the user explicitly requested restoring the earlier combined detector and
+  checking previously recorded bollard logs. Production source is restored
+  byte-for-byte to the successful54eff4c6631b point-map snapshot: original
+  structure detector plus the bounded stationary map, not map-only classification.
+  Preserve the failed replacement privately, not as current runtime code.
+  Original structure tests and map tests are restored;853 focused tests pass.
+  Fresh contextual replay covers41 segments and29 previously labelled structure
+  episodes. ON/OFF each hide186 of196 sends in those windows;24 episodes clear
+  completely but10 LF sends remain across358/3,395/6,c1/21. Some retained sends
+  select a different point; do not claim all bollards
+  disappear. db48's original false LF sends are all suppressed again (17ON/11OFF).
+  Reviewed outputs match the archived combined full-route replay.
+  Follow-up diagnostics correct the stop-memory explanation: none of these20
+  residual sends hit LF stop/approach-memory or vision exemptions; saved memory
+  in c1/21 belongs to RF. 358/3 ID41 is outside the confirmed row and exceeds
+  the map speed gate; ID60 is motion-admitted. 395/6 first row is only50ms old,
+  later OFF ID33 is motion-admitted. c1/21 has only two near points at5.48s;
+  at11.63s ID51 sits1.95m beyond the row, and relevant boundary gaps0.92-1.07m
+  exceed the map's0.75m gate. Matching a three-point prefix stops row extension;
+  the alternate three-point span is3.9999995m and fails the strict4m threshold.
+  Preserve diagnosis privately; no additional detector change was requested.
+  Keep changes uncommitted, branch-isolated and evidence private.
+
+- On 2026-10-11, the user authorized replacing the separate CCNC structure
+  detector with map classification; this supersedes preserving that detector
+  below. Use one bounded ego-compensated point map and vehicle/structure/unknown
+  output. Preserve motion/vision/stop-memory vehicle guards; unknown retains
+  existing admission and display. Current mature points seed >=3 anchors over
+  >=4m, including denser arrays needing more than three points. A new row from
+  never-simultaneous memory requires four anchors over5.5m. Store classification
+  on observed anchors so surviving points do not need neighbors to re-form a row.
+  Raw vLead can report ~2m/s on divider scenes; repeated fixed-position support
+  establishes geometry, with lateral-motion protection and no interpolation to
+  unseen points. Boundary candidates retain the old1.5m range; keep96 points,
+  3s/15m expiry and existing prediction hold. Early speed-only, tight-boundary,
+  three-only-seed and row-rebuild trials exposed regressions; preserve evidence
+  privately. Memory-only moving points falsely suppressed RF near a visible
+  right vehicle in c1-23; restore <=0.6m/s longitudinal/lateral conditions for
+  memory inference and retain observed-vs-remembered classification provenance.
+  Never upgrade an unobserved extension to observed evidence. 858 focused tests
+  pass, but full130-segment replay is partially FAILED: each mode152,695 eligible
+  sends; compared with the combined implementation ON35/OFF23 extra LF removals
+  and ON139/OFF116 side redisplays, in13/14 segments. FF equal, no extra RF removal;
+  the visible-right-vehicle regression is fixed in both modes. db48's earlier
+  ON17/OFF11 successful removals retain only10 in each mode; ON7/OFF1 reappear.
+  Do not claim improvement-only or promote this uncommitted replacement candidate
+  as deployment-ready. Local measured extra mean time ON0.009..0.066ms,
+  OFF-0.044..0.010ms is display-only PC timing, not vehicle CPU. Keep branch
+  isolation, failed evidence private and changes local;
+  no commit/push/deployment is authorized by this request.
+
+- On 2026-10-11, the user authorized a CCNC display-only stationary point map
+  and full local-log validation. Keep individual measured points in a bounded
+  ego-relative frame using existing speed integration and model yaw, independent
+  of radar IDs. Cap 96 points; expire missing points after 3s/15m and outside
+  -3..50m/+-6m. Four repeated static anchors may recognize a dense boundary row
+  before simultaneous visibility, with one missing position allowed in extension.
+  Preserve motion-confirmed/strong-vision/stop-memory exceptions and existing
+  width admission, radar data, FF, control and original structure detector.
+  Match classification to the existing 300ms temporal prediction hold; never
+  renew measured memory from predictions or extend the display hold. This fixes
+  a reviewed final redisplay after a 150ms-only trial. Avoid missing internal
+  attribute queries on raw capnp points; profiling exposed costly exceptions.
+  853 tests pass; 130 unique local segments, ON/OFF each 152,695 eligible sends:
+  only reviewed divider LF changes 17/11 times, other 129 segments and FF/RF equal.
+  Recorded-input equality is not object-truth or vehicle/CPU validation. Keep
+  branch isolation and evidence private; no commit/push/deployment authorized.
+  NAS shared-source bundle/fingerprint checked locally, but current wip-only
+  publishing and lead replay do not deploy/recalculate this CCNC display map.
+  See docs/ccnc_front_radar_detection.md and private 2026-10-11 point-map archive.
+
 - On 2026-10-11, the user authorized installing the new signal detector for
   live comparison recording, with the same pushed code on the vehicle. Add
   explicit per-device daytime_comparison_enabled: one camera copy, independent

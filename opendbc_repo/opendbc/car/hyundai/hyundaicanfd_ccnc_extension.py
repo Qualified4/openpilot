@@ -325,6 +325,11 @@ class _CcncRadarDisplayTracker:
     self.boundary_rejected = set()
     self.structure_regions = []
     self._structure_live = None
+    self.stationary_map = []
+    self._map_frame = None
+    self._map_distance = 0.0
+    self._map_live = None
+    self._map_rows = []
     self.lane_ready = True
     self._model = None
     self._model_stamp = None
@@ -731,6 +736,10 @@ class _CcncRadarDisplayTracker:
       self.boundary_rejected.clear()
       self.structure_regions.clear()
       self._structure_live = None
+      self.stationary_map.clear()
+      self._map_frame = None
+      self._map_live = None
+      self._map_rows.clear()
     self.last_frame = frame
     if live is self.live:
       return
@@ -835,13 +844,33 @@ class _CcncRadarDisplayTracker:
       speed = math.hypot(vx, vy)
       if not math.isfinite(speed) or speed <= 2.0 / CV.MS_TO_KPH:
         admission['moving'] = None
+        admission.pop('motion_windows', None)
       else:
         direction = (vx / speed, vy / speed)
         moving = admission['moving']
         if moving is None or sum(a * b for a, b in zip(direction, moving[2])) < 0.5:
           admission['moving'] = (stamp, position, direction)
-        elif (stamp - moving[0] >= (50 if admission['status'] == 'blocked' else 15)
-              and sum((a - b) * d for a, b, d in zip(position, moving[1], moving[2])) >= 0.5):
+          admission.pop('motion_windows', None)
+        # For slowly reported longitudinal motion, a single scattering-point
+        # displacement is insufficient: require two consistent window advances.
+        consistent = True
+        if speed <= 2.5 and abs(lateral_speed) <= .6:
+          windows = admission.setdefault('motion_windows', [])
+          if windows and stamp - windows[-1][0] > 35:
+            windows.clear()
+          if not windows or stamp - windows[-1][0] >= 20:
+            windows.append([stamp, 0., 0., 0])
+            del windows[:-4]
+          windows[-1][1] += position[0]
+          windows[-1][2] += position[1]
+          windows[-1][3] += 1
+          centers = [(w[1] / w[3], w[2] / w[3]) for w in windows[:-1]]
+          consistent = (len(centers) == 3 and all(w[3] >= 2 for w in windows[:-1])
+                        and all(sum((b - a) * d for a, b, d in zip(first, last, direction)) >= .06
+                                for first, last in zip(centers, centers[1:])))
+        moving = admission['moving']
+        if (moving is not None and consistent and stamp - moving[0] >= (50 if admission['status'] == 'blocked' else 15)
+            and sum((a - b) * d for a, b, d in zip(position, moving[1], moving[2])) >= .5):
           admission['status'] = 'allowed'
       if admission['status'] == 'pending' and stationary:
         # Missing/weak nearest geometry is not evidence that the point is interior.
@@ -893,8 +922,156 @@ class _CcncRadarDisplayTracker:
                     and self.stable(item[0].trackId, 50)]
     return min(alternatives, key=lambda item: item[0].dRel ** 2 + item[0].yRel ** 2)[:2] if alternatives else best[:2]
 
-  def update_structure_regions(self, md, frame):
+  def update_stationary_map(self, md, frame, reverse=False):
+    """Bounded ego-relative memory of measured static returns, for display only."""
+    rates = getattr(getattr(md, 'orientationRate', None), 'z', ())
+    changing = str(getattr(getattr(md, 'meta', None), 'laneChangeState', 'off')) != 'off'
+    delta = 0 if self._map_frame is None else frame - self._map_frame
+    distance = self.stop_distance - self._map_distance
+    curves = []
+    if md is not None:
+      for index in (1, 2):
+        if (index < len(md.laneLines) and index < len(md.laneLineProbs)
+            and math.isfinite(md.laneLineProbs[index]) and md.laneLineProbs[index] >= .3):
+          xs, ys, valid = self._curve(md, index)
+          if valid:
+            curves.append((index - 1, xs, ys))
+    self._map_rows = []
+    if (self.live is None or reverse or changing or not curves or not 0 <= delta <= 15
+        or not 0 <= distance <= 5.0 or not len(rates) or not math.isfinite(rates[0]) or abs(rates[0]) > .2):
+      self.stationary_map.clear()
+      self._map_frame = None
+      self._map_live = None
+      self._map_distance = self.stop_distance
+      return
+    # Model lateral/yaw coordinates are opposite radar yRel. Integrate an arc
+    # over this CAN interval, then rotate retained points into the new ego frame.
+    yaw = -float(rates[0]) * delta * .01
+    c, s = math.cos(yaw), math.sin(yaw)
+    dx, dy = distance * math.cos(yaw * .5), distance * math.sin(yaw * .5)
+    for p in self.stationary_map:
+      x, y = p['x'] - dx, p['y'] - dy
+      p['x'], p['y'] = c * x + s * y, -s * x + c * y
+      p['mx'], p['my'] = c * p['mx'] + s * p['my'], -s * p['mx'] + c * p['my']
+      for window in p['windows']:
+        window[1], window[2] = c * window[1] + s * window[2], -s * window[1] + c * window[2]
+    self._map_frame, self._map_distance = frame, self.stop_distance
+    self.stationary_map = [p for p in self.stationary_map if 0 <= frame - p['last'] <= 300
+                           and self.stop_distance - p['distance'] <= 15.0
+                           and -3.0 <= p['x'] <= 50.0 and abs(p['y']) <= 6.0]
+    live = self.temporal.raw if self.temporal is not None else self.live
+    fresh = live is not self._map_live
+    self._map_live = live
+    matched = set()
+    for q in live.points if fresh and live is not None else ():
+      if (str(getattr(q, 'radarSource', 'frontRadar')) != 'frontRadar'
+          or not getattr(q, 'measured', True)
+          or not all(math.isfinite(v) for v in (q.dRel, q.yRel, q.vLead, getattr(q, 'yvRel', 0.)))
+          or not .2 <= q.dRel <= 50.0 or not .2 <= abs(q.yRel) <= 6.0
+          or abs(q.vLead) > 2.5 or abs(getattr(q, 'yvRel', 0.)) > .6):
+        continue
+      nearest = [(abs(q.yRel + float(np.interp(q.dRel, xs, ys))), side)
+                 for side, xs, ys in curves if xs[0] <= q.dRel <= xs[-1]]
+      gap, side = min(nearest, default=(math.inf, None))
+      if gap > 1.5:
+        continue
+      strict = abs(q.vLead) <= .6 and gap <= .75
+      matches = [(abs(q.dRel - p['x']) + abs(q.yRel - p['y']), i)
+                 for i, p in enumerate(self.stationary_map) if i not in matched and p['side'] == side
+                 and ((strict and abs(q.dRel - p['x']) <= .5 and abs(q.yRel - p['y']) <= .25)
+                      or (not strict and p['static_count'] == 0
+                          and abs(q.dRel - (p['x'] + p['mx'])) <= min(.8, .5 + 2 * p['sx'])
+                          and abs(q.yRel - (p['y'] + p['my'])) <= min(.4, .25 + 2 * p['sy'])))]
+      if matches:
+        _, i = min(matches, key=lambda match: (strict and self.stationary_map[match[1]]['static_count'] == 0, match[0]))
+        p = self.stationary_map[i]
+        p['last'], p['count'], p['distance'] = frame, p['count'] + 1, self.stop_distance
+        if strict:
+          if p['static_first'] is None:
+            p['static_first'] = frame
+          p['static_count'] += 1
+          p['static_last'] = frame
+        # Do not follow measured drift: the original position is the static hypothesis.
+      elif len(self.stationary_map) < 96:
+        i = len(self.stationary_map)
+        self.stationary_map.append(dict(x=q.dRel, y=q.yRel, side=side, first=frame,
+                                       last=frame, count=1, distance=self.stop_distance,
+                                       static_first=frame if strict else None,
+                                       static_count=int(strict), static_last=frame if strict else -1,
+                                       mx=0., my=0., sx=0., sy=0., windows=[], jitter=False))
+      else:
+        continue
+      p = self.stationary_map[i]
+      ex, ey = q.dRel - p['x'], q.yRel - p['y']
+      p['mx'] = min(.25, max(-.25, p['mx'] + min(.025, max(-.025, (ex - p['mx']) * .125))))
+      p['my'] = min(.15, max(-.15, p['my'] + min(.015, max(-.015, (ey - p['my']) * .125))))
+      p['sx'] = min(.4, p['sx'] * .875 + abs(ex - p['mx']) * .125)
+      p['sy'] = min(.2, p['sy'] * .875 + abs(ey - p['my']) * .125)
+      windows = p['windows']
+      if windows and frame - windows[-1][0] > 35:
+        windows.clear()
+      if not windows or frame - windows[-1][0] >= 20:
+        windows.append([frame, 0., 0., 0])
+        del windows[:-4]
+      windows[-1][1] += ex
+      windows[-1][2] += ey
+      windows[-1][3] += 1
+      # Three completed windows plus the current accumulator; partial windows
+      # must not repeatedly revoke an otherwise stable stationary hypothesis.
+      centers = [(w[1] / w[3], w[2] / w[3]) for w in windows[:-1]]
+      p['jitter'] = (p['count'] >= 8 and frame - p['first'] >= 60 and len(centers) == 3
+                     and all(w[3] >= 2 for w in windows[:-1])
+                     and max(x for x, _ in centers) - min(x for x, _ in centers) <= .15
+                     and max(y for _, y in centers) - min(y for _, y in centers) <= .1
+                     and all(abs(x) <= .35 and abs(y) <= .25 for x, y in centers))
+      matched.add(i)
+    for side, xs, ys in curves:
+      points = sorted((p for p in self.stationary_map if p['side'] == side
+                       and ((p['static_count'] >= 4 and p['static_last'] - p['static_first'] >= 30
+                             and abs(p['y'] + float(np.interp(p['x'], xs, ys))) <= .75)
+                            or (p['jitter'] and abs(p['y'] + float(np.interp(p['x'], xs, ys))) <= 1.5))), key=lambda p: p['x'])
+      # Different IDs can leave two hypotheses for one noisy return. Prefer the
+      # better-supported anchor; such close points cannot establish row spacing.
+      distinct = []
+      for p in points:
+        if distinct and p['x'] - distinct[-1]['x'] < .6:
+          if (p['count'], p['last']) > (distinct[-1]['count'], distinct[-1]['last']):
+            distinct[-1] = p
+        else:
+          distinct.append(p)
+      points = distinct
+      for first in range(len(points) - 3):
+        row = points[first:first + 4]
+        gaps = [b['x'] - a['x'] for a, b in zip(row, row[1:])]
+        if min(gaps) < .6 or max(gaps) > 3.0 or max(gaps) - min(gaps) > .75 or sum(gaps) < 5.5:
+          continue
+        slope = (row[-1]['y'] - row[0]['y']) / sum(gaps)
+        if abs(slope) > .4 or max(abs(p['y'] - row[0]['y'] - slope * (p['x'] - row[0]['x'])) for p in row) > .25:
+          continue
+        spacing = sum(gaps) / 3.
+        # One missed position may separate the established row from another
+        # repeatedly observed static point. Never extrapolate to an unseen point.
+        missed = False
+        for p in points[first + 4:]:
+          gap = p['x'] - row[-1]['x']
+          missing = gap > 1.5 * spacing
+          if len(row) >= 16 or gap > 2. * spacing + .35 or (missing and missed):
+            break
+          if (min(abs(gap - spacing), abs(gap - 2. * spacing)) <= .35
+              and abs(p['y'] - row[0]['y'] - slope * (p['x'] - row[0]['x'])) <= .25):
+            row.append(p)
+            missed |= missing
+          else:
+            break
+        # Keep the classification through the existing display prediction hold.
+        # This never renews measured point memory or lengthens that hold.
+        hold = self.temporal.HOLD if self.temporal is not None else 15
+        if any(0 <= frame - (p['last'] if p['jitter'] else p['static_last']) <= hold for p in row):
+          self._map_rows.append((side, row))
+
+  def update_structure_regions(self, md, frame, reverse=False):
     """Track a fixed spatial row across radar IDs; never change lead selection."""
+    self.update_stationary_map(md, frame, reverse)
     rates = getattr(getattr(md, 'orientationRate', None), 'z', ())
     changing = str(getattr(getattr(md, 'meta', None), 'laneChangeState', 'off')) != 'off'
     uncertain = (self.live is None or md is None or changing or
@@ -984,7 +1161,7 @@ class _CcncRadarDisplayTracker:
         for last in range(first + 2, len(points)):
           row = points[first:last + 1]
           length = row[-1][0] - row[0][0]
-          if length < 4.0:
+          if length < 4.0 - 1e-5:
             continue
           gaps = [b[0] - a[0] for a, b in zip(row, row[1:])]
           if min(gaps) < 0.6 or max(gaps) > 3.0 or max(gaps) - min(gaps) > 0.75:
@@ -996,7 +1173,7 @@ class _CcncRadarDisplayTracker:
           owner = next((old for old in regions if old['side'] == side and support(row, old['anchors']) >= 2), None)
           if owner is not None:
             extend(owner, row)
-            break  # Every extension retains these same matching prefix points.
+            continue  # A longer row can add anchors beyond the matching prefix.
           regions.append(dict(side=side, start=frame, last=frame, anchors=tuple(row[:16]),
                               slope=slope, intercept=intercept))
           break  # Longer rows would match the region just created.
@@ -1019,7 +1196,16 @@ class _CcncRadarDisplayTracker:
         if abs(p.dRel - (lead.x[0] - 1.52)) <= max(3.0, p.dRel * 0.2) and abs(p.yRel + lead.y[0]) <= 1.2:
           return False
     x = self.stop_distance + p.dRel
-    return any(region['side'] == side and region['last'] - region['start'] >= 30
+    hold = self.temporal.HOLD if self.temporal is not None else 15
+    mapped = (0 <= frame - entry[1] <= hold and abs(getattr(p, 'yvRel', 0.)) <= .6
+              and any(row_side == side and any(
+                (frame - a['static_last'] <= hold and abs(p.vLead) <= .6
+                 and abs(a['x'] - p.dRel) <= .5 and abs(a['y'] - p.yRel) <= .25)
+                or (a['jitter'] and frame - a['last'] <= hold and abs(p.vLead) <= 2.5
+                    and abs(a['x'] + a['mx'] - p.dRel) <= min(.8, .5 + 2 * a['sx'])
+                    and abs(a['y'] + a['my'] - p.yRel) <= min(.4, .25 + 2 * a['sy'])) for a in row)
+                      for row_side, row in self._map_rows))
+    return mapped or any(region['side'] == side and region['last'] - region['start'] >= 30
                and 0 <= frame - region['last'] <= 15
                and region['anchors'][0][0] - 0.75 <= x <= region['anchors'][-1][0] + 0.75
                and abs(p.yRel - (float(np.interp(x, [a for a, _ in region['anchors']], [b for _, b in region['anchors']]))
@@ -2557,7 +2743,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     else:
       values["RF_DETECT"] = 0
 
-    display_tracker.update_structure_regions(md, frame)
+    display_tracker.update_structure_regions(md, frame, str(getattr(getattr(CS, 'out', None), 'gearShifter', 'unknown')) == 'reverse')
     structure_blocked = tuple(display_tracker.structure_suppresses(side, md, frame) for side in (0, 1))
     display_tracker.stopped_display(values, (None if structure_blocked[0] else lf_lead,
                                             None if structure_blocked[1] else rf_lead), frame)

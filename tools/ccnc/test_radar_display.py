@@ -2699,3 +2699,327 @@ def test_extended_region_uses_anchor_interval_lateral_interpolation(offset, hidd
   assert t.structure_regions[0]['extended']
   md = spatial_step(t, 50, [point(999, x=9.25, y=2.25 + offset)])
   assert t.structure_suppresses(0, md, 50) == hidden
+
+
+def test_matching_prefix_does_not_prevent_fourth_anchor_extension():
+  t = Tracker()
+  for frame in range(0, 41, 5):
+    md = spatial_step(t, frame, [point(i, x=x, y=2.1, speed=8.)
+                                for i, x in enumerate((4.15, 6.15, 8.2, 10.1499995))])
+  assert t.structure_regions[0]['anchors'][-1][0] == pytest.approx(10.1499995)
+  t.selected[1] = 3
+  assert t.structure_suppresses(0, md, 40)
+
+
+@pytest.mark.parametrize('length,hidden', [(3.9999995, True), (3.999, False)])
+def test_array_length_tolerance_only_covers_float_roundoff(length, hidden):
+  t = Tracker()
+  for frame in range(0, 41, 5):
+    md = spatial_step(t, frame, [point(i, x=x, y=2.1, speed=8.)
+                                for i, x in enumerate((3., 5., 3. + length))])
+  assert t.structure_suppresses(0, md, 40) == hidden
+
+
+def map_step(t, frame, xs=(3., 4.9, 6.8, 8.7), speed=0., yaw=0., y=2.1):
+  md = lane_model(frame)
+  md.orientationRate = N(z=[yaw])
+  points = [point(frame + i, x=x, y=y, speed=speed) for i, x in enumerate(xs)]
+  spatial_step(t, frame, points, md)
+  t.structure_regions.clear()
+  return md
+
+
+def confirmed_map():
+  t = Tracker()
+  for frame in range(0, 41, 5):
+    map_step(t, frame)
+  return t
+
+
+@pytest.mark.parametrize('side', [0, 1])
+def test_map_remembers_individual_points_before_a_row_is_visible(side):
+  t = Tracker()
+  for frame in range(0, 41, 5):
+    # No publication contains three points; all four have repeated observations.
+    md = map_step(t, frame, (3., 4.9) if frame % 10 == 0 else (6.8, 8.7), y=2.1 if side == 0 else -2.1)
+    t.selected = [None, frame if side == 0 else None, frame if side == 1 else None]
+  assert len(t.stationary_map) == 4
+  assert t.structure_suppresses(side, md, 40)
+
+
+def test_map_keeps_confirmed_row_through_individual_point_loss():
+  t = confirmed_map()
+  for frame in range(45, 121, 5):
+    md = map_step(t, frame, (6.8,))
+  assert t.structure_suppresses(0, md, 120)
+
+
+def test_map_cannot_mature_points_from_one_publication():
+  t = Tracker()
+  md = map_step(t, 0)
+  for frame in range(5, 101, 5):
+    t.update_stationary_map(md, frame)
+  assert not t._map_rows
+  assert all(p['count'] == 1 for p in t.stationary_map)
+
+
+def test_map_no_current_witness_cannot_suppress():
+  t = confirmed_map()
+  md = map_step(t, 45, ())
+  assert t.stationary_map
+  assert not t.structure_suppresses(0, md, 45)
+  for frame in range(50, 71, 5):
+    t.update_stationary_map(md, frame)
+  assert not t._map_rows
+
+
+def test_map_translation_and_rotation_transform_missing_point():
+  t = Tracker()
+  map_step(t, 0, (10.,))
+  t.stop_distance = 1.
+  md = map_step(t, 5, (), yaw=.1)
+  yaw = -.1 * .05
+  x, y = 10. - math.cos(yaw / 2), 2.1 - math.sin(yaw / 2)
+  assert len(t.stationary_map) == 1
+  assert t.stationary_map[0]['x'] == pytest.approx(math.cos(yaw) * x + math.sin(yaw) * y)
+  assert t.stationary_map[0]['y'] == pytest.approx(-math.sin(yaw) * x + math.cos(yaw) * y)
+  assert t.stationary_map[0]['count'] == 1
+  assert not t.structure_suppresses(0, md, 5)
+
+
+@pytest.mark.parametrize('kind', ['time', 'distance', 'behind', 'missing_yaw', 'nan_yaw', 'turn',
+                                  'reverse', 'lane_change', 'model', 'radar_gap', 'frame_reset'])
+def test_map_expires_or_clears_uncertain_memory(kind):
+  t = confirmed_map()
+  md = lane_model(45)
+  md.orientationRate = N(z=[0.])
+  if kind == 'time':
+    for frame in range(45, 351, 5):
+      map_step(t, frame, ())
+  elif kind == 'distance':
+    for frame in range(45, 66, 5):
+      t.stop_distance += 4.
+      map_step(t, frame, ())
+  elif kind == 'behind':
+    for frame in range(45, 61, 5):
+      t.stop_distance += 4.
+      map_step(t, frame, ())
+  else:
+    if kind == 'missing_yaw': md.orientationRate.z = []
+    elif kind == 'nan_yaw': md.orientationRate.z = [math.nan]
+    elif kind == 'turn': md.orientationRate.z = [.21]
+    elif kind == 'lane_change': md.meta = N(laneChangeState='laneChangeStarting')
+    elif kind == 'model': md = None
+    elif kind == 'radar_gap': t.observe(None, 45)
+    elif kind == 'frame_reset': t.observe(N(points=[]), 0)
+    t.update_stationary_map(md, 45, reverse=kind == 'reverse')
+  assert not t.stationary_map
+  assert not t._map_rows
+
+
+@pytest.mark.parametrize('kind', ['slow_drift', 'drift', 'compact', 'irregular', 'three', 'unmeasured'])
+def test_map_rejects_unproven_static_rows(kind):
+  t = Tracker()
+  for frame in range(0, 101, 5):
+    xs = {'compact': (3., 3.7, 4.4, 5.1), 'irregular': (3., 4., 7., 11.),
+          'three': (3., 4.9, 6.8)}.get(kind, (3., 4.9, 6.8, 8.7))
+    if kind == 'drift': xs = tuple(x + frame * .06 for x in xs)
+    if kind == 'slow_drift': xs = tuple(x + frame * .01 for x in xs)
+    md = map_step(t, frame, xs, speed=1. if kind == 'slow_drift' else 0.)
+    if kind == 'unmeasured':
+      t.stationary_map.clear()
+      for p in t.live.points: p.measured = False
+      t._map_live = None
+      t.update_stationary_map(md, frame)
+    assert not t._map_rows
+
+
+@pytest.mark.parametrize('kind', ['motion', 'vision', 'stop', 'approach'])
+def test_map_preserves_confirmed_vehicle_exceptions(kind):
+  t = confirmed_map()
+  md = map_step(t, 45, (6.8,))
+  key = t.selected[1]
+  birth = t.tracks[key][0]
+  if kind == 'motion': t.boundary_admission[key] = dict(status='allowed', moving=(0, (6.8, 2.1), (1., 0.)))
+  elif kind == 'vision': md.leadsV3 = [N(prob=.9, x=[8.32], y=[-2.1])]
+  elif kind == 'stop': t.stop_holds[0] = (key, 6.8, 2.1, (1, 6.8, 2.1), birth)
+  else: t.approach_holds[0] = (key, 6.8, 2.1, (1, 6.8, 2.1), 45, 0., birth)
+  assert not t.structure_suppresses(0, md, 45)
+
+
+def test_map_point_count_is_bounded():
+  t = Tracker()
+  map_step(t, 0, tuple(1. + i * .01 for i in range(300)))
+  assert len(t.stationary_map) == 96
+
+
+def test_fast_or_boundary_offset_map_candidates_do_not_establish_static_evidence():
+  t = Tracker()
+  for frame in range(0, 56, 5):
+    md = map_step(t, frame, speed=2., y=2.8)
+  assert len(t.stationary_map) == 4
+  assert all(p['static_count'] == 0 for p in t.stationary_map)
+  assert not t._map_rows
+  assert not t.structure_suppresses(0, md, 55)
+
+
+def test_relaxed_candidates_cannot_mature_a_single_strict_observation():
+  t = Tracker()
+  map_step(t, 0)
+  for frame in range(5, 56, 5):
+    map_step(t, frame, speed=2.)
+  assert max(p['static_count'] for p in t.stationary_map) == 1
+  assert sum(p['static_count'] for p in t.stationary_map) == 4
+  assert not t._map_rows
+
+
+@pytest.mark.parametrize('sign', [-1, 1])
+def test_map_accepts_bounded_jitter_only_after_stable_observation_windows(sign):
+  t = Tracker()
+  for frame in range(0, 81, 5):
+    dx = 0. if frame == 0 else .32 * (-1 if frame % 10 else 1)
+    dy = 0. if frame == 0 else .12 * (-1 if frame % 10 else 1)
+    md = map_step(t, frame, tuple(x + dx for x in (3., 4.9, 6.8, 8.7)), speed=2., y=sign * (2.1 + dy))
+    t.selected = [None, frame if sign > 0 else None, frame if sign < 0 else None]
+    if frame < 60:
+      assert not t._map_rows
+  assert t._map_rows
+  assert t.structure_suppresses(0 if sign > 0 else 1, md, 80)
+  assert all(len(p['windows']) <= 4 and abs(p['mx']) <= .25 and abs(p['my']) <= .15
+             and p['sx'] <= .4 and p['sy'] <= .2 for p in t.stationary_map)
+
+
+@pytest.mark.parametrize('speed', [.5, 1., 2.])
+def test_relaxed_map_rejects_consistently_translating_centers(speed):
+  t = Tracker()
+  for frame in range(0, 201, 5):
+    md = map_step(t, frame, tuple(x + speed * frame * .01 for x in (3., 4.9, 6.8, 8.7)), speed=2.)
+    assert not t._map_rows
+    assert not t.structure_suppresses(0, md, frame)
+
+
+def test_prediction_cannot_finish_jitter_confirmation_or_renew_its_windows():
+  t = Tracker()
+  for frame in range(0, 51, 5):
+    md = map_step(t, frame, speed=2.)
+  before = [(p['count'], [w[:] for w in p['windows']]) for p in t.stationary_map]
+  for frame in range(55, 81, 5):
+    t.update_stationary_map(md, frame)
+  assert before == [(p['count'], p['windows']) for p in t.stationary_map]
+  assert not t._map_rows
+
+
+def test_jitter_candidate_cannot_steal_or_shift_an_existing_strict_anchor():
+  t = Tracker()
+  map_step(t, 0)
+  for frame in range(5, 41, 5):
+    points = [point(frame + i, x=x, y=2.1, speed=0.)
+              for i, x in enumerate((2.6, 4.9, 6.8, 8.7))]
+    points.insert(0, point(999, x=3.6, y=2.1, speed=2.))
+    md = spatial_step(t, frame, points)
+    t.structure_regions.clear()
+    t.selected[1] = frame
+  original = next(p for p in t.stationary_map if p['x'] == 3.)
+  assert original['static_count'] == 9
+  assert original['mx'] < 0
+  assert t.structure_suppresses(0, md, 40)
+
+
+def test_map_can_bridge_one_missing_position_but_not_two():
+  t = Tracker()
+  for frame in range(0, 41, 5):
+    map_step(t, frame, (3., 4.9, 6.8, 8.7, 12.5, 16.3))
+  assert any(any(abs(p['x'] - 12.5) < .01 for p in row) for _, row in t._map_rows)
+  assert not any(any(abs(p['x'] - 16.3) < .01 for p in row) for _, row in t._map_rows)
+
+
+def test_map_cannot_hide_a_laterally_moving_candidate():
+  t = confirmed_map()
+  md = map_step(t, 45, (6.8,))
+  t.tracks[t.selected[1]][3].yvRel = 1.
+  assert not t.structure_suppresses(0, md, 45)
+
+
+def test_map_never_uses_temporal_prediction_as_new_support():
+  t = Tracker()
+  t.temporal = Temporal()
+  for frame in range(0, 41, 5):
+    map_step(t, frame)
+  previous = [(p['last'], p['count']) for p in t.stationary_map]
+  for frame in range(45, 76, 5):
+    map_step(t, frame, ())
+  assert previous == [(p['last'], p['count']) for p in t.stationary_map]
+  assert not t._map_rows
+
+
+def test_map_classification_survives_only_the_existing_prediction_hold():
+  t = Tracker()
+  t.temporal = Temporal()
+  for frame in range(0, 41, 5):
+    md = map_step(t, frame)
+  target = t.selected[1]
+  t.temporal.entries[target]['selected'] = 40
+  t.temporal.entries[target]['confirmed'] = True
+  for frame in range(45, 71, 5):
+    md = map_step(t, frame, ())
+    t.selected[1] = target
+    assert t.structure_suppresses(0, md, frame)
+  md = map_step(t, 75, ())
+  t.selected[1] = target
+  assert not t.structure_suppresses(0, md, 75)
+  assert not t._map_rows
+
+
+@pytest.mark.parametrize('sign', [-1, 1])
+def test_map_reobserves_static_points_after_ego_arc_without_id_dependency(sign):
+  t = Tracker()
+  xs = (8., 9.9, 11.8, 13.7)
+  map_step(t, 0, xs)
+  for frame in range(5, 41, 5):
+    t.stop_distance = frame * .01
+    yaw = -sign * .1 * .05
+    # Generate the next physical observation from the same fixed world anchors.
+    points = []
+    for i, p in enumerate(t.stationary_map):
+      x, y = p['x'] - .05 * math.cos(yaw / 2), p['y'] - .05 * math.sin(yaw / 2)
+      points.append(point(frame + i, x=math.cos(yaw) * x + math.sin(yaw) * y,
+                          y=-math.sin(yaw) * x + math.cos(yaw) * y, speed=0.))
+    md = lane_model(frame)
+    md.orientationRate = N(z=[sign * .1])
+    for line in md.laneLines:
+      line.y = [y - sign * .1 * frame * .01 * x for x, y in zip(line.x, line.y)]
+    t.observe(N(points=points), frame)
+    t.update_stationary_map(md, frame)
+  assert len(t.stationary_map) == 4
+  assert all(p['count'] == 9 for p in t.stationary_map)
+  assert t._map_rows
+
+
+@pytest.mark.parametrize('kind', ['oscillation', 'single_step'])
+def test_new_slow_motion_admission_requires_advancing_window_centers(kind):
+  t = Tracker()
+  for frame in range(0, 201, 5):
+    offset = (.32 * (-1 if frame % 10 == 0 else 1)) if kind == 'oscillation' else (.7 if frame >= 20 else 0.)
+    boundary_step(t, point(x=10. + offset, y=1.5, speed=2.), frame)
+  assert t.boundary_admission[1]['status'] != 'allowed'
+  assert len(t.boundary_admission[1]['motion_windows']) <= 4
+
+
+@pytest.mark.parametrize('speed', [.6, 2.])
+def test_consistent_slow_vehicle_motion_still_releases_boundary_rejection(speed):
+  t = Tracker()
+  for frame in range(0, 61, 5):
+    boundary_step(t, point(x=10., y=1.5, speed=0.), frame)
+  assert 1 in t.boundary_rejected
+  for frame in range(65, 171, 5):
+    boundary_step(t, point(x=10. + speed * (frame - 60) * .01, y=1.5, speed=speed), frame)
+  assert t.boundary_admission[1]['status'] == 'allowed'
+  assert 1 not in t.boundary_rejected
+
+
+def test_fast_motion_admission_keeps_original_confirmation_latency():
+  t = Tracker()
+  for frame in range(0, 31, 5):
+    boundary_step(t, point(x=10. + frame * .03, y=1.5, speed=8.), frame)
+  assert t.boundary_admission[1]['status'] == 'allowed'
+  assert 'motion_windows' not in t.boundary_admission[1]
