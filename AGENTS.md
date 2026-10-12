@@ -1,5 +1,11 @@
 # Repository memory
 
+- On 2026-10-12 the user requested merging carrot-wip into ccnc-hda1 after the
+  CCNC radar-map fixes were committed as 12eda56d (so the "NOT committed" notes
+  in the entries below are historical). origin/carrot-wip 5e187ab9 (36 commits:
+  signal assistance, Mountain Dew eGPU, Bosch MRRevo14F passive radar tracks) was
+  merged; only AGENTS.md conflicted and both sides' entries are kept, CCNC entries
+  first. Not pushed or deployed.
 - On 2026-10-12 (fifth follow-up, commit preparation; NOT committed) map is
   9c0da097c29f. ONE source change: when a radar id creates a new object and
   another object was measured with that id within .15s, the track jumped beyond
@@ -506,6 +512,269 @@
   NAS shared-source bundle/fingerprint checked locally, but current wip-only
   publishing and lead replay do not deploy/recalculate this CCNC display map.
   See docs/ccnc_front_radar_detection.md and private 2026-10-11 point-map archive.
+- On 2026-10-12, SignalAssistMode adds the requested live0/1/2 selection on
+  carrot-wip only:0 auxiliary OFF,1 display/alerts and stopped-red departure veto,
+  2 also conditional red preparation toward-0.5m/s2. Default0; old production
+  enable files cannot bypass it. Mode2 uses CPU housing evidence alongside either
+  driving model; preserve DM protection. Mode changes reject pre-activation
+  observations;0 clears the auxiliary veto without issuing go. Native rebuild
+  after pull is required for the new Params key. The user requested all signal
+  trial content on wip and SINGLE-PARENT commits going forward, superseding the
+  trial-only correction. Leave old topology/ref alone; no parallel trial changes.
+  Range audit finds6 observations of a real red outside3.5m, all with blinker on;
+  close signals mostly fail boundary confidence, not proven lateral exclusion.
+  See docs/signal_color_experiment_20261012.md for validation and limits.
+
+- On 2026-10-12, after correcting branch mistakes, the user superseded the
+  earlier trial-only instruction and explicitly requested ALL carrot-signal-shadow
+  contents integrated into carrot-wip. Preserve existing wip radar/font fixes.
+  Continue ONLY on carrot-wip with linear, single-parent commits; no merge
+  commits or parallel signal-branch development. Leave historical topology alone.
+  This includes the retrained Mountain Dew eGPU selection8d736683 and its pinned
+  runtime, while keeping internal/DM models and Jetson selection unchanged.
+  Add SignalAssistMode:0 fully OFF,1 display/alerts and red departure veto,
+  2 additionally gentle red stop preparation. This supersedes old per-file enables.
+
+- On 2026-10-12, the user clarified that traffic-light geometry must allow
+  space on both sides of the ego lane. The opt-in stop preparation now expands
+  each inner lane boundary by3.5m, clipped by reliable road edges with0.3m inward
+  clearance. Check original source agreement before expansion. This provisional
+  search region is not signal-to-lane assignment. The3348-observation screen
+  restores lateral/height support for3 observations of one real red signal;
+  only1 passes the unchanged full25-140m distance-interval requirement, and none
+  passes all color/context/temporal gates. Wider margins also widen distance
+  uncertainty; do not claim measured range or earlier braking. 193 focused tests
+  pass. Default OFF, no vehicle deployment. See docs/signal_color_experiment_20261012.md.
+
+- On 2026-10-12, the user requested edge/lane XYZ geometry for red preparation.
+  Remove position input/range constraints; use confident inner lanes or road
+  edges, intersect when both reliable, and never extrapolate. Correct the new
+  runtime pose reader to actual XYZMeasurement fields (previous adapter failed
+  closed). 187 tests pass, including a real Cap'n Proto pose. Full-rate-context
+  screening of3,348 retained observations gives9 new usable lane corridors but
+  zero qualified candidates/entries. Exact frames confirm real red lamps among
+  lateral rejects: do not call these false-positive removals or claim improved
+  braking. Signal mounting need not align with the ego lane. Keep OFF; no vehicle
+  deployment. See docs/signal_color_experiment_20261012.md and private road-geometry
+  archive for assumptions and negative results.
+
+- On 2026-10-12, the user requested red pre-deceleration before model stopping.
+  Add default-OFF per-device stop_prepare_enabled and state6 e2eStopPrepare:
+  confirmed measured red housing, calibrated pose/road-edge/path geometry,
+  no lead or driver override; final acceleration cap ramps0.25m/s3 to-0.5m/s2.
+  Release on missing/changed evidence, preserve model-stop handover and stronger
+  braking, and reuse trafficSignChanged audio once with cooldown. Remove only
+  visible signal track numbers. Geometry ranges are assumed, not metric truth.
+  184 desktop tests and1,200 default-OFF target comparisons pass. Screening3,348
+  retained night/morning observations yields zero qualified entries: do not claim
+  better stopping or activate from this result. No vehicle deployment. See
+  docs/signal_color_experiment_20261012.md and private stop-prepare archive.
+
+- On 2026-10-12, during the color experiment, the user prioritized avoiding
+  false green over missed detections, accepted rejecting turn-time readings,
+  and suggested pose. Offline rotation variants now reject green before tracker
+  confirmation, immediately remove old confirmed green and preserve red history.
+  Existing red start latch holds through unknown; old green never releases it.
+  Steering+speed avoids treating a stationary -39.5-degree wheel as rotation.
+  Preferred pose experiment uses calibrated livePose yaw, required validity,
+  uncertainty and separate arrival/sample freshness; no permissive fallback.
+  Four-way3348-frame replay: pose gates898 observations with zero fresh/confirmed
+  green outputs, retains the stationary real green;108 tests pass. Counts are
+  not accuracy and LED/reflection false greens remain. Both variants stay
+  offline, no vehicle deployment. See docs/signal_color_experiment_20261012.md.
+
+- On 2026-10-12, the user requested a signal correction experiment. Add
+  default-OFF offline conservative_green HSV38-90 consistently across housing,
+  day/night seeds and templates. Exact-frame paired replay of13 full videos and
+  3348 observations reduces morning green candidates5608->581, not an accuracy
+  metric. Selected development boxes remove61 replayed background greens;
+  21 newly reviewed frames keep37 visible green lamps and reject29/36 backgrounds.
+  LED text/reflections remain; one motion-blurred real night green is lost.
+  Only one of two live red miscrops reproduces green in encoded pixels.
+  Guard color-confirmation probe differs from live release and is not control
+  validation. 84 tests pass;21 default-OFF image results match prior code.
+  No deployment, model training or live enable; keep DM GPU/start-guard policy.
+  See docs/signal_color_experiment_20261012.md and its private evidence archive.
+
+- On 2026-10-11, user requested the latest signal camera observer with both
+  internal and retrained eGPU models, parked switching and performance checks.
+  Integrate the already deployed 42760 signal/display revisions into this trial;
+  retain its newer comparison/assist-OFF policy and preserve 7f3bfcd7 model/runtime
+  selection. The old October 10 assist-ON snapshot is historical, not the current
+  requested configuration. New camera neural output remains display/log only.
+
+- On 2026-10-11, the user selected upstream 6f4c0faf eGPU on this
+  carrot-signal-shadow branch only, for testing before a combined promotion.
+  Wip publication 03142df861 was reverted by b09ae3ddad; wip keeps Cinque v3.
+  Use retrained Mountain Dew 8d736683/12864, AMD 256f2178, isolated tinygrad
+  d3f09c9b and verified NAS package comma4-big-mdm-8d736683. Adapt byte-addressed
+  buffers while retaining prior dtype-bearing buffers. Empty-cache HTTPS
+  install and offline reuse pass; preserve startup delivery before build/manager.
+  Public ONNX catalog now has old 870a4823 but no matching 8d736683. Jetson
+  stays Cinque v2; internal/DM models and control/validity/warp policies stay
+  unchanged. No physical GPU, first-boot or driving validation is implied.
+  See docs/mdm_retrained_20261011.md. Keep the existing signal experiment scope.
+
+- On 2026-10-12, the user explicitly corrected the branch scope: current
+  signal experiments belong ONLY on carrot-signal-shadow, not carrot-wip.
+  Remove the five experimental commits5a80605d61,3f537bc13f,6df4f6296f,
+  df51eed7fb,4bc5307d0b from wip by a normal corrective commit; preserve the
+  trial branch, prior deployed helper/DM fixes and unrelated work. Future
+  signal experiments/settings/validation are trial-only until explicitly promoted.
+  Wip runtime/tools are restored byte-for-byte to85d97b3160. No vehicle action.
+
+- On 2026-10-12, the user requested collecting unseen night/morning logs and
+  evaluating signal size/height/road-edge filtering, analysis first. All52
+  completed segments/169 source files are locally SHA256-verified. Morning CPU
+  observer emits6792 fresh green candidate samples,6011 from day_color_core;
+  reviewed branches/sky pass hue38-105. Two still-red signals receive green
+  through tiny/cropped housings and adjacent cyan sky. This is not just UI hold.
+  In73 selected labels, conservative geometry removes8/62 background candidates
+  and neither red miscrop; an exploratory narrower-hue pixel test removes61/62
+  and both miscrops but is not a validated detector or night regression test.
+  No runtime/settings/model change or deployment. Prioritize sky rejection and
+  complete housing/lamp alignment; road edges are supporting evidence, not lane
+  assignment. Keep DM GPU protection. See docs/signal_morning_false_green_20261012.md
+  and private .analysis/archive/2026-10-12-day-signal/ for evidence and limits.
+
+- On 2026-10-11, the next drive exposed signal QCOM GPU contention with DM:
+  parked A/B/A gives DM 10.6-10.8 Hz with neural GPU versus 20 Hz with CPU;
+  priority15 also fails. This supersedes eGPU-implies-QCOM eligibility below.
+  Auto AND explicit QCOM now use CPU comparison whenever DM or Driver View
+  needs the internal GPU; never disable DM or use camera failure as permission.
+  Preserve DM policies and external/internal driving-model selections. Latest
+  drive neural observations at 2.33-2.67 Hz reset identity on every >250 ms gap.
+  Display revision4 extends UI-only memory to two seconds from capture, unique
+  same-housing unknown-ID carry without renewing old color, dim/~ previous and
+  immediate new color replacement. Ten-phase replay reduces visibility dropouts
+  146-162 to14, not recognition accuracy. Stopped red guard stays650 ms, warning
+  ON and moving assist OFF. 163 desktop tests pass, one Linux-only skip.
+  See docs/signal_dm_flicker_20261011.md for native verification and limitations.
+
+- On 2026-10-11, the user explicitly requested red automatic-departure blocking
+  AND one warning sound. Add separate default-OFF start_guard_enabled, fresh
+  observation transport and stopped-only veto for both observer backends. Keep
+  old moving assist OFF. Red needs two samples/150 ms; green same red-anchored
+  housing needs three/700 ms with no competing forward red. Unknown/stale and
+  observer restart never grant green release. Stop-only freshness is 650 ms
+  for measured GPU latency; old moving-assist 200 ms stays unchanged. Gas
+  overrides with 10 s cooldown. Final shouldStop/vTarget/aTarget and ACC mode
+  enforce the veto; audioRefuse is once per blocked stop's departure request.
+  264 checks pass, one skip. 43,090-frame nominal/+20 ms replays block both
+  1095 red departures; reviewed-red green releases are zero, but green holds
+  remain. Forward ROI is not lane association and detection can still fail.
+  New MDM stays trial-only; auto chooses QCOM neural with eGPU, lightweight
+  CPU tracker with internal model. Both sustain ~20 Hz parked; internal+QCOM
+  co-load falls to ~8 Hz and is rejected. See docs/signal_start_guard_20261011.md
+  and docs/signal_gpu_dual_model_20261011.md for evidence and device status.
+
+- On 2026-10-11, the user redirected the new upstream 6f4c0faf eGPU model
+  to carrot-signal-shadow for testing before a combined promotion. Revert the
+  just-pushed 03142df861 model/runtime change from carrot-wip; wip keeps Cinque
+  v3. Retrained Mountain Dew 8d736683 and its d3f09c9 runtime belong only on
+  carrot-signal-shadow until the user approves promotion. Its verified NAS
+  package is comma4-big-mdm-8d736683. The public ONNX catalog now includes old
+  870a4823, but not 8d736683; keep Jetson Cinque v2 and internal/DM models.
+
+- On 2026-10-11, the user explicitly requested connecting the new neural
+  signal detector to the vehicle, engine-off camera testing and CPU/QCOM GPU
+  timing comparison. Add opt-in neural_enabled dispatch in signalcolord, a
+  display/log-only VisionIPC worker, hash-pinned artifacts and explicit CPU/QCOM
+  backends. Preserve original ONNX/x/v and assist OFF; no control transport.
+  Default remains existing observer unless explicitly selected. QCOM uses the
+  existing tinygrad runtime, fixed-shape JIT and synchronous readback; no hidden
+  CPU fallback. 130 desktop tests pass, one skip. Vehicle offroad/noOutput and
+  runtime inventory were read, but intermittent SSH timeouts interrupted model
+  upload. GPU speed/parity, new live inference and forced camera/model co-load
+  remain unvalidated and must not be called installed or activated. Last checked
+  vehicle HEAD fc7588d67a contains only the earlier display-continuity deployment.
+  Resume private scripts/data in .analysis/scratch/2026-10-11-signal-live/ after
+  connection recovery. See docs/signal_neural_live_20261011.md.
+
+- On 2026-10-11, the user requested holding prior signal display results and
+  combining upper ROI, neural detection, fast tracking and high-resolution crop.
+  New 26-segment data has 5,714 observations at2.71--4.99 Hz, median gap250 ms
+  and result age183 ms. Display revision3 remembers candidates up to800 ms from
+  capture, marks them dim/~ previous, immediately replaces new red/green and
+  never renews old color from unknown/repeated data. Camera/session failures reset
+  it. This supersedes display-only no-hold policy; control freshness stays200 ms.
+  Offline pinned neural+tracking on381 new frames reduces PC mean work100 to33 ms;
+  faster search after loss removes a150 ms green reacquisition delay in that case.
+  Dark-light loss/arrows remain unresolved. ROI NV12 copying is implemented, but
+  native full-resolution camerad access, dynamic path ROI and GPU inference are
+  not connected. New neural reference remains offline, original ONNX/assist OFF
+  preserved. 123 related tests pass, one Linux-only skip. Vehicle install guards
+  offroad/inactive Park; see private deployment.json for live activation status.
+  See docs/signal_continuity_20261011.md. Keep recordings private.
+
+- On 2026-10-11, the user requested the best distant/fast/accurate signal
+  recognition approach, including upper-path ROI and overlapping frames. Offline
+  pretrained Autoware YOLOX-s on 73 selected boxes improves IoU>=0.5 coverage
+  from rules 49 to whole-frame 63, upper ROI 68 and two tiles 70; this is not
+  exhaustive precision or vehicle timing. A separate MobileNet classifier still
+  misses arrow combinations and returns unknown on dark real-green frames.
+  Five-frame averaging retains old red across a green transition even after
+  alignment. Prefer native-pixel ROI, neural detection, tracking and fresh lamp
+  evidence; dynamic ROI/full-resolution/vehicle integration are not implemented.
+  Logs confirm OS04C10; code downsamples 2688x1520 to1344x760 and has a full-res
+  placeholder, whose safe per-frame access remains unverified. Preserve original
+  driving ONNX and assist OFF; no vehicle changes in this investigation.
+  See docs/signal_detection_strategy_20261011.md; keep all raw evidence private.
+
+- On 2026-10-11, the post-overlay 1096/1097 drive contains 22 collected segments.
+  Helper observations run 3.23--4.93 Hz; median result age is 178 ms and
+  2,345/5,345 gaps exceed the 250 ms color-confirmation limit. Track 1267
+  keeps identity but never confirms 13 raw green observations after red.
+  Display expiry and red-history qualification also cause hiding/unknown labels.
+  User requested installation before departure: display-only revision 2 uses
+  current color R?/G? for unconfirmed candidates, R/G for matching confirmation.
+  Preserve freshness/lost-track gates, original ONNX and assist OFF; no memory
+  hold or control timing change. 68 focused tests pass, one Linux-only skip.
+  See docs/signal_display_drive_20261011.md; keep all recordings private.
+
+- On 2026-10-11, the user requested signal candidate boxes on the USB
+  camera image and vehicle installation. display_enabled opts into a separate
+  bounded tmpfs display endpoint; comparison's experimental observer supplies
+  R/G/? boxes and track IDs. Use the road camera's actual image rectangle,
+  reject wide/replay/3D overlays, expired/lost tracks and reused camera buffers.
+  Display age is <=350 ms with <=250 ms/five-frame camera skew; control freshness
+  stays 200 ms. Installed 64151b60ff with revalidated/comparison/display ON and
+  assist OFF, original ONNX unchanged, existing camera mode 2. This supersedes
+  the prior vehicle-code-unchanged status only for observation/visualization;
+  the candidate remains unapproved for control. Parked verification saw 501
+  valid consecutive model frames at 20.01 Hz, 501 plans, 25 renderer updates,
+  an open USB device and unchanged process PIDs/control transport. 425 desktop
+  tests pass, one Linux-only skip. Physical panel/road accuracy remain distinct.
+  See docs/signal_usb_display_20261011.md; keep captures and telemetry private.
+
+- On 2026-10-11, accumulated signal replay tested 37 segments / 15,422
+  images and 43,090 planner updates. The opt-in candidate combines housing/core
+  proposals, image-supported 500 ms identity retention with unchanged 250 ms
+  color continuity and 200 ms freshness, and explicit producer-red-history reuse.
+  Five nominal false-start windows are blocked, but added-latency trials still
+  fail acquisition; 1094-10's new green release lacks visually verified green.
+  Eight isolated parked camera-timed sequences improve nominal holds/releases
+  but 1093-6 loses acquisition with +20 ms. Earlier dusk green coverage regresses.
+  Do not enable this candidate for control. revalidated_enabled is only an
+  experimental opt-in name, default OFF, with separate assist_enabled required.
+  Vehicle remains c115ce4, original ONNX, comparison ON and assist OFF; no vehicle
+  code/settings changes. 360 tests and production/prototype parity pass, not
+  perception or closed-loop validation. This is hand-written OpenCV, not neural
+  retraining. See docs/signal_revalidation_20261011.md. Keep raw evidence private.
+
+- On 2026-10-11, Ioniq 5 PE 1095 segments 65/66 show two red-light
+  departures without gas while original x/v changes produce trafficState green.
+  Both legacy and daytime shadow detectors recorded red; current c115ce4 vehicle
+  uses original internal ONNX with assist OFF and comparison-only publication.
+  Same-recorded-input planner replay blocks both departures with either observer,
+  but delaying daytime arrivals by 20 ms loses both holds: fresh observations
+  miss stop-time acquisition and consumer confirmation resets across gaps.
+  Sequential dual-engine timing penalizes the second result. No confirmed green
+  tracks in this drive; manual overrides prevent continuous green-release proof.
+  Do not treat replay as vehicle-response validation or enable failed candidate.
+  No vehicle/model/control changes in this investigation; CPL is not supported
+  as the remedy by these images. See docs/signal_1095_red_departure_20261011.md.
+  Keep raw logs and captures private.
 
 - On 2026-10-11, the user authorized installing the new signal detector for
   live comparison recording, with the same pushed code on the vehicle. Add

@@ -39,6 +39,16 @@ def test_comparison_has_independent_trackers_and_reset_history():
   assert new_trackers(factory, False)[1] is None
 
 
+def test_production_uses_only_one_validated_tracker_even_with_comparison_flag():
+  calls = []
+  def factory(**kwargs):
+    calls.append(kwargs)
+    return object()
+  main, extra = new_trackers(factory, True, False, single=True)
+  assert main is not None and extra is None
+  assert calls == [{'daytime_cores': True, 'robust_tracking': True, 'verified_lamps': True}]
+
+
 @pytest.mark.parametrize('prediction', ['red', 'green', 'unknown'])
 def test_comparison_never_writes_control_transport(prediction):
   calls = []
@@ -94,22 +104,40 @@ def test_existing_worker_dispatches_only_with_opt_in(monkeypatch, tmp_path):
   assert calls == [(tmp_path, 2)]
 
 
-def test_comparison_worker_logs_both_engines_without_transport(monkeypatch, tmp_path):
+@pytest.mark.parametrize('single', [False, True])
+@pytest.mark.parametrize('start_enabled', [False, True])
+@pytest.mark.parametrize('comparison,revalidated,override', [
+  (True,False,None),(True,True,None),(False,False,None),(False,True,None),(False,False,True),(False,True,True),
+])
+def test_worker_modes_select_engines_and_bound_transport(monkeypatch, tmp_path, comparison, revalidated, override, start_enabled, single):
   import sys
   from openpilot.selfdrive.modeld import signal_tracking_shadow as worker
   from openpilot.selfdrive.carrot import signal_assist_runtime
+  from openpilot.selfdrive.carrot import signal_display
   from tools.signal_analysis import signal_tracker
+  from openpilot.selfdrive.carrot import signal_mode
+  if single:
+    monkeypatch.setattr(worker, 'DIRECTORY', tmp_path)
+    monkeypatch.setattr(signal_mode, 'signal_mode', lambda: 2)
 
-  for name in ['enabled', 'tracking_enabled', 'daytime_comparison_enabled']:
+  for name in ['enabled', 'tracking_enabled']:
     (tmp_path / name).write_text('1')
+  (tmp_path / 'daytime_comparison_enabled').write_text(str(int(comparison)))
+  (tmp_path / 'revalidated_enabled').write_text(str(int(revalidated)))
+  (tmp_path / 'display_enabled').write_text('1')
+  (tmp_path / 'start_guard_enabled').write_text(str(int(start_enabled)))
+  from openpilot.selfdrive.carrot import signal_start_guard
+  monkeypatch.setattr(signal_start_guard, 'publish_start_observation', lambda *a: None)
   rgb = object()
   calls, events, published = [], [], []
+  displays = []
   class Tracker:
     def __init__(self, **kwargs):
       self.trial = kwargs.get('daytime_cores', False)
+      self.robust = kwargs.get('robust_tracking', False)
     def process(self, image, timestamp):
       assert image is rgb
-      calls.append((self.trial, timestamp))
+      calls.append((self.trial, timestamp, self.robust))
       return dict(state='green' if self.trial else 'red', reason='test', tracks=[])
   class Camera:
     frame_id = 7
@@ -131,11 +159,22 @@ def test_comparison_worker_logs_both_engines_without_transport(monkeypatch, tmp_
   monkeypatch.setattr(worker.time, 'sleep', lambda seconds: None)
   monkeypatch.setattr(signal_tracker, 'SignalTracker', Tracker)
   monkeypatch.setattr(signal_assist_runtime, 'publish_observation', lambda *a: published.append(a))
-  worker.run(tmp_path)
-  assert [c[0] for c in calls] == [False, True] and calls[0][1] == calls[1][1]
-  assert published == []
+  monkeypatch.setattr(signal_display, 'publish_display', lambda record: displays.append(record))
+  worker.run(tmp_path, comparison_override=override)
+  comparison = comparison if override is None else override
+  if single:
+    comparison, revalidated = True, True
+  assert [c[0] for c in calls] == ([True] if single else [False, True] if comparison else [revalidated])
+  assert [c[2] for c in calls] == ([True] if single else [False, revalidated] if comparison else [revalidated])
+  assert len(published) == (0 if comparison else 1)
+  assert len(displays) == 1
+  assert displays[0]['prediction'] == ('green' if comparison or revalidated else 'red')
   records = {name: record for name, record in events}
-  assert records['signalTrackingShadow']['prediction'] == 'red'
-  assert records['signalTrackingDaytimeShadow']['prediction'] == 'green'
-  assert all(not r['assist_transport'] and not r['control_permission'] for r in records.values())
-  assert (tmp_path / 'daytime_comparison_latest.json').exists()
+  assert records['signalTrackingShadow']['prediction'] == ('green' if single or revalidated and not comparison else 'red')
+  if comparison and not single:
+    assert calls[0][1] == calls[1][1]
+    assert records['signalTrackingDaytimeShadow']['prediction'] == 'green'
+  assert all(r['assist_transport'] == (not comparison) and not r['control_permission'] for r in records.values())
+  assert all(r['revalidated'] == revalidated for r in records.values())
+  assert displays[0]['start_guard_transport'] == start_enabled
+  assert (tmp_path / 'daytime_comparison_latest.json').exists() == (comparison and not single)
