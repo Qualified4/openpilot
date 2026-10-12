@@ -65,6 +65,16 @@ class Wall:
   points: list
 
 
+@dataclass
+class Band:
+  sign: int  # 1 left, -1 right.
+  reference: int  # Lane index the offset is measured from.
+  offset: float
+  members: dict  # Object key -> distance along the road of each supporting return.
+  supported: float  # Odometer when a member was last measured.
+  spacing: float = 0.
+
+
 def interpolate(points, x):
   if len(points) < 2 or not points[0][0] <= x <= points[-1][0]:
     return None
@@ -113,8 +123,20 @@ class CcncRadarMap:
   # Position-only motion evidence is off: on 130 recorded segments it only admitted fixed returns
   # (map-only reviewed residual 17 with it, 3 without; known vehicle kept either way).
   DISPLACEMENT_EVIDENCE = False
+  RESTING_SPEED = 1.  # m/s; a vehicle reporting more is not at rest.
+  RESTING_TRAVEL, RESTING_NET = .15, .5  # Net movement of a resting return: this share of ego's travel plus this many metres.
   DENSE_ROW_POINTS, DENSE_ROW_SPAN = 5, 6.  # A row this long and dense is a structure even inside lane lines.
   WALL_MAX_GAP = 3.5
+  # A wall follows the road. Besides straight rows of returns seen together, resting returns are
+  # compared by their offset from ego's lane line of that side, collected over the last BAND_MEMORY
+  # metres driven, so that posts reported one at a time or on a curve form one band. Offsets are
+  # counted in BAND_BIN cells; a band is two adjacent cells (+-.25m, as the straight-row test).
+  # Recorded on 130 segments: members of established rows keep their offset from ego's lane line
+  # within .5m in 95% of sends above 60km/h (road edge 90%), but only in 63% at rest (road edge
+  # 36%), where the model's lines move; hence the rows are kept and the lane line is the reference.
+  BAND_MEMORY, BAND_BIN, BAND_FOLD = 40., .25, 10.
+  BAND_PREDICTION = .5  # A new return this near the band's next expected post joins before it has a history.
+  BAND_GAP = 3.5  # As WALL_MAX_GAP.
   WALL_CONTINUE = 7.  # A single fresh return may continue an established wall this far ahead (two gaps).  # Posts near 3m apart measure up to ~3.1m; stopped vehicles are farther apart.
   SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
@@ -124,6 +146,9 @@ class CcncRadarMap:
     self.objects = {}
     self.walls = []
     self.wall_geometry = []
+    self.bands = []
+    self.band_points = {}  # Object key -> (sign, reference, road distance, offset, odometer when measured, inside a lane).
+    self.band_early = set()  # Keys taken by prediction, for inspection.
     self.lanes = {}
     self.geometry = {}
     self.pose = (0., 0., 0.)
@@ -133,6 +158,7 @@ class CcncRadarMap:
     self.poses = deque(maxlen=64)
     self.now = None
     self.speed = 0.
+    self.odometer = 0.  # Distance ego has travelled, for conditions that follow the road instead of the clock.
     self.radar_stamp = self.model_stamp = None
     self.raw = self.model = None
     self.next_id = 1
@@ -179,6 +205,7 @@ class CcncRadarMap:
     self.pose = x + distance * math.cos(middle), y + distance * math.sin(middle), angle + yaw * dt
     self.cos, self.sin = math.cos(self.pose[2]), math.sin(self.pose[2])
     self.now, self.speed = now, speed
+    self.odometer += abs(distance)
     self.poses.append((now, self.pose))
     for obj in self.objects.values():
       if not self.holding:
@@ -436,7 +463,7 @@ class CcncRadarMap:
       if obj.radar_moving or obj.doppler_confirmed:
         obj.motion_confirmed = True
       cx, cy = x - obj.drift * hc, y - obj.drift * hs
-      obj.history.append((stamp, cx, cy))
+      obj.history.append((stamp, cx, cy, self.odometer))
       measured_keys.add(key)
       history = obj.history
       span = stamp - history[0][0]
@@ -453,8 +480,12 @@ class CcncRadarMap:
         if (self.DISPLACEMENT_EVIDENCE and coherent and span >= .4 and net >= .3
             and net / span > .35 + self.REPORT_DELAY_BOUND * abs(self.a_ego)):
           obj.motion_confirmed = True
-        spread = max(math.hypot(a[1] - cx, a[2] - cy) for a in history)
-        obj.stationary = span >= .3 and spread <= .4 and not coherent
+        # Reported positions scatter with ego speed (recorded: a median .5-.7m between reports above
+        # 30km/h, .15-.2m at rest), so the scatter of single reports says little. What a resting
+        # return cannot do is travel: net movement over the window stays small against ego's own.
+        obj.stationary = span >= .3 and net <= self.RESTING_TRAVEL * (last[3] - first[3]) + self.RESTING_NET and not coherent
+        if obj.motion_confirmed and abs(hc * vx + hs * vy) > self.RESTING_SPEED:
+          obj.stationary = False  # Slower than the travel bound, but the radar reports it driving.
         if obj.stationary:
           obj.vx = obj.vy = 0.
         elif coherent:
@@ -611,6 +642,123 @@ class CcncRadarMap:
         if key in self.objects:
           self.objects[key].structure = True
     self.wall_geometry = [sorted(self.to_ego(x, y) for x, y in w.points) for w in self.walls]
+    self._bands(candidates, measured, inside)
+
+  def _band_row(self, points):
+    """Returns of one offset as (road distance, offset, key, inside a lane); those inside a trusted
+    lane count only in a long dense row, as for straight rows."""
+    if any(p[3] for p in points) and (len(points) < self.DENSE_ROW_POINTS
+                                      or max(p[0] for p in points) - min(p[0] for p in points) < self.DENSE_ROW_SPAN):
+      points = [p for p in points if not p[3]]
+    return sorted(points)
+
+  def _bands(self, candidates, measured, inside):
+    lines = {}
+    for sign, order in ((1, (1, 0)), (-1, (2, 3))):
+      for i in order:
+        lane = self.lanes.get(i)
+        if lane is not None and lane.probability >= .1 and len(self.geometry.get(i, ())) >= 2:
+          lines[sign] = i, self.geometry[i]
+          break
+    if measured:
+      self.band_early.intersection_update(self.objects)
+      early = [(*self.local[key], key) for key in self.band_early if key in measured and key in self.band_points]
+      for x, y, key in candidates + early:
+        sign = 1 if y > 0. else -1
+        base = interpolate(lines[sign][1], x) if abs(y) > .2 and sign in lines else None
+        if base is None:
+          continue
+        old = self.band_points.get(key)
+        self.band_points[key] = (sign, lines[sign][0], self.odometer + x, y - base,
+                                 self.odometer if key in measured or old is None else old[4], key in inside)
+      # A return is forgotten after BAND_MEMORY metres without a measurement, or at once with vehicle evidence.
+      for key in [k for k, p in self.band_points.items() if self.odometer - p[4] > self.BAND_MEMORY
+                  or ((obj := self.objects.get(k)) is not None and (obj.vision or self._radar_vehicle(obj)))]:
+        del self.band_points[key]
+      claimed = set()
+      for band in self.bands:
+        points = {key: p for key, p in self.band_points.items() if p[0] == band.sign and p[1] == band.reference and key not in claimed}
+        # The model's line moves between frames and all offsets move with it: follow the members.
+        current = sorted(points[key][3] for key in band.members if key in points)
+        if not current:
+          band.members = {}
+          continue
+        band.offset = current[len(current) // 2]
+        row = self._band_row([(p[2], p[3], key, p[5]) for key, p in points.items() if abs(p[3] - band.offset) <= self.BAND_BIN])
+        positions = [p[0] for p in row if p[2] in band.members]
+        if not positions:
+          band.members = {}
+          continue
+        # The band continues through returns within WALL_CONTINUE of its ends, as a straight row does.
+        low, high = min(positions), max(positions)
+        for p in row:
+          if high < p[0] <= high + self.WALL_CONTINUE:
+            high = p[0]
+        for p in reversed(row):
+          if low - self.WALL_CONTINUE <= p[0] < low:
+            low = p[0]
+        band.members = {p[2]: p[0] for p in row if low <= p[0] <= high}
+        claimed.update(band.members)
+        if any(key in measured for key in band.members):
+          band.supported = self.odometer
+        positions = sorted(band.members.values())
+        gaps = sorted(b - a for a, b in zip(positions, positions[1:]) if b - a >= .6)
+        band.spacing = gaps[len(gaps) // 2] if gaps else 0.
+        # The next post is expected one spacing beyond the last (or two, with one post missed), at the
+        # band's offset. A fresh return there without any vehicle evidence is that post: it joins now,
+        # whatever its age or radar track state, instead of after it has shown that it rests.
+        line = lines.get(band.sign)
+        if band.spacing <= 0. or line is None or line[0] != band.reference:
+          continue
+        for key in sorted(measured.difference(self.band_points), key=lambda k: self.local[k][0]):
+          obj = self.objects[key]
+          x, y = self.local[key]
+          base = interpolate(line[1], x) if y * band.sign > .2 else None
+          if base is None or obj.motion_confirmed or obj.doppler or obj.vision or obj.vision_seen or obj.interior:
+            continue
+          ahead = self.odometer + x - positions[-1]
+          if (abs(y - base - band.offset) <= self.BAND_PREDICTION
+              and min(abs(ahead - band.spacing), abs(ahead - 2. * band.spacing)) <= self.BAND_PREDICTION):
+            self.band_points[key] = (band.sign, band.reference, self.odometer + x, y - base, self.odometer, False)
+            self.band_early.add(key)
+            band.members[key] = self.odometer + x
+            claimed.add(key)
+            positions.append(self.odometer + x)
+      for sign, (reference, _) in lines.items():
+        cells = {}
+        for key, p in self.band_points.items():
+          if p[0] == sign and p[1] == reference and key not in claimed:
+            cells.setdefault(math.floor(p[3] / self.BAND_BIN), []).append((p[2], p[3], key, p[5]))
+        for window in sorted((cells[c] + cells.get(c + 1, []) for c in cells), key=len, reverse=True):
+          run = []
+          for p in self._band_row([p for p in window if p[2] not in claimed]) + [None]:
+            if p is not None and (not run or p[0] - run[-1][0] <= self.BAND_GAP):
+              run.append(p)
+              continue
+            # Three posts (returns nearer than .6m are one post) no farther apart than in a straight row, over 4m.
+            posts = 1 + sum(b[0] - a[0] >= .6 for a, b in zip(run, run[1:])) if run else 0
+            if (posts >= 3 and run[-1][0] - run[0][0] >= 4. - 1e-5 and any(q[2] in measured for q in run)
+                and len(self.bands) + len(self.walls) < self.MAX_WALLS):
+              claimed.update(q[2] for q in run)
+              self.bands.append(Band(sign, reference, sum(q[1] for q in run) / len(run), {q[2]: q[0] for q in run}, self.odometer))
+            run = [p] if p is not None else []
+    # A band ages with the road, not the clock: it is folded after driving three of its spacings
+    # (at least BAND_FOLD metres) without a measured member, and never while ego stands.
+    self.bands = [band for band in self.bands
+                  if band.members and self.odometer - band.supported <= max(3. * band.spacing, self.BAND_FOLD)]
+    for band in self.bands:
+      reference, line = lines.get(band.sign, (None, None))
+      if reference != band.reference:
+        continue
+      first, last = min(band.members.values()) - self.odometer, max(band.members.values()) - self.odometer
+      ends = [(x, y + band.offset) for x in (first, last) for y in (interpolate(line, x),) if y is not None]
+      geometry = sorted(ends + [(x, y + band.offset) for x, y in line if first < x < last])
+      if len(geometry) >= 2 and geometry[-1][0] > geometry[0][0]:
+        self.wall_geometry.append(geometry)
+      for key in band.members:
+        obj = self.objects.get(key)
+        if obj is not None and not obj.vision and not self._radar_vehicle(obj):
+          obj.structure = True
 
   def _bridge_walls(self, candidates, measured):
     """Join adjacent established rows through observed, aligned stationary returns.
@@ -691,6 +839,13 @@ class CcncRadarMap:
   def _radar_vehicle(self, obj):
     return obj.radar_moving or obj.doppler_confirmed
 
+  @staticmethod
+  def _approach_only(obj):
+    """A same-direction vehicle never has speed towards ego: an object confirmed by approach speed
+    alone was oncoming, crossing or noise. It is neither beside ego nor waiting there, whatever
+    velocity the map holds for it (a resting one holds none)."""
+    return not (obj.radar_moving or obj.forward_samples or obj.vision_seen or obj.admitted)
+
   def _wall_outside(self, x, y):
     for points in self.wall_geometry:
       wy = interpolate(points, x)
@@ -719,7 +874,7 @@ class CcncRadarMap:
         continue
       # The frozen position of an unseen object says nothing about its direction:
       # use the direction of its last real measurement, never the zeroed velocity.
-      if slot != 0 and obj.last_motion[0] < -1. / 3.6:
+      if slot != 0 and (obj.last_motion[0] < -1. / 3.6 or self._approach_only(obj)):
         continue  # Keep opposing traffic in the map, outside same-direction side slots.
       if obj.structure or (not obj.motion_confirmed and not obj.vision and self._wall_outside(x, y)):
         continue
@@ -771,7 +926,7 @@ class CcncRadarMap:
       return 'no lane slot'
     if lane != slot:
       return f"lane slot {('FF', 'LF', 'RF')[lane]} instead"
-    if slot != 0 and obj.last_motion[0] < -1. / 3.6:
+    if slot != 0 and (obj.last_motion[0] < -1. / 3.6 or self._approach_only(obj)):
       return 'opposing direction'
     if not obj.motion_confirmed and not obj.vision and self._wall_outside(lx, ly):
       return 'beyond wall'
@@ -793,9 +948,7 @@ class CcncRadarMap:
       alongside = abs(lateral) <= .6 and 0. <= forward <= 3. and self.now - obj.seen <= self.MEMORY_MOVING_HOLD
       if not (resting or alongside) or self._crossing(obj) or (not obj.motion_confirmed and obj.tracked < self.MEMORY_TRACKED):
         continue
-      # A same-direction vehicle never has speed towards ego: an object confirmed by approach speed alone was
-      # oncoming, crossing or noise, and is not waiting beside ego.
-      if not (obj.radar_moving or obj.forward_samples or obj.vision_seen or obj.admitted):
+      if self._approach_only(obj):
         continue
       candidates.append((obj.key != self.selected[slot], abs(x), obj.key))
     return min(candidates)[2] if candidates else None
@@ -936,7 +1089,7 @@ class CcncRadarMap:
                               slot=o.slot, interior=o.interior, vision=o.vision,
                               born=o.born, seen=o.seen, hits=o.hits) for o in self.objects.values()],
                 lanes=self.geometry, lane_probability={i: (v.probability, v.consistent) for i, v in self.lanes.items()},
-                walls=[[self.to_ego(x, y) for x, y in w.points] for w in self.walls])
+                walls=self.wall_geometry)
 
 
 _live = SimpleNamespace(tracker=None, raw=None, radar_time=0., model=None, model_time=0., failed=False, filters={})

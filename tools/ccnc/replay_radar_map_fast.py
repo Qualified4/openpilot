@@ -19,6 +19,71 @@ import time
 from types import SimpleNamespace as N
 
 SIDES = ('FF', 'LF', 'RF')
+BANDS = ('stopped', '<30', '30-60', '>=60')
+
+
+def structure_stats(tracker, live, model_info, speed, counts):
+  """Per send: resting side returns, how many the map classes as resting and as wall members,
+  and what the walls keep out of the display, with the map's own evidence of that object."""
+  kph = speed * 3.6
+  band = BANDS[0 if kph <= .3 else 1 if kph < 30. else 2 if kph < 60. else 3]
+  yaw = abs(model_info['yaw'][0]) if model_info['yaw'] else 0.
+  groups = [band] + (['curve'] if speed >= 3. and yaw * 200. >= speed else [])  # Radius under 200m.
+  reported = {int(p.trackId): p.vLead for p in live.points} if live is not None else {}
+  add = lambda key, n=1: [counts.__setitem__((g, key), counts.get((g, key), 0) + n) for g in groups]
+  add('sends')
+  add('walls', len(tracker.wall_geometry))
+  add('wall members', sum(o.structure for o in tracker.objects.values()))
+  # Returns a band took by prediction, and those of them that later showed vehicle evidence.
+  seen = tracker.__dict__.setdefault('_replay_early', {})
+  for key in getattr(tracker, 'band_early', ()):
+    obj = tracker.objects.get(key)
+    if obj is None:
+      continue
+    if key not in seen:
+      seen[key] = None
+      add('taken by prediction')
+    evidence = 'class 2' if obj.radar_moving else 'speed' if obj.doppler_confirmed else 'vision' if obj.vision_seen else None
+    if evidence and seen[key] is None:
+      seen[key] = evidence
+      add(f'taken by prediction, later {evidence}')
+  joins = getattr(tracker, 'band_joins', 0)
+  add('band joins', joins - tracker.__dict__.get('_replay_joins', 0))
+  tracker._replay_joins = joins
+  for obj in tracker.objects.values():
+    x, y = tracker.local[obj.key]
+    fresh = tracker.now - obj.seen <= .15
+    vehicle = obj.radar_moving or obj.doppler_confirmed
+    if fresh and -5. <= x <= 20. and 1.5 <= abs(y) <= 6. and not vehicle and not obj.vision:
+      add('side candidates')
+      add('side stationary', obj.stationary)
+      add('side structure', obj.structure)
+    if fresh and obj.radar_moving and obj.stationary:
+      add('class 2 stationary')
+      add('class 2 stationary, reported over 2m/s', abs(reported.get(obj.source, 0.)) > 2.)
+    if fresh and obj.radar_moving and obj.structure:
+      add('class 2 structure')
+    # The display conditions of _select that do not involve walls.
+    if (tracker.now - obj.seen > tracker.PREDICTION_HOLD + 1e-6 or obj.hits < 3 or obj.seen - obj.born < .15 or obj.existence < .5
+        or not 0. <= x <= (tracker.FAR_X if obj.motion_confirmed or obj.vision else tracker.MAX_X)
+        or (obj.vehicle < .6 and not obj.admitted) or obj.uncertainty > tracker.MAX_DISPLAY_UNCERTAINTY):
+      continue
+    free = tracker._lane(x, y, moving=obj.motion_confirmed)[0]
+    if free is None and obj.vision and abs(y) <= 2.:
+      free = 0
+    if free is None or (free and (x > tracker.MAX_SIDE_X or obj.last_motion[0] < -1. / 3.6)):
+      continue
+    walled = tracker._lane(x, y, respect_walls=True, moving=obj.motion_confirmed)[0]
+    if walled is None and obj.vision and abs(y) <= 2. and not tracker._wall_outside(x, y):
+      walled = 0
+    reason = ('wall member' if obj.structure else 'lane cut by wall' if walled is None else
+              'beyond wall' if not obj.motion_confirmed and not obj.vision and tracker._wall_outside(x, y) else None)
+    if reason:
+      evidence = ('class 2' if obj.radar_moving else 'speed' if obj.doppler_confirmed else 'vision' if obj.vision
+                  else 'earlier vision' if obj.vision_seen else 'waiting' if obj.admitted else 'none')
+      add(f'{reason}: {evidence}')
+      if tracker.selected[free] is None:
+        add(f'{reason}, slot left empty: {evidence}')
 
 
 def load_map(path):
@@ -30,7 +95,7 @@ def load_map(path):
 
 
 def run_route(job):
-  candidate, cache_dir, output, names, hybrid, timing, maps = job
+  candidate, cache_dir, output, names, hybrid, timing, maps, structure = job
   tracker = load_map(candidate).CcncRadarMap()
   fields = [k for group in tracker.SLOT_FIELDS for k in group]
   result = []
@@ -42,7 +107,7 @@ def run_route(job):
     models = [(N(laneLines=[N(x=x, y=y) for x, y in m['lines']], laneLineProbs=m['probs'],
                  roadEdges=[N(x=x, y=y) for x, y in m['edges']], orientationRate=N(z=m['yaw']),
                  leadsV3=[N(prob=prob, x=x, y=y) for prob, x, y in m['leads']]), m) for m in cache['models']]
-    durations, peak = [], 0
+    durations, peak, counts = [], 0, {}
     reports = {}
     with gzip.open(Path(output) / f'{name}.jsonl.gz', 'wt', encoding='utf8') as out:
       for s in cache['sends']:
@@ -61,6 +126,8 @@ def run_route(job):
           value = tracker.display_values(dict.fromkeys(fields, 0))
         durations.append((time.perf_counter() - start) * 1000.)
         peak = max(peak, len(tracker.objects))
+        if structure:
+          structure_stats(tracker, live if s['live_fresh'] else None, model_info, s['v'], counts)
         row = dict(t=s['t'], now=s['now'], values=[s['values'][0], s['values'][1], value], selected=tracker.selected, ego=s['v'])
         row['evidence'] = [None if (o := tracker.objects.get(k)) is None else
                            'radar' if o.radar_moving else 'doppler' if o.doppler_confirmed else
@@ -81,7 +148,7 @@ def run_route(job):
               reports[obj.key] = live_info['evidence'][obj.source]
           row['reports'] = [reports.get(k) for k in tracker.selected]
         out.write(json.dumps(row, separators=(',', ':')) + '\n')
-    result.append(dict(name=name, peaks=dict(objects=peak), timing=dict(
+    result.append(dict(name=name, peaks=dict(objects=peak), structure=[[*key, n] for key, n in counts.items()], timing=dict(
       mean=statistics.mean(durations) if durations else 0., maximum=max(durations, default=0.),
       p99=sorted(durations)[min(len(durations) - 1, int(len(durations) * .99))] if durations else 0.) if timing else None))
   return result
@@ -96,6 +163,7 @@ def main():
   parser.add_argument('--hybrid', action='store_true', help='Hide the unchanged extension displays matched to map walls')
   parser.add_argument('--jobs', type=int, default=8)
   parser.add_argument('--maps', action='store_true', help='Store the full map snapshot per send (large)')
+  parser.add_argument('--structure', action='store_true', help='Count resting side returns, walls and what walls keep out of the display')
   parser.add_argument('--timing', action='store_true', help='Record map time per send; use --jobs 1 and no other workload')
   args = parser.parse_args()
   args.output.mkdir(parents=True, exist_ok=True)
@@ -107,7 +175,7 @@ def main():
       groups.append([])
     groups[-1].append(name)
     previous = route, int(segment)
-  jobs = [(str(args.candidate), str(args.cache), str(args.output), group, args.hybrid, args.timing, args.maps) for group in groups]
+  jobs = [(str(args.candidate), str(args.cache), str(args.output), group, args.hybrid, args.timing, args.maps, args.structure) for group in groups]
   if args.jobs <= 1:
     results = [run_route(job) for job in jobs]
   else:

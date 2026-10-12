@@ -5,6 +5,7 @@ and liveTracks (<150ms) are given to hyundaicanfd_ccnc_radar_map.update_vehicles
 controller does, and to the existing selector in a separate module instance. The recorded
 0x162 is decoded for comparison. Consecutive segments share state.
 
+Each row also counts the resting side returns and walls of the map (structure).
 Bookmarks: [{"segment": 5, "t": 44.84, "slot": "LF", "title": "..."}], t in seconds from the
 segment's first sendcan. Logs, bookmarks and output are private data.
 Windows can inject the local cereal bootstrap before invoking main().
@@ -47,6 +48,17 @@ def evidence(tracker, slot, interpolate):
   return dict(key=obj.key, source=obj.source, x=round(x, 2), y=round(y, 2), flags=flags or ['none'], tracked=obj.tracked,
               hits=obj.hits, unseen=round(tracker.now - obj.seen, 2), doppler=obj.doppler, forward=round(obj.last_motion[0], 2),
               clearance=None if line is None else round(y - line if slot == 1 else line - y, 2))
+
+
+def structure(tracker):
+  """Left and right: fresh returns without vehicle evidence 1.5-6m to the side within the wall
+  range, those the map classes as resting, those in a wall; then the number of walls."""
+  result = []
+  for sign in (1, -1):
+    side = [o for o in tracker.objects.values() if tracker.now - o.seen <= .15 and not (o.radar_moving or o.doppler_confirmed or o.vision)
+            and -5. <= tracker.local[o.key][0] <= 20. and 1.5 <= sign * tracker.local[o.key][1] <= 6.]
+    result.append([len(side), sum(o.stationary for o in side), sum(o.structure for o in side)])
+  return result + [len(tracker.wall_geometry)]
 
 
 def label(info):
@@ -151,7 +163,7 @@ def main():
         info = [evidence(tracker, slot, radar_map.interpolate) if shown[0][slot] else None for slot in range(3)]
         # Longitudinal distances in metres (the field carries 0.8 of it): recorded, map, existing selector.
         row = dict(t=round(t, 3), ego=round(cs.vEgo, 2), actual=actual, map=shown[0], legacy=shown[1], objects=info,
-                   distance=[sent_distance, *distances])
+                   distance=[sent_distance, *distances], structure=structure(tracker))
         output.write(json.dumps(row, separators=(',', ':')) + '\n')
         counts['sends'] += 1
         for slot, side in enumerate(SIDES):

@@ -773,3 +773,75 @@ def test_unseen_object_is_shown_only_as_a_short_prediction_or_as_stop_memory():
   for i in range(20, 50):
     driving.update(N(points=[]), model(), round(i * .05, 6), 5., evidence={})
     assert (driving.selected[1] is not None) == (round(i * .05 - .95, 2) <= RadarMap.PREDICTION_HOLD)
+
+@pytest.mark.parametrize('target,resting', [(0., True), (10.6, False)])
+def test_resting_is_judged_by_net_movement_against_ego_travel_not_by_report_scatter(target, resting):
+  # Recorded 2026-10-12 at 67-77km/h: reported positions of fixed returns moved a median .5-.7m between
+  # reports, so "all reports within .4m" classed 0-3 of 10-18 roadside returns as resting and no wall
+  # formed. Real vehicles there moved a median 10.6m/s; none moved less than .3m in the window.
+  radar = run(lambda t: [point(1, 19.5 + (target - 19.) * t + (.25 if round(t * 20) % 2 else -.25), 3.2, target)], count=16, speed=19.)
+  obj = next(iter(radar.objects.values()))
+  assert obj.hits == 16 and obj.stationary == resting
+
+
+@pytest.mark.parametrize('target,resting', [(2.5, False), (0., True)])
+def test_vehicle_the_radar_reports_driving_is_not_classed_as_resting_by_the_travel_bound(target, resting):
+  # Recorded on 130 segments: the travel bound alone classed 525 object-sends of radar class-2 vehicles
+  # reporting over 2m/s as resting (slower than 15% of ego's speed), which zeroes their map velocity.
+  # A class-2 vehicle that has stopped still is (30,301 object-sends while ego stands).
+  def points(t):
+    x = 19.5 + (target - 19.) * t + (.25 if round(t * 20) % 2 else -.25)
+    return [point(1, x, 3.2, target, motionState=2)]
+  radar = run(points, count=16, speed=19.)
+  obj = next(iter(radar.objects.values()))
+  assert obj.hits == 16 and obj.radar_moving and obj.stationary == resting
+
+
+@pytest.mark.parametrize('speed,shown', [(-1.6, False), (1.6, True)])
+def test_object_confirmed_only_by_speed_towards_ego_is_not_a_side_display_once_it_rests(speed, shown):
+  # Recorded on 130 segments once resting returns were recognised at speed: roadside returns of radar class 1
+  # with five samples of speed towards ego had been kept out of the side slots only by the map's noisy
+  # negative velocity. Classed as resting they hold no velocity, and 154 sends showed them beside ego.
+  # Ego drives at 6m/s: no waiting admission. The object moves for 1.5s, then rests.
+  radar = RadarMap()
+  for i in range(60):
+    x = (24. if speed < 0. else 20.) + speed * min(i, 30) * .05 - 6. * i * .05
+    radar.update(N(points=[point(37, x, -3.4, speed if i < 30 else 0., trackState=2)]), model(), round(i * .05, 6), 6.)
+  obj = next(iter(radar.objects.values()))
+  assert obj.doppler_confirmed and obj.stationary and obj.last_motion[0] > -1. / 3.6
+  assert (radar.selected[2] == obj.key) == shown
+
+
+def curved_model(bend=.012):
+  xs = [0., 4., 8., 12., 16., 20., 30., 100.]
+  return N(laneLines=[N(x=xs, y=[y - bend * x * x for x in xs]) for y in (-5.4, -1.8, 1.8, 5.4)],
+           laneLineProbs=[.95] * 4, orientationRate=N(z=[0.]), leadsV3=[])
+
+
+@pytest.mark.parametrize('follows_road', [True, False])
+def test_posts_at_a_constant_offset_from_the_lane_line_form_a_band_on_a_curve(follows_road):
+  # The model's y is right-positive: these lines bend left. Posts .3m beyond ego's left line do not lie
+  # on a straight row (a row takes three of the five), but share one offset from the line.
+  posts = [(i, x, 2.1 + (.012 * x * x if follows_road else .45 * (i % 2))) for i, x in enumerate((4., 7., 10., 13., 16.))]
+  radar = RadarMap()
+  for i in range(25):
+    radar.update(N(points=[point(k, x, y) for k, x, y in posts]), curved_model(), round(i * .05, 6), 0.)
+  assert len(radar.bands) == follows_road
+  assert all(o.structure for o in radar.objects.values()) == follows_road
+  if follows_road:
+    band = radar.bands[0]
+    assert len(band.members) == 5 and abs(band.offset - .3) < .05 and abs(band.spacing - 3.) < .1
+
+
+@pytest.mark.parametrize('offset,evidence,joins', [(.3, {}, True), (1.1, {}, False), (.3, {9: (2, 19.)}, False)])
+def test_band_takes_the_next_post_at_its_first_report_unless_it_is_elsewhere_or_a_vehicle(offset, evidence, joins):
+  # Recorded on 130 segments: 8,152 returns joined this way, none later had radar class 2 or a vision match.
+  posts = [(i, x, 2.1 + .012 * x * x) for i, x in enumerate((4., 7., 10., 13., 16.))]
+  radar = RadarMap()
+  for i in range(25):
+    radar.update(N(points=[point(k, x, y) for k, x, y in posts]), curved_model(), round(i * .05, 6), 0.)
+  new = point(9, 19., 1.8 + offset + .012 * 19. * 19., trackState=3)
+  radar.update(N(points=[point(k, x, y) for k, x, y in posts] + [new]), curved_model(), 1.25, 0., evidence=evidence)
+  obj = max(radar.objects.values(), key=lambda o: o.key)
+  assert obj.source == 9 and obj.hits == 1 and not obj.stationary
+  assert obj.structure == joins

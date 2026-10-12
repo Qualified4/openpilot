@@ -1,5 +1,60 @@
 # Repository memory
 
+- On 2026-10-12 (seventh follow-up: wall work wrap-up, commit preparation; NOT
+  committed) map is 1ace50c16016 (from fb02d3a9f1bc; 9c0da097c29f at 12eda56d).
+  ONE source change: a motion-confirmed object reporting over 1m/s is not classed
+  stationary. The travel bound alone had classed 525 object-sends of class-2
+  vehicles reporting >2m/s as resting; now 0, class-2 resting 41,059 -> 39,523
+  (36,888 at 12eda56d), wall table identical, no display removed (5 added, 19
+  swapped), 840 standalone detect values 2->1. The user's two variants were
+  measured and not taken as given: (a) no stationary on motion-confirmed objects
+  also strips standing vehicles (41,365 detect values, 64 class-2 sends lost);
+  (b) |vLead| <= 1m/s for every object breaks wall forming (>=60km/h members
+  44.0 -> 35.2%) because fixed returns report up to vEgo*(1-cos az). The
+  approach-only side-slot rule STAYS: replacing it by last_motion from the
+  reported speed leaves 18 of the 155 exposed fixed-return sends, and adds 1,975
+  RF memory sends (38a/10-11) and loses 55 class-2 sends because last_motion
+  also drives the memory conditions. Totals since 12eda56d on Full130: removed
+  215 (206 approach-only crossing objects, not counted either way per the user),
+  added 30 (28 a real waiting car), swapped 349, no class-2 loss, residual 0,
+  c1/23 6/6, seven reviewed waiting scenes 100%, live entry no exception; all 18
+  bookmarked false scenes gone (16/0.65 too), 23 kept. 997 tests (11 new cases,
+  none changed). PC time mean .58-.60 -> .64-.66ms (+9-12%), p99 1.03-1.06 -> 1.14-1.17ms; without the band code the module times like 12eda56d, so the band histogram and prediction cost about .06-.07ms. Known issues now: approach-speed confirmation
+  itself, coasted re-links, 356/2 FF swaps while turning, 358/0 fence, segment
+  15 far FF toggling, MEMORY_MAX_X 15, band joining without effect, no confirmed
+  display benefit of bands, no speed floor, no vehicle validation. Commit files:
+  the map module, tools/ccnc/test_radar_map.py, replay_radar_map_fast.py,
+  replay_live_path.py, the experiment doc, AGENTS.md; never CLAUDE.md.
+- On 2026-10-12 (sixth follow-up: walls at speed; NOT committed) map is
+  fb02d3a9f1bc (from 9c0da097c29f). Source changes: (1) stationary = net
+  movement over the history window <= .15 * ego travel + .5m (was: all reports
+  within .4m), since reports scatter .5-.7m above 30km/h; (2) an object
+  confirmed only by approach-speed samples is not shown in a side slot
+  (_approach_only, same condition as the memory exclusion): step 1 zeroes the
+  map velocity of resting returns and exposed 154 sends of class-1 roadside
+  returns that only the "opposing" check had hidden; (3) bands ADDED to the
+  straight rows: resting returns at one offset (+-.25m) from ego's own lane
+  line, collected over 40m driven, three posts <=3.5m apart over 4m, continued
+  within 7m, folded after max(3 spacings, 10m) driven without a measured
+  member; (4) a fresh return within .5m of a band's next expected post joins at
+  its first report unless it has vehicle evidence or is lane-interior. The
+  user's literal step 2 (bands replace rows, road edge/outer line reference, no
+  spacing limit) was measured and rejected: real waiting cars lost (c1/7 18%,
+  c2/24 4%), 356/3 bollard row shown as memory; row members keep their offset
+  within .5m from the lane line in 94.5% (>=60km/h) but 63% at rest, road edge
+  90%/36%. Step 4 (joining bands across <=12m) changed nothing (96 joins) and is
+  NOT adopted. Full130: wall members among resting side returns >=60km/h 21.1 ->
+  44.0%, curve 9.2 -> 31.8%; display change of steps 2-3 is 11 sends removed
+  (356/3) and 31 swapped; step 1 removed 13, added 40 (28 a real waiting car by
+  video); residual 0, c1/23 6/6, live entry no exception; bookmark 16/0.65 gone,
+  23 kept. 995 tests (9 new cases, none changed). PC time mean +8-9%, p99
+  1.19 -> 1.30ms. User decision the same day: crossing pedestrians/cyclists
+  shown as vehicles while measured are acceptable and are not counted as loss or
+  gain; their memory stays blocked (_crossing). Tools: replay_radar_map_fast.py
+  --structure, replay_live_path.py rows carry structure counts. Open: steps 2-3
+  have no confirmed display benefit; bookmarks 5/10/19 still have no wall; 525
+  object-sends of slow class-2 vehicles classed resting; no vehicle validation.
+  Private evidence: .analysis/archive/2026-10-12/ccnc-wall.
 - On 2026-10-12 the user requested merging carrot-wip into ccnc-hda1 after the
   CCNC radar-map fixes were committed as 12eda56d (so the "NOT committed" notes
   in the entries below are historical). origin/carrot-wip 5e187ab9 (36 commits:
