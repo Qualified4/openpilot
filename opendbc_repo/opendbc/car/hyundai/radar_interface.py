@@ -556,6 +556,7 @@ class RadarInterface(RadarInterfaceBase):
         self.pts[t_id].aRel = msg['REL_ACCEL']
         self.pts[t_id].yvRel = msg['LAT_SPEED']
         self.pts[t_id].trackState = track_state
+        self.pts[t_id].motionState = int(msg.get('VALID2', 0))
       elif self.radar_group4:
         self.pts[t_id].dRel = msg['LONG_DIST']
         self.pts[t_id].yRel = -msg['LAT_DIST']

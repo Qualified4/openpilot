@@ -8,7 +8,7 @@ from test_generate import GENERATOR, VALIDATOR, COMMIT, STAMP
 from test_ci_check import CI_CHECK
 
 
-KEYS = ("CcncLaneColor", "CcncModelLanes", "CcncRadarVehicles", "CcncVehiclePositionCorrection")
+KEYS = ("CcncLaneColor", "CcncModelLanes", "CcncRadarVehicles", "CcncVehiclePositionCorrection", "CcncRadarMap")
 CATALOG = Path(__file__).resolve().parents[4] / "openpilot/selfdrive/carrot_settings.json"
 
 

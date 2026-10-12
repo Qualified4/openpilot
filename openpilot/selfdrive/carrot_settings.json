@@ -410,7 +410,8 @@
             "CcncLaneColor",
             "CcncModelLanes",
             "CcncRadarVehicles",
-            "CcncVehiclePositionCorrection"
+            "CcncVehiclePositionCorrection",
+            "CcncRadarMap"
           ]
         },
         {
@@ -1890,6 +1891,22 @@
       "cgroup": "启动设置",
       "ctitle": "CCNC 车辆位置修正",
       "cdescr": "开启 HDA1 雷达车辆显示时，将保持车道的车辆图标平滑移向车道中央，抑制轻微的左右晃动，并缓慢跟随车道中心的变化。对已确认车辆分别检查距离、横向位置和速度的瞬时异常；短暂漏检时，从最后一次有效位置观测起最多预测显示 0.3 秒。新车辆需经过多次确认；短暂消失后，仅在连续两次观测中位置和速度匹配且候选唯一时延续原有显示。快速且一致的横向移动会更早得到跟随。确认持续横向移动后跟随测量位置；车辆在车道内重新稳定后恢复居中，瞬间坐标跳变不会清空全部稳定判断记录。已有居中状态在有效边界内可接受比新建居中更低的车道置信度，进一步下降时最多容忍 0.5 秒。暂时的不确定状态结束后恢复原有居中；确认持续移动后仍需等待稳定判断。正常行驶中边界附近短暂的显示槽位变化需至少 0.2 秒确认，期间持续更新当前位置和距离。其他车辆占据原槽位时立即切换；停车和停车接近显示保留原有处理。位于车道边界或车道几何信息消失时跟随测量位置，不会仅凭不确定信息建立新的居中状态。不适用于 HDA2 或后侧方盲区图标。关闭后使用原有位置显示。默认关闭，更改约在一秒内生效。 计算负载：开启雷达车辆显示时，PC 日志回放中开启此修正后，显示处理总时间平均比关闭此修正增加约 24%（0.633 ms → 0.785 ms）。雷达车辆显示关闭时不执行修正计算。 关闭时跳过该功能计算，但默认显示和设置检查仍继续。百分比基于 PC 上的显示处理总时间，不代表整机 CPU 使用率的增幅。",
+      "min": 0,
+      "max": 1,
+      "default": 0,
+      "unit": 1
+    },
+    {
+      "group": "시작",
+      "name": "CcncRadarMap",
+      "title": "CCNC 레이더 지도 차량 선택",
+      "descr": "HDA1 레이더 차량 표시를 켠 경우, 앞차와 좌우 차로 차량을 고르는 방식을 레이더 지도 방식으로 바꿉니다. 자차 주변 20m 안의 레이더 감지점을 자차 이동에 맞춰 지도에 누적하고, 실제로 움직인 물체를 차량으로 봅니다. 가까이 늘어선 정지 감지점은 볼라드·분리대·펜스 같은 벽으로 묶어 그 너머와 함께 표시에서 제외합니다. 정차 중에는 옆 차로에서 기다리는 차량과, 감지 범위를 벗어난 바로 옆·약간 뒤 차량을 표시할 수 있습니다. 횡단보도를 가로지르는 보행자·자전거는 대기 차량으로 기억하지 않습니다. CCNC 차량 위치 보정을 함께 켜면 지도 방식으로 고른 차량에도 중앙 고정과 횡이동 추종이 적용됩니다. 끄면 기존 차량 선택 방식을 사용합니다. HDA2에는 적용되지 않으며 선행차 판단이나 조향·가감속 제어를 바꾸지 않습니다. 기록된 주행 로그 재생으로만 확인했으며 실제 계기판 표시는 아직 실차 검증되지 않았습니다. 기본은 꺼짐이며, 변경은 약 1초 이내에 반영됩니다. 연산부하: PC 로그 재생에서 지도 방식의 차량 선택 시간은 평균 약 0.5~0.7ms로 기존 방식(약 0.7~0.9ms)과 비슷했습니다. 기기 전체 CPU 사용률을 뜻하지 않습니다.",
+      "egroup": "START",
+      "etitle": "CCNC radar-map vehicle selection",
+      "edescr": "When HDA1 radar vehicle display is enabled, switches the selection of the vehicles ahead and in adjacent lanes to the radar-map method. Radar detections within 20 m are accumulated in a map that follows ego motion, and objects that actually moved are treated as vehicles. Closely spaced stationary detections are linked into walls such as bollards, dividers and fences and are excluded from the display together with anything beyond them. While stopped, vehicles waiting in adjacent lanes and vehicles beside or slightly behind that left radar coverage can be shown. Pedestrians and cyclists crossing in front are not remembered as waiting vehicles. With CCNC vehicle position correction also enabled, its center lock and lateral following apply to the vehicles selected by the map. Turn off to use the existing vehicle selection. Does not apply to HDA2 and does not change lead selection, steering or acceleration control. Checked only by replaying recorded drives; display on the physical instrument cluster has not yet been validated in a vehicle. Off by default; changes appear within about one second. Compute cost: in PC log replay the map-based selection took about 0.5-0.7 ms on average, similar to the existing method (about 0.7-0.9 ms). This is not whole-device CPU usage.",
+      "cgroup": "启动设置",
+      "ctitle": "CCNC 雷达地图车辆选择",
+      "cdescr": "开启 HDA1 雷达车辆显示时，将前车及相邻车道车辆的选择方式切换为雷达地图方式。将本车周围 20 米内的雷达检测点随本车移动累积到地图中，把实际移动过的物体视为车辆。排列紧密的静止检测点会被连接为护柱、隔离带、围栏等墙体，墙体及其外侧的检测点不予显示。停车时可显示在相邻车道等待的车辆，以及离开雷达范围的侧方或略靠后的车辆。横穿前方的行人和自行车不会被记为等待车辆。同时开启 CCNC 车辆位置修正时，其居中和横向跟随也适用于地图方式选出的车辆。关闭后使用原有车辆选择方式。不适用于 HDA2，也不改变前车判断、转向或加减速控制。仅通过回放行车日志进行了确认，实车仪表盘显示尚未验证。默认关闭，更改约在一秒内生效。 计算负载：PC 日志回放中地图方式的车辆选择时间平均约 0.5~0.7 ms，与原有方式（约 0.7~0.9 ms）相近，不代表整机 CPU 使用率。",
       "min": 0,
       "max": 1,
       "default": 0,

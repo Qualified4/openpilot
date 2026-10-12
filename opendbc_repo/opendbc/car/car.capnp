@@ -407,6 +407,7 @@ struct RadarData @0x888ad6581cf0aacb {
     jLead @9 :Float32; # m/s^3
     radarSource @10 :RadarSource;
     trackState @11 :UInt8; # radar-native object state; 0 when unavailable
+    motionState @12 :UInt8; # radar-native motion class (Hyundai CAN-FD: 1 never moved, 2 moving or moved); 0 when unavailable
 
     enum RadarSource {
       frontRadar @0;

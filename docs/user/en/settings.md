@@ -105,7 +105,7 @@ Ignoring `x0.01`, `x0.001`, `cm`, `km/h`, or `%` can make a value appear one hun
 
 ## Settings map
 
-The current `carrot_settings.json` contains **191 parameters**. One driver-monitoring exception is search only; the remaining entries appear in these menus:
+The current `carrot_settings.json` contains **192 parameters**. One driver-monitoring exception is search only; the remaining entries appear in these menus:
 
 | Category | Count | Groups |
 |---|---:|---|
@@ -244,7 +244,7 @@ On supported Tesla vehicles with the additional vehicle bus detected, the device
 <a id="vehicle-hardware"></a>
 ## Vehicle and hardware
 
-This category contains 21 menu settings and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. The four CCNC instrument cluster options let you choose display features as described below.
+This category contains 22 menu settings and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. The five CCNC instrument cluster options let you choose display features as described below.
 
 | Group | Parameters | Purpose |
 |---|---|---|
@@ -254,6 +254,7 @@ This category contains 21 menu settings and one search-only driver-monitoring ex
 | [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes and lane-change animation · Off (0) / Basic (1) / Refined (2), default 0 |
 | [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | CCNC vehicle position correction · Default OFF (0) |
+| [CCNC display](#ccnc-display) | `CcncRadarMap` | CCNC radar-map vehicle selection · Default OFF (0) |
 | Radar | `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC radar, front-track orientation, corner radar, and Carrot Radar processing and cut-in sensitivity |
 | Driver monitoring | `DriverMonitoringEnabled` (search only), `DriverMonitoringMode`, `CarrotVisionEnabled`, `MuteDoor`, `MuteSeatbelt` | Driver monitoring and selected vehicle alerts |
 | Vehicle assistance | `MaxAngleFrames`, `SpeedFromPCM` | Steering-angle frames and stock-SCC speed control |
@@ -292,7 +293,7 @@ In modes `EnableRadarTracks=1`–`3`, a confirmed departing front lead can recei
 <a id="ccnc-display"></a>
 ### CCNC instrument cluster display
 
-Under **Vehicle and hardware → CAN FD/HDA**, each of the four options can be switched independently. All are off by default, and changes appear within about one second. These settings adjust the instrument cluster display.
+Under **Vehicle and hardware → CAN FD/HDA**, each of the five options can be switched independently. All are off by default, and changes appear within about one second. These settings adjust the instrument cluster display.
 
 #### CCNC acceleration/mode lane color
 
@@ -331,6 +332,14 @@ Sustained lateral motion in one direction releases the center lock to follow the
 Distance, lateral position and speed of confirmed vehicles are checked separately for continuity. Brief detection gaps or position errors use predicted positions for up to 0.3 seconds after the last accepted position; predictions do not extend confirmation or stopped-vehicle memory. New vehicles require repeated observations. A briefly missing vehicle resumes its previous display only when position and speed fit a unique candidate in two consecutive observations. Fast, consistent lateral motion is followed sooner. This can also change the selected display vehicle, displayed distance and detection state.
 
 Turn off to use the existing position display. Does not apply to HDA2 or rear-side blind-spot icons, and does not change lead selection, steering or acceleration control. Corrected icons do not represent precise lateral positions within a lane. Display quality on the physical instrument cluster has not yet been validated in a vehicle.
+
+#### CCNC radar-map vehicle selection
+
+Applies when **CCNC HDA1 radar vehicles** is enabled. Switches the selection of the vehicles ahead and in adjacent lanes to the radar-map method. Radar detections within 20 m are accumulated in a map that follows ego motion, and objects that actually moved are treated as vehicles. Closely spaced stationary detections are linked into walls such as bollards, dividers and fences; the wall and detections beyond it are excluded from the display. Beyond 20 m only vehicles that have moved are shown.
+
+While stopped, or slowing below 10 km/h, vehicles waiting in adjacent lanes are shown, and a vehicle beside or slightly behind that left radar coverage (up to 4 m behind) can remain displayed at distance 0. A waiting vehicle that never moved is remembered this way only after two seconds of steady detection; pedestrians and cyclists crossing in front are not remembered. No remembered display is used while driving.
+
+With **CCNC vehicle position correction** also enabled, its lane-center lock, sustained lateral following and display-slot confirmation apply to the vehicles selected by the map. The map handles new-vehicle confirmation and brief detection gaps itself, and a vehicle shown from memory while stopped keeps its last displayed position. Turn off to use the existing vehicle selection. Does not apply to HDA2, and does not change lead selection, steering or acceleration control. Checked only by replaying recorded drives; display on the physical instrument cluster has not yet been validated in a vehicle. Stationary real vehicles and structures cannot always be told apart, so do not rely on the icons to judge whether vehicles are nearby.
 
 ## Display
 

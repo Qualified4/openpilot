@@ -9,19 +9,22 @@ from opendbc.can import CANPacker
 from opendbc.can.parser import get_raw_value
 from opendbc.car import structs
 from opendbc.car.hyundai import hyundaicanfd as main, hyundaicanfd_ccnc_extension as ccnc_extension
+from opendbc.car.hyundai import hyundaicanfd_ccnc_radar_map as ccnc_radar_map
 from opendbc.car.hyundai.values import HyundaiFlags
 
 KEYS = ("CcncLaneColor", "CcncModelLanes", "CcncRadarVehicles")
 POSITION_KEY = "CcncVehiclePositionCorrection"
+MAP_KEY = "CcncRadarMap"
 
 
 @pytest.fixture
 def display(monkeypatch):
   params = dict.fromkeys(KEYS, False)
-  params[POSITION_KEY] = False
+  params[POSITION_KEY] = params[MAP_KEY] = False
   monkeypatch.setattr(main, "Params", lambda: N(get_bool=lambda key: bool(params[key]), get_int=lambda key: int(params.get(key, 0)), get=lambda key: "0"))
   monkeypatch.setattr(ccnc_extension, "Params", lambda: N(get_int=lambda key: 3))
   monkeypatch.delattr(main.create_ccnc_messages, "_display_options", raising=False)
+  monkeypatch.delattr(main.create_ccnc_messages, "_radar_map", raising=False)
   monkeypatch.setattr(ccnc_extension, "state", N())
   monkeypatch.setattr(ccnc_extension, "_options", None)
   ccnc_extension.reset()
@@ -78,6 +81,77 @@ def test_three_independent_options(display, monkeypatch, options):
     assert values["LANELINE_CURVATURE"] == 2
   if not color:
     assert values["LANE_HIGHLIGHT_DISTANCE"] == 0
+
+
+@pytest.mark.parametrize("radar,use_map", list(product((False, True), (False, True))))
+def test_radar_map_option_selects_the_vehicle_selector(display, monkeypatch, radar, use_map):
+  params, cs, send = display
+  params[KEYS[2]], params[MAP_KEY] = radar, use_map
+  calls = []
+  monkeypatch.setattr(ccnc_extension, "update_vehicles", lambda values, *args: calls.append("existing") or values)
+  monkeypatch.setattr(ccnc_radar_map, "update_vehicles", lambda values, *args: calls.append("map") or values)
+  monkeypatch.setattr(main, "_apply_ccnc_lead", lambda *args: None)
+  cs.ccnc_0x162 = dict.fromkeys(CANPacker("hyundai_canfd_generated").dbc.name_to_msg["CCNC_0x162"].sigs, 0)
+  for frame in (0, 5):
+    send(frame)
+  assert calls == ([("map" if use_map else "existing")] * 2 if radar else [])
+  # Switching the selector hands over with empty display state on both sides.
+  if radar:
+    tracker, live = ccnc_extension.state.radar_display_tracker, ccnc_radar_map._live.tracker
+    params[MAP_KEY] = not use_map
+    send(100)
+    assert ccnc_extension.state.radar_display_tracker is not tracker and ccnc_radar_map._live.tracker is not live
+    assert calls[-1] == ("existing" if use_map else "map")
+
+
+def test_radar_map_display_runs_on_live_inputs_and_keeps_rear_blindspot_icons(display, monkeypatch):
+  params, cs, send = display
+  params[KEYS[2]] = params[MAP_KEY] = True
+  monkeypatch.setattr(ccnc_extension, "update_vehicles", lambda *args: pytest.fail("existing selector used"))
+  cs.ccnc_0x162 = dict.fromkeys(CANPacker("hyundai_canfd_generated").dbc.name_to_msg["CCNC_0x162"].sigs, 0)
+  cs.modelV2 = N(meta=cs.modelV2.meta, position=cs.modelV2.position, laneLineProbs=[.9] * 4, orientationRate=N(z=[0.]), leadsV3=[], roadEdges=[],
+                 laneLines=[N(x=[0., 10., 30., 100.], y=[y] * 4) for y in (-5.4, -1.8, 1.8, 5.4)])
+  cs.out.leftBlindspot = True
+  for i in range(40):
+    x = 30. + 2. * i * .05  # A vehicle ahead in the left lane, faster than ego, with the radar's moving class.
+    cs.live_tracks = N(points=[N(trackId=40, dRel=x, yRel=3.6, vRel=2., vLead=12., yvRel=0., measured=True,
+                                 radarSource="frontRadar", trackState=2, motionState=2)])
+    values = dict(send(i * 5))["CCNC_0x162"]
+  assert values["LF_DETECT"] in (3, 4) and values["LF_DETECT_DISTANCE"] == pytest.approx(.8 * x, abs=1.)
+  assert values["FF_DETECT"] == 0 and values["RF_DETECT"] == 0
+  assert values["LR_DETECT"] == 4 and not ccnc_radar_map._live.failed
+
+
+def _map_left_vehicle(display, monkeypatch, correction, lateral, sends):
+  params, cs, send = display
+  params[KEYS[2]] = params[MAP_KEY] = True
+  params[POSITION_KEY] = correction
+  monkeypatch.setattr(ccnc_extension, "update_vehicles", lambda *args: pytest.fail("existing selector used"))
+  cs.ccnc_0x162 = dict.fromkeys(CANPacker("hyundai_canfd_generated").dbc.name_to_msg["CCNC_0x162"].sigs, 0)
+  shown = []
+  for i in range(sends):  # A vehicle 30m ahead in the left lane at ego speed, with the radar's moving class.
+    cs.modelV2 = N(meta=cs.modelV2.meta, position=cs.modelV2.position, laneLineProbs=[.9] * 4, orientationRate=N(z=[0.]), leadsV3=[], roadEdges=[],
+                   laneLines=[N(x=[0., 10., 30., 100.], y=[y] * 4) for y in (-5.4, -1.8, 1.8, 5.4)])  # A new model publication per send.
+    cs.live_tracks = N(points=[N(trackId=40, dRel=30., yRel=lateral(i * .05), vRel=0., vLead=10., yvRel=0., measured=True,
+                                 radarSource="frontRadar", trackState=2, motionState=2)])
+    values = dict(send(i * 5))["CCNC_0x162"]
+    shown.append(values["LF_DETECT_LATERAL"] if values["LF_DETECT"] else None)
+  assert not ccnc_radar_map._live.failed and all(v is not None for v in shown[20:])
+  return shown
+
+
+def test_position_correction_centers_a_lane_keeping_vehicle_selected_by_the_radar_map(display, monkeypatch):
+  wobble = lambda t: 4.3 + .12 * math.sin(5. * math.pi * t)  # Small and fast: below what the correction accepts as a lane change.
+  measured = _map_left_vehicle(display, monkeypatch, False, wobble, 160)[-40:]
+  monkeypatch.delattr(main.create_ccnc_messages, "_display_options", raising=False)
+  centered = _map_left_vehicle(display, monkeypatch, True, wobble, 160)[-40:]
+  assert max(centered) - min(centered) < .05 < max(measured) - min(measured)
+  assert centered[-1] == pytest.approx(3.6, abs=.2)  # The left lane centre, not the measured 4.3m.
+
+
+def test_position_correction_follows_sustained_lateral_motion_on_the_radar_map(display, monkeypatch):
+  shown = _map_left_vehicle(display, monkeypatch, True, lambda t: max(2.6, 4.6 - .55 * t), 80)
+  assert shown[-1] == pytest.approx(2.6, abs=.4)  # Released from the 3.6m lane centre.
 
 
 def test_hda2_never_calls_front_radar_display(display, monkeypatch):

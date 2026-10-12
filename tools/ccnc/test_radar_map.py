@@ -1,0 +1,652 @@
+"""Independent map invariants; does not import the old LF/FF/RF selector."""
+import importlib.util
+import math
+from pathlib import Path
+import sys
+from types import SimpleNamespace as N
+
+import pytest
+
+
+PATH = Path(__file__).resolve().parents[2] / 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_radar_map.py'
+spec = importlib.util.spec_from_file_location('ccnc_map_test_module', PATH)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+RadarMap = module.CcncRadarMap
+
+
+def point(key, x, y=0., speed=0., **extra):
+  return N(trackId=key, dRel=x, yRel=y, vLead=speed, vRel=speed, radarSource='frontRadar', measured=True, **extra)
+
+
+def model(probability=.95):
+  return N(laneLines=[N(x=[0., 10., 30., 100.], y=[y] * 4) for y in (-5.4, -1.8, 1.8, 5.4)],
+           laneLineProbs=[probability] * 4, orientationRate=N(z=[0.]), leadsV3=[])
+
+
+def run(points, count=25, speed=0., radar=None):
+  radar = RadarMap() if radar is None else radar
+  for i in range(count):
+    now = round(i * .05, 6)
+    radar.update(N(points=points(now)), model(), now, speed)
+  return radar
+
+
+@pytest.mark.parametrize('y,slot', [(0., 0), (3.5, 1), (-3.5, 2)])
+def test_stationary_lane_points_remain_unknown_without_vehicle_evidence(y, slot):
+  # Ego is driving: a stopped ego admits a resting adjacent-lane return as a waiting vehicle.
+  radar = run(lambda t: [point(1, 25. - 5. * t, y)], speed=5.)
+  assert radar.selected[slot] is None
+  assert next(iter(radar.objects.values())).vehicle < .6
+  assert not radar.walls
+
+
+def test_radar_slot_reuse_does_not_teleport_or_inherit_vehicle_identity():
+  radar = run(lambda t: [point(1, 10. + t, 3.5, 1.)])
+  old = radar.selected[1]
+  radar.update(N(points=[point(1, RadarMap.MAX_X - 2., -2.1)]), model(), 1.25, 0.)
+  new = max(radar.objects)
+  assert old != new
+  assert not radar.objects[new].motion_confirmed
+  assert radar.objects[new].hits == 1
+  assert radar.objects[old].x < 15.
+
+
+def test_id_change_near_predicted_position_reconnects_without_duplicate():
+  radar = run(lambda t: [point(1 if t < .5 else 2, 10. + t, 3.5, 1.)])
+  assert len(radar.objects) == 1
+  assert next(iter(radar.objects.values())).source == 2
+  assert radar.selected[1] is not None
+
+
+def test_two_nearby_measurements_cannot_update_one_track_twice():
+  radar = run(lambda t: [point(1, 10., 3.5)], count=5)
+  old = next(iter(radar.objects.values()))
+  hits = old.hits
+  radar.update(N(points=[point(1, 10.01, 3.5), point(2, 10.1, 3.5)]), model(), .25, 0.)
+  assert old.hits == hits + 1
+  assert len(radar.objects) == 2
+
+
+@pytest.mark.parametrize('sign', [-1, 1])
+def test_boundary_stationary_row_becomes_wall_but_interior_row_does_not(sign):
+  radar = run(lambda t: [point(i, x, sign * 2.1) for i, x in enumerate((5., 7., 9., 11.))])
+  assert radar.walls
+  assert all(o.structure for o in radar.objects.values())
+  assert all(k is None for k in radar.selected)
+  interior = run(lambda t: [point(i, x, sign * 3.5) for i, x in enumerate((5., 7., 9., 11.))])
+  assert not interior.walls
+  # Ego is stopped here, so the nearest resting return a car body's distance into the lane is a waiting vehicle.
+  assert interior.objects[interior.selected[1 if sign == 1 else 2]].admitted
+
+
+@pytest.mark.parametrize('velocity', [.5, 1., 2., 6.])
+def test_moving_periodic_array_never_becomes_wall(velocity):
+  # Reported speed matches the motion, as in every recorded log. Position-only
+  # motion (zero reported speed) was a synthetic input and is no longer evidence.
+  radar = RadarMap()
+  for i in range(81):
+    t = round(i * .05, 6)
+    radar.update(N(points=[point(k, x + velocity * t, 2.1, velocity) for k, x in enumerate((5., 7., 9., 11.))]), model(), t, 0.)
+    assert not radar.walls
+  # .5m/s is below the Doppler evidence limit: not a wall, but not a confirmed vehicle either.
+  assert any(o.motion_confirmed for o in radar.objects.values()) == (velocity > RadarMap.DOPPLER_SPEED)
+
+
+def test_stationary_row_with_oscillating_returns_can_form_wall():
+  radar = run(lambda t: [point(k, x + (.12 if round(t * 20) % 2 else -.12), 2.1)
+                         for k, x in enumerate((5., 7., 9., 11.))])
+  assert radar.walls
+
+
+def test_moving_vehicle_that_stops_keeps_vehicle_history():
+  radar = run(lambda t: [point(1, 10. + min(t, .5) * 2., 3.5, 2. if t < .5 else 0.)], count=45)
+  obj = radar.objects[radar.selected[1]]
+  assert obj.motion_confirmed and obj.stationary and not obj.structure
+
+
+def test_missing_stationary_object_follows_ego_braking_not_old_relative_velocity():
+  radar = run(lambda t: [point(1, 12. + min(t, .3) - t * 2., 3.5, 1. if t < .3 else 0.)], count=21, speed=2.)
+  key = radar.selected[1]
+  assert key is not None
+  radar.update(N(points=[]), model(), 1.05, 0.)
+  before = radar.to_ego(radar.objects[key].x, radar.objects[key].y)
+  for i in range(22, 41):
+    radar.update(N(points=[]), model(), round(i * .05, 6), 0.)
+  after = radar.to_ego(radar.objects[key].x, radar.objects[key].y)
+  assert after == pytest.approx(before, abs=.01)
+  assert radar.selected[1] == key
+
+
+def test_prediction_and_cached_input_never_add_evidence():
+  radar = RadarMap()
+  live = N(points=[point(1, 10., 3.5)])
+  md = model()
+  for i in range(20):
+    radar.update(live, md, i * .05, 0.)
+  obj = next(iter(radar.objects.values()))
+  assert obj.hits == 1 and len(obj.history) == 1
+  assert obj.vehicle < .6 and not radar.walls
+
+
+def test_explicit_repeated_timestamp_cannot_add_evidence_with_new_wrapper():
+  radar = RadarMap()
+  for i in range(4):
+    radar.update(N(points=[point(1, 10., 3.5)]), model(), i * .05, 0., radar_time=0.)
+  assert next(iter(radar.objects.values())).hits == 1
+
+
+def test_distance_retention_is_separate_from_display_uncertainty():
+  radar = run(lambda t: [point(1, 10. + t, 3.5, 1.)])
+  key = radar.selected[1]
+  for i in range(25, 201):
+    radar.update(N(points=[]), model(), round(i * .05, 6), 0.)
+  assert key in radar.objects
+  assert radar.objects[key].uncertainty > radar.MAX_DISPLAY_UNCERTAINTY
+  assert key not in radar.selected
+
+
+def test_points_are_removed_only_after_passing_rear_distance_or_other_bounds():
+  radar = run(lambda t: [point(1, 2., 3.5)], count=21)
+  key = next(iter(radar.objects))
+  for i in range(21, 181):
+    radar.update(N(points=[]), model(), round(i * .05, 6), 1.)
+  assert key not in radar.objects
+
+
+@pytest.mark.parametrize('kind', ['nan', 'reverse', 'gap', 'time_reversal', 'missing_yaw'])
+def test_unknown_pose_clears_map(kind):
+  radar = run(lambda t: [point(1, 10., 3.5)])
+  md, now, speed = model(), 1.25, 0.
+  if kind == 'nan':speed = math.nan
+  if kind == 'gap':now = 2.
+  if kind == 'time_reversal':now = .5
+  if kind == 'missing_yaw':md.orientationRate.z = []
+  radar.update(N(points=[]), md, now, speed, reverse=kind == 'reverse')
+  assert not radar.objects and not radar.lanes
+
+
+def test_capacity_and_sensor_source_are_bounded():
+  points = [point(i, .2 + (i % 100), -10. + (i // 100) * .8) for i in range(3000)]
+  points.append(N(trackId=9999, dRel=10., yRel=0., vLead=0., vRel=0., measured=True, radarSource='scc'))
+  radar = RadarMap()
+  radar.update(N(points=points), model(), 0., 0.)
+  assert len(radar.objects) <= radar.MAX_OBJECTS
+  assert all(o.source != 9999 for o in radar.objects.values())
+
+
+def test_center_preference_does_not_merge_two_points():
+  radar = run(lambda t: [point(1, 10. + t, 2.3, 1.), point(2, 10.3 + t, 3.5, 1.)])
+  assert len(radar.objects) == 2
+  assert radar.objects[radar.selected[1]].source == 2
+
+
+def test_display_adapter_does_not_mutate_inputs_or_unrelated_can_fields():
+  radar = run(lambda t: [point(1, 10. + t, -3.5, 1.)])
+  values = dict(untouched=123)
+  radar.display_values(values)
+  assert values['untouched'] == 123
+  assert values['RF_DETECT'] != 0 and values['LF_DETECT'] == 0
+  assert 0. <= values['RF_DETECT_DISTANCE'] <= 204.7
+  assert 0. <= values['RF_DETECT_LATERAL'] <= 12.7
+
+
+def test_wall_can_be_revoked_by_observed_motion():
+  radar = run(lambda t: [point(k, x, 2.1) for k, x in enumerate((5., 7., 9., 11.))])
+  assert radar.walls
+  for i in range(25, 70):
+    t = round(i * .05, 6)
+    radar.update(N(points=[point(k, x + (t - 1.2), 2.1, 1.) for k, x in enumerate((5., 7., 9., 11.))]), model(), t, 0.)
+  assert not radar.walls
+
+
+def test_measurement_time_uses_historical_ego_pose():
+  radar = RadarMap()
+  for i in range(30):
+    now = round(i * .05, 6)
+    stamp = round(now - .1, 6)
+    live = N(points=[point(1, 20. - 2. * stamp, 3.5)])
+    radar.update(live, model(), now, 2., radar_time=stamp)
+  obj = next(iter(radar.objects.values()))
+  assert not obj.motion_confirmed
+  assert obj.stationary
+  assert obj.x == pytest.approx(20., abs=.05)
+
+
+def test_one_position_step_is_not_confirmed_motion():
+  radar = run(lambda t: [point(1, 10. + (.3 if t >= .1 else 0.), 2.1)])
+  assert not any(o.motion_confirmed for o in radar.objects.values())
+
+
+def test_wall_limits_later_lane_expansion_without_editing_input():
+  radar = run(lambda t: [point(k, x, 2.1) for k, x in enumerate((5., 7., 9., 11.))])
+  assert radar.walls
+  for i in range(25, 31):
+    md = model()
+    md.laneLines[1].y = [-3.] * 4
+    radar.update(N(points=[]), md, i * .05, 0.)
+    assert md.laneLines[1].y == [-3.] * 4
+  assert radar._lane(7., 2.6)[0] == 0
+  assert radar._lane(7., 2.6, respect_walls=True)[0] is None
+
+
+@pytest.mark.parametrize('yaw', [-.12, .12])
+def test_ego_turn_does_not_turn_fixed_world_point_into_moving_vehicle(yaw):
+  radar = RadarMap()
+  wx, wy = 20., 3.5
+  px = py = angle = 0.
+  for i in range(31):
+    now = round(i * .05, 6)
+    if i:
+      px += .1 * math.cos(angle + yaw * .025)
+      py += .1 * math.sin(angle + yaw * .025)
+      angle += yaw * .05
+    x = math.cos(angle) * (wx - px) + math.sin(angle) * (wy - py)
+    y = -math.sin(angle) * (wx - px) + math.cos(angle) * (wy - py)
+    radar.update(N(points=[point(1, x, y)]), model(), now, 2., yaw_rate=yaw)
+  obj = next(iter(radar.objects.values()))
+  assert obj.stationary and not obj.motion_confirmed
+  assert (obj.x, obj.y) == pytest.approx((wx, wy), abs=.02)
+
+
+@pytest.mark.parametrize('field', ['dRel', 'yRel', 'vLead', 'vRel'])
+def test_nonfinite_measurement_cannot_poison_map(field):
+  p = point(1, 10., 3.5)
+  setattr(p, field, math.nan)
+  radar = run(lambda t: [p])
+  assert not radar.objects
+
+
+def test_ambiguous_new_id_does_not_inherit_either_nearby_identity():
+  radar = run(lambda t: [point(1, 10., 3.3), point(2, 10., 3.7)])
+  previous = set(radar.objects)
+  radar.update(N(points=[point(3, 10., 3.5)]), model(), 1.25, 0.)
+  created = set(radar.objects) - previous
+  assert len(created) == 1
+  assert radar.objects[created.pop()].hits == 1
+
+
+def test_weak_current_lanes_stop_admitting_new_lane_based_outputs():
+  radar = run(lambda t: [point(1, 10. + t, 3.5, 1.)])
+  for i in range(25, 65):
+    t = round(i * .05, 6)
+    radar.update(N(points=[point(1, 10. + t, 3.5, 1.)]), model(.05), t, 0.)  # below the .1 lane-use limit
+  assert radar.objects and radar.lanes
+  assert all(k is None for k in radar.selected)
+
+
+def test_collapsed_projected_wall_segment_is_unknown_not_division_by_zero():
+  assert module.interpolate([(1., 2.), (1., 3.)], 1.) is None
+
+
+@pytest.mark.parametrize('y,slot', [(0., 0), (3.5, 1), (-3.5, 2)])
+def test_strong_vision_can_corroborate_a_stationary_vehicle(y, slot):
+  radar = RadarMap()
+  for i in range(25):
+    md = model()
+    md.leadsV3 = [N(prob=.9, x=[11.52], y=[-y])]
+    radar.update(N(points=[point(1, 10., y)]), md, round(i * .05, 6), 0.)
+  assert radar.selected[slot] is not None
+  assert not radar.walls
+
+
+def test_capacity_eviction_cannot_remove_a_track_assigned_later_in_same_scan():
+  radar = RadarMap()
+  radar.MAX_OBJECTS = 3
+  radar.update(N(points=[point(1, 10.), point(2, RadarMap.MAX_X - 3.), point(3, RadarMap.MAX_X)]), model(), 0., 0.)
+  for obj in radar.objects.values():
+    obj.existence = .1 if obj.source == 3 else 1.
+  radar.update(N(points=[point(4, RadarMap.MAX_X - 1.5), point(3, RadarMap.MAX_X)]), model(), .05, 0.)
+  assert len(radar.objects) == 3
+  assert {3, 4}.issubset({obj.source for obj in radar.objects.values()})
+  assert next(obj for obj in radar.objects.values() if obj.source == 3).hits == 2
+
+
+@pytest.mark.parametrize('y', [-3.5, 3.5])
+def test_opposing_vehicle_is_remembered_but_not_selected_for_side_slot(y):
+  radar = run(lambda t: [point(1, 20. - 3. * t, y, -3.)])
+  assert any(o.motion_confirmed for o in radar.objects.values())
+  assert all(key is None for key in radar.selected)
+
+
+def test_near_same_id_reflection_shift_keeps_identity_but_other_id_does_not():
+  for source, count in ((1, 1), (2, 2)):
+    radar = run(lambda t: [point(1, 10., 2.1)])
+    radar.update(N(points=[point(source, 10.8, 2.1)]), model(), 1.25, 0.)
+    assert len(radar.objects) == count
+    assert next(iter(radar.objects.values())).hits == (26 if source == 1 else 25)
+
+
+def test_admission_edge_has_retention_margin_and_near_zero_is_observable():
+  radar = RadarMap()
+  radar.update(N(points=[point(1, .05), point(2, RadarMap.MAX_X), point(3, RadarMap.MAX_X + .1)]), model(), 0., 0.)
+  assert {o.source for o in radar.objects.values()} == {1, 2}
+  far = next(o for o in radar.objects.values() if o.source == 2)
+  far.x = RadarMap.KEEP_X - 1.
+  radar.update(N(points=[]), model(), .05, 0.)
+  assert far.key in radar.objects
+  far.x = RadarMap.KEEP_X + .1
+  radar.update(N(points=[]), model(), .1, 0.)
+  assert far.key not in radar.objects
+
+
+def test_capacity_preserves_near_unknown_points_against_new_distant_returns():
+  radar = RadarMap()
+  radar.MAX_OBJECTS = 3
+  radar.update(N(points=[point(1, 2.), point(2, 5.), point(3, 10.)]), model(), 0., 0.)
+  for i in range(1, 10):
+    radar.update(N(points=[point(10 + i, 28.)]), model(), i * .05, 0.)
+  assert {o.source for o in radar.objects.values()} == {1, 2, 3}
+  assert radar.evicted == 0
+
+
+def test_single_member_departure_preserves_remaining_wall_and_fixed_anchors():
+  radar = run(lambda t: [point(k, x, 2.1) for k, x in enumerate((5., 7., 9., 11.))])
+  before = {k: p for w in radar.walls for k, p in zip(w.members, w.points)}
+  for i in range(25, 85):
+    t = round(i * .05, 6)
+    radar.update(N(points=[point(k, x + (t - 1.2 if k == 0 else 0.), 2.1, 1. if k == 0 else 0.)
+                           for k, x in enumerate((5., 7., 9., 11.))]), model(), t, 0.)
+  moving = next(o for o in radar.objects.values() if o.source == 0)
+  assert moving.motion_confirmed and not moving.structure
+  assert radar.walls
+  assert all(p == before[k] for w in radar.walls for k, p in zip(w.members, w.points))
+  assert all(o.structure for o in radar.objects.values() if o.source != 0)
+
+
+def test_established_wall_survives_bounded_reflection_motion():
+  radar = run(lambda t: [point(k, x, 2.1) for k, x in enumerate((5., 7., 9., 11.))])
+  for i in range(25, 45):
+    t = round(i * .05, 6)
+    radar.update(N(points=[point(k, x + (min(1., t - 1.2) if k == 0 else 0.), 2.1)
+                           for k, x in enumerate((5., 7., 9., 11.))]), model(), t, 0.)
+  assert all(o.structure for o in radar.objects.values())
+  assert radar.selected[1] is None
+
+
+@pytest.mark.parametrize('witnesses,expected', [(1, False), (2, True)])
+def test_wall_can_use_remembered_neighbor_but_needs_two_fresh_witnesses(witnesses, expected):
+  radar = run(lambda t: [point(k, x, 2.1) for k, x in enumerate((5., 7., 9.))])
+  radar.walls.clear()
+  radar.update(N(points=[point(k, x, 2.1) for k, x in enumerate((5., 7., 9.)) if k < witnesses]), model(), 1.25, 0.)
+  assert bool(radar.walls) is expected
+
+
+def test_hybrid_keeps_unknown_lane_vehicle_and_distant_front_but_hides_wall_member():
+  radar = run(lambda t: [point(k, x, 2.1) for k, x in enumerate((5., 7., 9.))] + [point(9, 8., -3.5)])
+  points = [point(20, 100.), point(0, 5., 2.1), point(9, 8., -3.5)]
+  values = {'unrelated': 123}
+  for p, (d, y, flag) in zip(points, radar.SLOT_FIELDS):
+    values.update({d: p.dRel * .8, y: abs(p.yRel), flag: 2})
+  before = dict(values)
+  radar.refine_existing(values, points)
+  assert values == dict(before, LF_DETECT=0)
+  assert radar.selected[2] is not None
+
+
+def test_hybrid_does_not_associate_a_reused_id_or_mismatched_stop_memory_output():
+  radar = run(lambda t: [point(k, x, 2.1) for k, x in enumerate((5., 7., 9.))])
+  for points, x in (([None, point(0, 20., 2.1), None], 20.), ([None, point(0, 5., 2.1), None], 9.)):
+    values = dict(LF_DETECT=2, LF_DETECT_DISTANCE=x * .8)
+    assert radar.refine_existing(values, points)['LF_DETECT'] == 2
+
+@pytest.mark.parametrize('middle_y,expected', [(2.1, True), (3.2, False)])
+def test_two_walls_use_aligned_intermediate_point_beyond_fixed_three_meter_gap(middle_y, expected):
+  points = [point(k, x, 2.1) for k, x in enumerate((2., 4., 6., 14., 16., 18.))]
+  radar = run(lambda t: points)
+  assert len(radar.walls) == 2
+  for i in range(25, 45):
+    radar.update(N(points=points + [point(20, 10., middle_y)]), model(), round(i * .05, 6), 0.)
+  joined = [w for w in radar.walls if len(w.members) == 7]
+  assert bool(joined) is expected
+  if expected:
+    assert next(o for o in radar.objects.values() if o.source == 20).structure
+
+
+def test_wall_gap_stays_open_without_stationary_intermediate_evidence():
+  points = [point(k, x, 2.1) for k, x in enumerate((2., 4., 6., 14., 16., 18.))]
+  radar = run(lambda t: points)
+  for i in range(25, 45):
+    t = round(i * .05, 6)
+    radar.update(N(points=points + [point(20, 9. + (t - 1.2), 2.1, 1.)]), model(), t, 0.)
+  assert len(radar.walls) == 2
+  assert not next(o for o in radar.objects.values() if o.source == 20).structure
+
+
+def test_different_wall_directions_are_not_joined_by_a_middle_point():
+  radar = run(lambda t: [point(k, x, 2.1 + (max(0., x - 14.) * .35))
+                         for k, x in enumerate((2., 4., 6., 10., 14., 16., 18.))])
+  assert not any(len(w.members) == 7 for w in radar.walls)
+
+
+def passing(target_speed, ego=8., y=3.2, start=14.):
+  """Reported values of an off-axis return while ego passes: speed and distance both
+  carry the unprojected range-rate remainder ego*(1-cos(azimuth))."""
+  state = dict(world=start, last=0.)
+  def points(now):
+    dt = now - state['last']
+    state['last'] = now
+    x = state['world'] - ego * now
+    cosine = x / math.hypot(x, y)
+    reported = ego * (1. - cosine) + target_speed * cosine
+    state['world'] += reported * dt
+    x = state['world'] - ego * now
+    return [point(1, x, y, reported)] if x >= 1. else []
+  return points
+
+
+def test_fixed_off_axis_return_is_not_motion_confirmed_by_range_rate_geometry():
+  radar = run(passing(0.), count=30, speed=8.)
+  obj = next(iter(radar.objects.values()))
+  assert obj.drift > .3
+  assert not obj.motion_confirmed
+  assert radar.selected == (None, None, None)
+  assert max(a[1] for a in obj.history) - min(a[1] for a in obj.history) < .1
+
+
+def test_slow_adjacent_vehicle_remains_motion_confirmed_after_geometry_compensation():
+  radar = run(passing(2.), count=30, speed=8.)
+  assert any(o.motion_confirmed for o in radar.objects.values())
+
+def stopping_beside(radar, until, ego_speed=lambda t: 2., a_ego=-.1, blindspot=(False, False)):
+  """Ego slows past a slower left-lane vehicle that leaves radar coverage at 1.5m."""
+  state = radar.__dict__.setdefault('_test_state', dict(t=0., ego=0.))
+  while state['t'] < until - 1e-9:
+    now = state['t']
+    relative = 6. + min(now, 4.8) - state['ego']
+    cosine = relative / math.hypot(relative, 3.5)
+    points = [point(1, relative, 3.5, ego_speed(now) * (1. - cosine) + cosine)] if relative >= 1.5 else []
+    radar.update(N(points=points), model(), now, ego_speed(now), a_ego=a_ego, blindspot=blindspot)
+    state['ego'] += ego_speed(now) * .05
+    state['t'] = round(now + .05, 6)
+  return radar
+
+
+def test_stop_memory_draws_unseen_side_vehicle_at_zero_distance_until_four_metres_behind():
+  radar = stopping_beside(RadarMap(), 6.)
+  key = radar.selected[1]
+  assert key is not None and radar.remembered[1]
+  assert -4. <= radar.local[key][0] < 0.
+  values = radar.display_values({})
+  assert values['LF_DETECT'] and values['LF_DETECT_DISTANCE'] == 0.
+  stopping_beside(radar, 8., ego_speed=lambda t: 0., a_ego=0.)
+  assert radar.selected[1] == key
+  stopping_beside(radar, 10., ego_speed=lambda t: 2.)
+  assert radar.selected[1] is None
+
+
+def test_stop_memory_is_not_drawn_while_driving_or_with_same_side_blindspot_display():
+  driving = stopping_beside(RadarMap(), 6., a_ego=0.)
+  assert not driving.remembered[1]  # Only the ordinary short prediction may remain.
+  assert stopping_beside(driving, 7., a_ego=0.).selected[1] is None
+  assert stopping_beside(RadarMap(), 6., blindspot=(True, False)).selected[1] is None
+  assert stopping_beside(RadarMap(), 6., blindspot=(False, True)).selected[1] is not None
+
+@pytest.mark.parametrize('y,slot,missing,edge', [(3.3, 1, 0, 6.), (-3.3, 2, 3, 6.), (3.3, None, 0, 3.5), (-3.3, None, 3, None)])
+def test_moving_vehicle_beside_unmarked_outer_boundary_needs_road_edge_room(y, slot, missing, edge):
+  radar = RadarMap()
+  for i in range(30):
+    now = round(i * .05, 6)
+    md = model()
+    md.laneLineProbs[missing] = 0.
+    if edge is not None:
+      md.roadEdges = [N(x=[0., 10., 30., 100.], y=[side * edge] * 4) for side in (-1., 1.)]
+    radar.update(N(points=[point(1, 10. + 2. * now, y, 2.)]), md, now, 0.)
+  if slot is None:
+    assert radar.selected == (None, None, None)
+    return
+  obj = radar.objects[radar.selected[slot]]
+  assert obj.motion_confirmed and not obj.interior
+
+def test_radar_moving_class_is_vehicle_evidence_even_after_the_target_stops():
+  radar = RadarMap()
+  for i in range(12):
+    now = round(i * .05, 6)
+    radar.update(N(points=[point(1, 10., 3.5)]), model(), now, 0., evidence={1: (2 if i < 2 else 1, 10.)})
+  obj = radar.objects[radar.selected[1]]
+  assert obj.radar_moving and obj.motion_confirmed and obj.doppler == 0
+
+
+def test_radar_class_for_another_distance_or_stationary_class_is_not_evidence():
+  for report in ((2, 20.), (1, 10.), (0, 10.)):
+    radar = run(lambda t: [point(1, 10., 3.5)], count=12)
+    radar = RadarMap()
+    for i in range(12):
+      radar.update(N(points=[point(1, 10., 3.5)]), model(), round(i * .05, 6), 0., evidence={1: report})
+    assert not any(o.motion_confirmed or o.radar_moving for o in radar.objects.values())
+
+
+def test_doppler_evidence_needs_repeated_unexplained_speed_within_45_degrees():
+  radar = RadarMap()
+  for i in range(4):
+    radar.update(N(points=[point(1, 10., 3.5, 1.)]), model(), round(i * .05, 6), 0.)
+  assert not any(o.motion_confirmed for o in radar.objects.values())
+  radar.update(N(points=[point(1, 10., 3.5, 1.)]), model(), .2, 0.)
+  assert next(iter(radar.objects.values())).motion_confirmed
+  wide = RadarMap()
+  for i in range(8):
+    wide.update(N(points=[point(1, 2., 3.5, 1.)]), model(), round(i * .05, 6), 0.)
+  assert not any(o.motion_confirmed for o in wide.objects.values())
+
+@pytest.mark.parametrize('y', [2.0, 2.6, 4.5, -2.0, -2.6])
+def test_resting_return_too_close_to_ego_lane_line_or_past_the_lane_is_not_a_waiting_vehicle(y):
+  # Reviewed video: posts, a bollard and the lead truck's corner were 1.5-2.1m from ego's axis.
+  radar = run(lambda t: [point(1, 10., y)], count=40)
+  assert radar.selected == (None, None, None) and not any(o.admitted for o in radar.objects.values())
+
+
+def test_waiting_admission_only_while_ego_is_stopped():
+  stopped = run(lambda t: [point(1, 10., 3.5)], count=8)
+  assert stopped.selected[1] is None  # Not yet .5s at rest.
+  stopped = run(lambda t: [point(1, 10., 3.5)], count=20)
+  obj = stopped.objects[stopped.selected[1]]
+  assert obj.admitted and not obj.motion_confirmed and obj.vehicle < .6
+  for i in range(20, 60):  # Seen for 1s only, never as a measured track: shown while predicted, not remembered.
+    stopped.update(N(points=[]), model(), round(i * .05, 6), 0.)
+  assert stopped.selected[1] is None and not stopped.remembered[1]
+  stopped = run(lambda t: [point(1, 10., 3.5, trackState=2)], count=45)
+  obj = stopped.objects[stopped.selected[1]]
+  for i in range(45, 445):  # Tracked for 2s, then dropped by the radar: remembered while ego waits.
+    stopped.update(N(points=[]), model(), round(i * .05, 6), 0.)
+    assert stopped.selected[1] == obj.key
+  assert stopped.remembered[1] and not obj.motion_confirmed
+  near_line = run(lambda t: [point(1, 10., 2.0)], count=20)
+  assert near_line.selected[1] is None  # On the lane line, not a lane-centre vehicle.
+  driving = run(lambda t: [point(1, 30. - 5. * t, 3.5)], count=20, speed=5.)
+  assert driving.selected[1] is None and not any(o.admitted for o in driving.objects.values())
+
+
+def test_stop_memory_ignores_a_vehicle_that_was_crossing_when_it_left_coverage():
+  radar = RadarMap()
+  for i in range(20):
+    now = round(i * .05, 6)
+    radar.update(N(points=[point(1, 4., 5.2 - 3. * now, 3., yvRel=-3.)]), model(), now, 0., evidence={1: (2, 4.)})
+  for i in range(20, 40):
+    radar.update(N(points=[]), model(), round(i * .05, 6), 0., evidence={})
+  assert not radar.remembered[1] and not radar.remembered[2]
+
+def test_object_that_walked_sideways_is_neither_a_waiting_vehicle_nor_remembered():
+  # 395/7: pedestrians crossing in front paused in the adjacent lane and were remembered for 24s.
+  radar = RadarMap()
+  for i in range(80):
+    now = round(i * .05, 6)
+    y = max(3.5, 6.5 - 1.2 * now)  # Walks 3m sideways at 10m, then stands in the left lane.
+    radar.update(N(points=[point(1, 10., y, trackState=2)]), model(), now, 0.)
+  assert not any(o.admitted for o in radar.objects.values())
+  for i in range(80, 140):
+    radar.update(N(points=[]), model(), round(i * .05, 6), 0.)
+  assert radar.selected[1] is None and not radar.remembered[1]
+
+
+def test_undetected_opposing_vehicle_does_not_reappear_as_a_side_display():
+  # Review 2026-10-12: freezing an unseen object's position must not erase its last real direction.
+  radar = RadarMap()
+  for i in range(24):
+    now = round(i * .05, 6)
+    radar.update(N(points=[point(1, 12. - now, 3.5, -1.)]), model(), now, 0., evidence={1: (2, 12. - now)})
+    assert radar.selected[1] is None
+  for i in range(24, 124):
+    radar.update(N(points=[]), model(), round(i * .05, 6), 0., evidence={})
+    assert radar.selected[1] is None, i
+
+def test_radar_vehicle_evidence_releases_one_wall_member_without_removing_the_wall():
+  # Review 2026-10-12: a wall member later classified as moving by the radar must not stay hidden.
+  radar = run(lambda t: [point(k, x, 2.1) for k, x in enumerate((5., 7., 9., 11.))])
+  assert radar.walls and all(o.structure for o in radar.objects.values())
+  for i in range(25, 35):
+    radar.update(N(points=[point(k, x, 2.1) for k, x in enumerate((5., 7., 9., 11.))]), model(), round(i * .05, 6), 0.,
+                 evidence={0: (2, 5.)})
+  first = next(o for o in radar.objects.values() if o.source == 0)
+  assert first.motion_confirmed and not first.structure
+  assert radar.walls and first.key not in radar.walls[0].members
+  assert all(o.structure for o in radar.objects.values() if o.source != 0)
+  shown = radar.refine_existing({'FF_DISTANCE': 0., 'FF_DETECT': 0, 'LF_DETECT_DISTANCE': 4., 'LF_DETECT': 2, 'RF_DETECT_DISTANCE': 0., 'RF_DETECT': 0},
+                                [None, point(0, 5., 2.1), None])
+  assert shown['LF_DETECT'] == 2
+
+def test_sporadic_doppler_samples_do_not_accumulate_into_vehicle_evidence():
+  # Review 2026-10-12: one unexplained-speed sample per second on a resting return is noise, not travel.
+  radar = RadarMap()
+  for i in range(160):
+    now = round(i * .05, 6)
+    radar.update(N(points=[point(1, 10., 3.5, 1. if i % 20 == 0 else 0.)]), model(), now, 5.)
+  obj = next(iter(radar.objects.values()))
+  assert obj.doppler >= 5 and not obj.doppler_confirmed and not obj.motion_confirmed
+
+
+def test_confirmed_doppler_motion_stays_vehicle_evidence_after_the_vehicle_stops():
+  radar = RadarMap()
+  for i in range(60):
+    now = round(i * .05, 6)
+    radar.update(N(points=[point(1, 10. + min(now, .5), 3.5, 1. if now < .5 else 0.)]), model(), now, 0.)
+  obj = radar.objects[radar.selected[1]]
+  assert obj.doppler_confirmed and obj.motion_confirmed and obj.stationary
+
+def test_unseen_object_is_shown_only_as_a_short_prediction_or_as_stop_memory():
+  # Review 2026-10-12: an object unseen for seconds must not stay an ordinary candidate
+  # and bypass the stop-memory conditions (ego stopped/slowing, no same-side blind-spot display).
+  def scene(speed, blindspot):
+    radar = RadarMap()
+    for i in range(20):
+      now = round(i * .05, 6)
+      radar.update(N(points=[point(1, 3., 3.5)]), model(), now, speed, evidence={1: (2, 3.)}, blindspot=blindspot)
+    assert radar.selected[1] is not None
+    shown = []
+    for i in range(20, 70):
+      now = round(i * .05, 6)
+      radar.update(N(points=[]), model(), now, speed, evidence={}, blindspot=blindspot)
+      shown.append((round(now - .95, 2), radar.selected[1] is not None, radar.remembered[1]))
+    return shown
+  stopped = scene(0., (False, False))
+  assert all(on for _, on, _ in stopped)                                   # resting vehicle: prediction, then memory
+  assert all(memory == (age > RadarMap.PREDICTION_HOLD) for age, _, memory in stopped)
+  blind = scene(0., (True, False))
+  assert all(on == (age <= RadarMap.PREDICTION_HOLD) for age, on, _ in blind)   # memory suppressed by the blind-spot display
+  driving = scene(0., (False, False))[:1] and RadarMap()
+  for i in range(20):
+    driving.update(N(points=[point(1, 20. - 3. * i * .05, 3.5, 2.)]), model(), round(i * .05, 6), 5., evidence={1: (2, 20. - 3. * i * .05)})
+  assert driving.selected[1] is not None
+  for i in range(20, 50):
+    driving.update(N(points=[]), model(), round(i * .05, 6), 5., evidence={})
+    assert (driving.selected[1] is not None) == (round(i * .05 - .95, 2) <= RadarMap.PREDICTION_HOLD)

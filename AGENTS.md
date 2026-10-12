@@ -1,5 +1,249 @@
 # Repository memory
 
+- On 2026-10-12 the user asked for a Carrot Web option that switches CCNC vehicle
+  selection to the radar map: CcncRadarMap (default OFF, VEH_CANFD group, needs
+  CcncRadarVehicles, not HDA2). OFF keeps the existing extension d473d0fb4bd7
+  byte-identical; ON calls hyundaicanfd_ccnc_radar_map.update_vehicles (map-only
+  selection, existing deadband/colour/BSD conventions, falls back to the existing
+  selector on an exception). CcncVehiclePositionCorrection also applies on the
+  map path, keyed by map object: centre lock, lateral following, slot debounce
+  and the existing position filters; the temporal track checks are not used and
+  remembered vehicles keep their last drawn position. Live replay on152695
+  sends: no exception, c1/23 6/6, 706 slot-presence changes (FF<->side debounce),
+  lateral step p99 .20-.23m -> .075m. Icon behaviour not vehicle-validated. Toggling resets
+  both selectors. Without the radar's own motion class the map loses ~40-48% of
+  vehicle-evidence side displays (22400/46986 LF), so RadarPoint.motionState @12
+  (car.capnp) is now filled from VALID2 in hyundai/radar_interface.py: shared
+  radar code, NOT committed, NAS replay image NOT rebuilt, and the radar tests
+  cannot run on this PC (generated radar DBC missing). The controller has no
+  message timestamps; arrival stamping changes a few hundred of 152695 sends.
+  Live entry point replayed on all130 segments: no exception, c1/23 6/6; one
+  borderline scene (38a/10-11) remembers a class-2 vehicle beside ego that the
+  replay drops. Same day before this: memory rules added to the map (now
+  96a0f38c31f1): objects that travelled >=1.5m sideways with less forward travel
+  (395/7 pedestrians/cyclist on a crosswalk, remembered 24-30s) are neither
+  waiting vehicles nor remembered; a never-moved neighbour is remembered only
+  after 40 observations with trackState 2. Map-only memory/waiting displays
+  absent in legacy 38 scenes/2817 sends -> 15/917; removed 2016 = 1781 false
+  (video), 217 unverifiable, 18 real (bus .7s, SUV .2s). "Moved vehicles only"
+  memory rejected: loses real occluded waiting cars (c1/19 31.5s, c2/23 9.1s).
+  PROB and last-report state do not discriminate. 976 focused tests. PC timing
+  unchanged (.51-.66ms). No vehicle validation, no commit/push/deploy.
+- On 2026-10-12, user said to continue the remaining work. Replay tool gained
+  --explain (why each legacy-selected point is not the map-only display).
+  Offline map d1641d1970e4: (1) lane use matched to the live selector: lines
+  from probability .1, side lane bounded by outer line and/or road edge with
+  1.8m room, .75m outer margin for moving vehicles, straight 1.2m FF corridor
+  with no lines, side slots to 80m; trusted-interior (.6) unchanged. (2) BUG
+  fixed: the map reset itself whenever filtered vEgo read slightly negative at
+  standstill, erasing the stopped lead every frame (~4900 FF misses); reset
+  only below -.5m/s. (3) far vehicle candidates accepted to 40m lateral.
+  (4) lane handling optimized with identical output on 5997 sends. Full130
+  map-only: reviewed residual0, c1/23 6/6; vehicle-evidence legacy displays
+  missed 22368 -> 5645 (~2.5%: LF1440/RF1400/FF2805; mostly lane slot
+  disagreements); added radar-class-2 LF2042/RF2051/FF1014, no-evidence 10;
+  map stop memory adds LF6296/RF2714 and misses 8402 legacy memory displays,
+  not reconciled. Hybrid unchanged: residual1, no additions, 0 vehicle-evidence
+  removals. Timing, run alone on5 segments x3: legacy .68-.92ms, map-only
+  .69-.84ms mean (parity, -9..+9%), p99 worse (1.25-2.52 vs 1.19-1.62ms);
+  hybrid adds ~.9-1.0ms to legacy. Map-only is not faster than legacy. PC
+  timing only. 958 tests. Live extension d473d0fb4bd7 unchanged; no
+  commit/push/deploy. Private evidence: ccnc-why archive.
+- On 2026-10-12 the user instructed: whenever LF/RF removals or displays are
+  measured, measure vehicle-or-not with them. All display-change counts are now
+  split by vehicle evidence (radar class 2 / Doppler / vision / stop memory /
+  never moved with ego moving or stopped); removed uses the legacy-selected
+  point, added uses the candidate's object (replay rows carry `evidence`).
+  Evidence is not video truth. Reviewed-scene residual counts only displays
+  within15m of the structure: 12 "residual" sends in 395/6 were a class-2
+  vehicle at ~59m taking the slot. Wall gap: 3.7/5/8m hide stop-memory displays
+  (116/189/433 vs14) and 8m hides15 vehicle-evidence displays; user judged
+  widening unsuitable, keep 3.5m. User said 30m was an arbitrary value and
+  allowed a better one: structure-suspect side displays are 95% within20m and
+  20/30/40m give the same hybrid result with fewer objects at20m (max145 vs
+  256 cap), so mapping range is 20m (keep22m). Beyond it only radar class 2 or
+  vision-matched returns are admitted to 200m, never remembered; single Doppler
+  samples are not an admission reason (noise accumulated as evidence). Offline
+  map 43ede572c82f, 958 tests. Full130 replay: hybrid residual1, c1/23 6/6, no
+  additions, removes 0 vehicle-evidence displays, LF816/RF67/FF104 never-moved
+  ego-moving, 15 stop-memory, 17 never-moved ego-stopped. Map-only residual0,
+  c1/23 6/6, but removes 22368 (~10%) vehicle-evidence displays and most legacy
+  stop-memory displays, and adds 14400 radar-class-2 displays legacy did not
+  show; both causes unexamined. No reliable timing yet. Live extension
+  d473d0fb4bd7 unchanged; no commit/push/deploy. Private evidence:
+  ccnc-wall-range archive; see docs/ccnc_radar_map_experiment_20261011.md.
+- On 2026-10-12, user approved offline-first use of the radar's own motion class
+  (no shared radar code change yet). tools/ccnc/replay_radar_map.py reads raw
+  0x3A5.. CAN with --radar-evidence; offline map 8e888df4801b takes vehicle
+  evidence from radar class 2 (distance within1.5m) or >=5 samples of speed
+  beyond geometry by .7+.25*|aEgo| m/s inside45deg. User asked whether tests
+  were holding the work back: seven tests required position-only motion with
+  zero reported speed, a synthetic input never seen in logs. Decided by data:
+  with position-only evidence map-only reviewed29 residual17, without it 3
+  (c1/23 RF6/6 both), so DISPLACEMENT_EVIDENCE is False and those tests now
+  report speeds matching their motion; say which tests change and why whenever
+  a test is edited, and prefer recorded-log results over synthetic invariants.
+  958 focused tests. Full130 replay: legacy6 / hybrid1 / map-only3 residual;
+  hybrid removes FF110/LF829/RF67 vs legacy, adds none, far kept. Map-only is
+  first better than legacy on reviewed structures while keeping the known
+  vehicle, but cannot yet replace it: no display beyond30m by design, misses
+  ~10% (13047) of radar-class-2 legacy displays within30m (cause unexamined),
+  different memory behaviour, never-moved stationary policy undecided, and
+  FF683/LF3012/RF1548 displays absent in legacy are unreviewed. No timing
+  measured. Live use needs radar_interface.py to export the class. Live
+  extension d473d0fb4bd7 unchanged; no commit/push/deploy. Private evidence:
+  ccnc-evidence archive; see docs/ccnc_radar_map_experiment_20261011.md.
+- On 2026-10-12, after the user asked for new ideas instead of more map tuning,
+  raw CAN study (analysis only, no source change) found unused radar fields in
+  the 0x3A5.. front track message. Byte3 bits4..3 (DBC VALID2): 1 stationary
+  (94.4% of Doppler-static), 2 forward-moving (96.6%) and LATCHED after the
+  target stops (no 2->1 transition in12 segments; stopped-after-moving tracks
+  1599 vs 9), 0 mostly oncoming/unknown. Never 2 on reviewed structure points;
+  about76% of legacy side displays within30m have 2. c1/23 real right vehicle
+  is 0 (slow starter) but has Doppler residual >.7m/s on26 frames. VALID/PROB:
+  vehicles 97% state2/PROB>=64; near high-azimuth points incl. structure
+  residuals and c1/23 frames are state0/1/3 or low PROB, i.e. radar-coasted
+  tracks, consistent with the earlier position drift. Semantics are inferred
+  statistically, not documented. Remaining ambiguity is only never-moved
+  stationary returns (~10% of near side displays, 8154 sends, incl. all6
+  reviewed residuals and real already-stopped neighbours): motion evidence
+  cannot separate them; walls/geometry are needed only there. Scratch trial
+  requiring field2 or >=5 Doppler samples for legacy motion admission: LF141/
+  RF19/FF65 removed, FF9 added, residual6 unchanged, c1/23 6/6; FF changes
+  unreviewed. Using the field live needs radar_interface.py to export it
+  (shared radar code, user decision, NAS replay rule applies); not done.
+  Private evidence: ccnc-doppler archive; see docs/ccnc_radar_map_experiment_20261011.md.
+- On 2026-10-12 (continued), three more offline map changes (module now aa8de379b9cd):
+  motion confirmation needs >=.4s, >=.3m and rate > .35+.25*|aEgo| (5cm report
+  resolution; report delay measured .07s on 395/6 but .22s on 356/0, so only a
+  bound, not a constant); wall gap 3.5m (356/1 posts measured 3.07m after
+  compensation); a side lane with a missing outer line uses ego lane width only
+  if the road edge leaves 1.8m (cause of map-only c1/23 loss: outer line prob 0).
+  955 focused tests. Full130 replay: compensated hybrid reviewed29 residual1,
+  c1/23 6/6, far kept, reappearing sends 85->17, but removals vs legacy grew to
+  FF110/LF822/RF59 (two new FF windows are6-9-point stationary rows on a lane
+  line; not video-reviewed). Map-only: residual 23->8, then 17 once c1/23 was
+  recovered (6/6); added LF2729/RF2183 vs legacy unreviewed. Each map-only fix
+  exposed another failure; user said the work felt circular and asked for new
+  ideas. Do not keep tuning map thresholds without a new classifier idea.
+  No timing measured, no commit/push/deploy, live extension unchanged. Private
+  evidence: ccnc-map-next archive.
+- On 2026-10-12, user listed the intended map rules and asked for a plan and
+  sequential work. Review: most rules already existed in the offline map; the
+  defect was its motion input. Added to hyundaicanfd_ccnc_radar_map.py only
+  (now 7a9a33bc41ff): (1) geometry compensation: unconfirmed objects subtract
+  the accumulated min(max(vLead,0), vEgo*(1-cos az)) from map position, history
+  and speed; confirmed vehicles keep reported positions; raw-point matching uses
+  reported coordinates. (2) stop memory, per user: only stopped or <=10km/h
+  slowing, never while driving, only if that side slot is otherwise empty,
+  unseen vehicle from -4m (drawn at distance 0; legacy limit is -1m) to +5m,
+  not with same-side blind-spot display. -4/+5m are trial values, not log-fitted.
+  951 focused tests pass. Full130-segment/152695-send replay, reviewed29 residual:
+  legacy6, previous hybrid2 -> compensated hybrid1, integrated5 -> 4, map-only
+  59 -> 23. c1/23 RF6/6 in hybrid/integrated, still0/6 map-only, so the map
+  cannot replace legacy selection. Compensated hybrid vs legacy: FF71/LF524/RF47
+  removed, none added, all58308 beyond30m kept. Versus previous hybrid: 85 sends
+  REAPPEAR (mostly 356/1 3.48-6.64s LF), cause unexamined; newly removed side
+  points checked had speed at or below geometry (db/48 max +.31), no video
+  identity review. Integrated keeps 395/6 4 sends because unchanged legacy
+  admission protects them. Stop memory appeared 858 times in13 segments
+  map-only, not checked against video. No timing measured. Live extension
+  d473d0fb4bd7 unchanged; no live hook, commit, push or deploy. Private evidence:
+  ccnc-map-rules archive; see docs/ccnc_radar_map_experiment_20261011.md.
+- On 2026-10-12, user asked Claude to continue from the handoff and first confirm
+  why 395/6 structure returns gain motion admission. Diagnosis only; no source
+  change. LF source33 is measured, one ID: reported vLead .34->2.18m/s tracks
+  vEgo*(1-cos(azimuth)) (.37->2.12) as azimuth grows18->43deg, and reported
+  distance drifts forward by the same integral (.70m). The speed, three-window
+  and .5m displacement tests in update_boundary_admission count one geometry
+  effect, not independent motion. All27 moving-ego reviewed structure points
+  have vLead at or below this value; above ~45deg reports saturate lower.
+  Scratch-only trial 09c0e4c87dcc (copy of d473d0fb4bd7) subtracts that term
+  from forward speed before the motion test, thresholds unchanged. Full
+  130-segment/152695-send replay: reviewed29 residual legacy6->6, previous
+  hybrid2->2, integrated5->1; c1/23 RF6/6 kept. Versus unmodified legacy:
+  no additions, LF40/RF19 removed, positions FF6/LF173/RF21 changed, 43 beyond30m.
+  With integrated: FF4 at~49m removed and RF2 added in 358/11, unexplained.
+  Removed displays are NOT all identity-reviewed (366/64, 356/16, 358/9,
+  38a/16, cb/16). Slow real vehicles under~.7m/s are indistinguishable; yaw,
+  timing and other radars untested. Not implemented in the new module; live
+  extension and d32c0c386b09 unchanged; no commit/push/deploy. Private evidence:
+  ccnc-admission-geometry archive; see docs/ccnc_radar_map_experiment_20261011.md.
+- On 2026-10-12, user approved combining existing CCNC selection with the map
+  after duplicate-work review. Final offline integrated candidate d32c0c386b09
+  classifies before selection, carries blocked IDs to fallback/retention paths,
+  preserves motion/vision/confirmed-memory protections and ordinary stop admission.
+  Retain original simultaneous3point/4m rows: deleting them caused false LF.
+  Old stationary memory admits new points only from15m, retaining15..30m overlap
+  and old far histories; not all duplicate work or all range risks are removed.
+  Share validated lane arrays/projections and timestamp transforms; keep hypot.
+  Fresh aligned wall extensions use observed gap variation, never invented points.
+  947 tests pass; final130-segment/152695-send replay exactly matches the detailed
+  capture. Known c1/23 RF6/6 and all58308 displayed slots beyond30m are preserved.
+  Versus legacy: FF2/LF593/RF3 removed, LF9 added; physical identities not all proven.
+  Reviewed29 scenes residual6 legacy/2 previous hybrid/5 integrated: mixed result,
+  NOT improvement-only. 395/6 false LF inherits original motion admission after
+  selection changes; cb/16 RF remains unresolved. Five-case paired PC totals
+  1.003..1.265ms, change-4.0..+0.2% vs previous hybrid, still above legacy alone.
+  Keep new module offline; original live extension d473d0fb4bd7 remains unchanged.
+  No commit/push/deploy. Private evidence: ccnc-map-fusion archive; see
+  docs/ccnc_radar_map_experiment_20261011.md for limitations and source identities.
+
+- On 2026-10-11, user requested faster near-field radar-map tracking and then
+  explicitly continued wall linking. Final offline candidate b6584c8d9a06 admits
+  0..30m, retains to32m/-5m/12m sideways, protects near15m points, widens only
+  same-ID near association, caches transforms and keeps fixed wall anchors.
+  One drifting member no longer revokes a whole wall; aligned stationary middle
+  observations can join adjacent walls. User's distance-formula question was NOT
+  permission to change arithmetic: squared-distance trial withdrawn; keep hypot.
+  Offline hybrid reuses existing candidates, only hiding freshly matched wall
+  members; retain uncertain identities, stop-only memory and >30m existing leads.
+  Production extension d473d0fb4bd7 unchanged; no live hook, commit/push/deploy.
+  929 focused tests pass. Full130-segment/152,695-send replay: reviewed29 scenes
+  residual6 legacy/83 prior-map ->2; c1/23 RF6/6 preserved. Extra hides vs legacy:
+  FF68/LF296/RF7; cb16 RF identity remains unresolved, not all371 proven correct.
+  Max179 objects/no capacity evictions; short-gap same-radar-ID map-key changes
+  6558->2668 are a continuity proxy, not certified physical identities.
+  Paired PC map means .367-.493ms,40.7-45.7% below prior map; hybrid total remains
+  1.044-1.333ms including existing selection, so not cheaper than legacy alone.
+  Preserve private ccnc-map-near evidence. See docs/ccnc_radar_map_experiment_20261011.md.
+
+- On 2026-10-11, user requested preserving the current CCNC code and creating
+  hyundaicanfd_ccnc_radar_map.py for independent map-based detection. Added an
+  offline candidate plus replay and 46 tests; original extension d473d0fb4bd7
+  stays byte-identical and active. No controller import, switch, deployment,
+  commit or push. 916 focused tests pass; fresh139-file inventory/9 duplicates
+  yields130 unique segments and152,695 eligible sends, with2,203 excluded before
+  input readiness. Candidate worsens residual slot displays in29 reviewed scenes
+  from6 to83 (not all new representatives individually certified), and loses
+  all6 known c1/23 RF frames at21.74-21.99s despite retained nearby vehicle points.
+  Lane classification and permanent false motion evidence remain problems.
+  Five-case repeated PC mean .703-.970ms is not vehicle CPU/accuracy validation.
+  Keep candidate offline; preserve full/failed evidence and interactive maps
+  privately. See docs/ccnc_radar_map_experiment_20261011.md.
+
+- On 2026-10-11, after the authorized snapshot commit b06bef4b, tested a whole-row
+  registration alternative b306997c7f7c. Keep it analysis-only: runtime/tests stay
+  committed d473d0fb4bd7. Match measured rows to ego-compensated fixed anchors,
+  unwrap common motion, require7 samples/300ms, cap6 rows/16 anchors/8 samples;
+  immutable seed expiry3s/15m and current side geometry are required. Extra96
+  row anchors are additional to the existing96 individual points. Reject the
+  unbounded interim trial. Fresh139-file SHA256 inventory covers130 unique
+  segments; each existing correction profile replays152,695 eligible sends.
+  Correction used:10 LF removals, reviewed29 scenes6->5 residual sends/25->26
+  hidden; unused:all output fields equal,6 residual/25 hidden. No FF/RF changes,
+  additions, c1/23 right-vehicle loss or db48 regression. Inspect all4 change
+  videos without claiming certified point/body identity. c1/21 unused still
+  shows LF because row witness age160ms exceeds its150ms hold; used allows300ms.
+  New473 display tests and runtime870 focused tests pass. Registration alone
+  rejects coherent moving arrays; the original detector still suppresses the
+  previous synthetic input, so whole-pipeline error remains. PC paired mean
+  increment+.067-.176ms (+9.0-18.2%); maxima before10.154/after16.957ms have
+  unresolved causes and are not vehicle timing. Limited gain and added cost
+  do not justify applying this candidate. Keep private ccnc-alternative archive
+  and uncommitted investigation notes; no further commit/push/deploy authorized.
+  See docs/ccnc_front_radar_detection.md.
+
 - On 2026-10-11, user explicitly authorized committing the current tested CCNC
   snapshot before trying another method. Commit runtime d473d0fb4bd7 with its
   existing tests/investigation notes; the failed 3-point/4m candidate stays private
