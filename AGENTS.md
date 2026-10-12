@@ -1,5 +1,13 @@
 # Repository memory
 
+- On 2026-10-13 the user requested merging carrot-wip into ccnc-hda1 again.
+  origin/carrot-wip 2ec25da3 (four commits: green signal group release and small
+  night red tracks, stopped signal veto released on one central red-green
+  transition, two docs commits) was merged; only AGENTS.md conflicted and both
+  sides' entries are kept, CCNC entries first. tools/ccnc/pytest_plugin.py
+  BASELINE follows the merged carrot-wip revision (settings catalog unchanged).
+  The previous merge 0e379e08 was pushed on 2026-10-12 at the user's request;
+  this one is not pushed or deployed.
 - On 2026-10-12 the user requested merging carrot-wip into ccnc-hda1 again, after
   the CCNC wall work was committed as fed331cb (so the "NOT committed" notes in
   the two CCNC entries below are historical). origin/carrot-wip 0f417955 (two
@@ -574,6 +582,28 @@
   NAS shared-source bundle/fingerprint checked locally, but current wip-only
   publishing and lead replay do not deploy/recalculate this CCNC display map.
   See docs/ccnc_front_radar_detection.md and private 2026-10-11 point-map archive.
+- On 2026-10-12, 10a5 on nav ac1da01591/mode2 reproduces a real green held by
+  a tiny sole red anchor and zero moving preparation after small night lamps
+  repeatedly lose IDs. Add a two-housing red-to-green release: each anchor needs
+  independent red history and fresh 700ms green, with no forward red conflict.
+  Night-only pending-red templates and unique >=0.9 image correspondence retain
+  small red identity through bounded motion; do not relax green/daytime rules.
+  512 tests pass; prior 43,090-frame guard summaries match at nominal/+20ms;
+  3,347 prior image comparisons have unchanged fresh colors/green boxes. New
+  replay releases the reviewed green hold; image replay requests preparation
+  5.60s earlier for only0.9s, cap about-0.19m/s2. Not sustained braking or a full
+  stop; no vehicle install/native timing/closed-loop claim. Publish to BOTH
+  carrot-nav and carrot-wip, single-parent only. See docs/signal_a5_followup_20261012.md.
+
+- On 2026-10-12, the user reaffirmed that corrections must be committed and
+  pushed to ALL maintained carrot-* branches unless explicitly excepted. This
+  supersedes the earlier wip-only signal scope. Current remote targets are
+  carrot-wip and carrot-nav; do not recreate retired branches or modify other
+  contributors' namespaced branches. Port both signal preparation cadence and
+  night red-group corrections to nav, preserving its navigation/model/runtime
+  choices. Keep every new commit single-parent, preserve unrelated local work,
+  and distinguish branch publication from vehicle installation and road validation.
+
 - On 2026-10-12, the user requested solving the failed night-red preparation.
   A separate night contract now requires 2–4 persistent compact red lamps with
   compatible road-direction support, NOT a bounded distance or stop-line target.
