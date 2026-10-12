@@ -75,7 +75,7 @@ def test_boundary_stationary_row_becomes_wall_but_interior_row_does_not(sign):
   assert radar.walls
   assert all(o.structure for o in radar.objects.values())
   assert all(k is None for k in radar.selected)
-  interior = run(lambda t: [point(i, x, sign * 3.5) for i, x in enumerate((5., 7., 9., 11.))])
+  interior = run(lambda t: [point(i, x, sign * 3.5, trackState=2) for i, x in enumerate((5., 7., 9., 11.))])
   assert not interior.walls
   # Ego is stopped here, so the nearest resting return a car body's distance into the lane is a waiting vehicle.
   assert interior.objects[interior.selected[1 if sign == 1 else 2]].admitted
@@ -528,6 +528,45 @@ def test_doppler_evidence_needs_repeated_unexplained_speed_within_45_degrees():
   for i in range(8):
     wide.update(N(points=[point(1, 2., 3.5, 1.)]), model(), round(i * .05, 6), 0.)
   assert not any(o.motion_confirmed for o in wide.objects.values())
+  # Recorded 2026-10-12: returns 0.3-2m straight ahead reported 1-2m/s that no object had.
+  near = RadarMap()
+  for i in range(8):
+    near.update(N(points=[point(1, 2., .5, 1.5)]), model(), round(i * .05, 6), 0.)
+  assert not any(o.doppler or o.motion_confirmed for o in near.objects.values())
+  # Recorded on the 130-segment set: a bus and cars alongside at 1.8-3.4m ahead, 2.0-2.6m to the side.
+  beside = RadarMap()
+  for i in range(8):
+    now = round(i * .05, 6)
+    beside.update(N(points=[point(1, 2.4 + 2. * now, -2.3, 2.)]), model(), now, 0.)
+  assert next(iter(beside.objects.values())).doppler_confirmed
+
+
+def test_fixed_return_reporting_less_than_the_geometric_speed_is_not_doppler_evidence():
+  # Recorded 2026-10-12 at 70km/h: bollards and a wall 2-3m beside ego reported .1-.5m/s where
+  # vEgo*(1-cos azimuth) was 1-5m/s, and five such samples made them vehicles.
+  radar = RadarMap()
+  for i in range(10):
+    now = round(i * .05, 6)
+    radar.update(N(points=[point(1, 12. - 19. * now, 2.7, .3)]), model(), now, 19.)
+  obj = next(iter(radar.objects.values()))
+  assert len(radar.objects) == 1 and obj.hits == 10 and obj.doppler == 0 and not obj.motion_confirmed
+  # Speed towards ego is outside the fixed-return band and stays evidence.
+  oncoming = RadarMap()
+  for i in range(6):
+    now = round(i * .05, 6)
+    oncoming.update(N(points=[point(1, 15. - 2. * now, 3.5, -2.)]), model(), now, 0.)
+  assert next(iter(oncoming.objects.values())).doppler_confirmed
+
+
+def test_confirmed_vehicle_keeps_its_lane_when_the_outer_line_is_too_close_but_the_road_edge_leaves_room():
+  # Recorded 2026-10-12: the model's right outer line was 1.99m from the inner one, the road edge 3.3m,
+  # and a radar class-2 vehicle 3.5m to the right lost its slot.
+  md = N(laneLines=[N(x=[0., 10., 30., 100.], y=[y] * 4) for y in (-5.4, -1.8, 1.8, 3.79)], laneLineProbs=[.95] * 4,
+         roadEdges=[N(x=[0., 10., 30., 100.], y=[y] * 4) for y in (-9., 5.1)], orientationRate=N(z=[0.]), leadsV3=[])
+  radar = RadarMap()
+  radar.update(N(points=[]), md, 0., 0.)
+  assert radar._lane(10., -3.5, moving=True)[0] == 2
+  assert radar._lane(10., -3.5)[0] is None  # An unconfirmed return there has no lane.
 
 @pytest.mark.parametrize('y', [2.0, 2.6, 4.5, -2.0, -2.6])
 def test_resting_return_too_close_to_ego_lane_line_or_past_the_lane_is_not_a_waiting_vehicle(y):
@@ -537,12 +576,15 @@ def test_resting_return_too_close_to_ego_lane_line_or_past_the_lane_is_not_a_wai
 
 
 def test_waiting_admission_only_while_ego_is_stopped():
-  stopped = run(lambda t: [point(1, 10., 3.5)], count=8)
+  stopped = run(lambda t: [point(1, 10., 3.5, trackState=2)], count=8)
   assert stopped.selected[1] is None  # Not yet .5s at rest.
-  stopped = run(lambda t: [point(1, 10., 3.5)], count=20)
+  # Recorded 2026-10-12: a return the radar only coasted (13 reports, none measured) stood beside a stopped ego.
+  coasted = run(lambda t: [point(1, 10., 3.5, trackState=3)], count=40)
+  assert coasted.selected[1] is None and not any(o.admitted for o in coasted.objects.values())
+  stopped = run(lambda t: [point(1, 10., 3.5, trackState=2)], count=20)
   obj = stopped.objects[stopped.selected[1]]
   assert obj.admitted and not obj.motion_confirmed and obj.vehicle < .6
-  for i in range(20, 60):  # Seen for 1s only, never as a measured track: shown while predicted, not remembered.
+  for i in range(20, 60):  # A measured track for 1s only: shown while predicted, not remembered.
     stopped.update(N(points=[]), model(), round(i * .05, 6), 0.)
   assert stopped.selected[1] is None and not stopped.remembered[1]
   stopped = run(lambda t: [point(1, 10., 3.5, trackState=2)], count=45)
@@ -551,10 +593,91 @@ def test_waiting_admission_only_while_ego_is_stopped():
     stopped.update(N(points=[]), model(), round(i * .05, 6), 0.)
     assert stopped.selected[1] == obj.key
   assert stopped.remembered[1] and not obj.motion_confirmed
-  near_line = run(lambda t: [point(1, 10., 2.0)], count=20)
+  near_line = run(lambda t: [point(1, 10., 2.0, trackState=2)], count=20)
   assert near_line.selected[1] is None  # On the lane line, not a lane-centre vehicle.
-  driving = run(lambda t: [point(1, 30. - 5. * t, 3.5)], count=20, speed=5.)
+  driving = run(lambda t: [point(1, 30. - 5. * t, 3.5, trackState=2)], count=20, speed=5.)
   assert driving.selected[1] is None and not any(o.admitted for o in driving.objects.values())
+
+
+@pytest.mark.parametrize('side,released', [(.4, True), (-1.7, False)])
+def test_remembered_vehicle_is_released_when_it_reappears_just_ahead_and_pulls_away(side, released):
+  # Recorded 2026-10-12: a waiting car beside a stopped ego left radar coverage, drove off 10s later and stayed
+  # displayed for 30s. The radar first measured it again 3.7m ahead of the remembered position, .4m to the side,
+  # at 1.4m/s. Cars passing another remembered car in the next lane first appeared 1.5-1.9m to the side.
+  radar = run(lambda t: [point(1, 1.8, -2.9, trackState=2)], count=45)
+  waiting = radar.objects[radar.selected[2]]
+  frame = 45
+  def step(points):
+    nonlocal frame
+    radar.update(N(points=points), model(), round(frame * .05, 6), 0.)
+    frame += 1
+  for _ in range(100):
+    step([])
+  assert radar.selected[2] == waiting.key and radar.remembered[2]
+  x, speed = 1.8 + 3.7, 1.4
+  while x < 22.:
+    step([point(2, x, -2.9 + side, speed, trackState=2, motionState=2)])
+    x, speed = x + speed * .05, speed + .15
+  for _ in range(40):
+    step([])
+  assert waiting.departed == released
+  assert radar.selected[2] == (None if released else waiting.key)
+
+
+@pytest.mark.parametrize('speed,remembered', [(-1.6, False), (1.6, True)])
+def test_object_confirmed_only_by_speed_towards_ego_is_not_remembered_beside_ego(speed, remembered):
+  # Recorded 2026-10-12: a return 16-20m ahead, 3.4m to the right, reported -0.9..-1.9m/s (towards ego) and was
+  # confirmed. 14s later two coasted reports of the same radar id (+0.57m/s) re-linked it and it was displayed
+  # as a remembered vehicle for 47s on an empty crosswalk. A vehicle travelling ego's way never has such speed.
+  radar, frame = RadarMap(), 0
+  def step(points):
+    nonlocal frame
+    radar.update(N(points=points), model(), round(frame * .05, 6), 0.)
+    frame += 1
+  start = 18. if speed < 0. else 10.
+  for i in range(50):
+    step([point(37, start + speed * i * .05, -3.4, speed, trackState=2 if i % 3 else 3)])
+  obj = next(iter(radar.objects.values()))
+  assert obj.doppler_confirmed and bool(obj.forward_samples) == remembered
+  for _ in range(280):
+    step([])
+  x, y = radar.local[obj.key]
+  for _ in range(2):
+    step([point(37, x, y, .57, trackState=3)])
+  assert len(radar.objects) == 1 and obj.hits == 52
+  for i in range(100):
+    step([])
+    if i >= 8:  # Past the short prediction of the last measurement.
+      assert (radar.selected[2] == obj.key and radar.remembered[2]) == remembered
+
+
+@pytest.mark.parametrize('moving_class,remembered', [(2, False), (1, True)])
+def test_position_left_behind_by_a_moving_radar_track_is_not_remembered(moving_class, remembered):
+  # Recorded 2026-10-12: a car pulling away beside a stopped ego was reported at 2.5-4m/s for .5s while its
+  # reported position stayed within .5m, then the same radar id jumped 1.17m (beyond the association gate)
+  # with the radar's moving class and drove off. The object left behind was displayed as a remembered
+  # vehicle for 1.75s. A resting track that jumps (another reflection on the same body) keeps its memory.
+  radar, frame = RadarMap(), 0
+  def step(points):
+    nonlocal frame
+    radar.update(N(points=points), model(), round(frame * .05, 6), 0.)
+    frame += 1
+  for i, x in enumerate((3.4, 3.55, 3.15, 3.15, 3.3, 3.35, 3.4, 3.45, 3.6, 3.3, 3.7)):
+    step([point(39, x, -2.9, 2.6 + .12 * i, trackState=2 if i >= 2 else 3)])
+  stale = next(iter(radar.objects.values()))
+  assert stale.doppler_confirmed and len(radar.objects) == 1
+  x, speed = 3.58 + 1.17, 4.2
+  while x < 22.:
+    step([point(39, x, -2.9, speed if moving_class == 2 else 0., trackState=2, motionState=moving_class)])
+    if moving_class == 2:
+      x, speed = x + speed * .05, speed + .15
+    elif frame > 40:
+      break
+  assert len(radar.objects) == 2 and stale.superseded == (not remembered)
+  for i in range(40):
+    step([])
+    if i >= 8 and moving_class == 2:
+      assert radar.selected[2] is None
 
 
 def test_stop_memory_ignores_a_vehicle_that_was_crossing_when_it_left_coverage():

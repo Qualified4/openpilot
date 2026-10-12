@@ -39,10 +39,15 @@ class MapObject:
   radar_moving: bool = False
   doppler: int = 0  # All unexplained-speed samples, for inspection only.
   doppler_confirmed: bool = False  # Latched: enough of them close together in time.
+  forward_samples: int = 0  # Those above the fixed-return band; the rest were speed towards ego.
+  vision_seen: bool = False  # Latched vision match.
   doppler_recent: deque = field(default_factory=lambda: deque(maxlen=5))
   admitted: bool = False  # Stationary neighbour accepted while ego is stopped or stopping.
   last_motion: tuple = (0., 0.)  # Forward/lateral ground speed at the last measurement.
   origin: tuple | None = None  # Where it was first measured.
+  departed: bool = False  # A remembered vehicle that was seen driving off.
+  superseded: bool = False  # Its radar id was reported elsewhere in the next cycle: the same track moved on.
+  ahead_of: tuple = ()  # (key, gap) of remembered vehicles this object first appeared just ahead of.
   tracked: int = 0  # Observations the radar reported as a measured (not coasted) track.
   history: deque = field(default_factory=lambda: deque(maxlen=16))
 
@@ -88,6 +93,7 @@ class CcncRadarMap:
   # real waiting vehicles were 2.5-3.9m away. The return must be a car body's distance past ego's
   # own lane line (trial values, from those scenes only).
   WAITING_ADMISSION = True
+  WAITING_TRACKED = 5  # A return the radar only ever coasted (recorded: 13 reports, none measured) is not a waiting vehicle.
   MEMORY_TRACKED = 40  # A never-moved neighbour is remembered only after 2s as a measured radar track.
   CROSSING_TRAVEL = 1.5  # Sideways travel since first seen, more than a lane change needs without forward progress.
   BODY_CLEARANCE, BODY_FAR_SIDE = .9, 2.6
@@ -95,6 +101,14 @@ class CcncRadarMap:
   MEMORY_MOVING_HOLD = 5.  # s; trial value for a vehicle still rolling alongside when last seen.
   REPORT_DELAY_BOUND = .25  # s; observed .07..22 on two segments, not a calibrated constant.
   DOPPLER_SPEED, DOPPLER_SAMPLES = .7, 5  # Fixed returns stay within about .4m/s inside 45deg.
+  # Returns nearer than this in ego's own corridor reported 1-2m/s that no object had (recorded while
+  # turning, |y| up to 1.2m). Vehicles alongside at that range (recorded 2.0-2.6m to the side) still count.
+  DOPPLER_MIN_X, DOPPLER_NEAR_Y = 3., 1.5
+  # Recorded 2026-10-12: a remembered waiting car drove off and stayed displayed for 30s. It reappeared
+  # 3.7m ahead of its remembered position, .5m to the side, at 1.4m/s, then pulled away. Cars passing
+  # another remembered car in the next lane first appeared 1.5-1.9m to the side (trial values).
+  RELEASE_GAP, RELEASE_LATERAL, RELEASE_SPEED, RELEASE_ADVANCE = (2., 6.), 1., 3., 1.
+  ID_CYCLE = .15  # s; the radar reports every 50ms, the same freshness bound as elsewhere.
   DOPPLER_WINDOW = 1.  # s; the samples must fall within this span (trial value, checked on c1/23).
   # Position-only motion evidence is off: on 130 recorded segments it only admitted fixed returns
   # (map-only reviewed residual 17 with it, 3 without; known vehicle kept either way).
@@ -272,7 +286,9 @@ class CcncRadarMap:
       base = bounds[inner]
       offset = sign * (y - base)
       widths = [sign * (bounds[i] - base) for i in (line, edge) if i in usable]
-      if offset <= 0. or not widths or min(widths) - .25 <= 1.8:
+      # A confirmed moving vehicle is not denied its lane by a model outer line drawn too close
+      # (recorded: 1.99m from the inner line) while the road edge leaves the room.
+      if offset <= 0. or not widths or (max(widths) if moving and edge in usable else min(widths)) - .25 <= 1.8:
         continue
       limit = min(([sign * (bounds[line] - base) + (.75 if moving else -.25)] if line in usable else [])
                   + ([sign * (bounds[edge] - base) - .95] if edge in usable else [])
@@ -309,8 +325,13 @@ class CcncRadarMap:
       motion = report[0] if linked else getattr(p, 'motionState', None)
       # Track state 2 is a measured track; 0/1/3 are new or coasted ones (liveTracks trackState).
       tracked = (report[2] if linked and len(report) > 2 else getattr(p, 'trackState', 0)) == 2
-      doppler = (cosine >= .707 and abs(speed - self.speed * (1. - cosine))
+      # A fixed return reports anything from zero to the geometric value (recorded: .1-.5m/s
+      # where 2-5m/s was expected at 30-45deg). Only speed outside that band is unexplained:
+      # above it, or towards ego.
+      residual = speed - explained
+      doppler = (cosine >= .707 and (x >= self.DOPPLER_MIN_X or abs(y) >= self.DOPPLER_NEAR_Y) and abs(residual)
                  > self.DOPPLER_SPEED + self.REPORT_DELAY_BOUND * abs(self.a_ego))
+      doppler = (1 if residual > 0. else -1) if doppler else 0  # Above the band, or towards ego.
       # Beyond the wall-mapping range only returns with vehicle evidence are kept:
       # they need no structure reasoning, so no distance limit applies to them.
       # A single Doppler sample is not an admission reason: admitting a far fixed
@@ -382,6 +403,14 @@ class CcncRadarMap:
           self.evicted += 1
         key = self.next_id
         self.next_id += 1
+        # One radar id is in one place: an object measured with this id until the previous cycle is the
+        # same track, which jumped beyond the association gate. If the radar classes it as moving, the
+        # vehicle has left the old position, which is not remembered. A resting track that jumps has
+        # only changed its reflection point on the same body, and the old position stays valid.
+        if radar_moving:
+          for other in self.objects.values():
+            if other.source == source and 0. < stamp - other.seen <= self.ID_CYCLE:
+              other.superseded = True
         obj = MapObject(key, source, x, y, vx, vy, stamp, stamp, origin=(x, y))
         self.objects[key] = obj
         self.created += 1
@@ -390,6 +419,7 @@ class CcncRadarMap:
         if 0. < stamp - obj.seen <= .15 and not obj.motion_confirmed:
           obj.drift += .5 * (obj.explained + explained) * (stamp - obj.seen)
         obj.source, obj.seen = source, stamp
+        obj.departed = obj.superseded = False
         obj.hits += 1
         obj.existence = min(1., obj.existence + .15)
       obj.explained = explained
@@ -399,6 +429,7 @@ class CcncRadarMap:
         # Isolated noisy samples must not add up over a long observation; once the
         # samples are close enough together the vehicle stays one after it stops.
         obj.doppler += 1
+        obj.forward_samples += doppler > 0
         obj.doppler_recent.append(stamp)
         if len(obj.doppler_recent) == self.DOPPLER_SAMPLES and stamp - obj.doppler_recent[0] <= self.DOPPLER_WINDOW:
           obj.doppler_confirmed = True
@@ -443,11 +474,28 @@ class CcncRadarMap:
       self.local[key] = ex, ey
       obj.slot, obj.interior, center = self._lane(ex, ey, moving=obj.motion_confirmed)
       obj.last_motion = (hc * obj.vx + hs * obj.vy, hc * obj.vy - hs * obj.vx)
+      # A remembered vehicle that drives off reappears just ahead of where it stood, slowly, with the
+      # radar's moving class or its old radar id, and the gap then grows. It is no longer remembered.
+      if obj.hits == 1:
+        if self.holding and obj.slot in (1, 2) and hc * vx + hs * vy <= self.RELEASE_SPEED:
+          obj.ahead_of = tuple(
+            (m.key, ex - self.local[m.key][0]) for m in self.objects.values()
+            if m is not obj and m.slot == obj.slot and not m.departed and self.now - m.seen > self.PREDICTION_HOLD
+            and (m.vehicle >= .6 or m.admitted) and self.MEMORY_MIN_X <= self.local[m.key][0] <= self.MEMORY_MAX_X
+            and self.RELEASE_GAP[0] <= ex - self.local[m.key][0] <= self.RELEASE_GAP[1]
+            and abs(ey - self.local[m.key][1]) <= self.RELEASE_LATERAL)
+      else:
+        for remembered, gap in obj.ahead_of:
+          m = self.objects.get(remembered)
+          if (m is not None and (obj.radar_moving or source == m.source)
+              and ex - self.local[remembered][0] >= gap + self.RELEASE_ADVANCE):
+            m.departed = True
       # As in the existing selector: while ego is stopped or stopping, a return that has
       # rested for .5s near the middle of an adjacent lane is a waiting vehicle, even if
       # it never moved in view. Walls and wall-side positions are excluded at selection.
       if (self.WAITING_ADMISSION and self.holding and obj.stationary and obj.slot in (1, 2) and not obj.structure and 0. < ex <= self.MEMORY_MAX_X
-          and stamp - obj.born >= .5 and obj.hits >= 7 and self._body_clear(obj.slot, ex, ey) and not self._crossing(obj)):
+          and stamp - obj.born >= .5 and obj.hits >= 7 and obj.tracked >= self.WAITING_TRACKED
+          and self._body_clear(obj.slot, ex, ey) and not self._crossing(obj)):
         obj.admitted = True
       if obj.motion_confirmed:
         obj.vehicle = max(.8, obj.vehicle)
@@ -474,6 +522,7 @@ class CcncRadarMap:
       if matches:
         obj = min(matches, key=lambda v: v[0])[1]
         obj.vision, obj.vehicle = True, max(.8, obj.vehicle)
+        obj.vision_seen = True
 
   def _walls(self, measured):
     for obj in self.objects.values():
@@ -733,7 +782,7 @@ class CcncRadarMap:
     candidates = []
     for obj in self.objects.values():
       x, _ = self.local[obj.key]
-      if (obj.slot != slot or obj.structure or (obj.vehicle < .6 and not obj.admitted) or obj.hits < 3 or obj.existence < .5
+      if (obj.slot != slot or obj.departed or obj.superseded or obj.structure or (obj.vehicle < .6 and not obj.admitted) or obj.hits < 3 or obj.existence < .5
           or self.now - obj.seen <= self.PREDICTION_HOLD + 1e-6 or not self.MEMORY_MIN_X <= x <= self.MEMORY_MAX_X):
         continue
       # Reviewed scenes: a vehicle that was crossing, turning or oncoming when it left
@@ -743,6 +792,10 @@ class CcncRadarMap:
       resting = obj.stationary or math.hypot(forward, lateral) <= .6
       alongside = abs(lateral) <= .6 and 0. <= forward <= 3. and self.now - obj.seen <= self.MEMORY_MOVING_HOLD
       if not (resting or alongside) or self._crossing(obj) or (not obj.motion_confirmed and obj.tracked < self.MEMORY_TRACKED):
+        continue
+      # A same-direction vehicle never has speed towards ego: an object confirmed by approach speed alone was
+      # oncoming, crossing or noise, and is not waiting beside ego.
+      if not (obj.radar_moving or obj.forward_samples or obj.vision_seen or obj.admitted):
         continue
       candidates.append((obj.key != self.selected[slot], abs(x), obj.key))
     return min(candidates)[2] if candidates else None

@@ -1,5 +1,147 @@
 # Repository memory
 
+- On 2026-10-12 (fifth follow-up, commit preparation; NOT committed) map is
+  9c0da097c29f. ONE source change: when a radar id creates a new object and
+  another object was measured with that id within .15s, the track jumped beyond
+  the association gate; if the new report has radar class 2 the object left
+  behind is not a _stop_memory candidate (superseded). The unconditional form
+  erased a 1.1s memory of a real waiting car (388/6 23.6-24.7, video: resting
+  body, reflection point changed), hence the class-2 condition. Result: the
+  17/35.2-37.0 fragment memory (35 sends) is gone, 17/35.5 keeps only 3 sends of
+  a real passing car; Full130 no add/remove, 53 sends in 366/65 swap a passing
+  car's fragment memory for the standing white car's; live entry no exception,
+  c1/23 6/6; 986 tests (one new, two cases). Measured, NOT adopted: (a) the
+  existing selector's speed_thresholds on non-vision candidates: Full130 removes
+  1,518 sends, 1,355 of radar class-2 objects (slow or stopped vehicles in the
+  next lane while ego drives), 10 segments 89/80. The user's 76 high-speed
+  resting own-lane returns (ids; 55 with vision lead prob <.5) were never
+  displayed by the current module and 7 sends by the as-driven module, already
+  removed by the Doppler band change. (b) coasted re-link blocked after 2s
+  unseen: 2,893 links cut (176 to class-2 objects), no add/remove, 110 swaps,
+  gain is 7 sends in one scene. Summary since bbfeaa80 (00c01eab796e): seven
+  rules (Doppler band, lane width, waiting tracked>=5, near Doppler exclusion,
+  release on reappearance, approach-only not remembered, id moved on); bookmarks
+  17/18 gone (only 16/0.65 barrier left), 23 recovered, 29 afterimage gone;
+  Full130 map-only removed 202, added 357 (349 class 2), replaced 156, residual
+  0, c1/23 6/6; PC time mean +2.3..+5.5%, p99 1.09-1.33 vs .97-1.32ms. Files:
+  the map module, tools/ccnc/test_radar_map.py, new tools/ccnc/replay_live_path.py,
+  the experiment doc, AGENTS.md. Root CLAUDE.md is the user's untracked local
+  agent setting, not part of this work: never stage it (no git add -A). Open:
+  16/0.65 barrier; approach-only confirmation and coasted re-links; FF Doppler
+  swaps while turning; 358/0 fence; segment 15 far FF toggling; no high-speed
+  floor in the map. No vehicle validation, no commit/push/deploy. Private
+  evidence: ccnc-release-4 archive.
+- On 2026-10-12 (fourth follow-up) map is 3cf97550948b. ONE source change, per the
+  user: Doppler samples are counted as forward (above the fixed-return band) or
+  approach (towards ego); an object with no forward sample, radar class 2, latched
+  vision match (vision_seen) or waiting admission is not a _stop_memory candidate
+  (a same-direction vehicle never moves towards ego). 28->29: the 929-send
+  afterimage is gone, the real waiting minicar's memory shows in 28 instead;
+  Full130 map-only zero display change, c1/19, c2/23, 366/65-66 memories and
+  reviewed waiting scenes unchanged, residual 0, c1/23 6/6; live entry point no
+  exception; ten bookmarked segments identical to the previous module (16/18
+  gone, 23 recovered). 984 tests (one new, two cases, from the 28/29 numbers; no
+  existing test changed). PC time vs the original module mean +0.9..+7.9%, p99
+  1.07-1.41 vs 1.05-1.45ms, run-to-run noise of a few %. Measured, NOT adopted:
+  (a) approach samples only from measured tracks: the 29 return stays unconfirmed
+  (4 of 19 samples) but Full130 loses 58 sends, 10 while legacy shows, unreviewed;
+  (b) no coasted report may re-link an object unseen >0.3s: blocks the 43.2s
+  re-link but cuts 9,658 links (1,089 to class-2 objects), 170 sends change, 2
+  class-2 sends lost, more fragmentation; (c) pass-through release (moving object
+  within +-1.5m/1.0m of a remembered position): removes the afterimage alone, 59
+  releases, 51 sends swap to another memory, 366 kept. 17/35.2-37.0 fragment
+  memory cause found, fix only proposed: the Doppler object appeared with
+  20d78a176912 and became visible with 9f35bfc73247; radar id 39 reported
+  2.5-4m/s while its position stayed at 2.2-2.7m, then jumped 1.17m (same-id gate
+  ~.89m) creating a second object, and the stale one passed the "alongside"
+  memory condition for 5s. Proposal: an object whose radar id was measured in the
+  previous cycle and now creates a new object elsewhere is not remembered. Still
+  open: that fragment; approach-only confirmation itself (7 measured sends at
+  28/43.2); coasted re-links; FF Doppler swaps while turning (356/2); the 358/0
+  fence; segment 15 far FF toggling; 16/0.65 barrier. A leftover hung replay
+  process from the first session ran 1.5h unnoticed: after a multiprocessing run
+  check that no worker is left. No vehicle validation, no commit/push/deploy.
+  Private evidence: ccnc-release-3 archive.
+- On 2026-10-12 (third follow-up) the user had the memory-release rule put into
+  the source with a lateral condition, and segment 29 examined. Map now
+  9f35bfc73247. Rule (ego stopped/slowing): an object first measured 2-6m ahead
+  of and within 1.0m laterally of a remembered object in that side lane at
+  <=3m/s, with radar class 2 or the remembered object's radar id, whose gap
+  then grows 1m, releases that memory (RELEASE_* trial constants; cancelled if
+  the object is measured again). 17: release still at 29.6s; stale sends removed
+  326 (17: 288, 18: 38), not 361, because a different 1.75s memory (35 sends,
+  17/35.2-37.0, a split fragment of a passing car that got Doppler evidence at
+  2.8m after the x<3/|y|<1.5 correction; inferred, not isolated) now shows there.
+  366/65-66 memory windows identical. Full130: 13 releases (18 without lateral;
+  the 5 dropped were 1.10-2.35m aside), zero display change; live entry point
+  no exception, c1/23 6/6, slot counts unchanged. 982 tests (one new test, two
+  cases, from the 17 numbers). Timing not remeasured. Segment 28->29: bookmark
+  reproduced, 29 presence 100% equal to the car. The afterimage is NOT fixed and
+  is a separate cause, source untouched: a return 16-20m ahead right 3.4m
+  reported -0.9..-1.9m/s towards ego at 28/28.1-28.4 and was Doppler-confirmed
+  (approach-speed evidence kept in the first follow-up), unseen 14s, re-linked
+  at 43.2s to two coasted reports of the same id at 13.8m, then remembered
+  (28: 180 sends, 29: 929 sends/46.9s). By video the spot is empty crosswalk;
+  a white minicar waited behind it and left at 53-55s, cars then drove through
+  the remembered position; what the 28s return was is not identifiable. Known
+  open: that afterimage; the 17/35.2 fragment memory; FF Doppler swaps while
+  turning (356/2 26.4-27.7, 17 sends); why the 358/0 fence got Doppler evidence;
+  cause of segment 15 far FF toggling; 16/0.65 barrier vs BODY_CLEARANCE. No
+  vehicle validation, no commit/push/deploy. Private evidence: ccnc-release-2.
+- On 2026-10-12 (follow-up to the bookmark entry below) the user asked for a
+  narrower memory-release trial and checks of the leftovers. Map now 20d78a176912.
+  ONE source change, correcting the previous step: "no Doppler sample below x 3m"
+  delayed real vehicles right beside ego (Full130 RF52/LF9 sends showed a vehicle
+  12-46m ahead instead; three RF scenes video-checked: car, double-decker bus,
+  car), reported before only as "replaced". The exclusion is now x<3m AND |y|<1.5m
+  (DOPPLER_NEAR_Y; false speeds were within 1.2m of ego's axis, vehicles alongside
+  2.0-2.6m): bookmarks unchanged, 61 sends restored. When reporting display
+  changes, "replaced by another object" must be examined like removals. Release
+  trial (scratch only, NOT in source): object first measured 2-6m ahead of the
+  remembered position in that side lane at <=3m/s, radar class 2 or same radar
+  id, gap then growing 1m. 17/18: memory released at 29.6s, 361 stale sends gone.
+  366/65-66 memory kept (by video the remembered object is a white car ahead-right,
+  not the bus; cars pass in the next lane, one first measured +2.2m at 2.7m/s
+  and excluded only for lacking class 2, 1.5-1.9m further out laterally). Full130:
+  18 objects released, zero display change, so the benefit rests on one scene.
+  Video: of 28 removed-while-legacy-shows sends, 14 opposing-lane vehicles, 5 a
+  real stopped car at 5.2m lateral (c1/15), 9 no vehicle; G's 8 non-class-2
+  additions: 4 median fence (false), 2 bus (real), 2 nothing visible. Segment 15
+  FF 95.9%: far (121-197m) class-2 vehicles toggling a few sends apart plus 3
+  start-up sends; nothing within 30m. Live entry point on all130: no exception,
+  c1/23 6/6. PC map time mean -0.1..+3.3%, p99 .98-1.16ms vs .97-1.14. 980 tests
+  (one check added). Segment 28 rlog has arrived; 29 not yet done. No vehicle
+  validation, no commit/push/deploy. Private evidence: ccnc-release archive.
+- On 2026-10-12 the user gave 18 driver-bookmarked false CcncRadarMap displays and
+  one missed vehicle from a real drive (3dd, 10 segments; the option was on) and a
+  pre-tested fix list. New tools/ccnc/replay_live_path.py replays the live entry
+  point per recorded 0x162 send and compares with the decoded sendcan and the
+  existing selector; map presence matched the car 95.9-100% per segment/slot and
+  all 18 scenes reproduced. Map now 567e45a7531e (was 00c01eab796e): (1) Doppler
+  evidence is speed outside the fixed-return band [0, vEgo*(1-cos az)], i.e.
+  abs(vLead - explained): fixed returns report less than the geometry and were
+  confirmed as vehicles in .25s. The user's "positive difference only" gave the
+  same 10-segment result but on Full130 removed 600 and swapped 760 displays of
+  class-1 objects crossing in front of a stopped ego (395/7, 356/21; not video
+  identified), so approach speed stays evidence. (2) _lane: a confirmed moving
+  vehicle uses the wider of outer line/road edge. (3) waiting admission needs
+  tracked >= 5 (WAITING_TRACKED). (4) no Doppler sample below x 3m
+  (DOPPLER_MIN_X). Bookmarks: 16/18 gone, 23/20.86 recovered (14 -> 20 sends);
+  10 segments lost FF47/LF98/RF10 displays, none with radar class 2 or vision,
+  and gained LF12/RF11, all class 2. Full130 map-only: residual 0, c1/23 6/6,
+  missed vehicle-evidence displays LF1708/RF1584/FF2972 -> 1633/1512/2972;
+  removed 202 (no class-2 object; 28 while legacy shows that slot), added 357
+  (349 class 2; 205 where legacy shows nothing), neither video reviewed; reviewed
+  waiting scenes and the c1/19, c2/23 memories unchanged; hybrid identical.
+  980 tests: two waiting tests now give trackState=2 (their input was a never
+  measured return, the cause of 16/25.6), three recorded-scene checks added.
+  Left: 17/35.5 is by video a REAL waiting car remembered ~30s after it drove
+  off; a "moving vehicle within 5m ahead in that lane clears memory" trial also
+  erased the real 366/66 waiting bus, not adopted, no 8s cap. 16/0.65 is an
+  orange barrier at .83-.99m lane-line clearance while that real car was at
+  .80-.94m, so BODY_CLEARANCE stays .9. tracked>=5 is marginal for 11/19.9
+  (tracked 4). No timing, no vehicle validation, no commit/push/deploy. Private
+  evidence: ccnc-bookmarks archive; see docs/ccnc_radar_map_experiment_20261011.md.
 - On 2026-10-12 the user asked for a Carrot Web option that switches CCNC vehicle
   selection to the radar map: CcncRadarMap (default OFF, VEH_CANFD group, needs
   CcncRadarVehicles, not HDA2). OFF keeps the existing extension d473d0fb4bd7
