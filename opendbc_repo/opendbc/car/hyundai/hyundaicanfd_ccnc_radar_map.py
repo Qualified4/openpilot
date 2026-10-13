@@ -160,6 +160,10 @@ class CcncRadarMap:
   # its recorded positions TRAIL_NEAR-TRAIL_FAR ahead of ego all lie within TRAIL_ROOM of ego's lane lines.
   LEAD_BEYOND, LEAD_MARGIN, LEAD_CURVE = 5., 1.2, 2.
   TRAIL_STEP, TRAIL_NEAR, TRAIL_FAR, TRAIL_ROOM = 3., 5., 25., .3
+  # Beyond LEAD_SIDE_X a side slot behind a displayed lead is not given at all, unless the vehicle is within
+  # LEAD_SIDE_PAST of that lead: the far lane geometry is off by up to a lane width there and video cannot
+  # tell the lanes apart (recorded 2026-10-13: second leads at 58-79m shown RF/LF on a straight road).
+  LEAD_SIDE_X, LEAD_SIDE_PAST = 50., 30.
   WALL_CONTINUE = 7.  # A single fresh return may continue an established wall this far ahead (two gaps).  # Posts near 3m apart measure up to ~3.1m; stopped vehicles are farther apart.
   SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
@@ -396,11 +400,13 @@ class CcncRadarMap:
     return offsets
 
   def _behind_lead(self, key, slot, lead_x):
-    """A vehicle beyond the displayed lead whose side slot rests on far lane geometry only."""
+    """A vehicle beyond the displayed lead whose side slot rests on far lane geometry only, or is too far to tell."""
     obj = self.objects[key]
     x, y = self.local[key]
     if x <= lead_x + self.LEAD_BEYOND:
       return False
+    if x > self.LEAD_SIDE_X and x > lead_x + self.LEAD_SIDE_PAST:
+      return True
     left, right = interpolate(self.geometry.get(1, []), x), interpolate(self.geometry.get(2, []), x)
     if left is not None and right is not None and abs(.5 * (left + right)) > self.LEAD_CURVE:
       if (y - left if slot == 1 else right - y) < self.LEAD_MARGIN:

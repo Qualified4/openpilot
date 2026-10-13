@@ -1,5 +1,41 @@
 # Repository memory
 
+- On 2026-10-13 (fourth road-test round: far side slots behind a lead; NOT
+  committed) map is bc52b9c4e6e5 (from 25ff38ec9160; the curve entry below WAS
+  committed as ae21b0de). ONE rule: while an FF is displayed, a side candidate
+  beyond 50m AND more than 30m past the FF gets no side slot (LEAD_SIDE_X,
+  LEAD_SIDE_PAST); without an FF MAX_SIDE_X 80 as before. The FF+30m part was
+  added because a bare limit also removed displays 5-25m past the FF (Full130
+  866 at 50m), which the user required to be zero. Bookmarked object sends in
+  +-3s, A round -> now: 3e0/4 1.5 48 -> 0, 3e0/1 54.7 31 -> 0, 3e0/2 50.0 21 ->
+  0, 3e0/1 45.0 2 -> 0; unchanged 3e0/0 43.9 9 (within FF+30), 3e0/2 7.9 1,
+  3e0/2 20.4 7 and the car behind it 35 -> 32 (43-54m). FF never changes
+  standalone. A 60m limit leaves 22 sends of 3e0/4 (it approaches to 53m) and
+  30 of 3e0/1 54.7, so 50 was taken; 50 removes 2,125 more Full130 sends than
+  60, all at 50-60m. Standalone vs 25ff38ec9160: Full130 removed 4,444 (all
+  class 2, all beyond 50m), swapped 243 (all to stop memory: the freed slot
+  shows a remembered near vehicle), added 0; 27 segments removed 1,001. Video
+  of five 50-58m scenes that 50 removes and 60 keeps: three look like real
+  neighbours (358/11, 3d8/9, 366/33; not certain at that range), two
+  undecided; the rest unverifiable. Near real neighbours (35f/1 16.3-17.3 RF,
+  3e1/5 8.1-24.2 RF, 3e1/14 24.9-27.9 LF) unchanged. Boundary: 9 of 241
+  dropped objects on Full130 were dropped more than once (0 of 117 on the 27);
+  a +5m keep margin gives 5, not taken. The A round's live-entry FF difference
+  of 6 sends is at 356/14 55.04-55.09s and 366/47 27.78-27.92s; this round
+  changes live FF by 28 sends in seven places (standalone 0). At 366/29
+  20.3-21.1s the FF object is the same and only the shown value differs where
+  FF alternates among objects - presumably the existing stabilize_slots
+  debounce reacting to the side slots; not confirmed. Regressions: residual 0,
+  c1/23 6/6, seven waiting scenes 100%, ten earlier bookmarked segments same
+  per bookmark, B'/D/H and 3e1/3 scenes unchanged, live entry no exception on
+  130 + 27. 1,019 tests (4 new cases; two A-round tests moved their far car
+  from 55-60m to 44-45m because the new limit hides it, still failing on the
+  pre-A module). PC time unchanged. Open: real neighbours beyond 50m behind a
+  lead are not shown; live FF differences unexplained; out of scope as before
+  (lone resting return admitted, crawling neighbour, bus at a stop, objects
+  piling up while stopped). Not validated in the car. Commit files when asked:
+  the map module, tools/ccnc/test_radar_map.py, the experiment doc, AGENTS.md;
+  never CLAUDE.md. Evidence: .analysis/archive/2026-10-13/ccnc-far.
 - On 2026-10-13 (third road-test round: second lead shown LF/RF on curves; NOT
   committed) map is 25ff38ec9160 (from 6dd843a64690; the bollard entry below WAS
   committed as 099ce103). Rules, both only while an FF is displayed and for a
