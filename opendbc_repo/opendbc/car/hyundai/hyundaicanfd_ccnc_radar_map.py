@@ -52,6 +52,7 @@ class MapObject:
   beyond: float | None = None  # Since when it has been measured outside its side's outer lane line.
   settled: bool = False  # Outside that line for a while and no longer moving sideways: the lane beyond.
   history: deque = field(default_factory=lambda: deque(maxlen=16))
+  trail: deque = field(default_factory=lambda: deque(maxlen=20))  # Where a moving vehicle has driven, one point per TRAIL_STEP.
 
 
 @dataclass
@@ -151,6 +152,14 @@ class CcncRadarMap:
   BAND_MEMORY, BAND_BIN, BAND_FOLD = 40., .25, 10.
   BAND_PREDICTION = .5  # A new return this near the band's next expected post joins before it has a history.
   BAND_GAP = 3.5  # As WALL_MAX_GAP.
+  # The model draws curves beyond 30m too straight, so the second vehicle ahead in ego's own lane lands just
+  # past ego's lane line and was shown beside ego (recorded 2026-10-13, 45-75m). With a lead displayed, a
+  # vehicle more than LEAD_BEYOND past it gets a side slot on a curve (lane centre over LEAD_CURVE off ego's
+  # axis there) only LEAD_MARGIN beyond the line; on a straight road a real neighbour's near corner is
+  # reported .9-1.3m beyond it and nothing changes. Nor does it get one if it drove through ego's lane:
+  # its recorded positions TRAIL_NEAR-TRAIL_FAR ahead of ego all lie within TRAIL_ROOM of ego's lane lines.
+  LEAD_BEYOND, LEAD_MARGIN, LEAD_CURVE = 5., 1.2, 2.
+  TRAIL_STEP, TRAIL_NEAR, TRAIL_FAR, TRAIL_ROOM = 3., 5., 25., .3
   WALL_CONTINUE = 7.  # A single fresh return may continue an established wall this far ahead (two gaps).  # Posts near 3m apart measure up to ~3.1m; stopped vehicles are farther apart.
   SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
@@ -370,6 +379,35 @@ class CcncRadarMap:
         return True
     return False
 
+  def _trail(self, obj):
+    """Where the vehicle drove through the stretch TRAIL_NEAR-TRAIL_FAR ahead of ego: for each recorded point, how
+    far it lies outside ego's own lane lines (negative inside). The lines are trusted at that range; the
+    model draws curves beyond 30m too straight (recorded 2026-10-13)."""
+    lines = [self.geometry.get(i) for i in (1, 2) if i in self.lanes and self.lanes[i].probability >= .1]
+    if len(lines) < 2:
+      return []
+    offsets = []
+    for point in obj.trail:
+      x, y = self.to_ego(*point)
+      if self.TRAIL_NEAR <= x <= self.TRAIL_FAR:
+        left, right = interpolate(lines[0], x), interpolate(lines[1], x)
+        if left is not None and right is not None:
+          offsets.append(max(y - left, right - y))
+    return offsets
+
+  def _behind_lead(self, key, slot, lead_x):
+    """A vehicle beyond the displayed lead whose side slot rests on far lane geometry only."""
+    obj = self.objects[key]
+    x, y = self.local[key]
+    if x <= lead_x + self.LEAD_BEYOND:
+      return False
+    left, right = interpolate(self.geometry.get(1, []), x), interpolate(self.geometry.get(2, []), x)
+    if left is not None and right is not None and abs(.5 * (left + right)) > self.LEAD_CURVE:
+      if (y - left if slot == 1 else right - y) < self.LEAD_MARGIN:
+        return True
+    offsets = self._trail(obj)
+    return len(offsets) >= 2 and max(offsets) <= self.TRAIL_ROOM
+
   def _measurements(self, live, stamp):
     pose = self.pose_at(stamp)
     if pose is None:
@@ -580,6 +618,8 @@ class CcncRadarMap:
         obj.admitted = True
       if obj.motion_confirmed:
         obj.vehicle = max(.8, obj.vehicle)
+        if not obj.trail or math.hypot(obj.x - obj.trail[-1][0], obj.y - obj.trail[-1][1]) >= self.TRAIL_STEP:
+          obj.trail.append((obj.x, obj.y))
       elif obj.interior:
         # Lane occupancy alone cannot distinguish a stopped vehicle from an
         # obstacle. It protects against wall inference, but stays below admission.
@@ -933,6 +973,9 @@ class CcncRadarMap:
       groups[slot].append((x, center_distance, obj.key))
     selected = []
     for slot, candidates in enumerate(groups):
+      if slot and selected[0] is not None:
+        lead_x = self.local[selected[0]][0]
+        candidates = [c for c in candidates if not self._behind_lead(c[2], slot, lead_x)]
       if not candidates:
         selected.append(None)
         continue

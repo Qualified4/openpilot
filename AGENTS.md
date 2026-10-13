@@ -1,5 +1,41 @@
 # Repository memory
 
+- On 2026-10-13 (third road-test round: second lead shown LF/RF on curves; NOT
+  committed) map is 25ff38ec9160 (from 6dd843a64690; the bollard entry below WAS
+  committed as 099ce103). Rules, both only while an FF is displayed and for a
+  candidate more than 5m beyond it (no side slot, not promoted to FF): (1') on
+  a curve (ego lane centre at the candidate over 2m off ego's axis) a side slot
+  needs the candidate 1.2m past ego's lane line; (2) each motion-confirmed
+  object keeps a trail (one world point per 3m, 20 points) and gets no side
+  slot when its trail points 5-25m ahead of ego number two or more and all lie
+  within .3m of ego's lane lines. The user's seven bookmarks are NOT all gone:
+  sends of the bookmarked object in +-3s, before -> now: 3e0/0 43.9 54 -> 9,
+  3e0/1 45.0 27 -> 2, 3e0/1 54.7 56 -> 31, 3e0/2 7.9 56 -> 1, 3e0/2 20.4 79 ->
+  7 (the car behind it then shows longer, 40 -> 74), 3e0/2 50.0 52 -> 21,
+  3e0/4 1.5 48 -> 48. Those cars lie 1.5-1.9m (median) past the lane line, and
+  3e0/4 is on a straight (lane centre .1-.8m) with no trail. FF never changes.
+  Standalone vs 6dd843a64690: Full130 removed 1,622 (all class 2), swapped 151,
+  added 0; 27 segments removed 909, swapped 134. Measured, not taken: (1)
+  without the curve condition (margin 1.0/1.2/1.5) removes 2-5x more and on
+  straights hides real neighbours (video: 3e1/5 8.1-24.2s RF 273 sends, 3e1/14
+  24.9-27.9s LF 53); margin 1.5 still leaves 3 of 7; (3) slots from the model
+  path clears none of the seven and changes FF on Full130 (reference only).
+  Video of what the adopted rules remove: 356/7 49.9-54.6s RF correct (one
+  lane each way), five others undecided, none confirmed a real neighbour; most
+  removals unverified. Trail: 3.2-3.3 points per object; undecided (under two
+  points in the stretch) for 53% (27) / 27% (130) of side displays 25m+ past
+  the lead; 26-32% fall at 1.0-2.0m, where real neighbours also are, so a
+  drifted second lead there is not caught. Regressions: residual 0, c1/23 6/6,
+  seven waiting scenes 100%, ten earlier bookmarked segments same per bookmark,
+  earlier road-test scenes (B'/D/H seven, 3e1/3) unchanged, live entry no
+  exception on 130 + 27 (live FF differs by 6 sends on 130, cause not
+  checked). 1,015 tests (7 new cases, none changed). PC time unchanged.
+  Model paths for (3) are in .analysis/cache/ccnc-path-v1. Out of scope and
+  open: lone resting return admitted (3e1/5 49.3, 3e1/4 6.0), crawling
+  neighbour (3e1/6 19.8), bus at a stop (3e1/6 37.5), objects piling up while
+  stopped. Not validated in the car. Commit files when asked: the map module,
+  tools/ccnc/test_radar_map.py, the experiment doc, AGENTS.md; never CLAUDE.md.
+  Evidence: .analysis/archive/2026-10-13/ccnc-curve.
 - On 2026-10-13 (second road-test round: lone bollard admitted as a waiting
   vehicle; NOT committed) map is 6dd843a64690 (from b79648fe642b; the entry
   below WAS committed as 1f3abaa2). ONE source change, the user's variant (2):

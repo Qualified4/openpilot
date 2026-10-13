@@ -911,3 +911,40 @@ def test_lone_resting_return_on_the_line_of_a_post_row_is_not_a_waiting_vehicle(
   lone = next(o for o in radar.objects.values() if o.source == 20)
   assert len(radar.bands) == row and not lone.structure
   assert lone.admitted == waiting and (radar.selected[1] == lone.key) == waiting
+
+
+def bent_model(bend):
+  xs = [float(x) for x in range(0, 101, 5)]
+  return N(laneLines=[N(x=xs, y=[y - bend * x * x for x in xs]) for y in (-5.4, -1.8, 1.8, 5.4)],
+           laneLineProbs=[.95] * 4, orientationRate=N(z=[0.]), leadsV3=[])
+
+
+@pytest.mark.parametrize('bend,lead,beyond,side', [(.002, True, .8, False), (.002, True, 2., True), (.002, False, .8, True), (0., True, .8, True)])
+def test_vehicle_beyond_the_lead_just_past_egos_lane_line_on_a_curve_is_not_a_side_display(bend, lead, beyond, side):
+  # Recorded 2026-10-13: the second vehicle ahead in ego's lane, 45-75m away on a curve, was shown LF/RF. The
+  # model draws far curves too straight, so it lay .1-1.4m past ego's lane line. On a straight road a real
+  # neighbour's near corner is reported .9-1.3m past the line, and without a lead nothing hides it either way.
+  radar = RadarMap()
+  centre = bend * 55. * 55.  # The model's y is right-positive: this lane bends left.
+  for i in range(30):
+    points = [point(2, 55., centre + 1.8 + beyond, 15., motionState=2)] + ([point(1, 15., bend * 225., 15., motionState=2)] if lead else [])
+    radar.update(N(points=points), bent_model(bend), round(i * .05, 6), 15.)
+  assert (radar.selected[0] is not None) == lead
+  assert (radar.selected[1] is not None) == side
+
+
+@pytest.mark.parametrize('start,lane,side', [(45., 0., False), (60., 0., True), (45., 3., True)])
+def test_vehicle_beyond_the_lead_that_drove_through_egos_lane_is_not_a_side_display(start, lane, side):
+  # The road bends left from 60m on and the model still draws it straight: the vehicle ahead of the lead
+  # appears 2.5-4m to the left. Its recorded positions 5-25m ahead of ego lie in ego's lane, so it is the
+  # second lead. One first seen at the bend has no such record and stays, as does one in the next lane.
+  radar, shown = RadarMap(), []
+  for i in range(int((77.3 - start) / .75) + 3):
+    t = round(i * .05, 6)
+    far = start + 15. * t
+    bend = .01 * max(0., far - 60.) ** 2
+    y = lane if lane else bend  # The one in the next lane is reported on a straight line, 1.2m past ego's lane line.
+    radar.update(N(points=[point(1, 15., 0., 15., motionState=2), point(2, far - 15. * t, y, 15., motionState=2)]), model(), t, 15.)
+    if 2.4 <= bend <= 3.6:
+      shown.append(radar.selected[1] is not None)
+  assert len(shown) >= 4 and all(s == side for s in shown[1:])
