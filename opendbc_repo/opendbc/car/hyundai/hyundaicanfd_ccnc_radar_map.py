@@ -356,6 +356,20 @@ class CcncRadarMap:
       obj.beyond = stamp
     obj.settled = obj.settled or (stamp - obj.beyond > self.OUTER_TIME and abs(obj.last_motion[1]) < self.OUTER_LATERAL)
 
+  def _band_line(self, x, y):
+    """Whether an ego-frame position lies on the line of a band, within BAND_MEMORY metres of its members
+    along the road. A row of posts has gaps the band does not span (recorded 2026-10-13: 11.5m to the next
+    post), and the lone post beyond one rests where a waiting neighbour would."""
+    for band in self.bands:
+      lane = self.lanes.get(band.reference)
+      if y * band.sign <= .2 or not band.members or lane is None or lane.probability < .1:
+        continue
+      base = interpolate(self.geometry.get(band.reference, []), x)
+      if (base is not None and abs(y - base - band.offset) <= self.BAND_BIN
+          and min(band.members.values()) - self.BAND_MEMORY <= self.odometer + x <= max(band.members.values()) + self.BAND_MEMORY):
+        return True
+    return False
+
   def _measurements(self, live, stamp):
     pose = self.pose_at(stamp)
     if pose is None:
@@ -562,7 +576,7 @@ class CcncRadarMap:
       # it never moved in view. Walls and wall-side positions are excluded at selection.
       if (self.WAITING_ADMISSION and self.holding and obj.stationary and obj.slot in (1, 2) and not obj.structure and 0. < ex <= self.MEMORY_MAX_X
           and stamp - obj.born >= .5 and obj.hits >= 7 and obj.tracked >= self.WAITING_TRACKED
-          and self._body_clear(obj.slot, ex, ey) and not self._crossing(obj)):
+          and self._body_clear(obj.slot, ex, ey) and not self._crossing(obj) and not self._band_line(ex, ey)):
         obj.admitted = True
       if obj.motion_confirmed:
         obj.vehicle = max(.8, obj.vehicle)

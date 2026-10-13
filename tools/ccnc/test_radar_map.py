@@ -897,3 +897,17 @@ def test_speed_reported_by_a_fixed_return_while_ego_turns_is_not_vehicle_evidenc
   objects = list(radar.objects.values())
   assert sum(o.hits for o in objects) == 10
   assert any(o.doppler for o in objects) == samples and any(o.motion_confirmed for o in objects) == samples
+
+
+@pytest.mark.parametrize('row,y,waiting', [(True, 3.4, False), (False, 3.4, True), (True, 4.3, True)])
+def test_lone_resting_return_on_the_line_of_a_post_row_is_not_a_waiting_vehicle(row, y, waiting):
+  # Recorded 2026-10-13: bollards on the centre line, 1.6m beyond ego's left line where the model drew a
+  # lane. The row had an 11.5m gap; the post beyond it was not taken into the band and, once ego stopped,
+  # was shown for 50s as a vehicle waiting in that lane. A return off that line, or without a row, still is one.
+  posts = [(i, .5 + 1.2 * i, 3.4) for i in range(6)] if row else []  # To 6.5m; the lone return is 8m beyond.
+  radar = RadarMap()
+  for i in range(40):
+    radar.update(N(points=[point(k, x, py) for k, x, py in posts] + [point(20, 14.5, y)]), model(), round(i * .05, 6), 0.)
+  lone = next(o for o in radar.objects.values() if o.source == 20)
+  assert len(radar.bands) == row and not lone.structure
+  assert lone.admitted == waiting and (radar.selected[1] == lone.key) == waiting

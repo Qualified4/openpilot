@@ -1,5 +1,33 @@
 # Repository memory
 
+- On 2026-10-13 (second road-test round: lone bollard admitted as a waiting
+  vehicle; NOT committed) map is 6dd843a64690 (from b79648fe642b; the entry
+  below WAS committed as 1f3abaa2). ONE source change, the user's variant (2):
+  a resting return on the line of a band (+-BAND_BIN .25m from the band's
+  offset, within BAND_MEMORY 40m of its members along the road) is not admitted
+  as a waiting vehicle (_band_line). Standalone vs b79648fe642b: 27 segments
+  1,008 sends removed, all one bollard (3e1/3 15.1s to 3e1/4 5.6s, 56 measured
+  + 952 stop memory); Full130 output byte-identical, so residual 0, c1/23 6/6,
+  seven waiting scenes, c1/7 and c2/24 queued cars 100%, 356/3 row 0% are
+  unchanged; ten earlier bookmarked segments identical; live entry no
+  exception on 130 + 27; admitted object-sends 7,298 -> 6,250 (27) and 31,537
+  unchanged (130). 1,008 tests (3 new cases, none changed). PC time unchanged
+  within repeat spread. Measured and NOT taken: (1) storing resting returns on
+  a band line out to 40m does not fix 3e1/3 - the 11.5m gap to the next post is
+  a road distance and stays beyond WALL_CONTINUE 7m however early the post is
+  stored; it adds 3% objects, 8.3% of the far-stored objects on Full130 later
+  had vehicle evidence (345 class 2), band-line match failure 18% (Full130) /
+  35% (rainy 27) at +-.25m, displays +12 on Full130, and it removes 31 false
+  sends at 3e1/4 6.1-7.6s that (2) leaves. (3) BAND_CONTINUE 12m also removes
+  3e1/3 (reference only, as the user asked). (1)+(2) = sum of both. NOT FIXED:
+  3e1/5 49.3s and 52.5-53.5s LF - no band or wall ever forms on that side
+  there (two lone resting returns at 15-17m, 1.0-1.6m from the inner line), so
+  no band-based rule can act; the object could not be identified on the dusk
+  video. Remaining: that scene, 3e1/4 6.1-7.6s LF, and the cost of (2): a real
+  car standing on a band's line within 40m of its end is not admitted (none in
+  157 recorded segments). Not validated in the car. Commit files when asked:
+  the map module, tools/ccnc/test_radar_map.py, the experiment doc, AGENTS.md;
+  never CLAUDE.md. Evidence: .analysis/archive/2026-10-13/ccnc-bollard.
 - On 2026-10-13 (first road-test round; NOT committed) the user reported 21 Road
   Viewer bookmarks from driving fed331cb in the car (27 segments, routes
   000003e0--056c8059b7 0-5 and 000003e1--0786defbd1 0-20, rain at dusk) and asked
