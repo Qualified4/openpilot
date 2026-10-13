@@ -17,6 +17,7 @@ RadarMap = module.CcncRadarMap
 
 
 def point(key, x, y=0., speed=0., **extra):
+  extra.setdefault('trackState', 2)  # A measured track, unless the test says otherwise.
   return N(trackId=key, dRel=x, yRel=y, vLead=speed, vRel=speed, radarSource='frontRadar', measured=True, **extra)
 
 
@@ -845,3 +846,54 @@ def test_band_takes_the_next_post_at_its_first_report_unless_it_is_elsewhere_or_
   obj = max(radar.objects.values(), key=lambda o: o.key)
   assert obj.source == 9 and obj.hits == 1 and not obj.stationary
   assert obj.structure == joins
+
+
+@pytest.mark.parametrize('outer,final,stays', [(5.4, 5.9, False), (5.4, 5.2, True), (4.9, 5.2, True), (3.8, 4.3, True)])
+def test_vehicle_settled_beyond_the_outer_line_is_in_the_lane_beyond_but_is_followed_while_it_moves_there(outer, final, stays):
+  # Recorded 2026-10-13: cars that had moved on to the second lane over stayed LF for seconds at .3-.8m past
+  # the outer line (the radar reports the near corner), one of them instead of the car in the adjacent lane.
+  # Not so inside the line, within a lane width of the inner line (recorded: a car in a last lane whose line
+  # was drawn .4m too close), or where the outer line is drawn under 2.3m from the inner one.
+  md = N(laneLines=[N(x=[0., 10., 30., 100.], y=[y] * 4) for y in (-outer, -1.8, 1.8, 5.4)], laneLineProbs=[.95] * 4,
+         roadEdges=[N(x=[0., 10., 30., 100.], y=[y] * 4) for y in (-9., 9.)], orientationRate=N(z=[0.]), leadsV3=[])
+  radar, shown = RadarMap(), []
+  for i in range(100):
+    t = round(i * .05, 6)
+    y = 3.5 + (final - 3.5) * min(1., max(0., t - 1.))
+    radar.update(N(points=[point(1, 8., y, 15., motionState=2, trackState=2)]), md, t, 15.)
+    shown.append(radar.selected[1] is not None)
+  obj = next(iter(radar.objects.values()))
+  crossed = 1. + (outer - 3.5) / (final - 3.5) if final > outer else 9.
+  assert all(shown[10:int(min(crossed + 1., 4.9) * 20)])  # Never dropped while changing lane, nor in the second after.
+  assert shown[-1] == stays and obj.settled == (final > outer)
+
+
+@pytest.mark.parametrize('state,confirmed', [(2, True), (0, False)])
+def test_unexplained_speed_confirms_a_vehicle_only_on_a_track_with_measured_reports(state, confirmed):
+  # Recorded 2026-10-13: tracks that never had a measured report (track state 2) carried five samples of
+  # speed and were shown 4.7m and 9.6m from ego with nothing there. The samples are still collected.
+  radar = RadarMap()
+  for i in range(8):
+    now = round(i * .05, 6)
+    radar.update(N(points=[point(1, 15. - 2. * now, 3.5, -2., trackState=state)]), model(), now, 0.)
+  obj = next(iter(radar.objects.values()))
+  assert obj.doppler == 8 and obj.tracked == (8 if state == 2 else 0)
+  assert obj.doppler_confirmed == confirmed and obj.motion_confirmed == confirmed
+  # Once measured reports arrive, the samples already collected confirm it.
+  for i in range(8, 11):
+    now = round(i * .05, 6)
+    radar.update(N(points=[point(1, 15. - 2. * now, 3.5, -2., trackState=2)]), model(), now, 0.)
+  assert obj.doppler_confirmed
+
+
+@pytest.mark.parametrize('yaw,samples', [(.6, False), (.1, True)])
+def test_speed_reported_by_a_fixed_return_while_ego_turns_is_not_vehicle_evidence(yaw, samples):
+  # Recorded 2026-10-13 at .5-.75rad/s and 10-18km/h: a wall corner 30deg to the side reported 2-3.5m/s
+  # (the radar moves sideways with the turn; the report allows for forward speed only) and became a vehicle.
+  radar = RadarMap()
+  for i in range(10):
+    now = round(i * .05, 6)
+    radar.update(N(points=[point(1, 6., -3., 2.5, trackState=2)]), model(), now, 4., yaw_rate=yaw)
+  objects = list(radar.objects.values())
+  assert sum(o.hits for o in objects) == 10
+  assert any(o.doppler for o in objects) == samples and any(o.motion_confirmed for o in objects) == samples

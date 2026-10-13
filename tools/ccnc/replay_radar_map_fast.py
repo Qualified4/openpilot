@@ -68,12 +68,12 @@ def structure_stats(tracker, live, model_info, speed, counts):
         or not 0. <= x <= (tracker.FAR_X if obj.motion_confirmed or obj.vision else tracker.MAX_X)
         or (obj.vehicle < .6 and not obj.admitted) or obj.uncertainty > tracker.MAX_DISPLAY_UNCERTAINTY):
       continue
-    free = tracker._lane(x, y, moving=obj.motion_confirmed)[0]
+    free = tracker._lane(x, y, moving=obj.motion_confirmed, settled=obj.settled)[0]
     if free is None and obj.vision and abs(y) <= 2.:
       free = 0
     if free is None or (free and (x > tracker.MAX_SIDE_X or obj.last_motion[0] < -1. / 3.6)):
       continue
-    walled = tracker._lane(x, y, respect_walls=True, moving=obj.motion_confirmed)[0]
+    walled = tracker._lane(x, y, respect_walls=True, moving=obj.motion_confirmed, settled=obj.settled)[0]
     if walled is None and obj.vision and abs(y) <= 2. and not tracker._wall_outside(x, y):
       walled = 0
     reason = ('wall member' if obj.structure else 'lane cut by wall' if walled is None else

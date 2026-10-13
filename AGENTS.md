@@ -1,5 +1,55 @@
 # Repository memory
 
+- On 2026-10-13 (first road-test round; NOT committed) the user reported 21 Road
+  Viewer bookmarks from driving fed331cb in the car (27 segments, routes
+  000003e0--056c8059b7 0-5 and 000003e1--0786defbd1 0-20, rain at dusk) and asked
+  for three small fixes only. Map is b79648fe642b (from 1ace50c16016). The two
+  CCNC entries of 2026-10-12 below marked "NOT committed" WERE committed as
+  fed331cb. The 27 segments are decoded to .analysis/cache/ccnc-replay-v3
+  (manifest .analysis/archive/2026-10-13/ccnc-road/road-manifest.json); Full130
+  stays ccnc-replay-v2. Changes: (1) a moving vehicle measured outside its
+  side's outer lane line for over 1s with sideways speed under .3m/s is
+  "settled" and loses the +.75m outer margin, until it is measured inside the
+  line again; kept margin where the outer line is under 2.3m from the inner one
+  OR the return is under 3.5m from the inner line. Two departures from the
+  request, both measured: the latch (deciding per report let the far-lane car
+  back twice at 3e1/15 53.0s, sideways estimate -.3) and the 3.5m condition (as
+  requested, 358/0 49.8-53.8s RF lost 65 sends of a real car in the last lane
+  of a two-lane road, line drawn at 2.6-3.1m, return at 3.3m; 358/7 29 more).
+  3.5 was the only value tried. (2) doppler_confirmed needs obj.tracked >= 3;
+  samples are still collected and confirm once measured reports arrive. (3) no
+  Doppler samples while |yaw rate| > .3rad/s (update() stores yaw_rate);
+  variant (b), adding yaw * (3.5 + |y|) to the allowance, also removed both
+  bookmarks but changed more at small yaw rates (Full130 106 removed + 60
+  swapped vs 89 + 0) and was not taken. Numbers vs fed331cb, standalone:
+  Full130 removed 248 (class 2 115, of which 86 beyond 30m; speed-only 133),
+  added 0, swapped 323; 27 segments removed 29, added 0, swapped 196.
+  Beyond-normal-outer-line side sends 381 -> 198 (27) and 1,646 -> 1,250
+  (Full130). Speed-only displays with under 3 measured reports 20 -> 0 / 112 ->
+  0, above .3rad/s 16 -> 0 / 64 -> 0; no class-2 loss from (2) or (3). Video
+  (qcamera) of the larger Full130 changes: far-lane cars replaced by the
+  adjacent one at 3d8/9 RF, 356/20, 356/21, 39e/19, 366/65 (correct);
+  undecided 3d8/9 LF truck, 3c1/9, 3c2/23; no video 38a/10; (2)/(3) removals
+  were a car park's parked cars and walls passed while turning, except a real
+  parked SUV at 3c2/24 LF (10 sends). All seven in-scope bookmarks are gone in
+  replay (3e1/13 only from 12.9s: at 12.4s the car still moves sideways at
+  .5m/s). Residual 0, c1/23 6/6, seven waiting scenes 100%, the ten earlier
+  bookmarked segments identical to fed331cb, live entry no exception on 130 +
+  27. 1,005 tests (8 new cases; the synthetic point() helper now defaults to
+  trackState=2 because 21 older tests confirmed vehicles by speed without a
+  track state). PC time unchanged within repeat spread (.65/.72 vs .67/.70ms).
+  Known costs: a car returning from the lane beyond is shown .75m later (132
+  Full130 sends dropped after settling with sideways estimate >= .3, 123
+  inward); a car riding 3.5m+ past the inner line in a last lane; parked cars
+  while turning. Next round, untouched: second lead shown LF/RF on curves
+  (3e0/0-4; model lanes bend too little beyond 30m), lone bollards admitted as
+  waiting (3e1/3, 3e1/5; band storage beyond MAX_X 20), crawling neighbour not
+  shown (3e1/6 19.8), bus at a stop (3e1/6 37.5). 3e1/1 35-45s missing 65m FF
+  is an oncoming vehicle while waiting to U-turn: correct, not a loss. Not
+  validated in the car. Commit files when asked: the map module,
+  tools/ccnc/test_radar_map.py, tools/ccnc/replay_radar_map_fast.py, the
+  experiment doc, AGENTS.md; never CLAUDE.md. Evidence:
+  .analysis/archive/2026-10-13/ccnc-road.
 - On 2026-10-13 the user requested merging carrot-wip into ccnc-hda1 again.
   origin/carrot-wip 2ec25da3 (four commits: green signal group release and small
   night red tracks, stopped signal veto released on one central red-green

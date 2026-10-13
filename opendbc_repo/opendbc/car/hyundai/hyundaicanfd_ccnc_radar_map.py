@@ -49,6 +49,8 @@ class MapObject:
   superseded: bool = False  # Its radar id was reported elsewhere in the next cycle: the same track moved on.
   ahead_of: tuple = ()  # (key, gap) of remembered vehicles this object first appeared just ahead of.
   tracked: int = 0  # Observations the radar reported as a measured (not coasted) track.
+  beyond: float | None = None  # Since when it has been measured outside its side's outer lane line.
+  settled: bool = False  # Outside that line for a while and no longer moving sideways: the lane beyond.
   history: deque = field(default_factory=lambda: deque(maxlen=16))
 
 
@@ -124,6 +126,18 @@ class CcncRadarMap:
   # (map-only reviewed residual 17 with it, 3 without; known vehicle kept either way).
   DISPLACEMENT_EVIDENCE = False
   RESTING_SPEED = 1.  # m/s; a vehicle reporting more is not at rest.
+  # A moving vehicle is followed .75m past the outer line while it changes lane, or where the model draws
+  # that line too close. Once it has settled beyond a normally placed line it is in the lane beyond:
+  # the radar reports the near corner of its body, .3-.8m past the line (recorded 2026-10-13).
+  OUTER_NARROW = 2.3  # m from the inner line; an outer line nearer than this is one drawn too close.
+  OUTER_LATERAL, OUTER_TIME = .3, 1.  # m/s, s
+  # Lines drawn .3-.5m too close at a normal width also occur (recorded: a car in the last lane, 3.3m from
+  # the inner line): only a return a full lane width from the inner line is taken as the lane beyond.
+  OUTER_FAR = 3.5
+  DOPPLER_TRACKED = 3  # Measured reports before unexplained speed confirms a vehicle; coasted tracks carry none.
+  # The reported speed is compensated for ego's forward speed only. While ego turns, the radar ahead of the
+  # rear axle also moves sideways, and fixed returns to the side report 1-3m/s (recorded at .5-.75rad/s).
+  DOPPLER_YAW = .3  # rad/s; no unexplained-speed samples above it.
   RESTING_TRAVEL, RESTING_NET = .15, .5  # Net movement of a resting return: this share of ego's travel plus this many metres.
   DENSE_ROW_POINTS, DENSE_ROW_SPAN = 5, 6.  # A row this long and dense is a structure even inside lane lines.
   WALL_MAX_GAP = 3.5
@@ -166,6 +180,7 @@ class CcncRadarMap:
     self.usable = False
     self.holding = self.stopped = False
     self.a_ego = 0.
+    self.yaw_rate = 0.
     self.evidence = {}
     self.leads = []
     self.blindspot = (False, False)
@@ -287,7 +302,7 @@ class CcncRadarMap:
       points = sorted([ego for _, ego in behind] + placed[:40])
       self.geometry[i] = [p for j, p in enumerate(points) if j == 0 or p[0] > points[j - 1][0] + .001]
 
-  def _lane(self, x, y, respect_walls=False, moving=False):
+  def _lane(self, x, y, respect_walls=False, moving=False, settled=False):
     """Lane slot of an ego-frame position, with the existing selector's lane policy:
     inner lines from probability .1, an adjacent lane bounded by its outer line and/or
     the road edge with 1.8m of room, a wider outer margin for moving vehicles."""
@@ -317,13 +332,30 @@ class CcncRadarMap:
       # (recorded: 1.99m from the inner line) while the road edge leaves the room.
       if offset <= 0. or not widths or (max(widths) if moving and edge in usable else min(widths)) - .25 <= 1.8:
         continue
-      limit = min(([sign * (bounds[line] - base) + (.75 if moving else -.25)] if line in usable else [])
+      margin = -.25 if not moving else .75
+      if settled and line in usable and sign * (bounds[line] - base) >= self.OUTER_NARROW and offset >= self.OUTER_FAR:
+        margin = 0.
+      limit = min(([sign * (bounds[line] - base) + margin] if line in usable else [])
                   + ([sign * (bounds[edge] - base) - .95] if edge in usable else [])
                   + [sign * (wy - base) for wy in walls if sign * wy > .2])
       if offset <= limit:
         width = min(widths)
         return slot, {inner, line} <= strong and min(offset, width - offset) >= .35, abs(offset - .5 * width)
     return None, False, math.inf
+
+  def _settle(self, obj, x, y, stamp):
+    """Whether a moving vehicle has come to stay outside the outer lane line of its side. It stays so until
+    it is measured inside that line again: its sideways speed is too noisy to decide this report by report."""
+    line = 0 if y > 0. else 3
+    if line not in self.geometry or self.lanes[line].probability < .1 or (outer := interpolate(self.geometry[line], x)) is None:
+      return
+    if not obj.motion_confirmed or (y - outer if y > 0. else outer - y) <= 0.:
+      obj.beyond, obj.settled = None, False
+      return
+    if obj.beyond is None:
+      obj.beyond = stamp
+    obj.settled = obj.settled or (stamp - obj.beyond > self.OUTER_TIME and abs(obj.last_motion[1]) < self.OUTER_LATERAL)
+
   def _measurements(self, live, stamp):
     pose = self.pose_at(stamp)
     if pose is None:
@@ -357,7 +389,8 @@ class CcncRadarMap:
       # above it, or towards ego.
       residual = speed - explained
       doppler = (cosine >= .707 and (x >= self.DOPPLER_MIN_X or abs(y) >= self.DOPPLER_NEAR_Y) and abs(residual)
-                 > self.DOPPLER_SPEED + self.REPORT_DELAY_BOUND * abs(self.a_ego))
+                 > self.DOPPLER_SPEED + self.REPORT_DELAY_BOUND * abs(self.a_ego)
+                 and abs(self.yaw_rate) <= self.DOPPLER_YAW)
       doppler = (1 if residual > 0. else -1) if doppler else 0  # Above the band, or towards ego.
       # Beyond the wall-mapping range only returns with vehicle evidence are kept:
       # they need no structure reasoning, so no distance limit applies to them.
@@ -458,8 +491,10 @@ class CcncRadarMap:
         obj.doppler += 1
         obj.forward_samples += doppler > 0
         obj.doppler_recent.append(stamp)
-        if len(obj.doppler_recent) == self.DOPPLER_SAMPLES and stamp - obj.doppler_recent[0] <= self.DOPPLER_WINDOW:
-          obj.doppler_confirmed = True
+      # Confirmation waits for measured reports; the samples themselves are kept as before.
+      if (len(obj.doppler_recent) == self.DOPPLER_SAMPLES and obj.doppler_recent[-1] - obj.doppler_recent[0] <= self.DOPPLER_WINDOW
+          and obj.tracked >= self.DOPPLER_TRACKED):
+        obj.doppler_confirmed = True
       if obj.radar_moving or obj.doppler_confirmed:
         obj.motion_confirmed = True
       cx, cy = x - obj.drift * hc, y - obj.drift * hs
@@ -503,8 +538,9 @@ class CcncRadarMap:
       obj.uncertainty = max(.15, min(.4, obj.uncertainty * .6))
       ex, ey = self.to_ego(obj.x, obj.y)
       self.local[key] = ex, ey
-      obj.slot, obj.interior, center = self._lane(ex, ey, moving=obj.motion_confirmed)
       obj.last_motion = (hc * obj.vx + hs * obj.vy, hc * obj.vy - hs * obj.vx)
+      self._settle(obj, ex, ey, stamp)
+      obj.slot, obj.interior, center = self._lane(ex, ey, moving=obj.motion_confirmed, settled=obj.settled)
       # A remembered vehicle that drives off reappears just ahead of where it stood, slowly, with the
       # radar's moving class or its old radar id, and the gap then grows. It is no longer remembered.
       if obj.hits == 1:
@@ -865,7 +901,7 @@ class CcncRadarMap:
           or obj.existence < .5 or (obj.vehicle < .6 and not obj.admitted)
           or obj.uncertainty > self.MAX_DISPLAY_UNCERTAINTY or obj.structure):
         continue
-      slot, _, center_distance = self._lane(x, y, respect_walls=True, moving=obj.motion_confirmed)
+      slot, _, center_distance = self._lane(x, y, respect_walls=True, moving=obj.motion_confirmed, settled=obj.settled)
       if slot is not None and slot != 0 and x > self.MAX_SIDE_X:
         continue  # Same side-slot distance limit as the existing selector.
       if slot is None and obj.vision and abs(y) <= 2. and not self._wall_outside(x, y):
@@ -917,7 +953,7 @@ class CcncRadarMap:
       return 'too new'
     if obj.uncertainty > self.MAX_DISPLAY_UNCERTAINTY:
       return 'uncertain position'
-    lane, _, _ = self._lane(lx, ly, respect_walls=True, moving=obj.motion_confirmed)
+    lane, _, _ = self._lane(lx, ly, respect_walls=True, moving=obj.motion_confirmed, settled=obj.settled)
     if lane is not None and lane != 0 and lx > self.MAX_SIDE_X:
       return 'beyond side distance limit'
     if lane is None and obj.vision and abs(ly) <= 2. and not self._wall_outside(lx, ly):
@@ -980,6 +1016,7 @@ class CcncRadarMap:
     # Offline: {radar track id: (radar motion class, reported distance)} read from the raw
     # track message. A live build would carry the class on each RadarPoint as motionState.
     self.evidence = evidence or {}
+    self.yaw_rate = yaw_rate
     self._advance(now, v_ego, yaw_rate)
     self._geometry()
     radar_time = now if radar_time is None else radar_time
