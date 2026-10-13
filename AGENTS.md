@@ -1,5 +1,46 @@
 # Repository memory
 
+- On 2026-10-13 (audit of the day's four rounds; documents only, NOT committed)
+  nothing in the map or extension module changed (map bc52b9c4e6e5; the far
+  limit round below is committed as 58ba313b). Old = fed331cb's module
+  1ace50c16016 (what the car ran), new = HEAD, both through the live entry
+  point (update_vehicles with position correction) on every logged segment:
+  168 segments, 197,050 sends = Full130 (ccnc-replay-v2) + 27 road-test
+  (ccnc-replay-v3) + the eleven 3dd segments newly decoded to ccnc-replay-v4
+  (manifest .analysis/archive/2026-10-13/ccnc-audit/all-manifest.json).
+  Totals: removed LF 6,190 (3.1%), RF 3,556 (1.8%), FF 171; added 6; swapped
+  1,058. 70% of the removed sends are beyond 50m and 98% are side slots past
+  the FF. By rule (leave-one-out variants): far limit 6,185 sends, C(2) 1,007
+  (one bollard), A(1') 720, B' 569, A(1')+A(2) overlap 536, A rules + far
+  limit overlap 1,036, A(2) 406, D 132, H 95, mixed 295. 153 windows of 20+
+  sends are listed in the experiment doc with rule and video verdict. Video
+  (top 30 by length and the 19 with sends inside 25m, 45 in all): 15 correct,
+  22 undecided, 8 that look like real neighbours plus one seen earlier - all
+  nine at 41-80m and due to the far limit (3d8/9, 3c1/12, 366/33, 3c1/16,
+  356/12, 3c1/13, 384/12, 3c1/10, 358/11; 983 sends; not certain at that
+  range). No real vehicle loss confirmed inside 25m (13 correct, 5 undecided,
+  1 far). LEAD_SIDE_X 60 restores the 50-60m part (four windows almost fully)
+  and brings back 22 sends of 3e0/4 1.5 and 30 of 3e0/1 54.7; 356/12 0.7-5.6s
+  LF is mixed trail/far limit and no single number restores it. Today's
+  bookmarks through the live path: B' four show only the adjacent car, D/H
+  three and 3e1/3 gone, A six of seven at 0 (3e0/2 20.4 keeps the car behind,
+  58 sends), 3e1/5 unchanged (not fixed), out-of-scope ones unchanged; the 18
+  earlier scenes same or less. Stability: same object back within .5s LF 508
+  -> 251, RF 643 -> 517, FF 652 -> 649; object counts identical (mean 21.3,
+  33.4 while stopped, max 178, never 256). The live-only FF difference is
+  TRACED: stabilize_slots keeps an object that changes slot drawn in its old
+  slot for up to .2s only when that slot is vacant; at 366/29 20.27s a car
+  straddling ego's left line 8m ahead alternates LF/FF, the old module had a
+  59m object in LF so it went to FF at once, the far limit now empties LF and
+  the car is drawn LF with FF value 0 for .05-.2s (40 of the 176 FF-differing
+  sends have this shape; the other 136 are D/H removing speed-only FF). PC
+  time unchanged (.58-.62 vs .59ms), no live-entry exception in any of 13
+  module variants, 1,033 CCNC tests pass. Watch in the car: neighbours beyond
+  50m behind a lead and their appearance at 50m, cars moving to and from the
+  lane beyond, a car changing lane right ahead (FF empty ~.2s), second leads
+  and real neighbours on curves, turns, stops beside centre-line bollards,
+  cars riding wide in a last lane. Commit files when asked: the experiment
+  doc and AGENTS.md only; never CLAUDE.md.
 - On 2026-10-13 the user requested merging carrot-wip into ccnc-hda1 again, after
   the four road-test rounds were committed (1f3abaa2, 099ce103, ae21b0de,
   58ba313b - the "NOT committed" notes in the CCNC entries below are
