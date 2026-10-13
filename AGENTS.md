@@ -1,5 +1,9 @@
 # Repository memory
 
+- On 2026-10-13 the user asked to commit the root CLAUDE.md after all (it had
+  been kept out of every commit on the user's instruction until then). It is
+  tracked from this commit on; the "never CLAUDE.md" notes in the entries
+  below are historical. The audit entry below is committed as 61415e94.
 - On 2026-10-13 (audit of the day's four rounds; documents only, NOT committed)
   nothing in the map or extension module changed (map bc52b9c4e6e5; the far
   limit round below is committed as 58ba313b). Old = fed331cb's module
