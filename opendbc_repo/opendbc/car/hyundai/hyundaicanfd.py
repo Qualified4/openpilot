@@ -1,6 +1,7 @@
 import math
 import copy
 import numpy as np
+from opendbc.car.hyundai.scalar import clip_float
 from opendbc.car import CanBusBase, DT_CTRL
 from opendbc.car.carlog import carlog
 from opendbc.car.crc import CRC16_XMODEM
@@ -29,7 +30,7 @@ def apply_accel_jerk_limit(a_raw: float, a_value_last: float, jerk_u: float, jer
   """Ramp aReqValue toward aReqRaw using the asymmetric stock SCC jerk limits."""
   upper_step = max(0.0, float(jerk_u)) * dt
   lower_step = max(0.0, float(jerk_l)) * dt
-  return float(np.clip(a_raw, a_value_last - lower_step, a_value_last + upper_step))
+  return clip_float(a_raw, a_value_last - lower_step, a_value_last + upper_step)
 
 
 def apply_canfd_stopping(values, CS, controller, accel, previous_value, jerk_u, jerk_l):
@@ -480,12 +481,12 @@ def _apply_scc_lead(values, radar_state, model_v2=None, hud_lateral=None):
   # Match the stock no-object encoding; never retain an old camera target.
   values.update(ACC_ObjDist=204.6, ACC_ObjLatPos=0.0, ACC_ObjRelSpd=239.4, HUD_LEAD_INFO=0)
   if lead is not None:
-    values["ACC_ObjDist"] = float(np.clip(lead.dRel, 0.1, 204.5))
+    values["ACC_ObjDist"] = clip_float(lead.dRel, 0.1, 204.5)
     # Show the offset from the model path at the lead distance. Bound to
     # the signed 9-bit signal's representable range (0.1 scale, -20 offset).
     lateral = _display_lead_lateral(lead, model_v2) if hud_lateral is None else hud_lateral
-    values["ACC_ObjLatPos"] = float(np.clip(lateral, -45.6, 5.5))
-    values["ACC_ObjRelSpd"] = float(np.clip(lead.vRel, -170.0, 239.3))
+    values["ACC_ObjLatPos"] = clip_float(lateral, -45.6, 5.5)
+    values["ACC_ObjRelSpd"] = clip_float(lead.vRel, -170.0, 239.3)
     # Keep the OEM HUD/cluster lead white around standstill; relative-speed
     # noise near zero must not alternate white (2) and receding gray (1).
     values["HUD_LEAD_INFO"] = 1 if lead.vRel > 0.3 else 2
@@ -814,8 +815,9 @@ def _hide_replaced_adas_service_warning(values):
     values["FAULT_DAS"] = 0
 
 
-def _select_cluster_background(cruise_enabled, lat_active, paddle_pressed, paddle_mode):
-  if paddle_mode > 0 and paddle_pressed:
+def _select_cluster_background(cruise_enabled, lat_active, paddle_pressed, paddle_mode, turning=False):
+  # Reuse the existing flashing-red background to identify an active model turn.
+  if (lat_active and turning) or (paddle_mode > 0 and paddle_pressed):
     return 6
   return 1 if cruise_enabled else 3 if lat_active else 7
 
@@ -867,9 +869,9 @@ def _apply_ccnc_lead(values, radar_state, enabled, model_v2=None, hud_lateral=No
   # target; otherwise use the existing generic gray/white car presentation.
   if not same_object:
     values["FF_DETECT"] = 4 if enabled else 3
-  values["FF_DISTANCE"] = float(np.clip(lead.dRel, 0.1, 204.5))
+  values["FF_DISTANCE"] = clip_float(lead.dRel, 0.1, 204.5)
   # Match the OEM object using current geometry, independently of display lag.
-  values["FF_LATERAL"] = float(np.clip(lateral if hud_lateral is None else hud_lateral, -6.4, 6.3))
+  values["FF_LATERAL"] = clip_float(lateral if hud_lateral is None else hud_lateral, -6.4, 6.3)
 
 
 def create_alt2_adas_button_request(packer, CAN, frame, CC, CS, stopping):
@@ -935,7 +937,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   interlock_active = longitudinal_interlock_active(CS)
   display_lead = _display_lead(getattr(CS, "radarState", None))
   lead_visible = display_lead is not None
-  lead_distance = float(np.clip(display_lead.dRel, 0.1, 204.5)) if lead_visible else 0.0
+  lead_distance = clip_float(display_lead.dRel, 0.1, 204.5) if lead_visible else 0.0
 
   md = CS.modelV2
   if not hasattr(create_ccnc_messages, '_lane_line_check') or frame % 100 == 0:
@@ -1026,7 +1028,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values["TARGET_DISTANCE"] = lead_distance
 
         values["BACKGROUND"] = _select_cluster_background(
-          cruise_enabled, lat_active, CS.paddle_button_prev > 0, paddle_mode,
+          cruise_enabled, lat_active, CS.paddle_button_prev > 0, paddle_mode, turning=desire in (1, 2),
         )
         values["CENTERLINE"] = 1 if HDA_CntrlModSta > 0 else 0
         values["CAR_CIRCLE"] = 2 if hdp_active else 1 if cruise_enabled else 0

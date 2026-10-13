@@ -1,5 +1,26 @@
 # Repository memory
 
+- On 2026-10-13 the user requested merging carrot-wip into ccnc-hda1 again, after
+  the four road-test rounds were committed (1f3abaa2, 099ce103, ae21b0de,
+  58ba313b - the "NOT committed" notes in the CCNC entries below are
+  historical; the far-limit round is 58ba313b). origin/carrot-wip 09df1475 (14
+  commits: signal preparation input validation, signal/planner/MPC/CAN hot-path
+  performance, braking-onset following distance memory removed, onroad overlay
+  layer reuse and its fixes, vNavi motorway signal suspension, driver
+  monitoring pause in soft hold, startup recovery and active-turn indication,
+  docs) was merged. One conflict, openpilot/selfdrive/ui/mici/onroad/
+  hud_renderer.py: carrot-wip moved the wheel alpha filter update into
+  _update_state, so its side was taken there; it also updates _wheel_y_filter
+  in _update_state, which this branch had removed, so that one line was dropped
+  (it would raise AttributeError). AGENTS.md did not conflict.
+  tools/ccnc/pytest_plugin.py BASELINE follows the merged carrot-wip revision
+  (carrot_settings.json changed). Map module bc52b9c4e6e5 and extension
+  d473d0fb4bd7 unchanged; incoming hyundaicanfd.py and carcontroller.py changes
+  merged without conflict. CCNC tests 1,033 passed (14 incoming cluster cases),
+  wiki settings 27 passed. Incoming tests on this PC: those that import pass
+  (among them test_carrot_hud_renderer 29); the rest stop on this PC's
+  environment (capnp abort on the non-ASCII path, missing params_pyx, pyray,
+  fcntl). Not pushed or deployed.
 - On 2026-10-13 (fourth road-test round: far side slots behind a lead; NOT
   committed) map is bc52b9c4e6e5 (from 25ff38ec9160; the curve entry below WAS
   committed as ae21b0de). ONE rule: while an FF is displayed, a side candidate
