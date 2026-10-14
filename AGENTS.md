@@ -1,5 +1,10 @@
 # Repository memory
 
+- On 2026-10-14 (round 11 B) the map module went acf245a5b309 -> 2fead7f97fd7:
+  LEAD_SIDE_X 50 -> 60 except while holding (LEAD_SIDE_HOLD_X 50), since a
+  50-60m side candidate displaced the stop memory of a car beside ego (15
+  windows, 169 sends); legacy-only 50-80m side sends 7,524 -> 5,170, holding
+  side swaps 0, 50-60m flicker LF 15 -> 61, RF 17 -> 32 left for a later round.
 - On 2026-10-14 (round 11 C) the map module went 8e0a77855e73 -> acf245a5b309:
   far FF off-confirmation. 339 of 356 FF flickers beyond 50m were the lane slot
   leaving ego's lane for .1-.3s with the object measured; the displayed FF

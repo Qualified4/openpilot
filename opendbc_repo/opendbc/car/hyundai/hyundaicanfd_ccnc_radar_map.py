@@ -166,8 +166,11 @@ class CcncRadarMap:
   TRAIL_STEP, TRAIL_NEAR, TRAIL_FAR, TRAIL_ROOM = 3., 5., 25., .3
   # Beyond LEAD_SIDE_X a side slot behind a displayed lead is not given at all, unless the vehicle is within
   # LEAD_SIDE_PAST of that lead: the far lane geometry is off by up to a lane width there and video cannot
-  # tell the lanes apart (recorded 2026-10-13: second leads at 58-79m shown RF/LF on a straight road).
-  LEAD_SIDE_X, LEAD_SIDE_PAST = 50., 30.
+  # tell the lanes apart (recorded 2026-10-13: second leads at 58-79m shown RF/LF on a straight road). Raised from
+  # 50 (2026-10-14): the side vehicles the existing selector showed at 50-80m were real cars on video. While
+  # holding it stays at LEAD_SIDE_HOLD_X: a 50-60m candidate there displaced the stop memory of a car right
+  # beside ego (15 windows, 169 sends: 356/21, 3c1/21, 3c1/23, 3dd/28-29), when the display is watched most.
+  LEAD_SIDE_X, LEAD_SIDE_HOLD_X, LEAD_SIDE_PAST = 60., 50., 30.
   # The radar can merge the lead's track with a large vehicle beside it, or lose it, while vision keeps seeing
   # the lead in ego's lane (recorded 2026-10-14: the same id 1.2-1.7m sideways across the line for 1.5s next to
   # a trailer, FF jumping to a car 42m ahead). The displayed FF object is then kept for up to BRIDGE_HOLD while
@@ -450,7 +453,7 @@ class CcncRadarMap:
     x, y = self.local[key]
     if x <= lead_x + self.LEAD_BEYOND:
       return False
-    if x > self.LEAD_SIDE_X and x > lead_x + self.LEAD_SIDE_PAST:
+    if x > (self.LEAD_SIDE_HOLD_X if self.holding else self.LEAD_SIDE_X) and x > lead_x + self.LEAD_SIDE_PAST:
       return True
     left, right = interpolate(self.geometry.get(1, []), x), interpolate(self.geometry.get(2, []), x)
     if left is not None and right is not None and abs(.5 * (left + right)) > self.LEAD_CURVE:

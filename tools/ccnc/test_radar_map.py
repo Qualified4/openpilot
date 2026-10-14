@@ -954,17 +954,32 @@ def test_vehicle_beyond_the_lead_that_drove_through_egos_lane_is_not_a_side_disp
   assert len(shown) >= 4 and all(s == side for s in shown[1:])
 
 
-@pytest.mark.parametrize('lead,x,side', [(15., 48., True), (15., 55., False), (None, 55., True), (30., 55., True)])
+@pytest.mark.parametrize('lead,x,side', [(15., 48., True), (15., 55., True), (15., 65., False), (None, 65., True), (40., 65., True)])
 def test_side_slot_far_behind_the_displayed_lead_is_not_given(lead, x, side):
   # Recorded 2026-10-13: with a lead displayed, vehicles 58-79m away in ego's own lane were shown RF/LF on a
   # straight road, 1.7-2.5m past ego's lane line. Far lane geometry is off by up to a lane width there. Beyond
-  # 50m a side slot is given only without a lead, or within 30m of the lead.
+  # 60m a side slot is given only without a lead, or within 30m of the lead. 50-60m is given (2026-10-14: the
+  # side vehicles the existing selector showed there were real cars on video).
   radar = RadarMap()
   for i in range(30):
     points = [point(2, x, 3.5, 15., motionState=2)] + ([point(1, lead, 0., 15., motionState=2)] if lead else [])
     radar.update(N(points=points), model(), round(i * .05, 6), 15.)
   assert (radar.selected[0] is not None) == (lead is not None)
   assert (radar.selected[1] is not None) == side
+
+
+def test_far_side_candidate_behind_the_lead_does_not_displace_stop_memory_while_holding():
+  # Recorded 2026-10-14 (356/21, 3c1/21, 3c1/23, 3dd/28-29): while ego was stopped a 50-60m side vehicle behind
+  # the lead replaced the remembered car right beside ego. While holding the side limit stays at 50m.
+  radar = stopping_beside(RadarMap(), 6.)
+  key = radar.selected[1]
+  assert key is not None and radar.remembered[1]
+  now = radar._test_state['t']
+  for i in range(30):
+    points = [point(7, 15., 0., 3., motionState=2), point(8, 55., 3.5, 3., motionState=2)]
+    radar.update(N(points=points), model(), round(now + i * .05, 6), 0., a_ego=0.)
+  assert radar.holding and radar.selected[0] is not None
+  assert radar.selected[1] == key and radar.remembered[1]
 def bridge_scene(lead, steps=60, vision=lambda i: True, lane_change=lambda i: False, lead_x=12., vision_y=lambda i: 0., lead_y=lambda i: 0.):
   """Ego at 15m/s; a lead ``lead_x`` ahead in ego's lane until step 30, then whatever ``lead(i)`` reports; a second
   vehicle beyond it in the lane (40m, or 70m behind a far lead). Returns the map and, per step, the FF object's key and source."""
