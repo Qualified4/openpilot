@@ -1,5 +1,21 @@
 # Repository memory
 
+- On 2026-10-14 (legacy vs map overview; measurement only, no code change)
+  the existing selector alone (CcncRadarMap off) and the map (8e0a77855e73,
+  extension d473d0fb4bd7) ran side by side through the live entry order
+  (update_lanes, then update_vehicles; one extension instance each) on 171
+  segments, 200,653 sends. The harness needed modelV2 position, timestampEof
+  and named laneChangeState for the legacy path fallback: side cache
+  .analysis/cache/ccnc-meta-v3; legacy then matches the replay cache values[1]
+  on 99.4-99.9% of sends. Actual sendcan matches neither closely (drive-time
+  code). Shown by either: FF both 95.5%, legacy only 3.6%, map only 0.9%; LF
+  legacy only 14.5% (58.6% of 50-80m, the 50m side limit); RF legacy only
+  8.0%, map only 4.6%. Video, 80 windows: structure shown as a vehicle,
+  legacy 1,413 sends vs map 0; real vehicles not shown, map 1,324 (613 beyond
+  the side limit) vs legacy 2,378. Map FF flickers more beyond 50m (356 vs 91).
+  PC per send: legacy 0.43-0.45ms, map 0.80-0.82ms mean. Section "기존 vs 지도
+  종합" in the experiment doc; evidence in
+  .analysis/archive/2026-10-14/ccnc-legacy-vs-map.
 - On 2026-10-14 (bent walls; NOT committed) the map module went c2d313c7d0bf
   -> 8e0a77855e73: a fresh resting return within WALL_MAX_GAP of a wall end and
   within WALL_BEND 30 degrees of the end segment joins the wall, and the next
