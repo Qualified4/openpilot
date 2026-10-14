@@ -1,5 +1,20 @@
 # Repository memory
 
+- On 2026-10-14 (bent walls; NOT committed) the map module went c2d313c7d0bf
+  -> 8e0a77855e73: a fresh resting return within WALL_MAX_GAP of a wall end and
+  within WALL_BEND 30 degrees of the end segment joins the wall, and the next
+  one is compared with the new segment (3e3/15: a post row bending into a turn
+  pocket; one post was admitted as waiting .5s before its part became a wall).
+  Unlike new rows, the lane-interior protection does not apply to these joins:
+  the pocket posts stand inside the lane the model draws (with it the scene was
+  not fixed). 171 segments (3e3/15 added to ccnc-replay-v5 and meta-v2): only
+  that LF (10 sends) disappears; 799 objects joined by bends, none admitted at
+  the time; 15 degrees gives the same displays, 45 changes LF more. Consumers:
+  bands, band-line hits and stop memory unchanged; wall members +6%. One
+  synthetic test (two wall directions not joined) now switches WALL_BEND off.
+  The waiting-admission pair hold tried before (round 9) was dropped: a car's
+  two reflections are 0.8-3.9m apart, overlapping post spacing, and it hid 26
+  real vehicles of 30 windows; recorded in the experiment doc.
 - On 2026-10-14 (round 8c; NOT committed) the map module went 5e9d3ceb0d8e
   -> c2d313c7d0bf: a bridged FF object (cases A/B/C) is drawn at its stable
   y, the mean report y from ego's lane centre over its last .5s calm stretch

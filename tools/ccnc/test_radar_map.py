@@ -415,7 +415,10 @@ def test_wall_gap_stays_open_without_stationary_intermediate_evidence():
   assert not next(o for o in radar.objects.values() if o.source == 20).structure
 
 
-def test_different_wall_directions_are_not_joined_by_a_middle_point():
+def test_different_wall_directions_are_not_joined_by_a_middle_point(monkeypatch):
+  # The straight-row joining does not cross a change of direction. (A bend of up to WALL_BEND is followed
+  # post by post since 2026-10-14; this row bends 19 degrees, so that is switched off here.)
+  monkeypatch.setattr(RadarMap, 'WALL_BEND', 0.)
   radar = run(lambda t: [point(k, x, 2.1 + (max(0., x - 14.) * .35))
                          for k, x in enumerate((2., 4., 6., 10., 14., 16., 18.))])
   assert not any(len(w.members) == 7 for w in radar.walls)
@@ -1056,3 +1059,21 @@ def test_bridged_lead_is_drawn_where_its_reports_last_stood_still(weaving):
     assert lateral < -1.  # The last in-lane report, already pushed towards the line.
   else:
     assert abs(lateral - .2) < .1
+
+
+@pytest.mark.parametrize('angle,moving,joins', [(20., False, True), (40., False, False), (20., True, False)])
+def test_wall_follows_a_row_bending_into_a_turn_pocket(angle, moving, joins):
+  # Recorded 2026-10-14 (3e3/15): posts beside ego 1.6m left, then bending 20 degrees outwards where a turn pocket
+  # opens. The bent part joins the wall post by post, so its first post is not admitted as a waiting vehicle.
+  # A sharper bend does not, nor does a vehicle at the wall's end that the radar classes as moving.
+  slope = math.tan(math.radians(angle))
+  posts = [(i, -4. + 2. * i, 1.6) for i in range(5)]  # To 4m.
+  radar = RadarMap()
+  for i in range(30):
+    points = [point(k, x, y) for k, x, y in posts]
+    if i >= 10:
+      points.append(point(20, 6.5, 1.6 + 2.5 * slope, motionState=2 if moving else 0))
+    radar.update(N(points=points), model(), round(i * .05, 6), 0.)
+  bent = next(o for o in radar.objects.values() if o.source == 20)
+  assert bent.structure == joins
+  assert not (joins and bent.admitted)

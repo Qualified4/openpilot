@@ -189,6 +189,11 @@ class CcncRadarMap:
   # of reports moving sideways slower than STABLE_SPEED (over STABLE_WINDOW), kept while they move faster.
   # Reports come in .05m steps: one step over the window is resolution, not movement (.33m/s over .15s).
   STABLE_SPEED, STABLE_WINDOW, STABLE_TIME, REPORT_STEP = .3, .15, .5, .05
+  # A row bends where a turn pocket opens (recorded 2026-10-14: 3e3/15, posts beside ego at 1.6m, then 20 degrees
+  # outwards; the bent part became a wall only once three of its posts were seen, after one was admitted as a
+  # waiting vehicle). A fresh resting return within WALL_MAX_GAP of a wall end, at most WALL_BEND off the
+  # direction of the end segment, continues the wall; the next one is compared with the new segment.
+  WALL_BEND = 30.  # degrees
   WALL_CONTINUE = 7.  # A single fresh return may continue an established wall this far ahead (two gaps).  # Posts near 3m apart measure up to ~3.1m; stopped vehicles are farther apart.
   SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
@@ -198,6 +203,7 @@ class CcncRadarMap:
     self.objects = {}
     self.walls = []
     self.wall_geometry = []
+    self.bends = []
     self.bands = []
     self.band_points = {}  # Object key -> (sign, reference, road distance, offset, odometer when measured, inside a lane).
     self.band_early = set()  # Keys taken by prediction, for inspection.
@@ -746,6 +752,7 @@ class CcncRadarMap:
         obj.vision_seen = True
 
   def _walls(self, measured):
+    self.bends = []  # (key, degrees, gap) joined this cycle through a bend, for inspection.
     for obj in self.objects.values():
       obj.structure = False
     # Anchors stay at their measured world positions. A moving member can leave
@@ -822,6 +829,8 @@ class CcncRadarMap:
           wall.members += (key,)
           wall.points.append((self.objects[key].x, self.objects[key].y))
           x1, y1 = x, y
+      if self.WALL_BEND > 0.:
+        self._bend(wall, candidates, measured)
       if len(wall.members) > 16:
         keep = sorted(range(len(wall.members)), key=lambda i: -self.to_ego(*wall.points[i])[0])[:16]
         wall.members, wall.points = tuple(wall.members[i] for i in keep), [wall.points[i] for i in keep]
@@ -833,6 +842,38 @@ class CcncRadarMap:
           self.objects[key].structure = True
     self.wall_geometry = [sorted(self.to_ego(x, y) for x, y in w.points) for w in self.walls]
     self._bands(candidates, measured, inside)
+
+  def _bend(self, wall, candidates, measured):
+    """Continue a wall from either end through returns that follow its end segment within WALL_BEND."""
+    limit = math.cos(math.radians(self.WALL_BEND))
+    for forward in (True, False):
+      line = sorted(self.to_ego(*anchor) for anchor in wall.points)
+      if len(line) < 2:
+        return
+      a, b = (line[-2], line[-1]) if forward else (line[1], line[0])
+      while len(wall.members) < 24:
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        segment = math.hypot(dx, dy)
+        if segment < .3:
+          break
+        best = None
+        for x, y, key in candidates:
+          # Not the lane-interior protection of new rows: the posts of an opening pocket stand inside the lane
+          # the model draws there (3e3/15). A vehicle that ever moved, or that vision saw, is never a candidate.
+          if key in wall.members or key not in measured:
+            continue
+          ex, ey = x - b[0], y - b[1]
+          gap = math.hypot(ex, ey)
+          if .6 <= gap <= self.WALL_MAX_GAP and (ex * dx + ey * dy) / (gap * segment) >= limit and (best is None or gap < best[0]):
+            best = gap, x, y, key
+        if best is None:
+          break
+        gap, x, y, key = best
+        angle = math.degrees(math.acos(min(1., ((x - b[0]) * dx + (y - b[1]) * dy) / (gap * segment))))
+        self.bends.append((key, round(angle, 1), round(gap, 2)))
+        wall.members += (key,)
+        wall.points.append((self.objects[key].x, self.objects[key].y))
+        a, b = b, (x, y)
 
   def _band_row(self, points):
     """Returns of one offset as (road distance, offset, key, inside a lane); those inside a trusted
