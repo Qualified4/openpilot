@@ -3065,10 +3065,23 @@ def side_creep(c, t, start, rate=.006, frames=150):
           for frame in range(start, start + frames, 5)]
 
 
-def test_side_slot_does_not_follow_a_slow_outward_creep():
+@pytest.mark.parametrize('jumped', [True, False])
+def test_side_slot_follows_a_slow_outward_creep_only_without_a_reflection_jump(jumped):
+  # A track that has jumped inwards creeps by reflection: its slow outward move is not followed. Without such a
+  # jump the same move is a car changing lanes (3e1/20 id48: 1.07m in 2.3s) and is followed as before.
   c, t = Correction(), Tracker()
-  outputs = side_creep(c, t, side_lock(c, t))
-  assert not c.tracks[1]['following'] and max(outputs) < 3.1
+  start = side_lock(c, t, y=2.8)
+  if jumped:
+    for frame in range(start, start + 60, 5):
+      back = min(3., 2.15 + .02 * (frame - start - 10))  # Back out gradually: a .85m step would be a new track.
+      corrected_sample(c, t, frame, 2.15 if frame < start + 15 else back, slot=1, bounds=SIDE_BOUNDS)
+    for frame in range(start + 60, start + 400, 5):
+      corrected_sample(c, t, frame, 3., slot=1, bounds=SIDE_BOUNDS)
+    start += 400
+    assert c.tracks[1]['jumped'] and not c.tracks[1]['following']
+  outputs = side_creep(c, t, start)
+  assert c.tracks[1]['following'] != jumped
+  assert (max(outputs) < 3.1) == jumped
 
 
 def test_recent_lead_leaving_ego_lane_follows_a_slow_outward_creep():

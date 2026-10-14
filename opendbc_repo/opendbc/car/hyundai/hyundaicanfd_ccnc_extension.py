@@ -1545,8 +1545,10 @@ class _CcncVehiclePositionCorrection:
   # the side car by .9m. An inward jump of the measured y by JUMP_SIZE within JUMP_TIME holds the drawn lateral for
   # HOLD_AFTER_JUMP: no following starts, and the output stays. The hold ends at once when the measured position
   # crosses ego's lane line (a cut-in) or keeps moving inwards (JUMP_ON within JUMP_ON_TIME). An outward change is
-  # followed only when it is faster than DRIFT_SPEED over at least DRIFT_TIME, or crosses the outer line; a lead that
-  # was FF within RECENT_FF is leaving ego's lane and is followed as before. Neither applies while ego changes lanes.
+  # followed only when it is faster than DRIFT_SPEED over at least DRIFT_TIME, or crosses the outer line, but only on a
+  # track that has made such a jump: without one a slow outward move is a car changing lanes (2026-10-14: 3e1/20 id48
+  # drifted 1.07m in 2.3s to the next lane, as fast as a creep). A lead that was FF within RECENT_FF is leaving ego's
+  # lane and is followed as before. Neither applies while ego changes lanes.
   SIDE_X, JUMP_SIZE, JUMP_TIME, HOLD_AFTER_JUMP, JUMP_ON, JUMP_ON_TIME = 30., .6, 30, 30, .2, 20
   DRIFT_SPEED, DRIFT_TIME, RECENT_FF = .8, 150, 300
   SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
@@ -1648,9 +1650,10 @@ class _CcncVehiclePositionCorrection:
                    if key in tracks and tracks[key][0] == saved['birth']}
 
   def _slow_outward(self, saved, slot, stamp, net, frame):
-    """A side slot's outward change ``net`` that over DRIFT_TIME (or all history) is no faster than DRIFT_SPEED."""
+    """A side slot's outward change ``net`` that over DRIFT_TIME (or all history) is no faster than DRIFT_SPEED, on a
+    track that has jumped inwards."""
     drift = saved['drift']
-    if (slot == 0 or not drift or net * (1 if slot == 1 else -1) <= 0 or stamp <= drift[0][0]
+    if (slot == 0 or not saved['jumped'] or not drift or net * (1 if slot == 1 else -1) <= 0 or stamp <= drift[0][0]
         or (saved['ff_frame'] is not None and frame - saved['ff_frame'] <= self.RECENT_FF)):
       return False
     return (drift[-1][1] - drift[0][1]) / ((stamp - drift[0][0]) * .01) <= self.DRIFT_SPEED
@@ -1682,7 +1685,7 @@ class _CcncVehiclePositionCorrection:
       saved = dict(birth=birth, frame=frame, stamp=None, samples=deque(), settling=deque(),
                    locked=inside and reliable, following=not (inside and reliable), valid_frame=-1000,
                    output=filtered_y, slot=slot, reference=reference, slot_frame=-1000, boundary_follow=not inside,
-                   fast=deque(maxlen=8), fast_speed=0.0, raw=deque(), drift=deque(), hold=None, ff_frame=None)
+                   fast=deque(maxlen=8), fast_speed=0.0, raw=deque(), drift=deque(), hold=None, ff_frame=None, jumped=False)
       self.tracks[point.trackId] = saved
     bounds_valid = bounds is not None and all(math.isfinite(v) for v in bounds) and bounds[0] > bounds[1]
     center_valid = bounds_valid and bounds[1] <= center <= bounds[0]
@@ -1740,6 +1743,7 @@ class _CcncVehiclePositionCorrection:
             hold['after'].append((stamp, outward))
         elif raw and max(r[1] for r in raw) - outward >= self.JUMP_SIZE - 1e-6:
           saved['hold'] = dict(start=stamp, after=deque([(stamp, outward)]))
+          saved['jumped'] = True  # Kept for the track's life: its slow outward moves are reflection creep.
         raw.append((stamp, outward))
         drift.append((stamp, sign * aligned_y))
         while len(drift) > 1 and stamp - drift[1][0] >= self.DRIFT_TIME:

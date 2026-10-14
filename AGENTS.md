@@ -1,5 +1,11 @@
 # Repository memory
 
+- On 2026-10-14 (round 12e) the extension went 099be84d8c6f -> 5e38cabe8d7c: rule 2
+  (no following of a slow outward creep) applies only to a track that has made
+  an inward reflection jump, kept for the track's life; without one a slow
+  outward move is followed as before (3e1/20 id48, a real exit, equals HEAD).
+  Outer-lane moves back to HEAD (map late >2.5s 6, lag >1.2m 12); sawtooth map
+  median .36 -> .41m, accepted. 12d (release after 2.5s / 1.2m) was rejected.
 - On 2026-10-14 (round 12c) the extension went d473d0fb4bd7 ->
   099be84d8c6f: side-slot position correction (x<30m, off during ego lane
   change) holds the drawn lateral .3s after an inward reflection jump (>=.6m
