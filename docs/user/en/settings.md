@@ -105,7 +105,7 @@ Ignoring `x0.01`, `x0.001`, `cm`, `km/h`, or `%` can make a value appear one hun
 
 ## Settings map
 
-The current `carrot_settings.json` contains **192 parameters**. One driver-monitoring exception is search only; the remaining entries appear in these menus:
+The current `carrot_settings.json` contains **202 parameters**. The driver-monitoring exception and `NNFF` are search only; the remaining entries appear in these menus:
 
 | Category | Count | Groups |
 |---|---:|---|
@@ -148,16 +148,17 @@ The result depends heavily on whether the car uses stock SCC and which button me
 Volkswagen's separate `SET` button sets current speed and `RES` restores the previous set speed, while `+`/`-` follow the button mode, speed units, and long-press setting. Manual engagement with openpilot longitudinal control remains tied to the physical `SET`/`RES` buttons.
 
 <a id="vehicle-steering"></a>
-### Vehicle steering — 37 top-level + 5 ONNX detail settings
+### Vehicle steering — 37 top-level + 5 ONNX detail + 1 search-only setting
 
 | Section | Parameters | Purpose |
 |---|---|---|
 | ONNX Lane and BSD | `ShareData`, `OnnxLaneThreshold`, `OnnxLaneIntervalMs`, `OnnxBsdThreshold`, `OnnxBsdSmoothingMs`, `OnnxBsdIntervalMs` | On-device lane-type and camera BSD detection, source display, and tuning |
 | Centering | `PathOffset`, `CameraYawTrimDeg` | Path position and camera-yaw trim |
 | Steering feel | `SteerActuatorDelay`, `LatSmoothSec`, `LatSuspendAngleDeg`, `CustomSR`, `SteerRatioRate` | Timing, smoothing, suspension angle, and steering ratio |
-| [Lane change](lane-change.md) and automatic turn | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneLineCheck`, `AutoTurnControl`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | Lane-change entry conditions and ATC behavior |
+| [Lane change](lane-change.md) and automatic turn | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneLineCheck`, `BlinkerLatchedTurn`, `LaneChangeLeverWait`, `AutoTurnControl`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | Lane-change entry conditions and ATC behavior |
 | Lane mode | `LatMpcPathCost`, `LatMpcMotionCost`, `LatMpcAccelCost`, `LatMpcJerkCost`, `LatMpcSteeringRateCost`, `LatMpcInputOffset`, `UseLaneLineSpeed`, `UseLaneLineCurveSpeed`, `AdjustLaneOffset` | Lane-mode MPC weights and lane-line conditions |
 | Advanced torque | `LateralTorqueCustom`, `LateralTorqueAccelFactor`, `LateralTorqueFriction`, `LateralTorqueKpV`, `LateralTorqueKiV`, `LateralTorqueKf`, `LateralTorqueKd` | Custom torque-control gains |
+| Advanced torque, search only | `NNFF` | Neural-network feedforward for torque steering |
 | Steering limits | `CustomSteerMax`, `CustomSteerDeltaUp`, `CustomSteerDeltaDown`, `CustomSteerDeltaUpLC`, `CustomSteerDeltaDownLC` | Maximum torque and torque-rate limits |
 
 `ONNX Lane and BSD Detection` (`ShareData`) runs solid/dashed classification and camera BSD on the device. BSD alternates across configured sides whose model-estimated lane width is at least 2 m; speed and lane-change direction do not gate evaluation. The three-class model distinguishes a blind-spot threat from no nearby vehicle and a distant/rear vehicle. Its detail screen keeps the feature toggle at the top and shows the BSD detection-area editor in a separate card directly below it, with only side selection, image refresh, point undo/reset, and area save in the primary view. The basic rectangular point picker at the image's upper left uses `1(L)` and `1(R)` labels; tapping empty space adds a point whenever none is selected. Zoom, viewport panning, and whole-area dragging are omitted so only the selected point moves. Two equal-width buttons directly below the four editing actions open the road- and wide-camera images in pop-up dialogs. Runtime state, confidence, performance, diagnostics, and five persistent tuning values open from the lower-right **Expand/Collapse advanced settings** text and are collapsed by default. The editor retains one last camera frame and shows a dim default road example when no frame is available. An area can be saved only after receiving a real camera image in the current session. It defaults to off, and saved tuning values survive a service restart. The update includes OpenCV, prepared automatically during normal startup. When enabled, the service starts after onroad initialization and model/CAN/Panda readiness have settled for 0.5 seconds. Engaging cruise is not required. It stops offroad and waits again at the next onroad start. See [conditions and detailed values](lane-change.md#sharedata--onnx-lane-and-bsd-detection).
@@ -174,6 +175,12 @@ Previously ignored ID.4 values now take effect. For example, with `CustomSR=0`, 
 
 `LateralTorqueCustom` and `CustomSteer*` are advanced settings that can affect the vehicle tune and safety limits. Do not alter them without a vehicle-specific validated baseline and a recovery path.
 
+#### NNFF torque control
+
+`NNFF` is a neural-network feedforward option that defaults to off. Enabling selects torque-controller tuning on vehicles without angle control and uses NNFF when a matching model is available. Vehicles supported by comma's own NNFF retain that path's precedence; angle-control vehicles are unaffected.
+
+Disabling turns off this NNFF option without changing the separate `NNFFLite` value. Changes apply at the next onroad start or after a device reboot, rather than immediately during a drive. An absent startup notice alone does not establish whether NNFF is active.
+
 #### Steering recovery after driver intervention
 
 Hyundai/Kia/Genesis angle-control vehicles use the former combined mode 3 as standard. The mode selector has been removed, and previously saved mode values are ignored. Torque-control vehicles are unaffected.
@@ -188,7 +195,7 @@ Force-sensor trends do not establish loss of hand contact or driver consent to h
 
 | Section | Parameters | Purpose |
 |---|---|---|
-| [Speed cameras](speed-deceleration.md#speed-camera) | `AutoNaviSpeedCtrlMode`, `AutoNaviSpeedCtrlEnd`, `AutoNaviRearCameraHoldDistance`, `AutoNaviSpeedDecelRate`, `AutoNaviSpeedSafetyFactor`, `AutoNaviCountDownMode`, `VehicleNaviCanControl`, `VehicleNaviSchoolZoneControl`, `VehicleSpeedCameraControlMode`, `VehicleSpeedCameraDistanceTime` | Event types, rear-camera post-pass hold, stock camera distance matching and virtual distance, PV5 warning-confirmed camera retention/cancellation and section speed caps, deceleration start, and target speed |
+| [Speed cameras](speed-deceleration.md#speed-camera) | `AutoNaviSpeedCtrlMode`, `AutoNaviSpeedCtrlEnd`, `AutoNaviRearCameraHoldDistance`, `AutoNaviSpeedDecelRate`, `AutoNaviSpeedSafetyFactor`, `AutoNaviCountDownMode`, `VehicleNaviCanControl`, `VehicleNaviSchoolZoneControl`, `VehicleNaviDecelCancel`(`VehicleNaviDecelCancelBox`, `VehicleNaviDecelCancelMobileZone`, `VehicleNaviDecelCancelBump`, `VehicleNaviDecelCancelUnknown`, `VehicleNaviDecelCancelEarlyWarning`), `VehicleNaviSectionAvgControl`, `VehicleSpeedCameraControlMode`, `VehicleSpeedCameraDistanceTime` | Event types, rear-camera post-pass hold, stock camera distance matching and virtual distance, PV5 warning-confirmed camera retention/cancellation and section speed caps, deceleration start, and target speed |
 | [Road speed limit](speed-deceleration.md#road-speed-limit) | `AutoRoadSpeedLimitOffset`, `AutoRoadSpeedAdjust`, `AutoSpeedUptoRoadSpeedLimit` | Desired-speed adjustment from the road limit |
 | [Speed bumps](speed-deceleration.md#speed-bump) | `AutoNaviSpeedBumpTime`, `AutoNaviSpeedBumpSpeed`, `AutoNaviSpeedBumpEndDistance` | Completion time, crossing speed, and early-release distance |
 | [Curves and turns](speed-deceleration.md#curve-turn) | `AutoCurveSpeedFactor`, `AutoCurveSpeedLowerLimit`, `TurnSpeedControlMode`, `MapTurnSpeedFactor`, `ApplyModelSpeed` | Curve slowing from curvature and distance, prompt recovery after confirmed easing, and route-turn speed |
@@ -275,7 +282,7 @@ See [Radar tracks and corner radar](radar.md) before changing radar modes.
 
 With `HyundaiCameraSCC=0` and no camera-SCC configuration already applied to the vehicle, receiving `SCC_CONTROL` (CAN-FD) or `SCC12` (classic CAN) on the camera bus during the current onroad session adds **Enable CameraSCC** to the CAN error alert. This is bus2, or the corresponding camera bus with multiple Pandas. The hint uses reception history and does not establish the cause of every CAN error. It never changes the setting automatically; existing disengagement and engagement blocking remain active. Select the mode appropriate for the vehicle and wiring while stopped, then verify it in the next onroad session.
 
-`SpeedFromPCM` defaults to `2` (curve/camera deceleration) and affects PCM speed selection and button spamming. With mode `3`, Toyota/Lexus use stock set speed without changing longitudinal-control mode. See [button transmission details](buttons-presets.md#button-spam).
+`SpeedFromPCM` defaults to `2` (curve/camera deceleration) and affects PCM speed selection and button spamming. With mode `3`, Toyota/Lexus use stock set speed without changing longitudinal-control mode. For `TOYOTA_RAV4_TSS2_2022` using PCM with direct longitudinal control, mode `0` also applies valid stock set-speed changes and cruise resume while preserving lower deceleration targets. See [button transmission details](buttons-presets.md#button-spam).
 
 For dPath RadarD, `EnableRadarTracks=-2` is the vision-only experiment; `-1` always uses SCC without vision matching; `0` also always uses SCC; `1` matches front radar without SCC; `2` matches front radar plus low-speed SCC; and `3` uses SCC unconditionally after front-radar/vision matching fails. Matching modes use central vision at probability `0.40` or higher when matching fails. Modes `-1`, `0`, and `3` use vision only when SCC is absent. All SCC association ignores lateral position. SCC-only modes `-1` and `0` apply no additional dPath gate to vision fallback. Legacy Mando radar variants with 32 or 64 slots are handled automatically. A new stationary front lead requires vision or a matching corner detection; continuous front-radar observation alone cannot authorize it. When a separate measured moving target agrees with the visual position and speed, that vision cannot authorize or retain a different stationary reflection. Corner corroboration must match the selected stationary object itself. For a front candidate without corresponding corner corroboration, a vision-support interruption beyond the permitted brief hold resets both the pending object and its confirmation time before confirmation starts again. An already selected moving front can remain L1 within a bounded vision-uncertainty range while the same measured track stays physically continuous; a fixed 8 m difference alone no longer discards it. A new nearer match can replace it immediately, and gaps or physical jumps reset this allowance. A distant stopped front can qualify on a gentle curve through continuous measured radar history and repeated visual position agreement. Continuous corner position/speed evidence participates in that decision. Confirmed stationary fronts can bridge visual-range noise within distance and time limits while publishing radar distance and speed.
 
@@ -347,7 +354,9 @@ With **Vehicle position correction** also enabled, its lane-center lock, sustain
 
 Display contains 34 settings. External-HUD settings control the layout and output of separate display hardware.
 
-`ClusterHud` (External HUD Display) switches a **HUD connected directly to the device USB port** on or off. A HUD connected to Jetson starts automatically even when this value is `0`, and normally turns its display off with ignition. Use the existing always-on `ClusterHudDebug` modes to keep it visible offroad. Brightness and layout settings also apply to the Jetson HUD.
+`ClusterHud` (External HUD Display) switches a **direct USB HUD or a registered ESP32-S3 Wi-Fi HUD** on or off. A HUD connected to Jetson starts automatically even when this value is `0`, and normally turns its display off with ignition. Use the existing always-on `ClusterHudDebug` modes to keep it visible offroad. Brightness and layout settings also apply to the Jetson HUD.
+
+S3 Wi-Fi output requires a TURZX 9.2-inch display, a powered hub, and C4/S3 on the same 2.4 GHz network. Follow the [initial registration instructions](../../../tools/esp32s3_display/README.md) to register once over USB or import the registration file from the phone setup page. A registered S3 reconnects after reboot or an IP change. This path defaults to JPEG quality 50 and a 15 FPS target regardless of `ClusterHudEncoder`, preserving the existing 5 FPS cap while the eGPU is active. Actual speed depends on image content and wireless conditions; C4 vehicle measurements remain separate. Remove the registration file and restart HUD to restore direct USB output.
 
 The Jetson HUD shows the highest internal sensor temperature below `jetSON`, or in the upper-right corner in full-screen navigation/graph modes. If temperature data has not refreshed for three seconds, it shows `--°C`. A top-strip temperature warning starts 5°C below each sensor's configured thermal limit; reaching that limit shows an overheating warning. For example, a device configured to throttle at 99°C warns from 94°C. Check the fan and ventilation when warned. Vehicle driving alerts take precedence, and Jetson temperature remains separate from device temperature/memory statistics. This feature requires updated Jetson HUD software.
 
@@ -361,6 +370,11 @@ With `CarrotVisionEnabled` on, the external HUD and web camera view can be used 
 | External HUD | `ClusterHud`, `ClusterHudBrightness`, `ClusterHudOrientation`, and related `ClusterHud*` settings | Supported TURZX HUD layout, live brightness, screen rotation, camera, radar, and encoder options |
 
 On C4, the steering-wheel icon stays at the upper left regardless of the BSD display option. The right-aligned diagnostics shown with `ShowDebugUI=1` use smaller text and line spacing to fit above the DM camera inset.
+
+For RAV4 2022 with the ARS display stream, `ShowRadarInfo=3` on the standard device
+driving screen also shows adjacent-lane objects separately from control leads. Modes 1/2
+and other receivers retain their behavior. A marker does not mean braking-target selection
+or Toyota corner-radar support. See the [display conditions](radar.md).
 
 USB external HUD output is fixed at **10 FPS**; while the eGPU is active, rendering, encoding, and USB output switch to **5 FPS**. Changes to eGPU activity apply automatically; changing the H.264 encoder rate restarts the HUD. `ClusterNaviMapFps` remains a separate setting for Android map input.
 
