@@ -244,17 +244,17 @@ On supported Tesla vehicles with the additional vehicle bus detected, the device
 <a id="vehicle-hardware"></a>
 ## Vehicle and hardware
 
-This category contains 22 menu settings and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. The five CCNC instrument cluster options let you choose display features as described below.
+This category contains 20 menu settings, two sub-options on the **CCNC HDA1 radar vehicles** detail screen, and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. The five CCNC instrument cluster options let you choose display features as described below.
 
 | Group | Parameters | Purpose |
 |---|---|---|
 | Hyundai/Kia | `HyundaiCameraSCC`, `IsLdwsCar`, `HapticFeedbackWhenSpeedCamera` | SCC connection, LDWS behavior, and speed-event haptics |
 | CAN FD/HDA | `CanfdHDA2`, `HyundaiCanfdClusterDirectTx`, `CanfdDebug`, `HDPuse` | HDA2 selection, cluster direct send, CAN FD diagnostics, and HDP |
 | [CCNC display](#ccnc-display) | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
-| [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes and lane-change animation · Off (0) / Basic (1) / Refined (2), default 0 |
+| [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes · Off (0) / Standard (1) / Refined (2), default 0 |
 | [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Default OFF (0) |
-| [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | CCNC vehicle position correction · Default OFF (0) |
-| [CCNC display](#ccnc-display) | `CcncRadarMap` | CCNC radar-map vehicle selection · Default OFF (0) |
+| [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | Vehicle position correction · Sub-option of radar vehicles, default OFF (0) |
+| [CCNC display](#ccnc-display) | `CcncRadarMap` | Radar map · Sub-option of radar vehicles, default OFF (0) |
 | Radar | `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC radar, front-track orientation, corner radar, and Carrot Radar processing and cut-in sensitivity |
 | Driver monitoring | `DriverMonitoringEnabled` (search only), `DriverMonitoringMode`, `CarrotVisionEnabled`, `MuteDoor`, `MuteSeatbelt` | Driver monitoring and selected vehicle alerts |
 | Vehicle assistance | `MaxAngleFrames`, `SpeedFromPCM` | Steering-angle frames and stock-SCC speed control |
@@ -295,7 +295,7 @@ In modes `EnableRadarTracks=1`–`3`, a confirmed departing front lead can recei
 <a id="ccnc-display"></a>
 ### CCNC instrument cluster display
 
-Under **Vehicle and hardware → CAN FD/HDA**, each of the five options can be switched independently. All are off by default, and changes appear within about one second. These settings adjust the instrument cluster display.
+Under **Vehicle and hardware → CAN FD/HDA**, each of the five options can be switched independently. **Vehicle position correction** and **Radar map** are on the detail screen opened from **CCNC HDA1 radar vehicles**; they have no effect while radar vehicles is off (the screen does not grey them out). All are off by default, and changes appear within about one second. These settings adjust the instrument cluster display.
 
 #### CCNC acceleration/mode lane color
 
@@ -303,15 +303,15 @@ Uses the highlighted lane color to show acceleration, deceleration and driving m
 
 A driving-mode change may take about one second to appear in the lane color. Lane-change direction highlighting is controlled by the next option.
 
-#### CCNC model lanes and lane-change animation
+#### CCNC model lanes
 
-Choose Off (0), Basic (1), or Refined (2). Basic uses the original lightweight path-displacement curvature calculation. Refined uses path shape over an interval and nearby inner lanes to reduce lane-change translation and heading artifacts; it does not guarantee higher accuracy on every road. Existing ON (1) becomes Basic; select Refined to use the current improved curvature. Defaults to Off, with changes applied within about one second.
+Choose Off (0), Standard (1), or Refined (2). Standard uses the original lightweight path-displacement curvature calculation. Refined uses path shape over an interval and nearby inner lanes to reduce lane-change translation and heading artifacts; it does not guarantee higher accuracy on every road. Existing ON (1) becomes Standard; select Refined to use the current improved curvature. Defaults to Off, with changes applied within about one second.
 
 Both enabled modes display lane positions and lane-change direction with highlights and transition animation. During lane reassignment, briefly continue movement estimated from the preceding lane heading; otherwise hold position. Both also adjust set-speed and speed-limit indications and steering-assistance icons, and hide lanes when steering assistance is inactive.
 
 Refined does not discard curvature solely because of low lane confidence during a lane change. When the driving path is stale or unusable, it briefly retains the last curvature and then gradually returns the curve display toward straight. A longer lane reassignment can still pause the position display in both modes.
 
-Compute cost: in seven PC replay passes over eight logs with the other three options off, Basic increased average total display-processing time by about 21% (0.168 ms → 0.202 ms) versus OFF, and Refined by about 39% (0.168 ms → 0.234 ms). These times include CAN message generation and packing, not an increase in whole-device CPU usage.
+Compute cost: in seven PC replay passes over eight logs with the other three options off, Standard increased average total display-processing time by about 21% (0.168 ms → 0.202 ms) versus OFF, and Refined by about 39% (0.168 ms → 0.234 ms). These times include CAN message generation and packing, not an increase in whole-device CPU usage.
 
 Turn off to use the default lane and icon display. Trailer-related lane-change restrictions take priority. Nearby vehicle display is controlled separately by the next option.
 
@@ -325,7 +325,7 @@ If lane markings briefly disappear, previously detected side vehicles that remai
 
 Rear-side vehicle icons indicate blind-spot detection, not actual distance or precise position. Do not use icon spacing to judge following distance or whether a lane change is safe.
 
-#### CCNC vehicle position correction
+#### Vehicle position correction
 
 Applies when **CCNC HDA1 radar vehicles** is enabled. Smoothly centers lane-keeping vehicles ahead and in adjacent lanes, suppressing small lateral fluctuations and isolated coordinate jumps. Changes in adjacent-lane centers are followed gradually.
 
@@ -335,13 +335,13 @@ Distance, lateral position and speed of confirmed vehicles are checked separatel
 
 Turn off to use the existing position display. Does not apply to HDA2 or rear-side blind-spot icons, and does not change lead selection, steering or acceleration control. Corrected icons do not represent precise lateral positions within a lane. Display quality on the physical instrument cluster has not yet been validated in a vehicle.
 
-#### CCNC radar-map vehicle selection
+#### Radar map
 
 Applies when **CCNC HDA1 radar vehicles** is enabled. Switches the selection of the vehicles ahead and in adjacent lanes to the radar-map method. Radar detections within 20 m are accumulated in a map that follows ego motion, and objects that actually moved are treated as vehicles. Closely spaced stationary detections are linked into walls such as bollards, dividers and fences; the wall and detections beyond it are excluded from the display. Beyond 20 m only vehicles that have moved are shown.
 
 While stopped, or slowing below 10 km/h, vehicles waiting in adjacent lanes are shown, and a vehicle beside or slightly behind that left radar coverage (up to 4 m behind) can remain displayed at distance 0. A waiting vehicle that never moved is remembered this way only after two seconds of steady detection; pedestrians and cyclists crossing in front are not remembered. No remembered display is used while driving.
 
-With **CCNC vehicle position correction** also enabled, its lane-center lock, sustained lateral following and display-slot confirmation apply to the vehicles selected by the map. The map handles new-vehicle confirmation and brief detection gaps itself, and a vehicle shown from memory while stopped keeps its last displayed position. Turn off to use the existing vehicle selection. Does not apply to HDA2, and does not change lead selection, steering or acceleration control. Checked only by replaying recorded drives; display on the physical instrument cluster has not yet been validated in a vehicle. Stationary real vehicles and structures cannot always be told apart, so do not rely on the icons to judge whether vehicles are nearby.
+With **Vehicle position correction** also enabled, its lane-center lock, sustained lateral following and display-slot confirmation apply to the vehicles selected by the map. The map handles new-vehicle confirmation and brief detection gaps itself, and a vehicle shown from memory while stopped keeps its last displayed position. Turn off to use the existing vehicle selection. Does not apply to HDA2, and does not change lead selection, steering or acceleration control. Checked only by replaying recorded drives; display on the physical instrument cluster has not yet been validated in a vehicle. Stationary real vehicles and structures cannot always be told apart, so do not rely on the icons to judge whether vehicles are nearby.
 
 ## Display
 

@@ -1,5 +1,27 @@
 # Repository memory
 
+- On 2026-10-14 (CCNC setting texts; NOT committed, no behaviour change) the
+  five Ccnc* entries in carrot_settings.json got short titles and one-line
+  descriptions ending in a compute-cost percentage; CcncModelLanes labels are
+  0 끔 / 1 일반 (_ccnc_basic_curve) / 2 정밀 (compute_curve=precise), en
+  Standard; CcncVehiclePositionCorrection and CcncRadarMap became detail
+  children of CcncRadarVehicles (detail_section "radar"), so VEHICLE lists 20
+  menu items. Children are not greyed out while the parent is off, and an
+  existing favourite on a child no longer shows in Favourites (detail items are
+  filtered there). Moved out of the descriptions (kept in docs/user settings
+  pages): lane colour only in Drive, highlight longer at speed; radar vehicles
+  stop memory only within 15 m radar range, side display kept up to 2 s or 30 m
+  of ego travel when lanes vanish, rear icons are blind-spot alerts; position
+  correction predicts up to 0.3 s after the last accepted position, reconnects
+  a gap only with one candidate seen twice, tolerates a further lane-confidence
+  drop for 0.5 s, confirms boundary slot changes for 0.2 s; radar map keeps a
+  20 m map, joins close stationary points into walls, remembers waiting and
+  beside vehicles while stopped, not crossing pedestrians or cyclists. Old PC
+  costs (total display time): lane colour 0.185 -> 0.192 ms, radar vehicles
+  0.185 -> 0.633 ms, correction 0.633 -> 0.785 ms; model lanes 0.168 -> 0.202
+  / 0.234 ms is in docs/ccnc_lane_geometry_20261004.md. The map's +85% is the
+  2026-10-14 legacy-vs-map selector timing (0.44 -> 0.81 ms), a different
+  basis from the other four.
 - On 2026-10-14 (legacy vs map overview; measurement only, no code change)
   the existing selector alone (CcncRadarMap off) and the map (8e0a77855e73,
   extension d473d0fb4bd7) ran side by side through the live entry order

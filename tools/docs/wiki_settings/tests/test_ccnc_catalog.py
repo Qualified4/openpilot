@@ -30,7 +30,7 @@ class CcncCatalogTest(unittest.TestCase):
         field = {"ko": "descr", "en": "edescr", "zh": "cdescr"}[locale]
         self.assertIn(params[key][field], page)
     self.assertEqual(params['CcncModelLanes']['control'], 'select')
-    self.assertEqual(params['CcncModelLanes']['options']['ko'], ['끄기', '기본', '정밀'])
+    self.assertEqual(params['CcncModelLanes']['options']['ko'], ['끔', '일반', '정밀'])
 
   def test_current_catalog_ci_report(self):
     with tempfile.TemporaryDirectory() as temp:
