@@ -175,6 +175,12 @@ class CcncRadarMap:
   # A reported lateral step this large within this time is not a vehicle moving (5m/s sideways).
   BRIDGE_JUMP, BRIDGE_JUMP_TIME = .8, .15
   BRIDGE_RECONNECT = 1.5  # m; a new report this near the bridged position, in ego's lane, continues the object.
+  # The merge can also push the lead's track across the line over several cycles, without a jump (recorded
+  # 2026-10-14: 3e1/19 16.9s, the car 8m ahead pushed 2m right by an overtaking SUV, FF jumping to 21m).
+  # Vision then still sees the lead in the lane, while a lead really leaving the lane leaves it in vision
+  # first (recorded: a median 1s before the map, 62 of 64 departures).
+  # Not beyond BRIDGE_DRIFT_X: there the vision gate spans 20m and the lane lines are off by up to a lane width.
+  BRIDGE_DRIFT_X = 50.
   WALL_CONTINUE = 7.  # A single fresh return may continue an established wall this far ahead (two gaps).  # Posts near 3m apart measure up to ~3.1m; stopped vehicles are farther apart.
   SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
@@ -214,7 +220,7 @@ class CcncRadarMap:
     self.reports = {}  # Radar id -> recent (stamp, x, y) reports, ego frame.
     self.jumps = {}  # Radar id -> stamp of its last lateral jump.
     self.hold = None  # (key, lateral, centred, speed): the FF object at its last report inside ego's lane.
-    self.bridge = None  # The FF object kept on vision: dict(key, start, x, y, dx, speed, kind), x/y as drawn.
+    self.bridge = None  # The FF object kept on vision: dict(key, start, x, y, dx, speed, cause, kind), x/y as drawn.
 
   def reset(self):
     self.__init__()
@@ -1097,17 +1103,21 @@ class CcncRadarMap:
     if obj is None or normal == key or self.lane_change or not self.usable:
       return normal
     if bridge is None:
-      # Start only on a lost report, or a report that jumped sideways: a vehicle drifting out of the
-      # lane is a real lane change and is left to the ordinary selection.
+      # A lost report, a report that jumped sideways, or one that crossed the lane line slowly (vision decides
+      # below whether the vehicle really left the lane).
       unseen = obj.seen != self.radar_stamp
       jumped = self.radar_stamp - self.jumps.get(obj.source, -math.inf) <= self.PREDICTION_HOLD + 1e-6
-      if not (unseen or jumped):
+      # A slow crossing is one measured into a side lane; an object left out of FF for another reason
+      # (recorded: a pillar in a car park, once a structure) is not bridged.
+      crossed = obj.slot in (1, 2) and not obj.structure and self.local[key][0] <= self.BRIDGE_DRIFT_X
+      if not (unseen or jumped or crossed):
         return normal
+      cause = 'lost' if unseen else 'jump' if jumped else 'drift'
       start, x0, dx = self.now, self.local[key][0], None
       held = self.hold is not None and self.hold[0] == key
       speed = self.hold[3] if held else self.cos * obj.vx + self.sin * obj.vy
     else:
-      start, x0, dx, speed = bridge['start'], bridge['x'], bridge['dx'], bridge['speed']
+      start, x0, dx, speed, cause = bridge['start'], bridge['x'], bridge['dx'], bridge['speed'], bridge['cause']
       if self.now - start > self.BRIDGE_HOLD:
         return normal
     matches = []
@@ -1138,7 +1148,7 @@ class CcncRadarMap:
       _, lateral, centred, _ = hold
       y = centre + lateral if centred else lateral
     self.local[key] = x, y
-    self.bridge = dict(key=key, start=start, x=x, y=y, dx=dx, speed=speed, kind='lost' if obj.seen != self.radar_stamp else 'jump')
+    self.bridge = dict(key=key, start=start, x=x, y=y, dx=dx, speed=speed, cause=cause, kind='lost' if obj.seen != self.radar_stamp else 'jump')
     return key
 
   def explain(self, source, x, y, slot):

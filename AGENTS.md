@@ -1,5 +1,23 @@
 # Repository memory
 
+- On 2026-10-14 (FF bridge case C; NOT committed) the map module went
+  21ec6cd78825 -> 5e9d3ceb0d8e: the FF bridge also starts when the FF object
+  is measured into a side lane without a jump (the merge pushing the lead's
+  track across the line over several cycles, 3e1/19 16.9s), within
+  BRIDGE_DRIFT_X 50m and not for a structure; everything after the start is
+  as case B. Stage 0: of 428 drift events (no jump) only 13 are within 30m
+  with vision on the lead, 2 are merges (3e1/19 16.94, 358/0 40.6), 11 are
+  ego lane changes. On the 77 departing leads vision lets go a median 1s
+  before the map (later in 2 of 64), so no extra vision-movement end rule.
+  Without the 50m limit the bridge started 58 times, mostly at 60-130m; without
+  the side-slot condition it bridged a car-park pillar (366/0 30.0s). 170
+  segments (live entry): case A/B 8 bridges / 66 sends unchanged, case C 8 /
+  78 sends, far jump-and-return events 543 -> 537, lane-change windows 0,
+  77 departures: 2 differ (3dd/11 13.28 is a merge, 366/29 earlier). Known:
+  a slow merge's held lateral is already pushed toward the line (3e1/19 FF
+  drawn at +1.6m). The fast map-only replay passes no lane_change, so its
+  differences are larger than the live path's. Tests 1043 -> 1045 (round 8's
+  "drift is never bridged" test replaced).
 - On 2026-10-14 (FF bridge round; NOT committed) the map module went
   bc52b9c4e6e5 -> 82b2155583c3 -> 21ec6cd78825 (working copy, CRLF): a displayed FF object
   whose radar report is lost, or whose same-id report jumps >= .8m sideways

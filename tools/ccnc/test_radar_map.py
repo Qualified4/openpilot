@@ -962,14 +962,15 @@ def test_side_slot_far_behind_the_displayed_lead_is_not_given(lead, x, side):
     radar.update(N(points=points), model(), round(i * .05, 6), 15.)
   assert (radar.selected[0] is not None) == (lead is not None)
   assert (radar.selected[1] is not None) == side
-def bridge_scene(lead, steps=60, vision=lambda i: True, lane_change=lambda i: False):
-  """Ego at 15m/s; a lead 12m ahead in ego's lane until step 30, then whatever ``lead(i)`` reports; a second
-  vehicle 40m ahead in the lane. Returns the map and, per step, the FF object's key and source."""
+def bridge_scene(lead, steps=60, vision=lambda i: True, lane_change=lambda i: False, lead_x=12., vision_y=lambda i: 0.):
+  """Ego at 15m/s; a lead ``lead_x`` ahead in ego's lane until step 30, then whatever ``lead(i)`` reports; a second
+  vehicle beyond it in the lane (40m, or 70m behind a far lead). Returns the map and, per step, the FF object's key and source."""
   radar, shown = RadarMap(), []
   for i in range(steps):
     m = model()
-    m.leadsV3 = [N(prob=.9, x=[12. + 1.52], y=[0.])] if vision(i) else []
-    points = [point(2, 40., -.5, 15., motionState=2)] + ([point(1, 12., 0., 15., motionState=2)] if i < 30 else lead(i))
+    m.leadsV3 = [N(prob=.9, x=[lead_x + 1.52], y=[-vision_y(i)])] if vision(i) else []
+    far = 70. if lead_x > 40. else 40.
+    points = [point(2, far, -.5, 15., motionState=2)] + ([point(1, lead_x, 0., 15., motionState=2)] if i < 30 else lead(i))
     radar.update(N(points=points), m, round(i * .05, 6), 15., lane_change=lane_change(i))
     ff = radar.objects.get(radar.selected[0])
     shown.append(None if ff is None else (ff.key, ff.source, radar.local[ff.key]))
@@ -994,9 +995,22 @@ def test_lead_track_jumping_beside_ego_lane_stays_ff_while_vision_sees_the_lead(
     assert after[-1][2][0] > 30.
 
 
-def test_lead_track_drifting_out_of_ego_lane_is_not_held_by_vision():
-  # Without a sideways jump the report is a vehicle leaving the lane: no bridge, whatever vision shows.
-  radar, shown = bridge_scene(lambda i: [point(1, 12., -.1 * (i - 29), 15., motionState=2)])
+@pytest.mark.parametrize('x,kept', [(12., True), (55., False)])
+def test_lead_track_pushed_slowly_across_the_line_stays_ff_while_vision_sees_the_lead(x, kept):
+  # Recorded 2026-10-14 (3e1/19 16.9s): an overtaking SUV pushed the track of the car 8m ahead 2m to the right
+  # over a second, with no jump, while vision kept the car in the lane; FF jumped to a car 21m ahead. Beyond
+  # 50m the vision gate and the lane lines are too loose for this.
+  radar, shown = bridge_scene(lambda i: [point(1, x, -.1 * (i - 29), 15., motionState=2)] if i < 50 else [point(1, x, -2., 15., motionState=2)],
+                              steps=55, lead_x=x)
+  lead = shown[29][0]
+  assert all(s[0] == lead for s in shown[30:]) == kept
+  if kept:
+    assert radar.bridge['cause'] == 'drift'
+
+
+def test_lead_leaving_the_lane_in_vision_too_is_not_held():
+  # A lead really changing lanes leaves the lane in vision as well (recorded: a median 1s before the map).
+  radar, shown = bridge_scene(lambda i: [point(1, 12., -.1 * (i - 29), 15., motionState=2)], vision_y=lambda i: -.1 * max(0, i - 29))
   assert shown[-1][2][0] > 30. and radar.bridge is None
 
 
