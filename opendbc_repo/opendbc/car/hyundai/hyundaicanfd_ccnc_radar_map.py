@@ -189,6 +189,11 @@ class CcncRadarMap:
   # of reports moving sideways slower than STABLE_SPEED (over STABLE_WINDOW), kept while they move faster.
   # Reports come in .05m steps: one step over the window is resolution, not movement (.33m/s over .15s).
   STABLE_SPEED, STABLE_WINDOW, STABLE_TIME, REPORT_STEP = .3, .15, .5, .05
+  # Beyond FF_FAR_X the lane lines are off by up to a lane width and the lead's slot flickers from ego's lane to
+  # none or a side lane for a cycle or two (recorded 2026-10-14: 339 of 356 FF flickers beyond 50m, 243 of them
+  # .1s, the object measured throughout). The displayed FF object, still measured and otherwise eligible, stays FF
+  # for up to FF_FAR_HOLD after its slot leaves ego's lane; a nearer FF candidate takes FF at once.
+  FF_FAR_X, FF_FAR_HOLD = 50., .3
   # A row bends where a turn pocket opens (recorded 2026-10-14: 3e3/15, posts beside ego at 1.6m, then 20 degrees
   # outwards; the bent part became a wall only once three of its posts were seen, after one was admitted as a
   # waiting vehicle). A fresh resting return within WALL_MAX_GAP of a wall end, at most WALL_BEND off the
@@ -235,6 +240,7 @@ class CcncRadarMap:
     self.jumps = {}  # Radar id -> stamp of its last lateral jump.
     self.hold = None  # (key, lateral, centred, speed): the FF object at its last report inside ego's lane.
     self.bridge = None  # The FF object kept on vision: dict(key, start, x, y, dx, speed, cause, kind), x/y as drawn.
+    self.far_since = None  # (key, time): the displayed far FF object left ego's lane slot then.
 
   def reset(self):
     self.__init__()
@@ -1086,6 +1092,7 @@ class CcncRadarMap:
 
   def _select(self):
     groups = [[], [], []]
+    far = None  # (x, key): the displayed FF object beyond FF_FAR_X, eligible but not in ego's lane slot.
     for obj in self.objects.values():
       x, y = self.local[obj.key]
       # Ordinary candidates are fresh measurements or a short prediction of one. Anything
@@ -1097,6 +1104,9 @@ class CcncRadarMap:
           or obj.uncertainty > self.MAX_DISPLAY_UNCERTAINTY or obj.structure):
         continue
       slot, _, center_distance = self._lane(x, y, respect_walls=True, moving=obj.motion_confirmed, settled=obj.settled)
+      if (slot != 0 and obj.key == self.selected[0] and x > self.FF_FAR_X
+          and (obj.motion_confirmed or obj.vision or not self._wall_outside(x, y))):
+        far = (x, obj.key)
       if slot is not None and slot != 0 and x > self.MAX_SIDE_X:
         continue  # Same side-slot distance limit as the existing selector.
       if slot is None and obj.vision and abs(y) <= 2. and not self._wall_outside(x, y):
@@ -1127,7 +1137,7 @@ class CcncRadarMap:
         best = min(close, key=lambda c: (c[1], c[0], c[2]))
         selected.append(old[2] if old and old[1] <= best[1] + .25 else best[2])
       if not slot:
-        selected[0] = self._bridge(selected[0])
+        selected[0] = self._bridge(self._far_hold(selected[0], far))
     self.remembered = [False, False, False]
     if self.holding:
       for slot in (1, 2):
@@ -1146,6 +1156,15 @@ class CcncRadarMap:
     """Middle of ego's lane lines at x, or None."""
     left, right = self._ego_lines(x)
     return None if left is None or right is None else .5 * (left + right)
+
+  def _far_hold(self, normal, far):
+    """The displayed far FF object while its lane slot flickers away, for up to FF_FAR_HOLD; else ``normal``."""
+    if far is None or self.lane_change or self.bridge is not None or (normal is not None and self.local[normal][0] <= far[0]):
+      self.far_since = None
+      return normal
+    if self.far_since is None or self.far_since[0] != far[1]:
+      self.far_since = (far[1], self.now)
+    return far[1] if self.now - self.far_since[1] <= self.FF_FAR_HOLD + 1e-6 else normal
 
   def _bridge(self, normal):
     """The FF object, kept on vision while its radar report is lost or has jumped out of ego's lane; else ``normal``."""

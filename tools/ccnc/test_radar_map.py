@@ -1002,9 +1002,9 @@ def test_lead_track_jumping_beside_ego_lane_stays_ff_while_vision_sees_the_lead(
 def test_lead_track_pushed_slowly_across_the_line_stays_ff_while_vision_sees_the_lead(x, kept):
   # Recorded 2026-10-14 (3e1/19 16.9s): an overtaking SUV pushed the track of the car 8m ahead 2m to the right
   # over a second, with no jump, while vision kept the car in the lane; FF jumped to a car 21m ahead. Beyond
-  # 50m the vision gate and the lane lines are too loose for this.
+  # 50m the vision gate and the lane lines are too loose for this (there the far FF hold still keeps it for .3s).
   radar, shown = bridge_scene(lambda i: [point(1, x, -.1 * (i - 29), 15., motionState=2)] if i < 50 else [point(1, x, -2., 15., motionState=2)],
-                              steps=55, lead_x=x)
+                              steps=60, lead_x=x)
   lead = shown[29][0]
   assert all(s[0] == lead for s in shown[30:]) == kept
   if kept:
@@ -1077,3 +1077,45 @@ def test_wall_follows_a_row_bending_into_a_turn_pocket(angle, moving, joins):
   bent = next(o for o in radar.objects.values() if o.source == 20)
   assert bent.structure == joins
   assert not (joins and bent.admitted)
+
+
+
+def far_lead(left, x=70., lane_change=lambda i: False, near=lambda i: None):
+  """Ego at 15m/s and a vehicle ``x`` ahead at the same speed, reported 1.6m left; ego's left lane line is drawn
+  ``left[i]`` from the centre (1.8 keeps the vehicle in ego's lane, 1.4 puts it in the left lane), as far lane
+  lines wander. Optionally a nearer in-lane car ``near(i)`` metres ahead. Per step, the FF object's source."""
+  radar, shown = RadarMap(), []
+  for i, line in enumerate(left):
+    m = N(laneLines=[N(x=[0., 10., 30., 100., 200.], y=[y] * 5) for y in (-5.4, -line, 1.8, 5.4)],
+          laneLineProbs=[.95] * 4, orientationRate=N(z=[0.]), leadsV3=[])
+    points = [point(1, x, 1.6, 15., motionState=2)] + ([point(2, near(i), 0., 15., motionState=2)] if near(i) else [])
+    radar.update(N(points=points), m, round(i * .05, 6), 15., lane_change=lane_change(i))
+    ff = radar.objects.get(radar.selected[0])
+    shown.append(None if ff is None else ff.source)
+  return shown
+
+
+@pytest.mark.parametrize('x,kept', [(70., True), (40., False)])
+def test_far_lead_stays_ff_while_its_lane_slot_flickers(x, kept):
+  # Recorded 2026-10-14: 339 of 356 FF flickers beyond 50m were the lead's lane slot leaving ego's lane for a
+  # cycle or two (243 of them .1s) while it was measured throughout. Beyond 50m the displayed FF object stays
+  # FF through such a flicker; nearer, the lane decides at once as before.
+  shown = far_lead([1.8] * 30 + [1.4, 1.4, 1.8, 1.4, 1.8, 1.8, 1.4, 1.4, 1.8, 1.8], x)
+  assert all(s == 1 for s in shown[20:30])
+  assert all(s == 1 for s in shown[30:]) == kept
+
+
+@pytest.mark.parametrize('case', ['leaves', 'lane change', 'nearer car'])
+def test_far_lead_hold_is_short_and_yields(case):
+  # The hold lasts FF_FAR_HOLD: a lead that stays out of ego's lane leaves FF after .3s. It is not applied
+  # while ego changes lanes, and a nearer car in ego's lane takes FF at once.
+  if case == 'nearer car':  # The lane keeps flickering, so without yielding the far lead would stay FF.
+    shown = far_lead([1.8] * 30 + [1.4, 1.8] * 10, near=lambda i: 30. if i >= 32 else None)
+    assert all(s == 1 for s in shown[30:32]) and all(s == 2 for s in shown[38:])
+    return
+  shown = far_lead([1.8] * 30 + [1.4] * 15, lane_change=lambda i: case == 'lane change' and i >= 30)
+  assert shown[29] == 1
+  if case == 'leaves':
+    assert all(s == 1 for s in shown[30:36]) and all(s is None for s in shown[38:])
+  else:
+    assert all(s is None for s in shown[31:])

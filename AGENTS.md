@@ -1,5 +1,14 @@
 # Repository memory
 
+- On 2026-10-14 (round 11 C) the map module went 8e0a77855e73 -> acf245a5b309:
+  far FF off-confirmation. 339 of 356 FF flickers beyond 50m were the lane slot
+  leaving ego's lane for .1-.3s with the object measured; the displayed FF
+  object beyond FF_FAR_X 50m stays FF for FF_FAR_HOLD .3s while measured and
+  eligible, not during a lane change or a bridge, and a nearer FF candidate
+  wins. The check sits before the MAX_SIDE_X side cut (after it, beyond 80m it
+  never ran: 356 -> 279 only). Flickers beyond 50m 356 -> 142 (68 if applied
+  during lane changes too, which also changes displays within 50m); within 50m
+  116 unchanged. Tests 1050 -> 1055; the case C bridge test runs 60 steps.
 - On 2026-10-14 (CCNC setting texts; NOT committed, no behaviour change) the
   five Ccnc* entries in carrot_settings.json got short titles and one-line
   descriptions ending in a compute-cost percentage; CcncModelLanes labels are
