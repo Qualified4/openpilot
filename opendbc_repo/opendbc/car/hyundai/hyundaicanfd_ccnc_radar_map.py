@@ -53,6 +53,7 @@ class MapObject:
   settled: bool = False  # Outside that line for a while and no longer moving sideways: the lane beyond.
   history: deque = field(default_factory=lambda: deque(maxlen=16))
   trail: deque = field(default_factory=lambda: deque(maxlen=20))  # Where a moving vehicle has driven, one point per TRAIL_STEP.
+  report: tuple | None = None  # (stamp, x, y): its last radar report, ego frame, before smoothing.
 
 
 @dataclass
@@ -164,6 +165,16 @@ class CcncRadarMap:
   # LEAD_SIDE_PAST of that lead: the far lane geometry is off by up to a lane width there and video cannot
   # tell the lanes apart (recorded 2026-10-13: second leads at 58-79m shown RF/LF on a straight road).
   LEAD_SIDE_X, LEAD_SIDE_PAST = 50., 30.
+  # The radar can merge the lead's track with a large vehicle beside it, or lose it, while vision keeps seeing
+  # the lead in ego's lane (recorded 2026-10-14: the same id 1.2-1.7m sideways across the line for 1.5s next to
+  # a trailer, FF jumping to a car 42m ahead). The displayed FF object is then kept for up to BRIDGE_HOLD while
+  # a vision lead (probability BRIDGE_PROB) is at its distance and within BRIDGE_LANE of the lane centre.
+  # Vision only continues an object that was FF: it creates no object, fills no side slot and gives no evidence.
+  BRIDGE_HOLD = 2.  # s; trial value
+  BRIDGE_PROB, BRIDGE_LANE = .5, 1.2
+  # A reported lateral step this large within this time is not a vehicle moving (5m/s sideways).
+  BRIDGE_JUMP, BRIDGE_JUMP_TIME = .8, .15
+  BRIDGE_RECONNECT = 1.5  # m; a new report this near the bridged position, in ego's lane, continues the object.
   WALL_CONTINUE = 7.  # A single fresh return may continue an established wall this far ahead (two gaps).  # Posts near 3m apart measure up to ~3.1m; stopped vehicles are farther apart.
   SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
@@ -198,6 +209,12 @@ class CcncRadarMap:
     self.leads = []
     self.blindspot = (False, False)
     self.remembered = [False, False, False]
+    self.vision_leads = []  # Vision leads at BRIDGE_PROB or more: (x, y, speed or None), map frame.
+    self.lane_change = False  # Ego changing lanes (model desire or a turn signal).
+    self.reports = {}  # Radar id -> recent (stamp, x, y) reports, ego frame.
+    self.jumps = {}  # Radar id -> stamp of its last lateral jump.
+    self.hold = None  # (key, lateral, centred, speed): the FF object at its last report inside ego's lane.
+    self.bridge = None  # The FF object kept on vision: dict(key, start, x, y, dx, speed, kind), x/y as drawn.
 
   def reset(self):
     self.__init__()
@@ -246,7 +263,9 @@ class CcncRadarMap:
       obj.uncertainty += (.08 if obj.stationary else .35 + .3 * (now - obj.seen)) * dt + .002 * abs(distance)
       obj.vision = False
     self.local = {key: self.to_ego(obj.x, obj.y) for key, obj in self.objects.items()}
-    expired = [key for key, xy in self.local.items() if not self._in_range(*xy) and not self._far_vehicle(self.objects[key], *xy)]
+    bridged = self.bridge['key'] if self.bridge else None
+    expired = [key for key, xy in self.local.items()
+               if key != bridged and not self._in_range(*xy) and not self._far_vehicle(self.objects[key], *xy)]
     for key in expired:
       del self.objects[key]
       del self.local[key]
@@ -426,6 +445,11 @@ class CcncRadarMap:
       x, y, speed = p.dRel, p.yRel, p.vLead
       if not all(math.isfinite(v) for v in (x, y, speed, p.vRel)):
         continue
+      recent = self.reports.setdefault(int(p.trackId), deque(maxlen=4))
+      if any(0. < stamp - t <= self.BRIDGE_JUMP_TIME + 1e-6 and abs(x - rx) <= self.BRIDGE_RECONNECT and abs(y - ry) >= self.BRIDGE_JUMP
+             for t, rx, ry in recent):
+        self.jumps[int(p.trackId)] = stamp
+      recent.append((stamp, x, y))
       if not 0. <= x <= self.FAR_X or abs(y) > (self.MAX_Y if x <= self.MAX_X else self.FAR_Y) or abs(speed) > 100.:
         continue
       wx, wy = self.to_world(x, y, pose)
@@ -498,9 +522,38 @@ class CcncRadarMap:
         used.add(key)
     return assigned
 
+  def _reconnect(self, measurements, assignments):
+    """A bridged FF object continues with a new report near its bridged position in ego's lane, whatever its
+    radar id (recorded: the lead returned under a new id after its old one moved onto the trailer)."""
+    if self.bridge is None or self.bridge['key'] in assignments.values():
+      return
+    key = self.bridge['key']
+    bx, by = self.bridge['x'], self.bridge['y']
+    best = None
+    for i, (_, x, y, *_) in enumerate(measurements):
+      if i in assignments:
+        continue
+      ex, ey = self.to_ego(x, y)
+      distance = math.hypot(ex - bx, ey - by)
+      if distance <= self.BRIDGE_RECONNECT and self._lane(ex, ey, moving=True)[0] == 0 and (best is None or distance < best[0]):
+        best = distance, i
+    if best is not None:
+      obj = self.objects[key]
+      obj.x, obj.y = self.to_world(bx, by, self.pose)  # Continue from where it was drawn, not from its prediction.
+      self._forget_lateral(obj)
+      obj.vx, obj.vy = measurements[best[1]][3:5]  # Its own reported speed, not the merged track's.
+      assignments[best[1]] = key
+
+  def _forget_lateral(self, obj):
+    """Drop the reports and sideways speed a bridged object took from the vehicle its track merged with."""
+    obj.history.clear()
+    forward = self.cos * obj.vx + self.sin * obj.vy
+    obj.vx, obj.vy = forward * self.cos, forward * self.sin
+
   def _observe(self, live, stamp):
     measurements = self._measurements(live, stamp)
     assignments = self._associate(measurements, stamp)
+    self._reconnect(measurements, assignments)
     reserved = set(assignments.values())
     measured_keys = set()
     for i, (source, x, y, vx, vy, explained, hc, hs, radar_moving, doppler, tracked) in enumerate(measurements):
@@ -508,7 +561,8 @@ class CcncRadarMap:
       if key is None:
         if len(self.objects) >= self.MAX_OBJECTS:
           # Retain confirmed nearby vehicles before unconfirmed distant returns.
-          candidates = [o for o in self.objects.values() if o.key not in measured_keys and o.key not in reserved]
+          candidates = [o for o in self.objects.values() if o.key not in measured_keys and o.key not in reserved
+                        and not (self.bridge and o.key == self.bridge['key'])]
           if not candidates:
             continue
           def priority(o):
@@ -541,6 +595,7 @@ class CcncRadarMap:
         obj.hits += 1
         obj.existence = min(1., obj.existence + .15)
       obj.explained = explained
+      obj.report = (stamp, *self.to_ego(x, y))
       obj.tracked += tracked
       obj.radar_moving = obj.radar_moving or radar_moving
       if doppler:
@@ -981,22 +1036,110 @@ class CcncRadarMap:
     for slot, candidates in enumerate(groups):
       if slot and selected[0] is not None:
         lead_x = self.local[selected[0]][0]
-        candidates = [c for c in candidates if not self._behind_lead(c[2], slot, lead_x)]
+        # A bridged FF object measured beside ego's lane stays FF, not a side vehicle as well.
+        candidates = [c for c in candidates if c[2] != selected[0] and not self._behind_lead(c[2], slot, lead_x)]
       if not candidates:
         selected.append(None)
-        continue
-      nearest = min(c[0] for c in candidates)
-      close = [c for c in candidates if c[0] <= nearest + 1.]
-      old = next((c for c in close if c[2] == self.selected[slot]), None)
-      best = min(close, key=lambda c: (c[1], c[0], c[2]))
-      selected.append(old[2] if old and old[1] <= best[1] + .25 else best[2])
+      else:
+        nearest = min(c[0] for c in candidates)
+        close = [c for c in candidates if c[0] <= nearest + 1.]
+        old = next((c for c in close if c[2] == self.selected[slot]), None)
+        best = min(close, key=lambda c: (c[1], c[0], c[2]))
+        selected.append(old[2] if old and old[1] <= best[1] + .25 else best[2])
+      if not slot:
+        selected[0] = self._bridge(selected[0])
     self.remembered = [False, False, False]
     if self.holding:
       for slot in (1, 2):
         if selected[slot] is None and not self.blindspot[slot - 1]:
           selected[slot] = self._stop_memory(slot)
+          if selected[slot] is not None and selected[slot] == selected[0]:
+            selected[slot] = None
           self.remembered[slot] = selected[slot] is not None
     self.selected = tuple(selected)
+
+  def _ego_lines(self, x):
+    """Ego's left and right lane lines at x (None where unusable)."""
+    return tuple(interpolate(self.geometry.get(i, []), x) if i in self.lanes and self.lanes[i].probability >= .1 else None for i in (1, 2))
+
+  def _centre(self, x):
+    """Middle of ego's lane lines at x, or None."""
+    left, right = self._ego_lines(x)
+    return None if left is None or right is None else .5 * (left + right)
+
+  def _bridge(self, normal):
+    """The FF object, kept on vision while its radar report is lost or has jumped out of ego's lane; else ``normal``."""
+    kept = self._bridged(normal)
+    if kept != normal or normal is None:
+      return kept
+    # Record where the FF object was last reported inside ego's lane, unless that report is part of a jump.
+    obj = self.objects[normal]
+    if obj.report is not None and obj.report[0] == self.radar_stamp and self.now - self.jumps.get(obj.source, -math.inf) > self.BRIDGE_JUMP_TIME + 1e-6:
+      _, x, y = obj.report
+      left, right = self._ego_lines(x)
+      speed = self.cos * obj.vx + self.sin * obj.vy
+      if left is not None and right is not None:
+        if right <= y <= left:
+          self.hold = (normal, y - .5 * (left + right), True, speed)  # Relative to the lane centre.
+      elif abs(y) <= self.BRIDGE_LANE:
+        self.hold = (normal, y, False, speed)
+    if self.hold is not None and self.hold[0] != normal:
+      self.hold = None
+    return normal
+
+  def _bridged(self, normal):
+    bridge = self.bridge
+    key = bridge['key'] if bridge else self.selected[0]
+    obj = self.objects.get(key) if key is not None else None
+    self.bridge = None
+    if obj is not None and bridge is not None and normal == key:
+      self._forget_lateral(obj)  # Back in ego's lane on its own reports.
+    if obj is None or normal == key or self.lane_change or not self.usable:
+      return normal
+    if bridge is None:
+      # Start only on a lost report, or a report that jumped sideways: a vehicle drifting out of the
+      # lane is a real lane change and is left to the ordinary selection.
+      unseen = obj.seen != self.radar_stamp
+      jumped = self.radar_stamp - self.jumps.get(obj.source, -math.inf) <= self.PREDICTION_HOLD + 1e-6
+      if not (unseen or jumped):
+        return normal
+      start, x0, dx = self.now, self.local[key][0], None
+      held = self.hold is not None and self.hold[0] == key
+      speed = self.hold[3] if held else self.cos * obj.vx + self.sin * obj.vy
+    else:
+      start, x0, dx, speed = bridge['start'], bridge['x'], bridge['dx'], bridge['speed']
+      if self.now - start > self.BRIDGE_HOLD:
+        return normal
+    matches = []
+    for x, y, v in self.vision_leads:
+      centre = self._centre(x)
+      if abs(x - x0) <= max(3., .2 * x0) and abs(y - (centre if centre is not None else 0.)) <= self.BRIDGE_LANE:
+        matches.append((abs(x - x0), x, v))
+    if not matches:
+      return normal
+    _, vision_x, vision_speed = min(matches, key=lambda m: m[:2])
+    # The displayed speed (approach indication) is vision's, else the last one before: the merged
+    # track reports the speed of the vehicle it merged with.
+    speed = vision_speed if vision_speed is not None else speed
+    # Follow the vision distance from where the object was drawn: the radar's reflection point and the
+    # vision lead differ by 1-2m, and the display should not jump by that.
+    dx = x0 - vision_x if dx is None else dx
+    x = vision_x + dx
+    if normal is not None and self.local[normal][0] <= x + max(3., .2 * x):
+      # A nearer measured vehicle, such as one cutting in, takes FF; so does one at the bridged distance,
+      # which is the lead measured again as a new object. Only a farther one cannot.
+      return normal
+    hold = self.hold if self.hold is not None and self.hold[0] == key else None
+    centre = self._centre(x)
+    centre = 0. if centre is None else centre
+    if hold is None:
+      y = centre
+    else:
+      _, lateral, centred, _ = hold
+      y = centre + lateral if centred else lateral
+    self.local[key] = x, y
+    self.bridge = dict(key=key, start=start, x=x, y=y, dx=dx, speed=speed, kind='lost' if obj.seen != self.radar_stamp else 'jump')
+    return key
 
   def explain(self, source, x, y, slot):
     """Offline diagnostic only: why a reported radar point is not this slot's display."""
@@ -1053,7 +1196,7 @@ class CcncRadarMap:
     return min(candidates)[2] if candidates else None
 
   def update(self, live, model, now, v_ego, *, radar_time=None, model_time=None, yaw_rate=None, reverse=False,
-             select=True, lane_curves=None, a_ego=None, blindspot=(False, False), evidence=None):
+             select=True, lane_curves=None, a_ego=None, blindspot=(False, False), evidence=None, lane_change=False):
     """Return FF/LF/RF objects; retained state is never fed back to raw radar.
 
     ``yaw_rate`` is left-positive in rad/s. If omitted, use the current model's
@@ -1076,6 +1219,7 @@ class CcncRadarMap:
     self.holding = stopped or (not self.stopped and v_ego <= 10. / 3.6 and math.isfinite(a_ego) and a_ego < -.1 / 3.6)
     self.stopped = stopped
     self.blindspot = tuple(blindspot)
+    self.lane_change = bool(lane_change)
     # Offline: {radar track id: (radar motion class, reported distance)} read from the raw
     # track message. A live build would carry the class on each RadarPoint as motionState.
     self.evidence = evidence or {}
@@ -1092,6 +1236,10 @@ class CcncRadarMap:
     self.usable = live is not None and 0. <= now - radar_time <= .15
     self.leads = [(lead.x[0] - 1.52, -lead.y[0]) for lead in getattr(model, 'leadsV3', ())
                   if lead.prob >= .8 and len(lead.x) and len(lead.y)] if model is not None and 0. <= now - model_time <= .25 else []
+    self.vision_leads = [(lead.x[0] - 1.52, -lead.y[0], float(lead.v[0]) if len(getattr(lead, 'v', ())) and math.isfinite(lead.v[0]) else None)
+                         for lead in getattr(model, 'leadsV3', ())
+                         if lead.prob >= self.BRIDGE_PROB and len(lead.x) and len(lead.y) and math.isfinite(lead.x[0]) and math.isfinite(lead.y[0])
+                         ] if model is not None and 0. <= now - model_time <= .25 else []
     measured = set()
     if self.usable and live is not self.raw and (self.radar_stamp is None or radar_time > self.radar_stamp):
       measured = self._observe(live, radar_time)
@@ -1114,7 +1262,7 @@ class CcncRadarMap:
       if obj is None:
         values[detect] = 0
         continue
-      x, y = self.to_ego(obj.x, obj.y)
+      x, y = self.local[obj.key]  # A bridged FF object is drawn where the bridge holds it.
       values[distance] = min(204.7, max(0., x * .8))
       values[lateral] = min(12.7, max(0., y if slot == 1 else -y)) if slot else min(12.7, max(-12.8, -y))
       values[detect] = 2 if obj.stationary else 1
@@ -1273,9 +1421,11 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
       _live.raw, _live.radar_time = live, now
     if md is not None and md is not _live.model:
       _live.model, _live.model_time = md, now
+    desire = str(getattr(getattr(md, 'meta', None), 'desire', ''))
     tracker.update(live, md, now, out.vEgo, radar_time=_live.radar_time, model_time=_live.model_time,
                    reverse=str(out.gearShifter) == 'reverse', a_ego=out.aEgo,
-                   blindspot=(out.leftBlindspot, out.rightBlindspot))
+                   blindspot=(out.leftBlindspot, out.rightBlindspot),
+                   lane_change=desire in ('laneChangeLeft', 'laneChangeRight') or bool(getattr(out, 'leftBlinker', False) or getattr(out, 'rightBlinker', False)))
     for side, center in enumerate((state.lf_center, state.rf_center)):
       lane_center = ext._ccnc_side_lane_center(md, side)
       if lane_center is not None:
@@ -1286,7 +1436,8 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
       if obj is None or not values[detect]:
         continue
       y = tracker.local[obj.key][1]
-      forward = tracker.cos * obj.vx + tracker.sin * obj.vy
+      bridged = slot == 0 and tracker.bridge is not None and tracker.bridge['key'] == obj.key
+      forward = tracker.bridge['speed'] if bridged else tracker.cos * obj.vx + tracker.sin * obj.vy
       closing = forward - tracker.speed
       if slot == 0:
         values[lateral] = ext.apply_curved_deadband(-y, 0, .7, 1)

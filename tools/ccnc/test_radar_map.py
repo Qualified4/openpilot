@@ -962,3 +962,67 @@ def test_side_slot_far_behind_the_displayed_lead_is_not_given(lead, x, side):
     radar.update(N(points=points), model(), round(i * .05, 6), 15.)
   assert (radar.selected[0] is not None) == (lead is not None)
   assert (radar.selected[1] is not None) == side
+def bridge_scene(lead, steps=60, vision=lambda i: True, lane_change=lambda i: False):
+  """Ego at 15m/s; a lead 12m ahead in ego's lane until step 30, then whatever ``lead(i)`` reports; a second
+  vehicle 40m ahead in the lane. Returns the map and, per step, the FF object's key and source."""
+  radar, shown = RadarMap(), []
+  for i in range(steps):
+    m = model()
+    m.leadsV3 = [N(prob=.9, x=[12. + 1.52], y=[0.])] if vision(i) else []
+    points = [point(2, 40., -.5, 15., motionState=2)] + ([point(1, 12., 0., 15., motionState=2)] if i < 30 else lead(i))
+    radar.update(N(points=points), m, round(i * .05, 6), 15., lane_change=lane_change(i))
+    ff = radar.objects.get(radar.selected[0])
+    shown.append(None if ff is None else (ff.key, ff.source, radar.local[ff.key]))
+  return radar, shown
+
+
+@pytest.mark.parametrize('vision,lane_change,kept', [(True, False, True), (False, False, False), (True, True, False)])
+def test_lead_track_jumping_beside_ego_lane_stays_ff_while_vision_sees_the_lead(vision, lane_change, kept):
+  # Recorded 2026-10-14: next to a trailer, the radar track of the car 10m ahead jumped 1.2-1.7m sideways across
+  # the lane line for 1.5s (the radar merged it with the trailer) while vision kept the car in ego's lane, and FF
+  # moved to a car 42m ahead. The lead stays FF, drawn where it was last reported in the lane. Without vision,
+  # or while ego changes lanes, the ordinary selection decides.
+  radar, shown = bridge_scene(lambda i: [point(1, 12., -2.6, 15., motionState=2)], vision=lambda i: vision or i < 30,
+                              lane_change=lambda i: lane_change and i >= 30)
+  lead = shown[29][0]
+  after = shown[31:]
+  assert all(s is not None for s in after)
+  assert all(s[0] == lead for s in after) == kept
+  if kept:
+    assert all(abs(s[2][1]) < .3 for s in after)
+  else:
+    assert after[-1][2][0] > 30.
+
+
+def test_lead_track_drifting_out_of_ego_lane_is_not_held_by_vision():
+  # Without a sideways jump the report is a vehicle leaving the lane: no bridge, whatever vision shows.
+  radar, shown = bridge_scene(lambda i: [point(1, 12., -.1 * (i - 29), 15., motionState=2)])
+  assert shown[-1][2][0] > 30. and radar.bridge is None
+
+
+def test_lost_lead_continues_under_a_new_radar_id_near_its_bridged_position():
+  # The lead's report stops; the radar reports it again under another id .5s later, 1m from where it was drawn
+  # (beyond the ordinary association gate). It is the same object,
+  # not a new one that must wait for its own reports before it is shown.
+  radar, shown = bridge_scene(lambda i: [] if i < 40 else [point(3, 12.8, -.6, 15., motionState=2)])
+  lead = shown[29][0]
+  assert all(s[0] == lead for s in shown[30:])
+  assert shown[-1][1] == 3 and radar.bridge is None
+
+
+def test_bridge_ends_after_its_hold_time():
+  radar, shown = bridge_scene(lambda i: [point(1, 12., -2.6, 15., motionState=2)], steps=80)
+  lead = shown[29][0]
+  start = 30
+  hold = round(RadarMap.BRIDGE_HOLD / .05)
+  assert all(s[0] == lead for s in shown[start:start + hold - 1])
+  assert shown[-1][0] != lead and shown[-1][2][0] > 30.
+
+
+@pytest.mark.parametrize('x,takes', [(7., True), (40., False)])
+def test_nearer_vehicle_takes_ff_from_a_bridged_lead_but_a_farther_one_cannot(x, takes):
+  radar, shown = bridge_scene(lambda i: [point(1, 12., -2.6, 15., motionState=2)] + ([point(4, x, 0., 15., motionState=2)] if i >= 33 else []))
+  lead = shown[29][0]
+  assert (shown[-1][0] != lead) == takes
+  if takes:
+    assert shown[-1][1] == 4

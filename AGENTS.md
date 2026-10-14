@@ -1,5 +1,36 @@
 # Repository memory
 
+- On 2026-10-14 (FF bridge round; NOT committed) the map module went
+  bc52b9c4e6e5 -> 82b2155583c3 -> 21ec6cd78825 (working copy, CRLF): a displayed FF object
+  whose radar report is lost, or whose same-id report jumps >= .8m sideways
+  within .15s (the radar merged the lead with a trailer beside it, 3e3/2
+  52.3-54.7s), stays FF for up to BRIDGE_HOLD 2s while a leadsV3 entry
+  (p >= .5) is at its distance (+-max(3m, 20%)) and within 1.2m of ego's lane
+  centre. Distance follows vision with the offset fixed at the start; lateral
+  is the last in-lane report relative to the lane centre. A measured object
+  nearer or at the bridged distance takes FF; a farther one cannot. A new
+  report within 1.5m in ego's lane reconnects to the same object (any id).
+  Ends at once without vision, after 2s, or while ego changes lanes (model
+  desire laneChangeLeft/Right or a turn signal, passed as update(...,
+  lane_change=)). Gradual drift out of the lane never starts a bridge. Vision
+  creates no object, gives no evidence and fills no side slot. SCC (trackId 0)
+  is still ignored. New logs: 3e3/2 and 3e3/11 decoded to
+  .analysis/cache/ccnc-replay-v5 (3e3/15 also in the folder, not used); model
+  desire and turn signals for all 170 segments in .analysis/cache/ccnc-meta-v1;
+  170-segment manifest in .analysis/archive/2026-10-14/ccnc-bridge.
+  Live-entry replay of 170 segments: 66 bridged sends in 8 episodes, FF far
+  jump-and-return events 549 -> 543, LF/RF unchanged, 0 bridged sends in 103
+  lane-change windows, 77 departing-lead scenes unchanged. Review residual 0,
+  c1/23 6/6, waiting 7/7, bookmarks 18/18. Tests 1033 -> 1041. Stage 3 (FF
+  lateral jitter, measurement only) and the reliable-flag difference (map keeps
+  lanes whose probability fell below .1, decaying by .9 per frame; legacy uses
+  the current probabilities; both threshold .1) are in the experiment doc.
+  Follow-up (module 21ec6cd78825): during a bridge the FF closing speed is the
+  vision lead's leadsV3.v, else the speed at the last in-lane report; only the
+  speed update_vehicles passes changes (extension untouched). 3e3/2 FF_DETECT
+  stays 1; 170 segments differ from round 8 only in 107 detect values (3e3/2
+  92 -> 1, 366/46 15 -> 2 from vision 19.6m/s at 58m). Vision v is kept in
+  .analysis/cache/ccnc-meta-v2 (meta-v1 plus leadsV3 v). Tests 1041 -> 1043.
 - On 2026-10-13 the user asked to commit the root CLAUDE.md after all (it had
   been kept out of every commit on the user's instruction until then). It is
   tracked from this commit on; the "never CLAUDE.md" notes in the entries

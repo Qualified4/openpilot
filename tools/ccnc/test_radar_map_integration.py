@@ -245,3 +245,28 @@ def test_unusable_map_does_not_bypass_original_row_guard(setup):
   radar.usable = False
   display.map_blocked.clear()
   assert display.structure_suppresses(0, geometry(1.), 100)
+
+
+@pytest.mark.parametrize('vision_speed', [15., None])
+def test_bridged_lead_shows_the_vision_speed_not_the_merged_track_speed(monkeypatch, vision_speed):
+  # Recorded 2026-10-14 (3e3/2): while the lead's track had merged with a slower trailer beside it, the bridged
+  # FF showed the trailer's approach (FF_DETECT 2). The bridge uses vision's lead speed, or the speed from
+  # before the bridge when vision gives none.
+  monkeypatch.setattr(existing, 'state', N())
+  monkeypatch.setattr(existing, '_options', None)
+  existing.reset()
+  existing.configure(True, True, True, True)
+  module.reset_live()
+  fields = CANPacker('hyundai_canfd_generated').dbc.name_to_msg['CCNC_0x162'].sigs
+  shown = []
+  for i in range(60):
+    md = geometry(i * .05)
+    md.leadsV3 = [N(prob=.9, x=[12. + 1.52], y=[0.], v=[] if vision_speed is None else [vision_speed])]
+    # From step 30 the same id slides 2.4m to the right in .3s (merged), then falls back at the trailer's 11m/s.
+    lead = point(1, 12., 0., 15., motionState=2) if i < 30 else point(1, 12. - .2 * max(0, i - 34), -.4 * min(6, i - 29), 11., motionState=2)
+    cs = N(out=N(vEgo=15., aEgo=0., gearShifter='drive', leftBlindspot=False, rightBlindspot=False, leftBlinker=False, rightBlinker=False),
+           live_tracks=N(points=[lead, point(2, 40., -.5, 15., motionState=2)]))
+    values = module.update_vehicles(dict.fromkeys(fields, 0), cs, md, i * 5, 54., 0., True, existing)
+    shown.append((values['FF_DETECT'], values['FF_DISTANCE'] / .8, module._live.tracker.bridge is not None))
+  assert all(bridged for _, _, bridged in shown[36:])
+  assert all(detect == 1 and distance < 15. for detect, distance, _ in shown[31:])
