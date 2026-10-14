@@ -1,5 +1,12 @@
 # Repository memory
 
+- On 2026-10-14 (round 12c) the extension went d473d0fb4bd7 ->
+  099be84d8c6f: side-slot position correction (x<30m, off during ego lane
+  change) holds the drawn lateral .3s after an inward reflection jump (>=.6m
+  in .3s; ends on crossing ego's line or moving .2m further in .2s) and does
+  not follow an outward creep <=.8m/s over >=1.5s unless the object was FF in
+  the last 3s; sawtooth round trip median legacy .14 -> .11, map .45 -> .36m; accepted residuals: a
+  hold 3s after a lead left (356/21) and <=.15m carried into own lane changes.
 - On 2026-10-14 the CCNC replays run on os.cpu_count()-2 processes by default
   (replay_radar_map_fast, replay_live_path --jobs/--prepare, and the private
   probe/run harnesses), consecutive segments of a route in one job; outputs

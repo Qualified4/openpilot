@@ -3023,3 +3023,62 @@ def test_fast_motion_admission_keeps_original_confirmation_latency():
     boundary_step(t, point(x=10. + frame * .03, y=1.5, speed=8.), frame)
   assert t.boundary_admission[1]['status'] == 'allowed'
   assert 'motion_windows' not in t.boundary_admission[1]
+
+
+SIDE_BOUNDS = (5.25, 1.75)  # The left lane: its outer line and ego's left line.
+
+
+def side_lock(c, t, until=200, y=3.):
+  """A left-lane car 20m ahead, centred at ``y``, until the correction holds it at the lane centre (3m)."""
+  for frame in range(0, until, 5):
+    corrected_sample(c, t, frame, y, slot=1, bounds=SIDE_BOUNDS)
+  assert not c.tracks[1]['following'] and c.tracks[1]['output'] == pytest.approx(3., abs=.05)
+  return until
+
+
+def test_side_slot_holds_its_lateral_after_an_inward_reflection_jump():
+  # Recorded 2026-10-14 (3e1/20, 3e1/15): a passing side car's reflection jumps about 1m back inwards, close to
+  # ego's lane line. Boundary following used to pull the drawn car there and the settling sent it back.
+  c, t = Correction(), Tracker()
+  start = side_lock(c, t, y=2.6)
+  # 1.95m is .2m off ego's line, where boundary following would start at once.
+  outputs = [corrected_sample(c, t, frame, 1.95, slot=1, bounds=SIDE_BOUNDS) for frame in range(start, start + 30, 5)]
+  assert all(o == pytest.approx(outputs[0]) for o in outputs) and outputs[0] == pytest.approx(3., abs=.05)
+  later = [corrected_sample(c, t, frame, 1.95, slot=1, bounds=SIDE_BOUNDS) for frame in range(start + 30, start + 100, 5)]
+  assert later[-1] < 2.9  # After HOLD_AFTER_JUMP the existing rules apply again.
+
+
+@pytest.mark.parametrize('second', [1.6, 1.9])
+def test_side_slot_hold_ends_at_once_for_a_cut_in(second):
+  # A car cutting in also jumps inwards; crossing ego's lane line (1.6) or moving on inwards (1.9) ends the hold.
+  c, t = Correction(), Tracker()
+  start = side_lock(c, t, y=2.8)
+  first = corrected_sample(c, t, start, 2.15, slot=1, bounds=SIDE_BOUNDS)
+  assert c.tracks[1]['hold'] is not None
+  second_output = corrected_sample(c, t, start + 5, second, slot=1, bounds=SIDE_BOUNDS)
+  assert c.tracks[1]['hold'] is None and second_output < first
+
+
+def side_creep(c, t, start, rate=.006, frames=150):
+  """The left-lane car creeps outwards at ``rate`` m per frame (.6m/s) from 3m; the drawn lateral per frame."""
+  return [corrected_sample(c, t, frame, 3. + rate * (frame - start), slot=1, bounds=SIDE_BOUNDS)
+          for frame in range(start, start + frames, 5)]
+
+
+def test_side_slot_does_not_follow_a_slow_outward_creep():
+  c, t = Correction(), Tracker()
+  outputs = side_creep(c, t, side_lock(c, t))
+  assert not c.tracks[1]['following'] and max(outputs) < 3.1
+
+
+def test_recent_lead_leaving_ego_lane_follows_a_slow_outward_creep():
+  # A car that was FF within RECENT_FF is leaving ego's lane: its outward motion is followed as before.
+  c, t = Correction(), Tracker()
+  for frame in range(0, 100, 5):  # Out of ego's lane into the left lane at 2.8m/s.
+    y = .2 + .028 * frame
+    corrected_sample(c, t, frame, y, **({} if y < 1.8 else dict(slot=1, bounds=SIDE_BOUNDS)))
+  for frame in range(100, 250, 5):
+    corrected_sample(c, t, frame, 3., slot=1, bounds=SIDE_BOUNDS)
+  assert not c.tracks[1]['following'] and t.tracks[1][0] == 0
+  outputs = side_creep(c, t, 250)
+  assert c.tracks[1]['following'] and outputs[-1] > 3.4

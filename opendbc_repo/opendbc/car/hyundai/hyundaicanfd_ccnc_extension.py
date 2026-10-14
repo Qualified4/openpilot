@@ -1539,6 +1539,16 @@ class _CcncVehiclePositionCorrection:
   ROAD_MOVE_DISTANCE = .35
   ROAD_FAST_DISTANCE = .8
   SLOT_TIME = 20  # Display-only debounce, with at least three fresh observations.
+  # The reflection of a side vehicle passing ego or falling back (x < SIDE_X) creeps outwards for 1.5-2.5s at up to
+  # .7m/s, then jumps about 1m back inwards, close to ego's lane line, two or three times over (recorded 2026-10-14:
+  # 3e1/20, 3e1/15). Following the creep, then the line after the jump, then settling back to the lane centre swung
+  # the side car by .9m. An inward jump of the measured y by JUMP_SIZE within JUMP_TIME holds the drawn lateral for
+  # HOLD_AFTER_JUMP: no following starts, and the output stays. The hold ends at once when the measured position
+  # crosses ego's lane line (a cut-in) or keeps moving inwards (JUMP_ON within JUMP_ON_TIME). An outward change is
+  # followed only when it is faster than DRIFT_SPEED over at least DRIFT_TIME, or crosses the outer line; a lead that
+  # was FF within RECENT_FF is leaving ego's lane and is followed as before. Neither applies while ego changes lanes.
+  SIDE_X, JUMP_SIZE, JUMP_TIME, HOLD_AFTER_JUMP, JUMP_ON, JUMP_ON_TIME = 30., .6, 30, 30, .2, 20
+  DRIFT_SPEED, DRIFT_TIME, RECENT_FF = .8, 150, 300
   SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
                  ('RF_DETECT_DISTANCE', 'RF_DETECT_LATERAL', 'RF_DETECT'))
@@ -1550,6 +1560,7 @@ class _CcncVehiclePositionCorrection:
     self.tracks = {}
     self.display_slots = {}
     self.display_selected = (None, None, None)
+    self.lane_change = False  # Ego changing lanes (desire or a turn signal), set by update_lanes.
 
   @staticmethod
   def _median(values):
@@ -1636,6 +1647,14 @@ class _CcncVehiclePositionCorrection:
     self.tracks = {key: saved for key, saved in self.tracks.items()
                    if key in tracks and tracks[key][0] == saved['birth']}
 
+  def _slow_outward(self, saved, slot, stamp, net, frame):
+    """A side slot's outward change ``net`` that over DRIFT_TIME (or all history) is no faster than DRIFT_SPEED."""
+    drift = saved['drift']
+    if (slot == 0 or not drift or net * (1 if slot == 1 else -1) <= 0 or stamp <= drift[0][0]
+        or (saved['ff_frame'] is not None and frame - saved['ff_frame'] <= self.RECENT_FF)):
+      return False
+    return (drift[-1][1] - drift[0][1]) / ((stamp - drift[0][0]) * .01) <= self.DRIFT_SPEED
+
   @staticmethod
   def _ongoing_motion(samples, stamp, nets):
     recent = [s for s in samples if stamp - s[0] <= 20]
@@ -1663,7 +1682,7 @@ class _CcncVehiclePositionCorrection:
       saved = dict(birth=birth, frame=frame, stamp=None, samples=deque(), settling=deque(),
                    locked=inside and reliable, following=not (inside and reliable), valid_frame=-1000,
                    output=filtered_y, slot=slot, reference=reference, slot_frame=-1000, boundary_follow=not inside,
-                   fast=deque(maxlen=8), fast_speed=0.0)
+                   fast=deque(maxlen=8), fast_speed=0.0, raw=deque(), drift=deque(), hold=None, ff_frame=None)
       self.tracks[point.trackId] = saved
     bounds_valid = bounds is not None and all(math.isfinite(v) for v in bounds) and bounds[0] > bounds[1]
     center_valid = bounds_valid and bounds[1] <= center <= bounds[0]
@@ -1696,8 +1715,35 @@ class _CcncVehiclePositionCorrection:
                      and 0 <= frame - saved['valid_frame'] <= self.GEOMETRY_HOLD)
     forced_follow = (not inside and not geometry_hold) or (not reliable and frame - saved['valid_frame'] > self.GEOMETRY_HOLD)
     saved['following'] = not saved['locked'] or forced_follow
+    if slot == 0:
+      saved['ff_frame'] = frame
+    side = slot != 0 and point.dRel < self.SIDE_X and not self.lane_change
+    if not side:
+      saved['raw'].clear()
+      saved['drift'].clear()
+      saved['hold'] = None
     if stamp != saved['stamp'] and fresh:
       saved['stamp'] = stamp
+      if side:
+        sign = 1 if slot == 1 else -1
+        raw, drift, hold = saved['raw'], saved['drift'], saved['hold']
+        outward = sign * point.yRel
+        while raw and stamp - raw[0][0] > self.JUMP_TIME:
+          raw.popleft()
+        if hold is not None:
+          if any(stamp - s <= self.JUMP_ON_TIME and o - outward >= self.JUMP_ON - 1e-6 for s, o in hold['after']):
+            saved['hold'] = None  # Still moving inwards: not a reflection jump.
+            raw.clear()
+          elif stamp - hold['start'] > self.HOLD_AFTER_JUMP:
+            saved['hold'] = None
+          else:
+            hold['after'].append((stamp, outward))
+        elif raw and max(r[1] for r in raw) - outward >= self.JUMP_SIZE - 1e-6:
+          saved['hold'] = dict(start=stamp, after=deque([(stamp, outward)]))
+        raw.append((stamp, outward))
+        drift.append((stamp, sign * aligned_y))
+        while len(drift) > 1 and stamp - drift[1][0] >= self.DRIFT_TIME:
+          drift.popleft()
       fast = saved['fast']
       if fast:
         last, raw, aligned = fast[-1]
@@ -1724,7 +1770,8 @@ class _CcncVehiclePositionCorrection:
         if (boundary_valid and reliable and self._ongoing_motion(fast, stamp, nets)
             and (approaching_boundary or continuing_fast or recent_crossing) and nets[0] * nets[1] > 0 and all(
             .8 <= abs(net) / span <= 15 and abs(net) >= minimum_fast_distance and abs(net) >= .8 * sum(abs(s) for s in changes)
-            and max(abs(s) for s in changes) <= .7 * abs(net) for net, changes in zip(nets, steps))):
+            and max(abs(s) for s in changes) <= .7 * abs(net) for net, changes in zip(nets, steps))
+            and saved['hold'] is None and not self._slow_outward(saved, slot, stamp, nets[1], frame)):
           saved['fast_speed'] = abs(nets[1]) / span
           saved['locked'], saved['following'] = False, True
       if samples:
@@ -1752,7 +1799,8 @@ class _CcncVehiclePositionCorrection:
             abs(net) >= max(self.ROAD_MOVE_DISTANCE if common_road else self.MOVE_DISTANCE, self.MOVE_SPEED * span)
             and abs(net) >= 0.8 * sum(abs(step) for step in changes)
             and max(abs(step) for step in changes) <= 0.5 * abs(net)
-            for net, changes in zip(nets, steps))):
+            for net, changes in zip(nets, steps))
+            and saved['hold'] is None and not self._slow_outward(saved, slot, stamp, nets[1], frame)):
           saved['following'] = True
           saved['locked'] = False
       # Curves move raw yRel even when a vehicle keeps its lane. Isolated spikes
@@ -1781,8 +1829,13 @@ class _CcncVehiclePositionCorrection:
             and sum(s[4] for s in evidence) >= 0.8 * len(evidence)):
           saved['following'] = False
           saved['locked'] = True
+    if saved['hold'] is not None and bounds_valid and (aligned_y < bounds[1] if slot == 1 else aligned_y > bounds[0]):
+      saved['hold'] = None  # Across ego's lane line: a cut-in is followed at once.
+      saved['raw'].clear()
     dt = max(0.0, min(0.15, (frame - saved['frame']) * 0.01))
     saved['frame'] = frame
+    if saved['hold'] is not None:
+      return saved['output']
     target = filtered_y if saved['following'] else center
     rate = self.FOLLOW_RATE if saved['following'] else self.CENTER_RATE
     if saved['following'] and saved['fast_speed'] > 0 and fresh:
@@ -2319,6 +2372,10 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
   is_auto_lane_changing = desire in (3, 4)
   is_blinking = CS.out.leftBlinker != CS.out.rightBlinker
   is_currently_lane_changing = model_lanes and (is_auto_lane_changing or (is_blinking and v_ego_kph > 20.0))
+  correction = state.radar_display_tracker.position_correction
+  if correction is not None:
+    # Same as the map's FF bridge: ego's own lane change moves every side car sideways.
+    correction.lane_change = is_auto_lane_changing or bool(CS.out.leftBlinker or CS.out.rightBlinker)
 
   if not model_lanes:
     return
