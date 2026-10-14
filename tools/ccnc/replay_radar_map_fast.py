@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import json
 from multiprocessing import Pool
+import os
 from pathlib import Path
 import pickle
 import statistics
@@ -161,7 +162,8 @@ def main():
   parser.add_argument('--output', type=Path, required=True)
   parser.add_argument('--candidate', type=Path, default=Path('opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_radar_map.py'))
   parser.add_argument('--hybrid', action='store_true', help='Hide the unchanged extension displays matched to map walls')
-  parser.add_argument('--jobs', type=int, default=8)
+  parser.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 4) - 2),
+                      help='Worker processes; consecutive segments of a route stay in one job')
   parser.add_argument('--maps', action='store_true', help='Store the full map snapshot per send (large)')
   parser.add_argument('--structure', action='store_true', help='Count resting side returns, walls and what walls keep out of the display')
   parser.add_argument('--timing', action='store_true', help='Record map time per send; use --jobs 1 and no other workload')

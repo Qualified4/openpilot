@@ -8,13 +8,16 @@ controller does, and to the existing selector in a separate module instance. The
 Each row also counts the resting side returns and walls of the map (structure).
 Bookmarks: [{"segment": 5, "t": 44.84, "slot": "LF", "title": "..."}], t in seconds from the
 segment's first sendcan. Logs, bookmarks and output are private data.
-Windows can inject the local cereal bootstrap before invoking main().
+Windows can inject the local cereal bootstrap before invoking main(); worker processes run the bootstrap
+of --prepare. Runs of consecutive segments are spread over --jobs processes, one run per job.
 """
 import argparse
 from collections import Counter
 import gzip
 import importlib.util
 import json
+from multiprocessing import Pool
+import os
 from pathlib import Path
 import re
 import statistics
@@ -70,20 +73,17 @@ def segment_of(path):
   return match.group(1), int(match.group(2))
 
 
-def main():
-  parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument('logs', type=Path, nargs='+', help='rlog.zst files; consecutive segments of a route share state')
-  parser.add_argument('--output', type=Path, required=True)
-  parser.add_argument('--bookmarks', type=Path)
-  parser.add_argument('--window', type=float, default=.5, help='Seconds around each bookmark')
-  parser.add_argument('--baseline', type=Path, default=Path('opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_extension.py'))
-  parser.add_argument('--candidate', type=Path, default=Path('opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_radar_map.py'))
-  parser.add_argument('--compare', type=Path, help='Output directory of an earlier run: report map displays removed/added since')
-  args = parser.parse_args()
+def run_chain(job):
+  """One run of consecutive segments, which share state. Returns per segment its printed line and counts, then
+  the send intervals, the bookmark hits and the changes since --compare."""
+  args, paths, bookmarks = job
+  if args.prepare is not None:  # A worker process needs the caller's bootstrap (e.g. cereal on Windows).
+    import runpy
+    import tempfile
+    runpy.run_path(str(args.prepare))['bootstrap'](Path(tempfile.mkdtemp(prefix='ccnc_live_replay_')))
   from openpilot.cereal import log
   from opendbc.can import CANPacker
   from opendbc.can.parser import get_raw_value
-  args.output.mkdir(parents=True, exist_ok=True)
   clock = [0.]
   extensions = []
   for i in range(2):  # 0: conventions for the map path, 1: the existing selector.
@@ -97,13 +97,11 @@ def main():
   packer = CANPacker('hyundai_canfd_generated')
   signals = packer.dbc.name_to_msg['CCNC_0x162'].sigs
   lane_fields = packer.dbc.name_to_msg['ADRV_0x161'].sigs
-  bookmarks = json.loads(args.bookmarks.read_text(encoding='utf8')) if args.bookmarks else []
   hits = [dict(actual=0, map=0, legacy=0, sends=0, evidence=Counter()) for _ in bookmarks]
-  totals = Counter()
-  intervals = []
+  segments, intervals = [], []
   changes = {kind: Counter() for kind in ('removed', 'added')}
   previous, base = None, None
-  for path in sorted(args.logs, key=segment_of):
+  for path in paths:
     route, segment = segment_of(path)
     if previous != (route, segment - 1):
       base, latest = None, {}
@@ -186,11 +184,58 @@ def main():
               kind, who = ('removed', old['objects'][slot]) if old['map'][slot] else ('added', info[slot])
               changes[kind][(segment, side, label(who), 'legacy shows' if shown[1][slot] else 'legacy hides')] += 1
     n = max(1, counts['sends'])
-    print(f"{segment}: sends {counts['sends']} unready {counts['unready']} display agreement with the recorded 0x162: "
-          + ' '.join(f"{side} map {100 * counts[side + ' map agrees'] / n:.1f}% legacy {100 * counts[side + ' legacy agrees'] / n:.1f}%" for side in SIDES),
-          flush=True)
-    totals += counts
+    segments.append((f"{segment}: sends {counts['sends']} unready {counts['unready']} display agreement with the recorded 0x162: "
+                     + ' '.join(f"{side} map {100 * counts[side + ' map agrees'] / n:.1f}% legacy {100 * counts[side + ' legacy agrees'] / n:.1f}%"
+                                for side in SIDES), counts))
     del events, raw
+  return segments, intervals, hits, changes
+
+
+def main():
+  parser = argparse.ArgumentParser(description=__doc__)
+  parser.add_argument('logs', type=Path, nargs='+', help='rlog.zst files; consecutive segments of a route share state')
+  parser.add_argument('--output', type=Path, required=True)
+  parser.add_argument('--bookmarks', type=Path)
+  parser.add_argument('--window', type=float, default=.5, help='Seconds around each bookmark')
+  parser.add_argument('--baseline', type=Path, default=Path('opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_extension.py'))
+  parser.add_argument('--candidate', type=Path, default=Path('opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_radar_map.py'))
+  parser.add_argument('--compare', type=Path, help='Output directory of an earlier run: report map displays removed/added since')
+  parser.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 4) - 2),
+                      help='Worker processes; consecutive segments of a route stay in one job')
+  parser.add_argument('--prepare', type=Path, help='Python file whose bootstrap(staging_dir) each worker process runs first')
+  args = parser.parse_args()
+  args.output.mkdir(parents=True, exist_ok=True)
+  bookmarks = json.loads(args.bookmarks.read_text(encoding='utf8')) if args.bookmarks else []
+  chains, previous = [], None
+  for path in sorted(args.logs, key=segment_of):
+    route, segment = segment_of(path)
+    if previous != (route, segment - 1):
+      chains.append([])
+    chains[-1].append(path)
+    previous = route, segment
+  jobs = [(args, chain, bookmarks) for chain in chains]
+  if args.jobs <= 1 or len(chains) <= 1:
+    results = [run_chain(job) for job in jobs]
+  else:
+    order = sorted(range(len(jobs)), key=lambda i: -len(chains[i]))  # Longest chain first.
+    with Pool(min(args.jobs, len(chains))) as pool:
+      done = dict(zip(order, pool.map(run_chain, [jobs[i] for i in order], chunksize=1)))
+    results = [done[i] for i in range(len(jobs))]
+  # Merged in segment order, as a single process builds them.
+  hits = [dict(actual=0, map=0, legacy=0, sends=0, evidence=Counter()) for _ in bookmarks]
+  totals, intervals = Counter(), []
+  changes = {kind: Counter() for kind in ('removed', 'added')}
+  for segments, chain_intervals, chain_hits, chain_changes in results:
+    for line, counts in segments:
+      print(line, flush=True)
+      totals += counts
+    intervals += chain_intervals
+    for hit, chain_hit in zip(hits, chain_hits):
+      for key in ('actual', 'map', 'legacy', 'sends'):
+        hit[key] += chain_hit[key]
+      hit['evidence'].update(chain_hit['evidence'])
+    for kind, counter in chain_changes.items():
+      changes[kind].update(counter)
   period = statistics.median(intervals) if intervals else 0.
   n = max(1, totals['sends'])
   print(f"all: sends {totals['sends']} period {period:.3f}s "

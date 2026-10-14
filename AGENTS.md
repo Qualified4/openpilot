@@ -1,5 +1,10 @@
 # Repository memory
 
+- On 2026-10-14 the CCNC replays run on os.cpu_count()-2 processes by default
+  (replay_radar_map_fast, replay_live_path --jobs/--prepare, and the private
+  probe/run harnesses), consecutive segments of a route in one job; outputs
+  are byte-identical to the round 11 runs. Wall time is bound by the longest
+  run (22 of 171 segments). Measure timing only in rounds that add a rule.
 - On 2026-10-14 (round 11 B) the map module went acf245a5b309 -> 2fead7f97fd7:
   LEAD_SIDE_X 50 -> 60 except while holding (LEAD_SIDE_HOLD_X 50), since a
   50-60m side candidate displaced the stop memory of a car beside ego (15
