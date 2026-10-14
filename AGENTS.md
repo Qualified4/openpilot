@@ -1,5 +1,15 @@
 # Repository memory
 
+- On 2026-10-14 (round 8c; NOT committed) the map module went 5e9d3ceb0d8e
+  -> c2d313c7d0bf: a bridged FF object (cases A/B/C) is drawn at its stable
+  y, the mean report y from ego's lane centre over its last .5s calm stretch
+  (sideways < .3m/s over .15s after subtracting the .05m report step), kept
+  while it moves and not updated while bridged (the merged reports would look
+  stable); without one, the last in-lane report as before. Display only. 3e1/19
+  and 3dd/11 return to the lane centre during the bridge (were +1.6/+1.4m);
+  3e3/2 unchanged (deadband). 170 segments: only FF lateral changes, 72 sends
+  in bridges, 75 within 3s after, 5 LF/RF in 366/29 (slot debounce), none
+  elsewhere; bridge-end steps over .5m 2 -> 0. Tests 1045 -> 1047.
 - On 2026-10-14 (FF bridge case C; NOT committed) the map module went
   21ec6cd78825 -> 5e9d3ceb0d8e: the FF bridge also starts when the FF object
   is measured into a side lane without a jump (the merge pushing the lead's

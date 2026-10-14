@@ -54,6 +54,9 @@ class MapObject:
   history: deque = field(default_factory=lambda: deque(maxlen=16))
   trail: deque = field(default_factory=lambda: deque(maxlen=20))  # Where a moving vehicle has driven, one point per TRAIL_STEP.
   report: tuple | None = None  # (stamp, x, y): its last radar report, ego frame, before smoothing.
+  lateral_reports: deque = field(default_factory=lambda: deque(maxlen=16))  # (stamp, report y from ego's lane centre).
+  calm_since: float | None = None  # Since when the reports have not moved sideways.
+  stable_y: float | None = None  # Report y from ego's lane centre, averaged over its last calm stretch: drawn while bridged.
 
 
 @dataclass
@@ -181,6 +184,11 @@ class CcncRadarMap:
   # first (recorded: a median 1s before the map, 62 of 64 departures).
   # Not beyond BRIDGE_DRIFT_X: there the vision gate spans 20m and the lane lines are off by up to a lane width.
   BRIDGE_DRIFT_X = 50.
+  # A merge has already pushed the last in-lane report towards the line (recorded: 3e1/19 drawn 1.6m right of a car
+  # vision saw centred). A bridged object is drawn at its report y from before the push: the mean over STABLE_TIME
+  # of reports moving sideways slower than STABLE_SPEED (over STABLE_WINDOW), kept while they move faster.
+  # Reports come in .05m steps: one step over the window is resolution, not movement (.33m/s over .15s).
+  STABLE_SPEED, STABLE_WINDOW, STABLE_TIME, REPORT_STEP = .3, .15, .5, .05
   WALL_CONTINUE = 7.  # A single fresh return may continue an established wall this far ahead (two gaps).  # Posts near 3m apart measure up to ~3.1m; stopped vehicles are farther apart.
   SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
@@ -550,6 +558,30 @@ class CcncRadarMap:
       obj.vx, obj.vy = measurements[best[1]][3:5]  # Its own reported speed, not the merged track's.
       assignments[best[1]] = key
 
+  def _stable(self, obj):
+    """Update the object's stable report y (from ego's lane centre) with its latest report."""
+    stamp, x, y = obj.report
+    centre = self._centre(x)
+    reports = obj.lateral_reports
+    # While bridged its reports are the merged track's: they would make the merged position look stable.
+    if centre is None or (self.bridge is not None and self.bridge['key'] == obj.key):
+      reports.clear()
+      obj.calm_since = None
+      return
+    reports.append((stamp, y - centre))
+    earlier = [r for r in reports if .1 - 1e-6 <= stamp - r[0] <= self.STABLE_WINDOW + 1e-6]
+    if not earlier:
+      obj.calm_since = None
+      return
+    t0, y0 = earlier[0]
+    if max(0., abs(reports[-1][1] - y0) - self.REPORT_STEP) / (stamp - t0) >= self.STABLE_SPEED:
+      obj.calm_since = None
+      return
+    obj.calm_since = t0 if obj.calm_since is None else obj.calm_since
+    if stamp - obj.calm_since >= self.STABLE_TIME - 1e-6:
+      recent = [r[1] for r in reports if stamp - r[0] <= self.STABLE_TIME + 1e-6]
+      obj.stable_y = sum(recent) / len(recent)
+
   def _forget_lateral(self, obj):
     """Drop the reports and sideways speed a bridged object took from the vehicle its track merged with."""
     obj.history.clear()
@@ -602,6 +634,7 @@ class CcncRadarMap:
         obj.existence = min(1., obj.existence + .15)
       obj.explained = explained
       obj.report = (stamp, *self.to_ego(x, y))
+      self._stable(obj)
       obj.tracked += tracked
       obj.radar_moving = obj.radar_moving or radar_moving
       if doppler:
@@ -1142,7 +1175,9 @@ class CcncRadarMap:
     hold = self.hold if self.hold is not None and self.hold[0] == key else None
     centre = self._centre(x)
     centre = 0. if centre is None else centre
-    if hold is None:
+    if obj.stable_y is not None:
+      y = centre + obj.stable_y
+    elif hold is None:
       y = centre
     else:
       _, lateral, centred, _ = hold

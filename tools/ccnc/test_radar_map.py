@@ -962,7 +962,7 @@ def test_side_slot_far_behind_the_displayed_lead_is_not_given(lead, x, side):
     radar.update(N(points=points), model(), round(i * .05, 6), 15.)
   assert (radar.selected[0] is not None) == (lead is not None)
   assert (radar.selected[1] is not None) == side
-def bridge_scene(lead, steps=60, vision=lambda i: True, lane_change=lambda i: False, lead_x=12., vision_y=lambda i: 0.):
+def bridge_scene(lead, steps=60, vision=lambda i: True, lane_change=lambda i: False, lead_x=12., vision_y=lambda i: 0., lead_y=lambda i: 0.):
   """Ego at 15m/s; a lead ``lead_x`` ahead in ego's lane until step 30, then whatever ``lead(i)`` reports; a second
   vehicle beyond it in the lane (40m, or 70m behind a far lead). Returns the map and, per step, the FF object's key and source."""
   radar, shown = RadarMap(), []
@@ -970,7 +970,7 @@ def bridge_scene(lead, steps=60, vision=lambda i: True, lane_change=lambda i: Fa
     m = model()
     m.leadsV3 = [N(prob=.9, x=[lead_x + 1.52], y=[-vision_y(i)])] if vision(i) else []
     far = 70. if lead_x > 40. else 40.
-    points = [point(2, far, -.5, 15., motionState=2)] + ([point(1, lead_x, 0., 15., motionState=2)] if i < 30 else lead(i))
+    points = [point(2, far, -.5, 15., motionState=2)] + ([point(1, lead_x, lead_y(i), 15., motionState=2)] if i < 30 else lead(i))
     radar.update(N(points=points), m, round(i * .05, 6), 15., lane_change=lane_change(i))
     ff = radar.objects.get(radar.selected[0])
     shown.append(None if ff is None else (ff.key, ff.source, radar.local[ff.key]))
@@ -1040,3 +1040,19 @@ def test_nearer_vehicle_takes_ff_from_a_bridged_lead_but_a_farther_one_cannot(x,
   assert (shown[-1][0] != lead) == takes
   if takes:
     assert shown[-1][1] == 4
+
+
+@pytest.mark.parametrize('weaving', [False, True])
+def test_bridged_lead_is_drawn_where_its_reports_last_stood_still(weaving):
+  # Recorded 2026-10-14: a slow merge pushes the last in-lane report to the line (3e1/19 drawn 1.6m right of a
+  # car vision saw centred). The bridged lead is drawn at the mean of its reports from before the push, once
+  # they had stood still for .5s; without such a stretch, at its last in-lane report as before.
+  pre = (lambda i: .3 if i % 2 else -.3) if weaving else (lambda i: .2)
+  radar, shown = bridge_scene(lambda i: [point(1, 12., .2 - .12 * (i - 29), 15., motionState=2)], lead_y=pre)
+  bridged = [s for s in shown[40:] if radar.bridge is not None]
+  lateral = radar.local[radar.bridge['key']][1]
+  assert bridged and radar.bridge['cause'] == 'drift'
+  if weaving:
+    assert lateral < -1.  # The last in-lane report, already pushed towards the line.
+  else:
+    assert abs(lateral - .2) < .1
