@@ -1,4 +1,5 @@
 import importlib.util
+import ast
 import json
 from pathlib import Path
 import socket
@@ -146,6 +147,39 @@ def test_default_usb_and_registered_wifi_factory(tmp_path, monkeypatch):
     create_display()
 
 
+def test_wifi_geometry_is_available_before_opening_idle_timed_connection(monkeypatch):
+  monkeypatch.setattr('cluster_wifi_display.Connection', lambda *a: pytest.fail('connected before renderer ready'))
+  display = S3WifiDisplay(CONFIG)
+  display.set_orientation(1)
+  assert (display.landscape_width, display.landscape_height) == (1920, 462)
+  assert display.connection is None and display.dev is None
+  assert display.open_after_renderer
+  assert not getattr(TuringUsbDisplay(), 'open_after_renderer', False)
+
+
+@pytest.mark.parametrize('allowed', [True, False])
+def test_registration_wakes_usb_wait_without_device_event(tmp_path, monkeypatch, allowed):
+  path = tmp_path / 'pair.json'
+  monkeypatch.setenv('CARROT_S3_CONFIG', str(path))
+  source = CLUSTER.parent / 'cluster_autorun.py'
+  tree = ast.parse(source.read_text(encoding='utf8'))
+  node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_wait_for_supported_usb_device')
+  clock, closed = [0.0], []
+  def wait(*args):
+    protocol.save_config(CONFIG, path)
+    clock[0] += 1
+    return False
+  scope = dict(Params=object, time=SimpleNamespace(monotonic=lambda: clock[0]),
+               _read_hud_mode=lambda params: 1, _hud_output_allowed=lambda params: allowed or clock[0] == 0,
+               _open_usb_uevent_socket=lambda: SimpleNamespace(close=lambda: closed.append(True)),
+               _wait_for_usb_uevent=wait, USB_FALLBACK_SCAN_INTERVAL_S=30, HUD_CHECK_INTERVAL_S=1,
+               HUD_PARAM='ClusterHud', HUD_DEBUG_PARAM='ClusterHudDebug', IS_ONROAD_PARAM='IsOnroad')
+  exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), 'exec'), scope)
+  monkeypatch.setattr('cluster_usb_display.find_supported_usb_product', lambda *a: pytest.fail('unnecessary USB scan'))
+  assert scope['_wait_for_supported_usb_device'](object(), 0x0092, 'test') is None
+  assert clock[0] == 1 and closed == [True]
+
+
 @pytest.mark.parametrize('data', [[], None, {**CONFIG, 'fps': 1.5}, {**CONFIG, 'quality': True}])
 def test_registration_rejects_invalid_shape_and_noninteger_policy(tmp_path, data):
   path = tmp_path / 'pair.json'
@@ -188,8 +222,67 @@ def test_provisioning_validates_bytes_and_does_not_reset_uart():
   assert 'port.dtr = port.rts = False' in source
 
 
+def test_automatic_uart_selection_refuses_ambiguity_without_opening_ports(monkeypatch):
+  path = Path(__file__).resolve().parents[4] / 'tools/esp32s3_display/provision.py'
+  spec = importlib.util.spec_from_file_location('s3_auto_provision', path)
+  module = importlib.util.module_from_spec(spec)
+  spec.loader.exec_module(module)
+  ports = []
+  monkeypatch.setattr('serial.tools.list_ports.comports', lambda: ports)
+  with pytest.raises(RuntimeError, match='UART candidates: none'):
+    module.automatic_port()
+  ports.extend([SimpleNamespace(vid=0x10c4, device='COM14'), SimpleNamespace(vid=0x9999, device='COM15')])
+  assert module.automatic_port() == 'COM14'
+  ports.append(SimpleNamespace(vid=0x1a86, device='COM16'))
+  with pytest.raises(RuntimeError, match='COM14, COM16'):
+    module.automatic_port()
+
+
 @pytest.mark.parametrize('size', [0, 511, protocol.MAX_PAYLOAD + 1])
 def test_payload_bounds_before_socket_write(size):
   connection = protocol.Connection.__new__(protocol.Connection)
   with pytest.raises(ValueError):
     connection.send(bytes(size))
+
+
+@pytest.mark.parametrize('fail', [False, True])
+def test_close_syncs_and_confirms_off_but_releases_transport_on_failure(monkeypatch, fail):
+  display = S3WifiDisplay(CONFIG)
+  events = []
+  display.connection = SimpleNamespace(close=lambda: events.append('closed'))
+  def command(number, name, fields=None, **kwargs):
+    events.append((number, fields))
+    assert kwargs.get('expect_response', True)
+    if fail and number == 14:
+      raise RuntimeError('USB response lost')
+  monkeypatch.setattr(display, '_send_command', command)
+  monkeypatch.setattr('cluster_wifi_display.time.sleep', lambda delay: events.append(delay))
+  display.close()
+  assert events == [(10, None), .2, (14, {8: 0}), 'closed']
+  assert display.connection is None and not display.pending
+
+
+@pytest.mark.parametrize('registered', [False, True])
+def test_offroad_dims_registered_s3_without_local_usb(tmp_path, monkeypatch, registered):
+  path = tmp_path / 'pair.json'
+  monkeypatch.setenv('CARROT_S3_CONFIG', str(path))
+  if registered:
+    protocol.save_config(CONFIG, path)
+  events = []
+  def scan(pid):
+    events.append('scan')
+    return None
+  class Display:
+    def __init__(self, config, **kwargs):
+      assert config == CONFIG and kwargs['brightness'] == 0
+    def open(self): events.append('open-off')
+    def close(self): events.append('close')
+  monkeypatch.setattr('cluster_usb_display.find_supported_usb_product', scan)
+  monkeypatch.setattr('cluster_wifi_display.S3WifiDisplay', Display)
+  source = CLUSTER.parent / 'cluster_autorun.py'
+  node = next(n for n in ast.parse(source.read_text(encoding='utf8')).body
+              if isinstance(n, ast.FunctionDef) and n.name == '_turn_off_supported_usb_device')
+  scope = {'_configure_autorun_locale': lambda: None}
+  exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), 'exec'), scope)
+  assert scope[node.name](0x0092, 'test') is registered
+  assert events == (['open-off', 'close'] if registered else ['scan'])

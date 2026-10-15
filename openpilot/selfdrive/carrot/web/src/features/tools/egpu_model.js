@@ -39,7 +39,8 @@ const FALLBACK_STRINGS = {
   failure_download: "The server refused the download or the requested file is unavailable.",
   failure_storage: "Not enough free storage to install the eGPU package.",
   failure_install: "The eGPU package could not be installed or verified. The saved diagnostic report contains the cause.",
-  failure_rejected: "This model was blocked after an earlier runtime failure. The saved diagnostic report contains the cause.",
+  failure_rejected: "A previous failure blocked this model. Compiling again does not resolve a runtime failure. If it remains after a reboot, download the diagnostics and send them for support.",
+  diagnostics: "Download diagnostics",
   failure_runtime: "The eGPU could not start or continue running. The internal model is selected.",
   failure_pcie: "The eGPU connection could not start. The internal model is selected.",
   failure_timeout: "The eGPU took too long to respond. The internal model is selected.",
@@ -87,6 +88,7 @@ function modelDisplayName(status) {
   if (explicitName) return explicitName;
 
   const modelId = String(status?.model_id || "").toLowerCase();
+  if (modelId.includes("pr39087-md-v3")) return "Mountain Dew v3";
   if (modelId.includes("pr39047") || modelId.includes("mdm-v1") || modelId.includes("6f4c0faf-256f2178") || modelId.includes("4bfb5340-e20cde17")) return "Mountain Dew";
   if (modelId.includes("pr38932") || modelId.includes("cinque-v3")) return "Cinque v3";
   if (modelId.includes("pr38823") || modelId.includes("cinque-v2")) return "Cinque v2";
@@ -123,6 +125,11 @@ function render(status = lastStatus) {
   const progressBar = document.getElementById("egpuModelProgressBar");
   const amountEl = document.getElementById("egpuModelAmount");
   const action = document.getElementById("btnEgpuCompileRestart");
+  const diagnostics = document.getElementById("egpuModelDiagnostics");
+  if (diagnostics) {
+    diagnostics.hidden = !status.available || state !== "error" || !!status.active;
+    diagnostics.textContent = t("diagnostics");
+  }
 
   let hostEl = document.getElementById("jetlinkHealth");
   if (!hostEl) {
@@ -181,7 +188,7 @@ function render(status = lastStatus) {
     : (state === "compiling" ? elapsedText(status.started_at) : "");
 
   action.textContent = restartPending ? t("checking") : t("restart");
-  action.hidden = !["ready", "waiting_for_ignition", "error"].includes(state) || status.compiled;
+  action.hidden = !["ready", "waiting_for_ignition", "error"].includes(state) || status.compiled || status.error_code === "rejected";
   action.disabled = restartPending || !status.can_restart;
 }
 

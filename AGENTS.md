@@ -1,5 +1,20 @@
 # Repository memory
 
+- On 2026-10-15, the user requested merging carrot-wip into ccnc-hda1 again.
+  origin/carrot-wip 8e7eec04 (19 commits: eGPU recovery/runtime and MD v3,
+  S3 Wi-Fi/registration/installer and retry lifecycle, in-lane radar braking,
+  Tesla PR551 corrections, docs) is merged with current CCNC work preserved.
+  Only AGENTS.md conflicted; both complete blocks are retained, CCNC first.
+  The CCNC extension/map have no change against pre-merge b595f099.
+  tools/ccnc/pytest_plugin.py BASELINE now follows the incoming revision;
+  CCNC 928 (including Wiki) and map 161 checks pass. Incoming focused checks:
+  modeld 320, cluster/radar 100, Tesla 50, browser tests 10 pass. Additional
+  web-server/viewer and angle-saturation checks cannot run on this PC without
+  aiohttp/setproctitle. Installer browser tests need LF working-copy text on
+  Windows (their import-removal regex assumes LF); no Git blob change needed.
+  No push, deployment, MCU safety build or vehicle validation performed.
+  Private logs: .analysis/archive/2026-10-15/carrot-merge.
+
 - On 2026-10-15 (CCNC round 14, committed, not pushed), baseline working-copy hashes
   extension b4499608db61 / map b231140f84fe: same-id longitudinal report jumps
   split near side vehicles and stale objects then stole reports back. Accepted
@@ -985,6 +1000,155 @@
   NAS shared-source bundle/fingerprint checked locally, but current wip-only
   publishing and lead replay do not deploy/recalculate this CCNC display map.
   See docs/ccnc_front_radar_detection.md and private 2026-10-11 point-map archive.
+- On 2026-10-15, user requested review/integration of Tesla PR551 c61d998ff8.
+  Reproduced inactive phase-lead CAN/feedback and saturation defects; Tesla's
+  encoded zero375 also regranted controls through the shared accel helper.
+  Port the nine PR files unchanged: measured inactive angle, final feedback,
+  cooperative torque blending only above25km/h with normal low-speed steering,
+  output-limit-aware saturation and Tesla-specific longitudinal permission.
+  Both maintained branches:199 focused tests/128 subtests pass. Three inherited
+  generic disabled-angle safety cases still fail identically before/after;
+  do not claim full safety suite success. Native C uses a desktop packet/forward
+  ABI bridge, not MCU/vehicle validation. Publish single-parent on both branches;
+  no vehicle installation. See docs/tesla_pr551_review_20261015.md.
+
+- On 2026-10-15, user requested historical attribution of memory >80%. Read925
+  retained local logs (916 own-device with memory) plus on-device qlogs. Earliest
+  observed >80% is Oct10/108e, but Oct11/1095 stays73--77% with HUD+signals;
+  not one proven regression date. Current DM warmup/plateau and logger sawtooth
+  match earlier runs. GC retry fix reduces Python retention, but native HUD ION
+  buffers persist after process death (89.6MB), and new PID accumulates again.
+  Do not call memory normal/fixed or recommend process cycling as its fix.
+  Expected S3 transport log cleanup published both branches; fresh-manager
+  reboot verifies concise timeout lines (HUD-only restart kept cached code).
+  Reboot clears old native buffers but four retries retain6.6MB again; current
+  81%/685MiB available is not leak clearance. Preboot model/DM1200 frames/60s,
+  postboot1199 valid consecutive each at19.974Hz, no missing IDs/fallback;
+  do not claim a strict >=20Hz postboot pass. S3 still times out. See
+  docs/hud_retry_memory_20261015.md; raw evidence private.
+
+- On 2026-10-15, user's C4 Git Pull was blocked by two untracked manually
+  installed eGPU helpers identical to incoming blobs; back up only those files,
+  preserve unrelated build/model artifacts. Old93160a93 HUD repeatedly lost S3
+  before renderer ready. Prior qlogs reach99%; same HUD PID grows168.62->528.55
+  MiB RSS, +181.89MiB PSS across segments5->27. Actual failed JPEG pipelines
+  remain frozen after close/collect; unfreeze releases them. Pair HUD session
+  freeze with finally unfreeze/threshold restore, retaining active-frame policy.
+  27 focused tests and native isolated12-cycle reclamation pass. This fixes a
+  demonstrated retention path, not every system/native allocation or reboot
+  cause. User authorizes parked system stop/update; verify fresh P/zero/inactive.
+  Publish both maintained branches, single-parent. See docs/hud_retry_memory_20261015.md.
+
+- On 2026-10-15, user requested public S3 firmware/install guide after confirming
+  the panel wakes and turns off. S3 1.1.0 confirms sync/brightness-off, retries
+  failed shutdown and reasserts idle-off; C4 offroad dimming includes registered
+  S3. N16R8 / powered hub / TURZX 1cbe:0092 only. Browser installer and NAS ZIP
+  preserve NVS; never distribute device flash backups or pairing keys. UART
+  --auto requires a unique bridge and verifies identity. Native three-phase
+  150-frame final test passes with preserved pairing; browser-native flashing
+  is distinct from UART validation. Publish both maintained branches, single-parent.
+  See docs/s3_release_20261015.md and tools/esp32s3_display/INSTALL_KO.md.
+
+- On 2026-10-15, user requested MD v3 PR39087 on carrot-wip ONLY unless already
+  installed. Prior selection was8d736683; new checkpoint1365126a/12864, AMDd4c7a3fc,
+  pinned tinygrad02e69816/runtimec7c58622. PR changes only the big PKL; no matching
+  ONNX, internal/DM and Jetson remain unchanged. Preserve retry/fallback policies;
+  source-verified new runtime retains USB no-op sleep and +/-1 link-error meanings,
+  so extend only the exact hash allowlist.411 focused tests/13 Web tests pass,
+  8 Windows skips; Linux CI403 plus3 native-runtime tests and HTTPS empty-cache
+  install/offline reuse pass on8864280c9c.
+  No vehicle install or native20Hz/driving claim. See docs/md_v3_20261015.md.
+
+- On 2026-10-15, user requested explicit tmux error/retry visibility after
+  repeated eGPU investigations. Add bounded stderr [eGPU] lifecycle events with
+  PID/monotonic time, saved failure cause/classification, attempt/limit/backoff,
+  waiting reason, probe-ready/handover, actual first live publication and stop
+  reason. Preserve all retry/validation/model policies; never write diagnostic
+  text to the worker stdout protocol.179 focused tests pass; no vehicle action.
+  See docs/egpu_persistent_rejection_20261015.md.
+
+- On 2026-10-15, identified the persistent Ioniq 5 PE block from actual NAS
+  diagnostics: pinned90970e01 reports AMD failed with +1 during input upload.
+  Its usb_reap latches LIBUSB_TRANSFER_ERROR=1; old classifier recognized only-1.
+  Both branches now classify exactly +/-1 only for that verified runtime, with
+  previous-boot/hash/artifact/smoke validation for old rejections.175 tests and
+  the exact recorded traceback probe pass. The failing734634 predates Oct15
+  timing changes. Device wall clock was stale; do not assert recorded21:05 as
+  incident time. Physical USB root cause remains unknown; no vehicle install.
+  This supersedes the earlier unknown reporter cause below; numerical migration
+  is a separate correction. See docs/egpu_persistent_rejection_20261015.md.
+
+- On 2026-10-15, a Mountain Dew report remained rejected after reboot. Current
+  wip lacked nav's previous-boot numerical-rejection migration; four positive
+  replay cases fail before the port and pass afterward. Port only that migration,
+  preserving branch model/runtime and per-frame policies. Keep identity, fresh
+  boot, artifact verification and new smoke checks; unknown/integrity failures
+  remain blocked. Both web branches deny ineffective compile-restart on rejection
+  and offer a bounded matching historical failure download. Original reporter
+  failure/commit is still unknown; no vehicle action or USB root-cause claim.
+  See docs/egpu_persistent_rejection_20261015.md.
+
+- On 2026-10-15, Carnival225-28 on0e647cd2 has a visible moving-to-stop corner
+  born in-lane, excluded from L1 and outside-history/45m CUT-IN L2. Prior Oct14
+  fallback is inactive, not a demonstrated regression. Add measured braking L2
+  only with current confident lanes/vision,350ms lane/braking/physical history,
+  actual speed decline and integrated range-rate agreement; preserve front/SCC
+  primary and ordinary CUT-IN. Broad cruising association was rejected. All
+  102 logs/502 labels: prior499 rows identical in modes1/2/3; failures11/10/13,
+  predecel0/0/1 and208 unverified remain. Three new cases pass. All122,090 mode1
+  frames have unchanged L1; only6 Carnival and7 reviewed Azera L2 samples differ.
+  Carnival first66.35m/video16.602s, only6 samples:1.45s before replay front or
+  about1.3s before recorded front. Tighter obstacle input is not MPC/closed-loop
+  braking validation; the later evidence gap remains.1230 Windows tests pass,
+  vault36 pass/4 skips. Publish both maintained branches, single-parent, verify
+  automatic NAS image/page/replay; no vehicle action. See
+  docs/carnival_in_lane_braking_20261015.md. Recordings remain private.
+
+- On 2026-10-15, the user requested allowing S3 Wi-Fi HUD up to10fps while eGPU
+  is active. Its live rate reader inherited the wired USB5fps cap. Give only the
+  Wi-Fi reader a10fps cap, preserve lower configured rates and direct USB policy.
+  Parked HUD-only restart reports9.8-10.0Hz; model/DM each1200 consecutive valid
+  frames in60s, no process restart or fallback.32 focused tests pass on both
+  branches. This is host refresh, not optical panel FPS. See
+  docs/s3_wifi_egpu_investigation_20261015.md.
+
+- On 2026-10-15, the user required normal model output at20Hz and requested
+  upstream NAV n16 afbf2e547e / AMD52205044 (checkpoint96244b1f/12800). It changes
+  only the PKL; runtime d3f09c9/90970e01 and old Jetson ONNX are unchanged. Pin
+  the separate NAS n16 package on carrot-nav; preserve wip's model selection.
+  Shared eGPU fixes yield200us after1ms in this exact runtime's previously no-op
+  USB sleep, retaining FIFO54/core7 after lower-priority/core trials failed20Hz.
+  Full-response deadline150ms, bounded failed-worker kill/reaping plus ownership
+  lock, fresh-frame fallback and startup-only internal inference warmup/reset
+  replace the ~3s stale fallback. Stopped-worker probe reaches internal output
+  in718ms with106ms capture age; this is not fault-time20Hz or root-cause proof.
+  Final native300s has6000/6000 consecutive valid model/DM frames at20.0002Hz;
+  no fallback, S3 connected. Later USB link counter remains1->1, not zero.
+  Nav298/wip257 focused tests pass. User authorized parked restarts/install. See
+  docs/egpu_n16_stability_20261015.md for final validation and remaining limits.
+
+- On 2026-10-15, deeper direct-eGPU analysis confirms all three fault snapshots
+  were USB4-1/5Gbps, active with autosuspend off. Outstanding output_read used
+  ~95–99% main-thread CPU; worker FIFO54 and DM FIFO5 share CPU7, with DM CPU
+  sharply reduced during stalls. Pinned90970e01 has no-op USB sleep and zero-time
+  libusb polling; older AMDSignal yield tests do not cover it. Polling/starvation
+  is a supported failure-path hypothesis, not the initial GPU/bridge root cause.
+  Parent close can add2s; no runtime/model change or eGPU restart performed.
+  Parked retry permission pending. S3-only TCP disconnect recovers in9.217s
+  without process restart, model/DM601/600 valid updates in30s. Offroad Wi-Fi
+  association differs from HUD output gating. See docs/s3_wifi_egpu_investigation_20261015.md.
+
+- On 2026-10-15, S3 home Wi-Fi delay improved after an approved single-AP
+  channel1->6/20MHz change: 35% loss/217ms mean to no loss/6.7ms after removing
+  the temporary AP lock. C4 had no pairing file; saved the existing key privately.
+  Defer S3 TCP open until renderer readiness to avoid its2s idle timeout; notice
+  new registration during USB wait.30 focused tests pass; native parked HUD runs
+  typically9-13Hz, model/DM600/601 valid updates in30s with original PIDs. Physical
+  panel/road validation is separate. Three new Oct14/15 NAV-RL eGPU output-read
+  timeouts cause~3s model gaps and~3s-old first fallback; underlying cause remains
+  unresolved. No eGPU/model/control change. Publish host fixes to both maintained
+  branches, single-parent. See docs/s3_wifi_egpu_investigation_20261015.md.
+
 - On 2026-10-14, the upper/lower signal-group trial fixes supplied qualified
   observations but not actual departure: 43,090 historical planner inputs at
   nominal/+20ms and 20 recent segments show no output changes; Santa Fe encoded
