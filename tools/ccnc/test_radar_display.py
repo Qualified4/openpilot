@@ -3095,3 +3095,26 @@ def test_recent_lead_leaving_ego_lane_follows_a_slow_outward_creep():
   assert not c.tracks[1]['following'] and t.tracks[1][0] == 0
   outputs = side_creep(c, t, 250)
   assert c.tracks[1]['following'] and outputs[-1] > 3.4
+
+
+@pytest.mark.parametrize('release', ['confirmed', 'stale', 'reference_changed', 'near'])
+def test_confirmed_inward_motion_only_exempts_a_recent_same_reference_jump(release):
+  correction = Correction(3.6, 3.6)
+  p = N(trackId=1, dRel=20., yRel=3.6)
+  for n in range(33):
+    frame = n * 5
+    p.yRel = 3.6 - max(0, n - 20) * .04
+    correction.apply(p, p.yRel, p.yRel, 1, ('lane', 'center'), (5.4, 1.8), (0, frame), frame)
+  assert correction.tracks[1]['following']
+  if release == 'stale':
+    for _ in range(10):
+      frame += 5
+      correction.apply(p, p.yRel, p.yRel, 1, ('lane', 'center'), (5.4, 1.8), (0, frame), frame)
+  if release == 'near':
+    p.dRel = 5.
+  frame += 5
+  p.yRel -= .65
+  reference = ('lane', True) if release == 'reference_changed' else ('lane', 'center')
+  correction.apply(p, p.yRel, p.yRel, 1, reference, (5.4, 1.8), (0, frame), frame)
+  assert (correction.tracks[1]['hold'] is None) == (release == 'confirmed')
+  assert correction.tracks[1]['jumped'] != (release == 'confirmed')

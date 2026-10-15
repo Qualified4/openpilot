@@ -1551,6 +1551,10 @@ class _CcncVehiclePositionCorrection:
   # lane and is followed as before. Neither applies while ego changes lanes.
   SIDE_X, JUMP_SIZE, JUMP_TIME, HOLD_AFTER_JUMP, JUMP_ON, JUMP_ON_TIME = 30., .6, 30, 30, .2, 20
   DRIFT_SPEED, DRIFT_TIME, RECENT_FF = .8, 150, 300
+  # A jump within INWARD_KEEP_TIME of confirmed inward following (fast or ordinary motion gates) is a cut-in's
+  # report step, not a reflection: no hold starts and the track is not marked as jumped. Below INWARD_KEEP_X the
+  # reflection hold stays (2026-10-15: 358/4 and 3e1/11 near straight cars were followed more without it).
+  INWARD_KEEP_X, INWARD_KEEP_TIME = 10., 30
   SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
                  ('RF_DETECT_DISTANCE', 'RF_DETECT_LATERAL', 'RF_DETECT'))
@@ -1685,7 +1689,7 @@ class _CcncVehiclePositionCorrection:
       saved = dict(birth=birth, frame=frame, stamp=None, samples=deque(), settling=deque(),
                    locked=inside and reliable, following=not (inside and reliable), valid_frame=-1000,
                    output=filtered_y, slot=slot, reference=reference, slot_frame=-1000, boundary_follow=not inside,
-                   fast=deque(maxlen=8), fast_speed=0.0, raw=deque(), drift=deque(), hold=None, ff_frame=None, jumped=False)
+                   fast=deque(maxlen=8), fast_speed=0.0, raw=deque(), drift=deque(), hold=None, ff_frame=None, jumped=False, inward_frame=-1000)
       self.tracks[point.trackId] = saved
     bounds_valid = bounds is not None and all(math.isfinite(v) for v in bounds) and bounds[0] > bounds[1]
     center_valid = bounds_valid and bounds[1] <= center <= bounds[0]
@@ -1701,6 +1705,7 @@ class _CcncVehiclePositionCorrection:
       saved['slot_frame'] = frame if slot != saved['slot'] and reference == saved['reference'] else -1000
       # Keep the physical output, but never compare different geometry references.
       samples.clear()
+      saved['inward_frame'] = -1000
       if reference != saved['reference']:
         saved['fast'].clear()
         saved['fast_speed'] = 0.0
@@ -1725,6 +1730,7 @@ class _CcncVehiclePositionCorrection:
       saved['raw'].clear()
       saved['drift'].clear()
       saved['hold'] = None
+      saved['inward_frame'] = -1000
     if stamp != saved['stamp'] and fresh:
       saved['stamp'] = stamp
       if side:
@@ -1742,8 +1748,10 @@ class _CcncVehiclePositionCorrection:
           else:
             hold['after'].append((stamp, outward))
         elif raw and max(r[1] for r in raw) - outward >= self.JUMP_SIZE - 1e-6:
-          saved['hold'] = dict(start=stamp, after=deque([(stamp, outward)]))
-          saved['jumped'] = True  # Kept for the track's life: its slow outward moves are reflection creep.
+          # Keep following a recently confirmed inward maneuver through a report jump.
+          if point.dRel < self.INWARD_KEEP_X or frame - saved['inward_frame'] > self.INWARD_KEEP_TIME:
+            saved['hold'] = dict(start=stamp, after=deque([(stamp, outward)]))
+            saved['jumped'] = True  # Kept for the track's life: its slow outward moves are reflection creep.
         raw.append((stamp, outward))
         drift.append((stamp, sign * aligned_y))
         while len(drift) > 1 and stamp - drift[1][0] >= self.DRIFT_TIME:
@@ -1778,6 +1786,8 @@ class _CcncVehiclePositionCorrection:
             and saved['hold'] is None and not self._slow_outward(saved, slot, stamp, nets[1], frame)):
           saved['fast_speed'] = abs(nets[1]) / span
           saved['locked'], saved['following'] = False, True
+          if side and nets[1] * (1 if slot == 1 else -1) < 0:
+            saved['inward_frame'] = frame
       if samples:
         last, raw, aligned = samples[-1]
         dt = (stamp - last) * 0.01
@@ -1807,6 +1817,8 @@ class _CcncVehiclePositionCorrection:
             and saved['hold'] is None and not self._slow_outward(saved, slot, stamp, nets[1], frame)):
           saved['following'] = True
           saved['locked'] = False
+          if side and nets[1] * (1 if slot == 1 else -1) < 0:
+            saved['inward_frame'] = frame
       # Curves move raw yRel even when a vehicle keeps its lane. Isolated spikes
       # must not erase all evidence that its road-relative position has settled.
       settling = saved['settling']
