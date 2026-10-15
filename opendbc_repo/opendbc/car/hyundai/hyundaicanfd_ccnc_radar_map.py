@@ -522,6 +522,28 @@ class CcncRadarMap:
       offset = 0. if obj.motion_confirmed else obj.drift
       x, y = obj.x - obj.vx * age + offset * self.cos, obj.y - obj.vy * age + offset * self.sin
       grid.setdefault((math.floor(x / 2.), math.floor(y / 2.)), []).append((key, x, y))
+    # A selected car's reports can move along its body while ego waits. Keep a
+    # recent same-id interior track; stale reflections must not steal the report.
+    recent = {}
+    for key, obj in self.objects.items():
+      if 0. < stamp - obj.seen <= self.ID_CYCLE and obj.report is not None and abs(self.local[key][0]) <= 15.:
+        if obj.source not in recent or obj.seen > self.objects[recent[obj.source]].seen:
+          recent[obj.source] = key
+    continuations = {}
+    for i, (source, x, y, vx, vy, *_) in enumerate(measurements):
+      key = recent.get(source)
+      if key is None:
+        continue
+      obj = self.objects[key]
+      age = self.now - stamp
+      dx, dy = x - (obj.x - obj.vx * age), y - (obj.y - obj.vy * age)
+      forward, lateral = dx * self.cos + dy * self.sin, dy * self.cos - dx * self.sin
+      if (self.holding and key in self.selected[1:] and self.cos * vx + self.sin * vy > self.RESTING_SPEED
+          and obj.motion_confirmed and obj.interior and obj.slot in (1, 2) and not self.lane_change
+          and key not in continuations.values()
+          and abs(forward) <= 2. and abs(lateral) <= .35 and math.hypot(vx - obj.vx, vy - obj.vy) <= 6.
+          and self._lane(*self.to_ego(x, y), moving=True)[1]):
+        continuations[i] = key
     pairs = []
     for i, (source, x, y, vx, vy, *_) in enumerate(measurements):
       matches = []
@@ -544,7 +566,7 @@ class CcncRadarMap:
           and self.objects[matches[0][2]].source != source):
         continue  # A new ambiguous return cannot inherit another object's history.
       pairs.extend(matches)
-    assigned, used = {}, set()
+    assigned, used = dict(continuations), set(continuations.values())
     for _, i, key in sorted(pairs):
       if i not in assigned and key not in used:
         assigned[i] = key

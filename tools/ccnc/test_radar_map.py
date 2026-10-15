@@ -677,7 +677,12 @@ def test_position_left_behind_by_a_moving_radar_track_is_not_remembered(moving_c
       x, speed = x + speed * .05, speed + .15
     elif frame > 40:
       break
-  assert len(radar.objects) == 2 and stale.superseded == (not remembered)
+  if remembered:
+    assert len(radar.objects) == 2 and not stale.superseded
+  else:
+    # A continuous same-id body reflection keeps the moving object itself.
+    assert len(radar.objects) == 1 and radar.objects[stale.key] is stale
+    assert stale.x > 20. and not stale.superseded
   for i in range(40):
     step([])
     if i >= 8 and moving_class == 2:
@@ -1152,3 +1157,33 @@ def test_missing_outer_line_prefers_an_adjacent_candidate_without_removing_other
     radar.update(N(points=points), md, now, 0. if mode == 'stopped' else 10., lane_change=mode == 'ego_change')
   assert radar.objects[radar.selected[2]].source == (34 if mode == 'prefer_adjacent' else 42)
 
+
+@pytest.mark.parametrize('sign', [-1, 1])
+def test_selected_side_car_keeps_identity_across_longitudinal_body_reflections(sign):
+  radar = run(lambda t: [point(49, 5. + 2. * t, sign * 3.1, 2., motionState=2)], count=10)
+  key = radar.selected[1 if sign > 0 else 2]
+  assert key is not None
+  for i, x in enumerate((6., 4.8, 5., 6.4, 6.6, 5.3, 5.5)):
+    radar.update(N(points=[point(49, x, sign * 3.1, 2., motionState=2)]), model(), .5 + .05 * i, 0.)
+    assert len(radar.objects) == 1 and radar.selected[1 if sign > 0 else 2] == key
+    # A backwards reflection change cannot turn the car into an opposing return.
+    assert radar.objects[key].last_motion[0] >= 0.
+
+
+@pytest.mark.parametrize('changed', ['source', 'lateral', 'time', 'speed', 'ego_lane_change', 'unselected', 'boundary', 'uncertain'])
+def test_body_reflection_continuation_does_not_bypass_track_identity_checks(changed):
+  y0 = 5.2 if changed == 'boundary' else 3.1
+  radar = run(lambda t: [point(49, 5. + 2. * t, y0, 2., motionState=2)], count=10)
+  key = radar.selected[1]
+  assert key is not None
+  if changed == 'unselected':
+    radar.selected = (None, None, None)
+  source = 50 if changed == 'source' else 49
+  y = 4.1 if changed == 'lateral' else y0
+  speed = 20. if changed == 'speed' else 2.
+  if changed == 'time':
+    for t in (.5, .55, .6, .65, .7, .75):
+      radar.update(N(points=[]), model(), t, 0.)
+  now = .8 if changed == 'time' else .5
+  radar.update(N(points=[point(source, 7.5, y, speed, motionState=2)]), model(.2 if changed == 'uncertain' else .95), now, 0., lane_change=changed == 'ego_lane_change')
+  assert len(radar.objects) == 2 and max(radar.objects) != key

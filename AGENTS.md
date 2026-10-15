@@ -1,5 +1,28 @@
 # Repository memory
 
+- On 2026-10-15 (CCNC round 14, committed, not pushed), baseline working-copy hashes
+  extension b4499608db61 / map b231140f84fe: same-id longitudinal report jumps
+  split near side vehicles and stale objects then stole reports back. Accepted
+  association only for an already selected, motion-confirmed side vehicle while
+  holding, within 15m, same id seen within ID_CYCLE, both positions strongly lane
+  interior, forward innovation <=2m / lateral <=.35m / speed error <=6m/s;
+  report forward speed >RESTING_SPEED, off during ego lane changes. Existing
+  cross-id matching is unchanged, no new history inheritance. Actual-reader
+  174 segments/206444 sends: continuous same-source key changes 25697 -> 25688,
+  new objects among those 10511 -> 10509, resulting display reinitializations
+  335 -> 331; >.6m initial offsets 218 -> 212, 3e6/4 13 -> 7. Presence additions/
+  removals, own lane-change differences and late maneuvers 0. Map-only 130+27
+  has no display/source differences; residual 0, c1/23 6/6, 19 bookmarks same.
+  Seven waiting windows unchanged (3c8/20 is exactly 845/846 in both; the earlier
+  100% was rounded). Broad continuity failed with false additions; a narrower
+  predecessor lost 4 map-only sends near an outer boundary and was rejected.
+  Entry-only curved drawing with immediate release on confirmed following kept
+  internal tracking unchanged but delayed outward moves/departing leads and one
+  legacy cut-in, so rejected. No new saw suppression. PC serial 4 logs/4794
+  updates, warmup+3 reps: lanes+vehicles 1.1254 -> 1.1406ms (+1.35%, no CAN pack).
+  Map tests 161 passed; existing suite 926 passed / same 2 Wiki catalog failures.
+  Evidence .analysis/archive/2026-10-15/ccnc-r14.
+
 - On 2026-10-15 the user requested applying the reviewed CCNC candidates:
   extension A2 preserves recently confirmed inward following through jump-hold
   entry only at 10-30m; below 10m the existing reflection hold stays. Confirmation
