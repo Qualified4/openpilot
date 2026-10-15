@@ -1,5 +1,25 @@
 # Repository memory
 
+- On 2026-10-15 the user requested applying the reviewed CCNC candidates:
+  extension A2 preserves recently confirmed inward following through jump-hold
+  entry only at 10-30m; below 10m the existing reflection hold stays. Confirmation
+  comes from existing raw/aligned motion gates and expires after .3s or a slot/
+  reference change, never from forced-follow alone. Map B prefers an eligible
+  candidate within OUTER_FAR of the inner line when the outer line is unusable;
+  it keeps the original choice if none qualifies, with valid outer lines, while
+  holding or during ego lane changes. No unconditional ID-history inheritance.
+  The first unrestricted A was rejected for near-field straight-car movement.
+  Actual-reader replay: 174 segments/206,444 sends; 3d8/35 map threshold delay
+  .753 -> .401s; 3e6/5 RF range 2.901 -> .846m, object swaps 9 -> 2.
+  No display additions/removals, stopped/ego-lane-change changes; side selection
+  differs on 173 sends/13 windows, some visually inconclusive. Repeated reflection
+  wobble and 3e6/4's ID-change step remain. Claude's review fixes (named
+  INWARD_KEEP_X/INWARD_KEEP_TIME, a skipped hold does not mark the track as
+  jumped, outer-line lookup hoisted) changed no replayed send. Committed; not
+  pushed or vehicle-validated.
+  See docs/ccnc_radar_map_experiment_20261011.md and local evidence
+  .analysis/archive/2026-10-15/ccnc-candidates.
+
 - On 2026-10-14 (round 12e) the extension went 099be84d8c6f -> 5e38cabe8d7c: rule 2
   (no following of a slow outward creep) applies only to a track that has made
   an inward reflection jump, kept for the track's life; without one a slow

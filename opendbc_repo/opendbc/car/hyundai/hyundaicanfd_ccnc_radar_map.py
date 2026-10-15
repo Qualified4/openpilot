@@ -1131,6 +1131,20 @@ class CcncRadarMap:
         lead_x = self.local[selected[0]][0]
         # A bridged FF object measured beside ego's lane stays FF, not a side vehicle as well.
         candidates = [c for c in candidates if c[2] != selected[0] and not self._behind_lead(c[2], slot, lead_x)]
+      if slot and candidates and not self.holding and not self.lane_change:
+        # An absent outer line must not let the lane beyond displace a measured adjacent candidate.
+        inner, outer, sign = (1, 0, 1.) if slot == 1 else (2, 3, -1.)
+        line = self.lanes.get(outer)
+        line_usable = line is not None and line.probability >= .1
+        adjacent = []
+        for candidate in candidates:
+          x, y = self.local[candidate[2]]
+          outer_valid = line_usable and interpolate(self.geometry.get(outer, []), x) is not None
+          base = interpolate(self.geometry.get(inner, []), x)
+          if outer_valid or base is None or sign * (y - base) <= self.OUTER_FAR:
+            adjacent.append(candidate)
+        if adjacent:
+          candidates = adjacent
       if not candidates:
         selected.append(None)
       else:

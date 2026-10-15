@@ -1134,3 +1134,21 @@ def test_far_lead_hold_is_short_and_yields(case):
     assert all(s == 1 for s in shown[30:36]) and all(s is None for s in shown[38:])
   else:
     assert all(s is None for s in shown[31:])
+
+
+@pytest.mark.parametrize('mode', ['prefer_adjacent', 'alone', 'outer_valid', 'ego_change', 'stopped'])
+def test_missing_outer_line_prefers_an_adjacent_candidate_without_removing_other_policies(mode):
+  radar = RadarMap()
+  for n in range(30):
+    now = n * .05
+    md = model()
+    md.laneLineProbs[3] = .95 if mode == 'outer_valid' else 0.
+    if mode == 'outer_valid':
+      md.laneLines[3].y = [6.4] * 4
+    md.roadEdges = [N(x=[0., 10., 30., 100.], y=[v] * 4) for v in (-9., 9.)]
+    points = [point(42, 6., -5.7, 10., motionState=2)]
+    if mode != 'alone':
+      points.append(point(34, 12., -3., 10., motionState=2))
+    radar.update(N(points=points), md, now, 0. if mode == 'stopped' else 10., lane_change=mode == 'ego_change')
+  assert radar.objects[radar.selected[2]].source == (34 if mode == 'prefer_adjacent' else 42)
+
