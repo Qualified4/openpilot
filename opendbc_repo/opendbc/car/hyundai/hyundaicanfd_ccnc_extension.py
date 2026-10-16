@@ -1567,6 +1567,7 @@ class _CcncVehiclePositionCorrection:
     self.display_slots = {}
     self.display_selected = (None, None, None)
     self.lane_change = False  # Ego changing lanes (desire or a turn signal), set by update_lanes.
+    self.vision_model = None
 
   @staticmethod
   def _median(values):
@@ -1705,6 +1706,8 @@ class _CcncVehiclePositionCorrection:
       saved['slot_frame'] = frame if slot != saved['slot'] and reference == saved['reference'] else -1000
       # Keep the physical output, but never compare different geometry references.
       samples.clear()
+      saved.pop('ff_departure', None)
+      saved.pop('ff_vision', None)
       saved['inward_frame'] = -1000
       if reference != saved['reference']:
         saved['fast'].clear()
@@ -1716,6 +1719,26 @@ class _CcncVehiclePositionCorrection:
         saved['locked'] = False
     saved['slot'], saved['reference'] = slot, reference
     fresh = getattr(point, 'ccnc_fresh', True)
+    if slot != 0 or self.lane_change:
+      saved.pop('ff_departure', None)
+      saved.pop('ff_vision', None)
+    ff = saved.get('ff_departure')
+    vision_history, vision = None, None
+    if slot == 0 and not self.lane_change:
+      vision_history = saved.setdefault('ff_vision', deque())
+      model = self.vision_model
+      leads = getattr(model, 'leadsV3', ())
+      if leads and leads[0].prob >= .5 and len(leads[0].x) and len(leads[0].y):
+        lead = leads[0]
+        x, y = float(lead.x[0]) - 1.52, -float(lead.y[0])
+        if math.isfinite(x) and math.isfinite(y):
+          model_stamp = getattr(model, 'timestampEof', None) or id(model)
+          matched = abs(x - point.dRel) <= max(3., .2 * point.dRel)
+          vision = (frame, model_stamp, x, y, matched)
+          if not vision_history or vision_history[-1][1] != model_stamp:
+            vision_history.append(vision)
+      while vision_history and frame - vision_history[0][0] > 100:
+        vision_history.popleft()
     if inside and reliable and fresh:
       saved['valid_frame'] = frame
     # Temporary uncertainty changes the output mode without proving actual motion.
@@ -1825,7 +1848,7 @@ class _CcncVehiclePositionCorrection:
       settling.append((stamp, point.yRel, aligned_y, filtered_y, inside))
       while len(settling) > 1 and stamp - settling[1][0] >= self.SETTLE_TIME:
         settling.popleft()
-      if (saved['following'] and inside and reliable and len(settling) >= 5
+      if ((saved['following'] or (ff is not None and ff['following'])) and inside and reliable and len(settling) >= 5
           and stamp - settling[0][0] >= self.SETTLE_TIME):
         span = (stamp - settling[0][0]) * 0.01
         evidence = list(settling)
@@ -1845,6 +1868,89 @@ class _CcncVehiclePositionCorrection:
             and sum(s[4] for s in evidence) >= 0.8 * len(evidence)):
           saved['following'] = False
           saved['locked'] = True
+          if ff is not None and ff['released']:
+            ff['locked'], ff['following'] = True, False
+            ff['baseline'] = self._median([s[2] for s in evidence if stamp - s[0] <= 100])
+            ff['raw_baseline'] = self._median([s[1] for s in evidence if stamp - s[0] <= 100])
+            ff['trail'] = None
+            paired = [(s[0], s[3]) for s in vision_history if s[4]]
+            ff.update(vision_samples=paired, vision_baseline=self._median([s[1] for s in paired]) if paired else None,
+                      radar_ready=None, vision_rejected=False, vision_reason=None)
+      # Keep the old output/state for remembered vehicles, side slots and ego lane changes.
+      # The extra FF display state is discarded at those transitions, never inherited.
+      eligible = slot == 0 and not self.lane_change and inside and reliable and center_valid
+      if ff is not None and saved['following'] and not ff['released']:
+        saved.pop('ff_departure', None)
+        ff = None
+      if ff is not None and ff['released'] and saved['following']:
+        ff['locked'], ff['following'] = False, True
+      if eligible and saved['locked'] and not saved['following']:
+        history = [s for s in settling if stamp - s[0] <= 100]
+        if ff is None:
+          ff = dict(baseline=self._median([s[2] for s in history]),
+                    raw_baseline=self._median([s[1] for s in history]), trail=None,
+                    released=False, locked=True, following=False, output=saved['output'], stamp=stamp,
+                    catchup_until=-1000, release_frame=-1000,
+                    vision_samples=[(s[0], s[3]) for s in vision_history if s[4]],
+                    vision_baseline=None, radar_ready=None, vision_rejected=False, vision_reason=None)
+          if ff['vision_samples']:
+            ff['vision_baseline'] = self._median([s[1] for s in ff['vision_samples']])
+          saved['ff_departure'] = ff
+        if ff['locked'] and not ff['following']:
+          if abs(aligned_y - ff['baseline']) <= .25:
+            ff['baseline'] = self._median([s[2] for s in history])
+            ff['raw_baseline'] = self._median([s[1] for s in history])
+            paired = [(t, y) for t, y in ff['vision_samples'] if frame - t <= 100]
+            if vision is not None and vision[4]:
+              paired.append((frame, vision[3]))
+            ff['vision_samples'] = paired
+            ff['vision_baseline'] = self._median([s[1] for s in paired]) if paired else None
+          dev = aligned_y - ff['baseline']
+          if abs(dev) < .25:
+            ff.update(radar_ready=None, vision_rejected=False, vision_reason=None)
+          sign = 1 if dev >= 0 else -1
+          distance = sign * ((bounds[0] if sign > 0 else bounds[1]) - aligned_y)
+          trail = ff['trail']
+          if (abs(dev) < 0.5 or (trail is not None and
+              (sign != trail['sign'] or stamp - ff['stamp'] > 15 or trail['peak'] - abs(dev) > .1))):
+            trail = None
+          if abs(dev) >= 0.5:
+            if trail is None:
+              trail = dict(sign=sign, start=stamp, count=0, peak=abs(dev), progress=stamp, distance=distance)
+            if abs(dev) > trail['peak'] + 1e-6:
+              trail['peak'], trail['progress'] = abs(dev), stamp
+            trail['count'] += 1
+            if stamp - trail['progress'] > 25:
+              trail = None
+            elif (stamp - trail['start'] >= 30 and trail['count'] >= 3
+                  and distance < trail['distance'] and sign * (point.yRel - ff['raw_baseline']) >= .35):
+              if ff['radar_ready'] is None and not ff['vision_rejected']:
+                ff['radar_ready'] = frame
+                ff['vision_reason'] = 'waiting'
+                if ff['vision_baseline'] is None:
+                  ff['vision_rejected'], ff['vision_reason'] = True, 'no_baseline'
+          ff['trail'], ff['stamp'] = trail, stamp
+      elif ff is not None:
+        ff['trail'] = None
+    if ff is not None and ff['locked'] and ff['radar_ready'] is not None and not ff['vision_rejected']:
+      ready = ff['radar_ready']
+      dev = aligned_y - ff['baseline']
+      sign = 1 if dev >= 0 else -1
+      trail = ff['trail']
+      still_moving = (trail is not None and abs(dev) >= 0.5 and sign == trail['sign']
+                      and trail['peak'] - abs(dev) <= .1 and stamp - trail['progress'] <= 25
+                      and sign * (point.yRel - ff['raw_baseline']) >= .35)
+      moved = (ff['vision_baseline'] is not None and any(
+        s[0] >= ready - 50 and frame - s[0] <= 50 and s[4]
+        and sign * (s[3] - ff['vision_baseline']) >= .3 for s in vision_history))
+      farther = (vision is not None and not vision[4] and vision[2] > point.dRel + 5.)
+      if frame <= ready + 50 and still_moving and (moved or farther):
+        ff.update(output=ff['output'] if ff['released'] else saved['output'],
+                  released=True, locked=False, following=True,
+                  catchup_until=frame + 50, release_frame=frame,
+                  vision_reason='moved' if moved else 'farther')
+      elif frame >= ready + 50:
+        ff['vision_rejected'], ff['vision_reason'] = True, 'timeout'
     if saved['hold'] is not None and bounds_valid and (aligned_y < bounds[1] if slot == 1 else aligned_y > bounds[0]):
       saved['hold'] = None  # Across ego's lane line: a cut-in is followed at once.
       saved['raw'].clear()
@@ -1860,6 +1966,16 @@ class _CcncVehiclePositionCorrection:
         target = aligned_y
       rate = min(15.0, max(rate, 1.4 * saved['fast_speed'] + 1.0))
     saved['output'] += min(max(target - saved['output'], -rate * dt), rate * dt)
+    if ff is not None and ff['released']:
+      ff_target = filtered_y if ff['following'] else center
+      ff_rate = self.FOLLOW_RATE if ff['following'] else self.CENTER_RATE
+      if ff['following'] and fresh:
+        ff_rate = max(ff_rate, rate, 3.0 if frame <= ff['catchup_until'] else 0.)
+        if saved['fast_speed'] > 0 and bounds is not None and (not bounds[1] <= aligned_y <= bounds[0]
+            or 0 <= frame - saved['slot_frame'] <= 30):
+          ff_target = aligned_y
+      ff['output'] += min(max(ff_target - ff['output'], -ff_rate * dt), ff_rate * dt)
+      return ff['output']
     return saved['output']
 
 class _CcncRadarLaneSelector:
@@ -2390,6 +2506,7 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
   is_currently_lane_changing = model_lanes and (is_auto_lane_changing or (is_blinking and v_ego_kph > 20.0))
   correction = state.radar_display_tracker.position_correction
   if correction is not None:
+    correction.vision_model = md
     # Same as the map's FF bridge: ego's own lane change moves every side car sideways.
     correction.lane_change = is_auto_lane_changing or bool(CS.out.leftBlinker or CS.out.rightBlinker)
 

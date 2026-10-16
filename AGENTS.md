@@ -1,5 +1,11 @@
 # Repository memory
 
+- On 2026-10-16, Davin accepted FF-exit round 4's .5m vision-confirmed self-baseline release: 3e7/18 5.384 -> 4.830s; common43 departure p90 .962 -> .390s; FF step p95 .0171 -> .0180m. Slot/presence/active ego-change/cutin/departing-lead regressions are zero. Road-test residuals: five departures slower than round3 (conditional added-delay p90 .30s), 28 large return windows (eight overlap prior video measurement-error judgements), and one abandoned release at 3d8/35 (legacy behavior). Production/prototype outputs match all 175 segments/205449 sends, and 462+5 tests pass; no push/deploy/timing measurement. Evidence: .analysis/archive/2026-10-16/ccnc-ff-exit-r4 and the follow-up adoption archive.
+
+- On 2026-10-16, FF self-baseline round 2 was rejected: the user chose raw .35m movement during threshold dwell. On 175 cached segments/205,449 sends, .5m releases at 5.129s, catches up to .142m error, but departure p90 stays 1.05s; FF step p95 .018m, 50 zero-centre return windows (39 >.3m, 5 sharp-curve windows). Existing 462 tests pass; 2 new tests pass and the stepped .7m/s test fails (.5s release delay vs .3s). Side/active/post ego-lane-change differences are zero; expanded +/- .5s windows retain 30 pre-change sends. Slot/presence/cutin/departure regressions are zero. Both raw-period interpretations and .4/.5/.6m fail acceptance; selected-family video 20 windows reviewed. Evidence .analysis/archive/2026-10-16/ccnc-ff-exit-r2; production unchanged, no commit/push/deploy/timing benchmark; see the experiment doc.
+
+- On 2026-10-16, FF displacement-release prototypes at .4/.5/.6m were rejected on 175 cached segments (205,449 sends): .5m improved departure delay but worsened FF jitter and ego-lane-change displays; new 3e7/18 is cached in ccnc-replay-v7, 12e replay matches 62.83% of nine packed front-slot fields exactly; production unchanged, no commit/push/deploy; see docs/ccnc_radar_map_experiment_20261011.md and private .analysis/archive/2026-10-16/ccnc-ff-exit.
+
 - On 2026-10-15, the user requested merging carrot-wip into ccnc-hda1 again.
   origin/carrot-wip 8e7eec04 (19 commits: eGPU recovery/runtime and MD v3,
   S3 Wi-Fi/registration/installer and retry lifecycle, in-lane radar braking,
