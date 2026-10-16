@@ -1,5 +1,7 @@
 # Repository memory
 
+- On 2026-10-17, origin/carrot-wip f104b56c (2 commits: S3 Wi-Fi H.264/firmware1.2.0, bounded network-stall backpressure and stronger-AP selection) is merged into ccnc-hda1 on2e434486. Only AGENTS.md conflicted; all complete blocks from both sides are preserved, CCNC first. CCNC extension/map bytes and five Ccnc settings are unchanged. The test catalog baseline follows incoming upstream. Checks: CCNC943, map161, Wi-Fi/H.264/settings/retry60, installer browser5, user-doc and Wiki validators pass. The separate performance-safeguards module cannot collect on this PC without pyray; no native ESP-IDF/GBM build or vehicle validation. UTF-8/ASCII capnp staging and default-OFF Params test double; browser tests use an LF-normalized scratch copy only. No push/deployment. Evidence .analysis/archive/2026-10-17/carrot-merge.
+
 - On 2026-10-17, side replacement display continuity on0451bcc8: operating13A was absent (archived rejected prototype only). Inherit only output between locked stable central side displays within30m/.15s, actual/predicted x3m, target delta.35m and center.6m; no ID/map/lock/vision/filter history inheritance. 175 segments/205449 sends: side exchange steps93->80/returns66->57; keeping111->98/246->237; side p95 .019767->.019507m, FF unchanged; saw61 worse0, maneuver late0, presence/raw/display slots/distance/signal-only differences0. Changed1273 sends. Actual seeds82 (12 different-source, identity unresolved); all5 visually different-car candidate windows excluded. Local2s steps increase in2 windows and target-error increase up to.258m remain explicit, aggregate stability improves. Production/prototype identical, CCNC943 pass. Evidence .analysis/archive/2026-10-17/ccnc-side-replacement; no timing/push/deploy.
 
 - On 2026-10-16, phase (B), on 2c9a3ce7, hands a vision-released following FF's actual auxiliary output to its side slot (same reference, within2s), preserving fast following at3m/s for1s without changing FF release/vision, map/selection/debounce or distance. 175 segments/205449 sends: fixed43 has41 completed,12 faster/29 same, median/p90 .81/2.15 -> .75/1.25s; two short observations and four absent baselines remain explicit. Additional52 transitions have36 completed, median/p901.025/2.10 -> .730/1.405s. Same-object handoff >.3m steps12->0; all steps1573->1569. Keeping p95/steps111/returns246 and FF-release returns40/large23 unchanged; presence/raw/display slots/distance and added maneuver delays0, changed sends240. 3e7/18 and vision-rejected3d8/35 unchanged. FF-only longer catchup rejected as unnecessary for fixed43. Production/prototype identical; CCNC941 pass. Evidence ccnc-stability phaseB; no timing/push/deploy.
@@ -1032,6 +1034,34 @@
   NAS shared-source bundle/fingerprint checked locally, but current wip-only
   publishing and lead replay do not deploy/recalculate this CCNC display map.
   See docs/ccnc_front_radar_detection.md and private 2026-10-11 point-map archive.
+- On 2026-10-16, user reported repeated blank S3 H.264 output after initial pass.
+  250ms queue-full shutdown magnified short stalls: retain three ordered slots,
+  apply HUD-encoder backpressure with close/error checks and a3s dead-sender cap.
+  This alone did NOT fix it: actual TCP timeouts and confirmed S3 idle-off remain.
+  C4->S3 loses14/30 packets, PC11/15; router0/30. PC cannot connect even with HUD
+  stopped. UART shows no association loss/reset/USB failures. Earlier successful
+  boot selected channel6/-48dBm; failing boot another AP channel1/-68dBm. Replace
+  first-match fast scan with all-channel RSSI-ranked connection; add BSSID status.
+  App-only flash preserves pairing and selects channel6/-50dBm; PC detailed601
+  frames/60.076s passes and user confirms restored actual C4 HUD stays normal.
+  No router changes, AP lock, ongoing-roaming or general radio root-cause claim.
+  Final180s UART has no close/off/USB failure;300s model/DM6000 consecutive valid
+  each at19.9999977/19.9998398Hz (approximately20, not strict>=20).115 tests pass,
+  one skip. See docs/s3_h264_release_20261016.md for observation/distribution.
+
+- On 2026-10-16, user requested implementing and deploying H.264 for S3 Wi-Fi.
+  Firmware1.2.0 authenticates capability discovery and keeps video chunks awake;
+  C4 targets1Mbps/GOP10, preserves reference order in bounded queues, and retains
+  legacy/auto-initialization JPEG fallback. PC physical simple601/60.06s and
+  detailed589/60.11s pass; user confirms smooth test and normal native C4 HUD.
+  AP channel/RSSI changed, so do not attribute every gain to codec. Two native
+  HUD stops reclaim all six owned buffers; TCP loss reconnects in20.205s.
+  Initial model/DM60s each1200 valid consecutive at20.007/20.008Hz. A separate
+  300s memory watch stays connected, same PID/104FDs, PSS184.95->185.66MiB;
+  synchronous smaps reads lose observer frames at exact30s boundaries and are
+  not a model-rate pass. See docs/s3_h264_release_20261016.md for final clean
+  frame observation, release checks and remaining Wi-Fi/long-duration limits.
+  Preserve pairing; public firmware never includes NVS. Both branches single-parent.
 
 - On 2026-10-16, user requested faster signals (20–50Hz target) and brake-lamp
   ON/OFF. Camera is20fps; no sustained20Hz signal pass. Remove packed NV12 copy
