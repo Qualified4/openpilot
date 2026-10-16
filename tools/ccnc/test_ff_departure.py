@@ -79,3 +79,30 @@ def test_camera_confirmation_point_three_seconds_after_radar_releases_then():
       if ready is None and ff['radar_ready'] is not None:ready=ff['radar_ready']
       if ff['released'] and release is None:release=frame
     assert ready is not None and release==ready+30
+
+
+def display_ff(c,t,frame,key,raw):
+  output=original_sample(c,t,frame,raw,track_id=key,reference=('lane','center'))
+  values={k:0 for fields in c.SLOT_FIELDS for k in fields}
+  values.update(FF_DETECT=1,FF_LATERAL=-output,FF_DISTANCE=16.)
+  c.stabilize_slots(values,(key,None,None),t.tracks,frame)
+  return -values['FF_LATERAL']
+
+
+def test_locked_ff_replacement_inherits_visible_lateral_through_short_report_gap():
+  c,t=Correction(),Tracker()
+  for frame in range(0,101,5):display_ff(c,t,frame,1,0.)
+  # A remembered, still-locked lead remains valid during the existing geometry hold.
+  c.tracks[1]['valid_frame']=70
+  assert display_ff(c,t,105,2,.9)==0.
+  assert c.tracks[2]['output']==0.
+  assert c.tracks[2]['locked'] and not c.tracks[2]['following']
+
+
+def test_ff_replacement_keeps_boundary_motion_and_ego_change_outputs():
+  for moving,ego in ((True,False),(False,True)):
+    c,t=Correction(),Tracker()
+    for frame in range(0,101,5):display_ff(c,t,frame,1,0.)
+    c.lane_change=ego
+    output=display_ff(c,t,105,2,2. if moving else .9)
+    assert output==(2. if moving else .9)

@@ -1580,6 +1580,7 @@ class _CcncVehiclePositionCorrection:
     self.ego_targets = {}
     self.ego_drawn = {}
     self.ego_resume = {}
+    self.ff_previous_display = None
 
   def update_ego_follow(self, md, speed, desire, left, right, now):
     was_active = self.ego_follow_active
@@ -1629,7 +1630,9 @@ class _CcncVehiclePositionCorrection:
     # correction and its lateral filter resume from the last visible value.
     self._stabilize_slots(values, selected, observations, frame, bypass)
     if not self.ego_follow_active:
+      self.inherit_ff_display(values, observations, frame)
       return
+    self.ff_previous_display = None
     for slot, track_id in enumerate(self.display_selected):
       target = self.ego_targets.get(track_id)
       _, lateral, detect = self.SLOT_FIELDS[slot]
@@ -1643,6 +1646,27 @@ class _CcncVehiclePositionCorrection:
       observation = observations.get(track_id)
       if observation is not None:
         self.ego_drawn[track_id] = (observation[0], frame, values[lateral] * (-1 if slot in (0, 2) else 1))
+
+  def inherit_ff_display(self, values, observations, frame):
+    previous = self.ff_previous_display
+    self.ff_previous_display = None
+    key = self.display_selected[0]
+    saved = self.tracks.get(key)
+    if self.lane_change or not values['FF_DETECT'] or saved is None or saved.get('frame') != frame:
+      return
+    ff = saved.get('ff_departure')
+    effective = ff if ff is not None and ff['released'] else saved
+    stable = (effective.get('locked', False) and not effective['following'] and not saved['boundary_follow']
+              and saved['reference'][0] == 'lane' and 0 <= frame - saved['valid_frame'] <= self.GEOMETRY_HOLD)
+    if (stable and previous is not None and previous[0] != key and previous[3]
+        and 0 <= frame - previous[1] <= 15 and previous[4] == saved['reference']
+        and saved['samples'] and abs(saved['samples'][-1][2]) <= 1.2 and abs(previous[2]) <= .4):
+      output = previous[2]
+      saved['output'] = output
+      if ff is not None and ff['released']:
+        ff['output'] = output
+      values['FF_LATERAL'] = -output
+    self.ff_previous_display = (key, frame, -values['FF_LATERAL'], stable, saved.get('reference'))
 
   def _stabilize_slots(self, values, selected, observations, frame, bypass=False):
     """Debounce an object's vacant-slot crossing without changing raw selection."""
