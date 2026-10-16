@@ -1,7 +1,7 @@
 """FF self-baseline departure and vision confirmation regressions."""
 import math
 from types import SimpleNamespace as N
-from test_radar_display import Correction,Tracker,corrected_sample as original_sample
+from test_radar_display import Correction,Tracker,point,corrected_sample as original_sample
 
 def corrected_sample(c,t,frame,raw,*args,vision=None,**kwargs):
   visual=raw if vision is None else vision
@@ -106,3 +106,39 @@ def test_ff_replacement_keeps_boundary_motion_and_ego_change_outputs():
     c.lane_change=ego
     output=display_ff(c,t,105,2,2. if moving else .9)
     assert output==(2. if moving else .9)
+
+
+def released_lead(sign):
+  c,t=Correction(),Tracker()
+  for frame in range(0,201,5):corrected_sample(c,t,frame,0.,reference=('lane','center'))
+  for frame in range(205,326,5):corrected_sample(c,t,frame,sign*.175*((frame-200)//25),reference=('lane','center'))
+  saved=c.tracks[1]
+  assert saved['ff_departure']['released'] and saved['ff_departure']['following']
+  saved['ff_departure']['output']=sign*.8
+  saved['output']=sign*.1
+  return c,t
+
+
+def test_released_ff_crossing_inherits_visible_output_and_fast_follow():
+  for sign,slot,bounds in ((1,1,(5.4,1.8)),(-1,2,(-1.8,-5.4))):
+    c,t=released_lead(sign)
+    saved=c.tracks[1]
+    output=c.apply(point(y=sign*3.),sign*3.,sign*3.,slot,('lane','center'),bounds,
+                   (saved['birth'],330),330)
+    assert abs(output-sign*.95)<1e-9
+    assert saved['exit_follow_until']==430
+    assert not saved['locked'] and saved['following']
+    assert 'ff_departure' not in saved
+
+
+def test_exit_fast_follow_expires_and_clears_during_ego_change():
+  for ego in (False,True):
+    c,t=released_lead(1)
+    saved=c.tracks[1]
+    c.apply(point(y=3.),3.,3.,1,('lane','center'),(5.4,1.8),(saved['birth'],330),330)
+    frame=335 if ego else 435
+    c.lane_change=ego
+    saved.update(frame=frame-5,output=1.,locked=False,following=True)
+    output=c.apply(point(y=3.),3.,3.,1,('lane','center'),(5.4,1.8),(saved['birth'],frame),frame)
+    assert abs(output-1.075)<1e-9
+    if ego:assert 'exit_follow_until' not in saved

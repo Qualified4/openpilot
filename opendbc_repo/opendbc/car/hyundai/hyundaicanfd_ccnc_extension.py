@@ -1805,6 +1805,14 @@ class _CcncVehiclePositionCorrection:
       saved['boundary_follow'] = False
     inside = inside and not saved['boundary_follow']
     samples = saved['samples']
+    if self.lane_change or slot == 0 or reference != saved['reference']:
+      saved.pop('exit_follow_until', None)
+    elif slot != saved['slot'] and saved['slot'] == 0:
+      departure = saved.get('ff_departure')
+      if (departure is not None and departure['released'] and departure['following']
+          and 0 <= frame - departure['release_frame'] <= 200):
+        saved['output'] = departure['output']
+        saved['exit_follow_until'] = frame + 100
     if slot != saved['slot'] or reference != saved['reference']:
       same_road = (reference in (('lane', 'center'), ('lane', 'position'))
                    and saved['reference'] in (('lane', 'center'), ('lane', 'position')))
@@ -2063,8 +2071,11 @@ class _CcncVehiclePositionCorrection:
     saved['frame'] = frame
     if saved['hold'] is not None:
       return saved['output']
+    exit_follow = not self.lane_change and slot != 0 and frame <= saved.get('exit_follow_until', -1000)
+    if exit_follow:
+      saved['locked'], saved['following'] = False, True
     target = filtered_y if saved['following'] else center
-    rate = self.FOLLOW_RATE if saved['following'] else self.CENTER_RATE
+    rate = max(self.FOLLOW_RATE, 3.0 if exit_follow else 0.) if saved['following'] else self.CENTER_RATE
     if saved['following'] and saved['fast_speed'] > 0 and fresh:
       # Keep ordinary smoothing until a physical boundary is actually crossed.
       if bounds is not None and (not bounds[1] <= aligned_y <= bounds[0] or 0 <= frame - saved['slot_frame'] <= 30):
