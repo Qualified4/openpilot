@@ -1425,7 +1425,10 @@ class _CcncRadarDisplayTracker:
         geometry_blend = False
     filtered_input = aligned_y + bias
     self.positions[track_id] = (birth, frame, reference, point.yRel, filtered_input, bias, geometry_blend, distance, lateral)
-    return distance.apply(point.dRel), lateral.apply(filtered_input)
+    result = distance.apply(point.dRel), lateral.apply(filtered_input)
+    if self.position_correction is not None and self.position_correction.ego_follow_active:
+      self.position_correction.ego_targets[track_id] = (frame, aligned_y, result[1], reference)
+    return result
 
   def finish(self, ff, lf, rf, ff_y, lane_mode, frame):
     ids = (ff.trackId if ff is not None else None, lf.trackId if lf is not None else None, rf.trackId if rf is not None else None)
@@ -1568,6 +1571,43 @@ class _CcncVehiclePositionCorrection:
     self.display_selected = (None, None, None)
     self.lane_change = False  # Ego changing lanes (desire or a turn signal), set by update_lanes.
     self.vision_model = None
+    self.ego_follow_active = False
+    self.ego_follow_until = -math.inf
+    self.ego_follow_time = None
+    self.ego_follow_model = None
+    self.ego_follow_motion = deque()
+    self.ego_targets = {}
+
+  def update_ego_follow(self, md, speed, desire, left, right, now):
+    if self.ego_follow_time is not None and not 0 <= now - self.ego_follow_time <= .15:
+      self.ego_follow_until = -math.inf
+      self.ego_follow_motion.clear()
+    self.ego_follow_time = now
+    self.ego_targets.clear()
+    motion = self.ego_follow_motion
+    stamp = getattr(md, 'timestampEof', None) or id(md)
+    if md is not None and stamp != self.ego_follow_model:
+      self.ego_follow_model = stamp
+      velocities = []
+      lines, probabilities = getattr(md, 'laneLines', ()), getattr(md, 'laneLineProbs', ())
+      if len(lines) >= 3 and len(probabilities) >= 3:
+        for index in (1, 2):
+          line = lines[index]
+          if (probabilities[index] < .1 or not math.isfinite(probabilities[index])
+              or not _ccnc_valid_boundary(line.x, line.y) or line.x[0] > 0 or line.x[-1] < 5):
+            break
+          y0, ym, y5 = np.interp((0., 2.5, 5.), line.x, line.y)
+          velocities.append(float(speed * (-3 * y0 + 4 * ym - y5) / 5.))
+      if len(velocities) == 2 and abs(velocities[0] - velocities[1]) <= .5:
+        motion.append((now, sum(velocities) * .5))
+    while motion and now - motion[0][0] > .3:
+      motion.popleft()
+    moving = (left != right and len(motion) >= 4 and motion[-1][0] - motion[0][0] >= .15
+              and (1 if left else -1) * self._median([v for _, v in motion]) >= .3)
+    state = str(getattr(getattr(md, 'meta', None), 'laneChangeState', 'off'))
+    if desire in (3, 4) or state in ('laneChangeStarting', 'laneChangeFinishing') or moving:
+      self.ego_follow_until = now + 1.
+    self.ego_follow_active = now <= self.ego_follow_until
 
   @staticmethod
   def _median(values):
@@ -1576,6 +1616,23 @@ class _CcncVehiclePositionCorrection:
     return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
 
   def stabilize_slots(self, values, selected, observations, frame, bypass=False):
+    # Run the ordinary history unchanged, then accelerate drawing only. This
+    # keeps slot selection and every send outside the maneuver identical.
+    self._stabilize_slots(values, selected, observations, frame, bypass)
+    if not self.ego_follow_active:
+      return
+    for slot, track_id in enumerate(self.display_selected):
+      target = self.ego_targets.get(track_id)
+      _, lateral, detect = self.SLOT_FIELDS[slot]
+      if target is None or target[0] != frame or target[3][0] != 'lane' or not values[detect]:
+        continue
+      _, aligned, filtered, _ = target
+      # Preserve ordinary small-noise smoothing within the permitted error band.
+      output = min(max(filtered, aligned - .25), aligned + .25)
+      values[lateral] = (min(12.7, max(-12.8, -output)) if slot == 0 else
+                         min(5.4, max(0., output if slot == 1 else -output)))
+
+  def _stabilize_slots(self, values, selected, observations, frame, bypass=False):
     """Debounce an object's vacant-slot crossing without changing raw selection."""
     previous_display = self.display_selected
     self.display_selected = selected
@@ -1674,6 +1731,8 @@ class _CcncVehiclePositionCorrection:
                for i, net in zip((1, 2), nets))
 
   def apply(self, point, aligned_y, filtered_y, slot, reference, bounds, observation, frame, reliable=True):
+    if self.ego_follow_active and point.trackId not in self.ego_targets:
+      self.ego_targets[point.trackId] = (frame, aligned_y, filtered_y, reference)
     if observation is None:
       return filtered_y
     birth, stamp = observation[:2]
@@ -2507,6 +2566,8 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
   correction = state.radar_display_tracker.position_correction
   if correction is not None:
     correction.vision_model = md
+    correction.update_ego_follow(md, v_ego_kph / 3.6, desire, CS.out.leftBlinker, CS.out.rightBlinker,
+                                 time.monotonic() if frame is None else frame * .01)
     # Same as the map's FF bridge: ego's own lane change moves every side car sideways.
     correction.lane_change = is_auto_lane_changing or bool(CS.out.leftBlinker or CS.out.rightBlinker)
 

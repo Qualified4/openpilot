@@ -1,5 +1,7 @@
 # Repository memory
 
+- On 2026-10-16, ego-lane-change lateral drawing acceleration was accepted under Davin's corrected gate (faster convergence and zero lost vehicles/slot changes; .2s is a target): 175 segments/205449 sends, 108 windows/506 car-windows, 31 crossing/reference-shift cases; common18 sustained-convergence p90 .950 -> .330s, all19 .360s; presence/raw and displayed slots/distance/outside sends all identical; 936 tests pass. Ordinary histories and debounce remain unchanged. Residuals: 12 short observations, FF step p95 .0750 -> .0804m, and 30 post-end >.3m steps (max1.898m). No timing/push/deploy; evidence .analysis/archive/2026-10-16/ccnc-ego-fast.
+
 - On 2026-10-16, origin/carrot-wip d34224b4 (8 commits: signal display/processing,
   opt-in lead brake lamps, HUD graphics cleanup, S3 status LED/release download,
   and docs) is merged into ccnc-hda1. Only AGENTS.md conflicted; complete records

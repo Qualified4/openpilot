@@ -21,7 +21,7 @@ def main():
   if args.suite in ("docs", "all"):
     paths.append("tools/docs/wiki_settings/tests")
   if args.suite in ("display", "all"):
-    paths.append("tools/ccnc/test_radar_display.py")
+    paths.extend(f"tools/ccnc/test_{name}.py" for name in ("radar_display", "ff_departure", "ego_follow"))
   if args.suite in ("vehicle", "all"):
     paths.extend(f"opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_{name}.py"
                  for name in ("cluster", "lead", "fault_filter", "extension"))
