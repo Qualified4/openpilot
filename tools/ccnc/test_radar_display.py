@@ -1691,6 +1691,40 @@ def test_unknown_nearest_boundary_does_not_hide_new_stationary_side_vehicle():
 Correction = H['_CcncVehiclePositionCorrection']
 
 
+def side_replacement_sample(correction,tracker,frame,key,y,slot=1,x=20.):
+  p=point(key,x=x,y=y)
+  tracker.observe(N(points=[p]),frame)
+  correction.update_centers(3.,3.,frame,tracker.tracks)
+  bounds=(5.4,1.8) if slot==1 else (-1.8,-5.4)
+  output=correction.apply(p,y,y,slot,('lane','center'),bounds,tracker.tracks[key],frame)
+  values={k:0 for fields in correction.SLOT_FIELDS for k in fields}
+  distance,lateral,detect=correction.SLOT_FIELDS[slot]
+  values.update({distance:x*.8,lateral:output*(1 if slot==1 else -1),detect:1})
+  selected=[None]*3;selected[slot]=key
+  correction.stabilize_slots(values,tuple(selected),tracker.tracks,frame)
+  return values[lateral]*(1 if slot==1 else -1)
+
+
+def test_locked_side_replacement_continues_visible_lateral_without_motion_history_inheritance():
+  for sign,slot in ((1,1),(-1,2)):
+    c,t=Correction(),Tracker()
+    for frame in range(0,101,5):before=side_replacement_sample(c,t,frame,1,sign*3.1,slot)
+    output=side_replacement_sample(c,t,105,2,sign*3.4,slot)
+    assert output==before
+    saved=c.tracks[2]
+    assert saved['locked'] and not saved['following']
+    assert not saved['jumped'] and saved['ff_frame'] is None and saved['hold'] is None
+    assert len(saved['samples'])==1 and len(saved['settling'])==1
+
+
+def test_side_replacement_does_not_inherit_a_different_lane_or_distant_vehicle():
+  for slot,x,y in ((1,50.,3.3),(1,20.,5.2),(2,20.,-3.3)):
+    c,t=Correction(),Tracker()
+    for frame in range(0,101,5):side_replacement_sample(c,t,frame,1,3.1)
+    output=side_replacement_sample(c,t,105,2,y,slot,x)
+    assert output==y
+
+
 def corrected_sample(correction, tracker, frame, raw, aligned=None, slot=0, bounds=(1.8, -1.8),
                      reference=('lane', True), track_id=1, reliable=True):
   aligned = raw if aligned is None else aligned

@@ -1581,6 +1581,7 @@ class _CcncVehiclePositionCorrection:
     self.ego_drawn = {}
     self.ego_resume = {}
     self.ff_previous_display = None
+    self.side_previous_display = {}
 
   def update_ego_follow(self, md, speed, desire, left, right, now):
     was_active = self.ego_follow_active
@@ -1631,8 +1632,10 @@ class _CcncVehiclePositionCorrection:
     self._stabilize_slots(values, selected, observations, frame, bypass)
     if not self.ego_follow_active:
       self.inherit_ff_display(values, observations, frame)
+      self.inherit_side_display(values, frame)
       return
     self.ff_previous_display = None
+    self.side_previous_display.clear()
     for slot, track_id in enumerate(self.display_selected):
       target = self.ego_targets.get(track_id)
       _, lateral, detect = self.SLOT_FIELDS[slot]
@@ -1667,6 +1670,37 @@ class _CcncVehiclePositionCorrection:
         ff['output'] = output
       values['FF_LATERAL'] = -output
     self.ff_previous_display = (key, frame, -values['FF_LATERAL'], stable, saved.get('reference'))
+
+  def inherit_side_display(self, values, frame):
+    previous = self.side_previous_display
+    self.side_previous_display = {}
+    if self.lane_change:
+      return
+    for slot in (1, 2):
+      key = self.display_selected[slot]
+      saved = self.tracks.get(key)
+      _, lateral, detect = self.SLOT_FIELDS[slot]
+      if not values[detect] or saved is None or saved.get('frame') != frame or 'display_road' not in saved:
+        continue
+      x, aligned, bounds = saved['display_road']
+      old = previous.get(slot)
+      stable = (saved['locked'] and not saved['following'] and not saved['boundary_follow'] and saved['hold'] is None
+                and saved['slot'] == slot and saved['reference'] == ('lane', 'center')
+                and (saved['ff_frame'] is None or frame - saved['ff_frame'] > self.RECENT_FF)
+                and self.center_valid[slot - 1] and 0 <= frame - saved['valid_frame'] <= self.GEOMETRY_HOLD)
+      dt = 0. if old is None else (frame - old['frame']) * .01
+      rate = (x - old['x']) / dt if old and old['key'] == key and 0 < dt <= .15 else 0.
+      output = values[lateral] * (1 if slot == 1 else -1)
+      if (stable and old is not None and old['stable'] and old['key'] != key and 0 < dt <= .15
+          and x < 30. and abs(x - old['x']) <= 3. and abs(x - old['x'] - old['rate'] * dt) <= 3.
+          and abs(aligned - old['aligned']) <= .35 and bounds is not None
+          and all(bounds[1] + .35 <= y <= bounds[0] - .35 for y in (aligned, old['aligned'], old['output']))
+          and all(abs(y - self.centers[slot - 1]) <= .6 for y in (aligned, old['aligned'], old['output']))):
+        output = old['output']
+        saved['output'] = output
+        values[lateral] = output * (1 if slot == 1 else -1)
+      self.side_previous_display[slot] = dict(key=key, frame=frame, x=x, rate=rate, aligned=aligned,
+                                              output=output, stable=stable)
 
   def _stabilize_slots(self, values, selected, observations, frame, bypass=False):
     """Debounce an object's vacant-slot crossing without changing raw selection."""
@@ -1787,6 +1821,7 @@ class _CcncVehiclePositionCorrection:
                    output=filtered_y, slot=slot, reference=reference, slot_frame=-1000, boundary_follow=not inside,
                    fast=deque(maxlen=8), fast_speed=0.0, raw=deque(), drift=deque(), hold=None, ff_frame=None, jumped=False, inward_frame=-1000)
       self.tracks[point.trackId] = saved
+    saved['display_road'] = (point.dRel, aligned_y, bounds)
     resume = self.ego_resume.pop(point.trackId, None)
     if resume is not None and resume[0] == birth and 0 <= frame - resume[1] <= 15:
       filtered_y = resume[2]
