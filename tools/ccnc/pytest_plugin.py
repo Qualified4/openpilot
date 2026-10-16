@@ -6,8 +6,8 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-# carrot-wip revision matching the merged, unmodified upstream tests.
-BASELINE = "8e7eec049241b6ba384e9197aacdfb01f7d88ed3"
+# carrot-wip settings catalog revision used by the merged upstream tests.
+BASELINE = "d34224b49616882279d6b5f7884ce55f5a71ab82"
 
 
 @pytest.fixture(scope="session")

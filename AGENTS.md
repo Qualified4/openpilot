@@ -1,5 +1,19 @@
 # Repository memory
 
+- On 2026-10-16, origin/carrot-wip d34224b4 (8 commits: signal display/processing,
+  opt-in lead brake lamps, HUD graphics cleanup, S3 status LED/release download,
+  and docs) is merged into ccnc-hda1. Only AGENTS.md conflicted; complete records
+  from both sides are retained, CCNC first. CCNC extension/map and all Ccnc
+  setting definitions are unchanged against pre-merge 448c6017. The CCNC test
+  catalog baseline follows incoming upstream; Wiki tests now expect its 196
+  settings and explicitly check LeadBrakeLights. Checks: CCNC 928, map/FF 166,
+  incoming focused 213, installer browser 5 pass; Wiki/user-doc validators pass.
+  Windows checks use ASCII schema staging, default-OFF Params for incoming
+  tests, UTF-8 mode, and temporary OpenCV 5.0.0.93. Browser checks use temporary
+  LF installer text, restored byte-for-byte. No native GBM/MCU firmware build,
+  push, deployment, or vehicle validation. Evidence:
+  .analysis/archive/2026-10-16/carrot-merge.
+
 - On 2026-10-16, Davin accepted FF-exit round 4's .5m vision-confirmed self-baseline release: 3e7/18 5.384 -> 4.830s; common43 departure p90 .962 -> .390s; FF step p95 .0171 -> .0180m. Slot/presence/active ego-change/cutin/departing-lead regressions are zero. Road-test residuals: five departures slower than round3 (conditional added-delay p90 .30s), 28 large return windows (eight overlap prior video measurement-error judgements), and one abandoned release at 3d8/35 (legacy behavior). Production/prototype outputs match all 175 segments/205449 sends, and 462+5 tests pass; no push/deploy/timing measurement. Evidence: .analysis/archive/2026-10-16/ccnc-ff-exit-r4 and the follow-up adoption archive.
 
 - On 2026-10-16, FF self-baseline round 2 was rejected: the user chose raw .35m movement during threshold dwell. On 175 cached segments/205,449 sends, .5m releases at 5.129s, catches up to .142m error, but departure p90 stays 1.05s; FF step p95 .018m, 50 zero-centre return windows (39 >.3m, 5 sharp-curve windows). Existing 462 tests pass; 2 new tests pass and the stepped .7m/s test fails (.5s release delay vs .3s). Side/active/post ego-lane-change differences are zero; expanded +/- .5s windows retain 30 pre-change sends. Slot/presence/cutin/departure regressions are zero. Both raw-period interpretations and .4/.5/.6m fail acceptance; selected-family video 20 windows reviewed. Evidence .analysis/archive/2026-10-16/ccnc-ff-exit-r2; production unchanged, no commit/push/deploy/timing benchmark; see the experiment doc.
@@ -1006,6 +1020,82 @@
   NAS shared-source bundle/fingerprint checked locally, but current wip-only
   publishing and lead replay do not deploy/recalculate this CCNC display map.
   See docs/ccnc_front_radar_detection.md and private 2026-10-11 point-map archive.
+
+- On 2026-10-16, user requested faster signals (20–50Hz target) and brake-lamp
+  ON/OFF. Camera is20fps; no sustained20Hz signal pass. Remove packed NV12 copy
+  with exact two-plane conversion; native conversion CPU drops~11–12%, wall
+  varies. Count preemption/I/O in50% CPU-duty sleep, preserving unique-frame,
+  freshness, detector/control and DM policies. Reject slower color prefilter
+  and core-reassignment trial. Add default-OFF LeadBrakeLights, mode0 dominates:
+  lazy context, bounded central lead crop, radar/vision match, turn rejection,
+  display/log only, candidate/unknown (never confirmed OFF or go). Signal-first
+  admission and overrun backoff; not a hard real-time deadline. Selected spatial
+  screen8/10 ON and0/16 OFF proposals is development evidence, not accuracy or
+  temporal validation.693 desktop tests with Params double pass. Native /tmp
+  diagnostics only; no vehicle installation. Publish both maintained branches,
+  single-parent. See docs/signal_speed_brake_lamps_20261016.md.
+
+- On 2026-10-16, user reported live low-memory warning after keeping ignition on.
+  Captured93.29%/241.89MiB available on the same14.5h boot; guarded HUD stop
+  recovers88.68%/408.40MiB and reclaims its current6 buffers, but old510 remain.
+  Comparable HUD-off snapshots2h44m apart lose24.29MiB, with no hundreds-of-MiB
+  growth in surviving process PSS. Save evidence, verify selective HUD hashes,
+  auto-pull off and no staged overlay, then authorized parked C4 reboot clears
+  historical buffers:74.75%/910.88MiB at173s, same e9b33329e4/eGPU active.
+  Recovery exceeds known GBM bytes; do not attribute all recovered memory to it.
+  Initial postboot1199/1200 valid consecutive model/DM frames at19.9836/19.9852Hz
+  is not a strict20Hz pass. Restore HUD with headroom guard:180s ends~82.3%/
+  639.38MiB, same PID/six current buffers, S3 connected at all40–180s samples.
+  HUD PSS188.00->191.19MiB is not a proven long plateau. Concurrent final60s
+  model/DM1202/1202 valid consecutive at20.0340/20.0323Hz, eGPU active. HUD stays1.
+  See docs/hud_low_memory_reboot_20261016.md for bounded
+  HUD-restoration observation and remaining long-duration/Wi-Fi limits.
+
+- On 2026-10-16, reproduced the remaining HUD native leak without S3: each
+  post98 raylib window close retains6 ION objects/1658880bytes plus DRM/socket
+  handles. Installed binary omits GBM surface/owned-FD and handoff-socket cleanup.
+  Add HUD-only hash-pinned adapter for post98/post103; preserve borrowed DRM_FD.
+  Native12-cycle minimal, actual renderer, post103 overlay and borrowed-FD tests
+  each reclaim all test-owned buffers with stable handles. Manager preimports
+  raylib: discard inherited graphics once by exec of only the HUD child before
+  binding the adapter. Actual managed stop exposed another cleanup gap: mark
+  context owned before asset loading and guarantee native close in finally,
+  before blocking display close.54 focused tests pass; unknown binaries fail before render.
+  Selective HUD-only install on vehicle e9b33329e4; no model/control/full pull.
+  Final3 actual managed HUD stops each reclaim all6 objects; S3 reconnects and
+  stays enabled at configured10fps (actual Wi-Fi refresh varies). Historical510 orphan objects/134.47MiB remain
+  until a clean restart; no total-memory clearance or original Wi-Fi-cause claim.
+  Recent S3 retries expose an older cleanup defect; introduction date unproven.
+  Final model/DM60s1200/1200 consecutive valid frames at20.000010/20.000090Hz;
+  S3 flag false at interval end, so Wi-Fi stability remains unresolved.
+  See docs/hud_native_cleanup_20261016.md for actual-cycle verification and limits.
+
+- On 2026-10-16, stop Wi-Fi HUD under fresh Park/inactive guard for memory/link
+  diagnosis; ClusterHud stays0, networking stays on. Available memory recovers
+  to501MiB, but510 orphan HUD ION objects/141004800bytes persist; not fixed.
+  Isolated raylib headless init segfaults: never enable as workaround. Small USB
+  commands and PC auth fail without rendering; channel6 temporarily refuses S3,
+  channel1 attaches at-72dBm. After approved reset/app flash channel6 at-38dBm
+  passes24 commands and150 JPEG frames/three10fps phases; later1200 frames in
+  120.029s with0 disconnects and idle internal heap restored182104bytes. AP changed: no
+  root-cause or long-duration fix claim. S3 firmware1.1.1 adds dim GPIO48 RGB
+  states and secret-free S3STATUS UART diagnostics; GPIO38 revisions configurable.
+  Pairing preserved, C policy tests/build pass; actual LED visual check pending.
+  No C4 model/control install. See docs/s3_wifi_memory_20261016.md.
+
+- On 2026-10-16, user clarified mode2 is moving gentle deceleration with no/remote
+  lead; after stopping it uses mode1 exactly. Near means fixed distance, with50m
+  used provisionally. Check both leads at entry/final cap; retain MPC leads and
+  reject low speed/soft hold. User explicitly corrected display scope: mode0
+  does NO auxiliary recognition/display/control; modes1/2 show raw recognition
+  even with ACC inactive. Separate HUD ring from planner action, dim previous
+  result at most2s from capture, gray unknown; never feed display memory to
+  control. Do not restart the CPU tracker solely for1<->2. Collected144qlogs,
+  20full segments/10,020 observer records. Evening green/lead departure is still
+  held by existing guard; no blanket lead release or solved-recognition claim.
+  Publish both maintained branches single-parent; no vehicle deployment. See
+  docs/signal_modes_display_20261016.md for checks and limits.
+
 - On 2026-10-15, user requested review/integration of Tesla PR551 c61d998ff8.
   Reproduced inactive phase-lead CAN/feedback and saturation defects; Tesla's
   encoded zero375 also regranted controls through the shared accel helper.
