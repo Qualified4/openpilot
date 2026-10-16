@@ -1,5 +1,9 @@
 # Repository memory
 
+- CCNC acceptance policy (Davin, 2026-10-16): numeric targets are advisory; each stage must improve its target, have zero vehicle losses/additions and raw/display slot changes, and not worsen stability (p95, >.3m steps, return windows); any stability regression requires reporting and holding the commit for Davin. Outside-activation bit equality is no longer required; count differences and validate their effects. Validate/commit (0), (A), (B) separately on the preceding accepted commit; no push/deployment/timing measurement.
+
+- On 2026-10-16, phase (0) hands the last ego-change drawing to correction output and the actual lateral filter while preserving lock/follow/settle history; map edit is display-call plumbing only. 175 segments/205449 sends: post-end >.3m steps30->0 (max1.898->.260m), locked central pulls within2s41->34, common18 convergence p90 .330s unchanged; keeping FF/side p95 .015/.019868 -> .015/.019767m, steps127 unchanged, return episodes256->255, FF-release return counts unchanged. Presence/slots/distance changes0; changed sends2897, outside2651. CCNC937+map161 checks pass. Evidence .analysis/archive/2026-10-16/ccnc-stability, phase0; no push/deploy.
+
 - On 2026-10-16, ego-lane-change lateral drawing acceleration was accepted under Davin's corrected gate (faster convergence and zero lost vehicles/slot changes; .2s is a target): 175 segments/205449 sends, 108 windows/506 car-windows, 31 crossing/reference-shift cases; common18 sustained-convergence p90 .950 -> .330s, all19 .360s; presence/raw and displayed slots/distance/outside sends all identical; 936 tests pass. Ordinary histories and debounce remain unchanged. Residuals: 12 short observations, FF step p95 .0750 -> .0804m, and 30 post-end >.3m steps (max1.898m). No timing/push/deploy; evidence .analysis/archive/2026-10-16/ccnc-ego-fast.
 
 - On 2026-10-16, origin/carrot-wip d34224b4 (8 commits: signal display/processing,

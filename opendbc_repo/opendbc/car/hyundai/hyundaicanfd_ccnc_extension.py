@@ -1516,7 +1516,8 @@ class _CcncRadarDisplayTracker:
     else:
       reliable = False
     return correction.apply(point, aligned_y, filtered_y, slot, reference, bounds,
-                            self.tracks.get(point.trackId), frame, reliable)
+                            self.tracks.get(point.trackId), frame, reliable,
+                            lateral_filter=position[-1] if position is not None else None)
 
 
 class _CcncVehiclePositionCorrection:
@@ -1577,8 +1578,11 @@ class _CcncVehiclePositionCorrection:
     self.ego_follow_model = None
     self.ego_follow_motion = deque()
     self.ego_targets = {}
+    self.ego_drawn = {}
+    self.ego_resume = {}
 
   def update_ego_follow(self, md, speed, desire, left, right, now):
+    was_active = self.ego_follow_active
     if self.ego_follow_time is not None and not 0 <= now - self.ego_follow_time <= .15:
       self.ego_follow_until = -math.inf
       self.ego_follow_motion.clear()
@@ -1608,6 +1612,11 @@ class _CcncVehiclePositionCorrection:
     if desire in (3, 4) or state in ('laneChangeStarting', 'laneChangeFinishing') or moving:
       self.ego_follow_until = now + 1.
     self.ego_follow_active = now <= self.ego_follow_until
+    if was_active and not self.ego_follow_active:
+      self.ego_resume, self.ego_drawn = self.ego_drawn, {}
+    elif not was_active and self.ego_follow_active:
+      self.ego_resume.clear()
+    self.ego_resume = {key: value for key, value in self.ego_resume.items() if 0 <= now - value[1] * .01 <= .15}
 
   @staticmethod
   def _median(values):
@@ -1616,8 +1625,8 @@ class _CcncVehiclePositionCorrection:
     return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
 
   def stabilize_slots(self, values, selected, observations, frame, bypass=False):
-    # Run the ordinary history unchanged, then accelerate drawing only. This
-    # keeps slot selection and every send outside the maneuver identical.
+    # Slot selection stays ordinary. When the faster drawing ends, the
+    # correction and its lateral filter resume from the last visible value.
     self._stabilize_slots(values, selected, observations, frame, bypass)
     if not self.ego_follow_active:
       return
@@ -1631,6 +1640,9 @@ class _CcncVehiclePositionCorrection:
       output = min(max(filtered, aligned - .25), aligned + .25)
       values[lateral] = (min(12.7, max(-12.8, -output)) if slot == 0 else
                          min(5.4, max(0., output if slot == 1 else -output)))
+      observation = observations.get(track_id)
+      if observation is not None:
+        self.ego_drawn[track_id] = (observation[0], frame, values[lateral] * (-1 if slot in (0, 2) else 1))
 
   def _stabilize_slots(self, values, selected, observations, frame, bypass=False):
     """Debounce an object's vacant-slot crossing without changing raw selection."""
@@ -1730,7 +1742,7 @@ class _CcncVehiclePositionCorrection:
                and abs(recent[-1][i] - recent[0][i]) >= max(.04, .15 * span)
                for i, net in zip((1, 2), nets))
 
-  def apply(self, point, aligned_y, filtered_y, slot, reference, bounds, observation, frame, reliable=True):
+  def apply(self, point, aligned_y, filtered_y, slot, reference, bounds, observation, frame, reliable=True, lateral_filter=None):
     if self.ego_follow_active and point.trackId not in self.ego_targets:
       self.ego_targets[point.trackId] = (frame, aligned_y, filtered_y, reference)
     if observation is None:
@@ -1751,6 +1763,16 @@ class _CcncVehiclePositionCorrection:
                    output=filtered_y, slot=slot, reference=reference, slot_frame=-1000, boundary_follow=not inside,
                    fast=deque(maxlen=8), fast_speed=0.0, raw=deque(), drift=deque(), hold=None, ff_frame=None, jumped=False, inward_frame=-1000)
       self.tracks[point.trackId] = saved
+    resume = self.ego_resume.pop(point.trackId, None)
+    if resume is not None and resume[0] == birth and 0 <= frame - resume[1] <= 15:
+      filtered_y = resume[2]
+      saved['output'] = filtered_y
+      if saved.get('ff_departure') is not None:
+        saved['ff_departure']['output'] = filtered_y
+      if lateral_filter is not None:
+        lateral_filter.reset(filtered_y)
+        lateral_filter._buffer.extend((filtered_y,) * 3)
+        lateral_filter._following_step = False
     bounds_valid = bounds is not None and all(math.isfinite(v) for v in bounds) and bounds[0] > bounds[1]
     center_valid = bounds_valid and bounds[1] <= center <= bounds[0]
     if center_valid and not inside:

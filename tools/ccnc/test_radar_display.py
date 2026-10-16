@@ -1810,7 +1810,7 @@ def test_motion_and_boundary_use_continuous_geometry_before_measurement_smoothin
   t.filter_position(p, .2, ('lane', 'center'), 0)
   t.observe(live, 5)
   _, filtered = t.filter_position(p, .8, ('lane', 'position'), 5)
-  monkeypatch.setattr(t.position_correction, 'apply', lambda point, aligned, *args: aligned)
+  monkeypatch.setattr(t.position_correction, 'apply', lambda point, aligned, *args, **kwargs: aligned)
   value = t.correct_position(p, .8, filtered, 0, ('lane', 'position'), 5)
   assert value == pytest.approx(.35)
 

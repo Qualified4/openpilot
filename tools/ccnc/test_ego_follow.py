@@ -13,7 +13,7 @@ def step(c,t,frame,y,slot=0,starting=False,blinker=False):
   p=point(y=y);t.observe(N(points=[p]),frame)
   c.update_centers(3.5,3.5,frame,t.tracks)
   _,f=t.filter_position(p,y,('lane','center'),frame)
-  out=c.apply(p,y,f,slot,('lane','center'),((1.75,-1.75),(5.25,1.75),(-1.75,-5.25))[slot],t.tracks[1],frame)
+  out=c.apply(p,y,f,slot,('lane','center'),((1.75,-1.75),(5.25,1.75),(-1.75,-5.25))[slot],t.tracks[1],frame,lateral_filter=t.positions[1][-1])
   values={k:0 for fields in c.SLOT_FIELDS for k in fields}
   distance,lateral,detect=c.SLOT_FIELDS[slot]
   values.update({distance:16.,lateral:-out if slot in (0,2) else out,detect:1})
@@ -47,17 +47,26 @@ def test_blinker_without_lateral_motion_is_unchanged():
     assert not c.ego_follow_active
     assert actual==expected
 
-def test_post_interval_restores_original_rules_and_history():
-  c,t=pair();base,bt=pair()
-  base.update_ego_follow=lambda *args:None
+def test_post_interval_resumes_ordinary_rates_from_visible_value():
+  c,t=pair()
+  previous=None
   for frame in range(0,401,5):
     active=100<=frame<=200;y=3.3 if frame>=100 else .1;slot=1 if frame>=100 else 0
-    actual,_=step(c,t,frame,y,slot,starting=active)
-    # The reference runs ordinary rules without the new drawing activation.
-    expected,_=step(base,bt,frame,y,slot,starting=active)
-    if frame<=300 and frame>=100:assert c.ego_follow_active
+    _,output=step(c,t,frame,y,slot,starting=active)
+    if 100<=frame<=300:assert c.ego_follow_active
     if frame>300:
       assert not c.ego_follow_active
-      assert actual==expected
-      assert c.tracks==base.tracks
-      assert c.display_slots==base.display_slots
+      assert abs(output-previous)<=.075+1e-9
+    previous=output
+
+
+def test_post_handoff_preserves_last_visible_output_and_lateral_filter():
+  c,t=pair()
+  for frame in range(0,351,5):
+    _,visible=step(c,t,frame,1.2 if frame==350 else .1,starting=200<=frame<=250)
+  assert c.ego_follow_active and visible>=.95-1e-9
+  _,resumed=step(c,t,355,1.2)
+  assert not c.ego_follow_active
+  assert abs(resumed-visible)<=.015+1e-9
+  assert t.positions[1][-1].value==visible
+  assert c.tracks[1]['locked']

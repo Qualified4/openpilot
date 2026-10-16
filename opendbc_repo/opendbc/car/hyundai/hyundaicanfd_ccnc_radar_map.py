@@ -1539,7 +1539,7 @@ def _correct_positions(tracker, correction, values, frame, md, ext):
       values[distance] = min(204.7, max(0., far.apply(x) * .8))
       point = SimpleNamespace(trackId=obj.key, dRel=x, yRel=y, ccnc_fresh=obj.seen == tracker.radar_stamp)
       reliable = bounds is not None and (slot == 0 or correction.center_valid[slot - 1])
-      output = correction.apply(point, aligned, side.apply(aligned), slot, reference, bounds, observations[obj.key], frame, reliable)
+      output = correction.apply(point, aligned, side.apply(aligned), slot, reference, bounds, observations[obj.key], frame, reliable, lateral_filter=side)
     if slot == 0:
       values[lateral] = min(12.7, max(-12.8, -output))
     else:
