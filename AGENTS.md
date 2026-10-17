@@ -1,5 +1,7 @@
 # Repository memory
 
+- On 2026-10-17, origin/carrot-wip e944a8c5 (one commit: existing lead handover takes priority over auxiliary red veto) is merged into ccnc-hda1 on2e948f54. Only AGENTS.md conflicted; all entries from both sides retained, CCNC first. CCNC extension/map bytes and all five Ccnc settings are unchanged; catalog baseline remains f104b56c because settings did not change. Checks: CCNC943, map161, signal/planner/lead-brake622 (including22 new handover cases) and user-doc check pass. Desktop tests use ASCII capnp staging and a native Params lookup double; incomplete global cv2 caused four initial brake-test failures, resolved with project-pinned opencv-python-headless4.13.0.92 in private analysis/deps only. No closed-loop MPC/vehicle validation, native build, timing, push or deployment. Evidence .analysis/archive/2026-10-17/carrot-merge-lead.
+
 - On 2026-10-17, origin/carrot-wip f104b56c (2 commits: S3 Wi-Fi H.264/firmware1.2.0, bounded network-stall backpressure and stronger-AP selection) is merged into ccnc-hda1 on2e434486. Only AGENTS.md conflicted; all complete blocks from both sides are preserved, CCNC first. CCNC extension/map bytes and five Ccnc settings are unchanged. The test catalog baseline follows incoming upstream. Checks: CCNC943, map161, Wi-Fi/H.264/settings/retry60, installer browser5, user-doc and Wiki validators pass. The separate performance-safeguards module cannot collect on this PC without pyray; no native ESP-IDF/GBM build or vehicle validation. UTF-8/ASCII capnp staging and default-OFF Params test double; browser tests use an LF-normalized scratch copy only. No push/deployment. Evidence .analysis/archive/2026-10-17/carrot-merge.
 
 - On 2026-10-17, side replacement display continuity on0451bcc8: operating13A was absent (archived rejected prototype only). Inherit only output between locked stable central side displays within30m/.15s, actual/predicted x3m, target delta.35m and center.6m; no ID/map/lock/vision/filter history inheritance. 175 segments/205449 sends: side exchange steps93->80/returns66->57; keeping111->98/246->237; side p95 .019767->.019507m, FF unchanged; saw61 worse0, maneuver late0, presence/raw/display slots/distance/signal-only differences0. Changed1273 sends. Actual seeds82 (12 different-source, identity unresolved); all5 visually different-car candidate windows excluded. Local2s steps increase in2 windows and target-error increase up to.258m remain explicit, aggregate stability improves. Production/prototype identical, CCNC943 pass. Evidence .analysis/archive/2026-10-17/ccnc-side-replacement; no timing/push/deploy.
@@ -1034,6 +1036,20 @@
   NAS shared-source bundle/fingerprint checked locally, but current wip-only
   publishing and lead replay do not deploy/recalculate this CCNC display map.
   See docs/ccnc_front_radar_detection.md and private 2026-10-11 point-map archive.
+
+- On 2026-10-17, user explicitly requested reusing the existing stop-to-lead
+  condition to bypass auxiliary red departure vetoes. Share finite positive
+  leadOne range and dRel - filtered model stop distance <2m with both stopped
+  handovers; 2m is relative to model stopping, not ego-to-lead spacing. Effective
+  start/legacy decisions suppress hold/warning/red injection while eligible,
+  including final longitudinal veto, without reporting green or granting accel.
+  Preserve red memory for immediate reapplication on lead loss/range exit and
+  preserve soft hold/user stop/MPC leads. Moving mode2 preparation is unchanged.
+  715 desktop tests pass with native Params lookup doubled. Publish both maintained
+  branches single-parent; no vehicle install or closed-loop road claim. See
+  docs/signal_lead_handover_20261017.md. This supersedes prior blanket red-veto
+  priority over an eligible lead, not signal recognition/green confirmation.
+
 - On 2026-10-16, user reported repeated blank S3 H.264 output after initial pass.
   250ms queue-full shutdown magnified short stalls: retain three ordered slots,
   apply HUD-encoder backpressure with close/error checks and a3s dead-sender cap.
