@@ -1,5 +1,7 @@
 # Repository memory
 
+- On 2026-10-18, origin/carrot-wip c44d20f9 (5 commits: HUD retry/session memory reclamation and discovery preflight, offline central-signal experiment, memory follow-up and withdrawn locationd experiment records) is merged into ccnc-hda1 on dfff5764. During preparation the separately created CCNC round3 commit dfff5764 appeared; its map/test content matched the preserved working snapshot and remains intact. Only AGENTS.md conflicted; both complete conflict blocks retained, CCNC first. CCNC map/extension/test and all five Ccnc settings are unchanged by the merge; catalog baseline stays f104b56c. Checks: CCNC952, map/integration195, HUD101, signal/planner/lead-brake/central527 and user-doc validator pass. Desktop checks use ASCII capnp staging, native Params lookup double, existing pinned OpenCV and desktop TICI=False for HUD argument tests; the initial hardware import needed unavailable zstandard, so no Linux hardware validation is claimed. Central selector stays offline; locationd implementation remains original. No native build, vehicle replay/install, timing, push or deployment. Evidence .analysis/archive/2026-10-18/carrot-merge.
+
 - On 2026-10-17, origin/carrot-wip 5405f5a4 (one commit: mute planner signal notices while current leadOne is present, without changing control) is merged into ccnc-hda1 on f563d8b0. Only AGENTS.md conflicted; all complete entries from both sides retained, CCNC first. CCNC extension/map bytes and all five Ccnc settings are unchanged; catalog baseline remains f104b56c. Checks: CCNC952, map167 and signal/planner/lead-brake631 (including9 new lead-alert cases) pass. Desktop checks reuse ASCII capnp staging, a native Params lookup double and private pinned OpenCV. Incoming drive-review limitations remain documented; no claim of fixed creeping. No native build, closed-loop/vehicle validation, timing, push or deployment. Evidence .analysis/archive/2026-10-17/carrot-merge-notices.
 
 - On 2026-10-17, on e6d201b6, confirmed ego-change side->FF first crossings skip debounce only into an empty FF, with finite two-boundary point clearance >= existing ROAD_BOUNDARY_RETURN_MARGIN .35m; already-pending crossings retain ordinary debounce. Davin allowed one valid inner line for >=4 fresh observations/.15s/heading-derived >=.3m/s confirmation; separate current activation leaves old two-line drawing/post histories unchanged. Near reindex .10/.15m gave zero benefit on175 segments; .20m delayed3e1/18 and lost its whiteSUV for2 sends, so bd map/reindex stays unchanged. Accepted175/205449: 6 windows/24 sends, FF gaps in108 windows11599->11575; 3e1/18 FF53.540->53.335s/gap8->4 sends (.4->.2s, target0-.1s remains). Presence/raw selection/distance/signal-only35 differences0; keeping98steps/237returns/p95, global1541steps, FF/LF/RF flicker and old20repeat windows unchanged; current-activation FF-side repeats21->21. Cutin123, FFexit41/52, departing85, outward37 and ego common18 p90 .330s have no added delay. All6 improved +5 suspect video windows reviewed. Production/prototype205449 signatures match; HEAD baseline independently matches; CCNC952+map167 pass. Evidence .analysis/archive/2026-10-17/ccnc-ff-gap; no timing/push/deploy.
@@ -1042,6 +1044,82 @@
   NAS shared-source bundle/fingerprint checked locally, but current wip-only
   publishing and lead replay do not deploy/recalculate this CCNC display map.
   See docs/ccnc_front_radar_detection.md and private 2026-10-11 point-map archive.
+
+- On 2026-10-17, user requested locationd CPU optimization, then rejected the
+  small benefit and explicitly requested stopping, original code and records
+  only. Trial native-result/noise-allocation optimization preserves32,625 replay
+  inputs exactly and saves9.23% replay CPU; live38.63->35.24% of one core is
+  only3.38 percentage points (~0.85 points averaged over cores0--3). Do NOT
+  publish/reinstall the withdrawn implementation/tests. Restore all four C4
+  source/native files to verified original hashes on same boot/base2ef833b2;
+  guarded manager restart recreates the exited tmux session with original env.
+  Original native mapping verified in locationd/paramsd. Final60s model1201/DM1200
+  valid consecutive at20.000005/20.003386Hz; pose1200 healthy at20.001242Hz,
+  same PIDs and eGPU active at both ends. No model/settings/reboot changes or
+  road/memory/hard-deadline claim. Publish records only to both maintained
+  branches, single-parent. See docs/locationd_cpu_20261017.md.
+
+- On 2026-10-17, user requested central-priority signal improvement and historical
+  validation. Offline 122 segments/56,612 observations: any-colour peripheral
+  rejection removes1,035 reds; do not activate it. Preserve every red/red-history
+  track and same-row green pairs: revised selector excludes503 green boxes,
+  not503 labelled false positives. Development48-frame review removes33/34 clear
+  backgrounds and retains7/7 visible overhead greens; seven exclusions remain
+  ambiguous. These examples informed the rule, not independent accuracy tests.
+  Road-only selection barely acts at low-confidence intersections; explicit
+  image fallback is only a screen-position hypothesis. Paired stopped guards
+  have0 changes over115,920 nominal and115,898 +20ms updates,18 releases each;
+  cold per segment, not MPC/moving/closed-loop validation. Existing18.802s red
+  colour gap remains.750 desktop tests pass with native Params lookup doubled.
+  Keep CentralSignalSelector OFFLINE: no observer/display/control/vehicle change.
+  Publish both maintained branches single-parent. See
+  docs/signal_central_selection_20261017.md; raw evidence remains private.
+
+- On 2026-10-17, user requested another live memory-leak investigation while
+  ignition stays on. Same boot/base2ef833b2/selective HUD fixes: untouched580s
+  retry observation returns HUD PSS75.55--75.74MiB, old ION4.75MiB unchanged.
+  Then guarded HUD-only isolation runs real live renderer/native H264 into a
+  packet sink (not S3) for~10min/5985 diagnostic units. Last5min PSS183.81--184.98
+  MiB; bounded text cache resets, GPU240 objects/151.49MiB unchanged across140s.
+  Normal close/collect drops to83.66MiB, display weakref gone, owned ION empty.
+  No additional production leak reproduced or speculative code change. Earlier
+  92% event remains incompletely attributed; no hours/road/S3 stability claim.
+  Restore HUD1; final453.42MiB available/87.43%, S3 disconnected. Independent60s
+  model/DM1200 valid consecutive each at20.0012/20.0069Hz, original PIDs/eGPU.
+  Publish findings both branches single-parent. See docs/hud_memory_followup_20261017.md.
+
+- On 2026-10-17, user reported >92% memory and clarified HUD power was cycled
+  before the observed88%; user authorizes vehicle-log transfer for diagnosis,
+  raw evidence stays private. Three routes/11,046 memory samples reach91%.
+  Old510 graphics leaks are absent; current4.75MiB orphans do not explain it.
+  Reproduce failed JPEG/H264 traceback retention until post-handler collection;
+  gc alone barely returns RSS, glibc trim returns~25-33MiB after close and~9-10MiB
+  after init. Collect/trim only at lifecycle boundaries, preflight authenticated
+  S3 discovery before graphics, preserve TCP-after-init and concise retries.
+  Twelve native injected failures reclaim all test-owned ION/weakrefs, but small
+  PSS growth remains; no long plateau/full-warning fix claim. Selective two-HUD-
+  file install on C4 2ef833b2, no model/control/reboot. Final model/DM60s1200/1201
+  valid consecutive at20.0049/20.0025Hz; S3 still disconnected. 114 desktop tests,
+  one skip. Both maintained branches single-parent. See
+  docs/hud_memory_retry_20261017.md for remaining limits and measurements.
+
+- On 2026-10-17, user requested muting signal notices with a lead and analysis
+  of today's creeping/stopping. Gate all planner signal notices on current
+  leadOne.status, any range, before navigation processing; preserve raw display,
+  control, unrelated warnings and unconsumed notice cooldown. 724 tests pass;
+  paired recorded-input replay20,384 updates changes no control outputs and
+  removes42 notices (default context, not native/MPC replay). Read-only vehicle
+  already runs2ef833b2/mode2. Collected/hash-verified99qlogs,17rlogs,3videos.
+  11:05:20 red stop: transient vision lead32.6m opens the new2m exception for
+  ~449ms; no pedal, peak0.627m/s and ~1.53m speed-integrated travel. Crossing
+  traffic is visible; exact object identity unproven. This is a remaining
+  regression in immediate lead bypass, NOT fixed by notice muting. 12:01 lead
+  fixed4.15m but filtered stop crosses2.15m:16 hold/exception transitions.
+  13:47 small0.141m/s/~0.20m movement follows actual gap opening with guard
+  continuously bypassed. Do not call all creeping signal flicker or relax red
+  further. Require separate validation of lead continuity/assignment and range
+  stability. Publish both branches single-parent; no vehicle install. See
+  docs/signal_drive_review_20261017.md; recordings remain private.
 
 - On 2026-10-17, user explicitly requested reusing the existing stop-to-lead
   condition to bypass auxiliary red departure vetoes. Share finite positive
