@@ -1572,11 +1572,13 @@ class _CcncVehiclePositionCorrection:
     self.display_selected = (None, None, None)
     self.lane_change = False  # Ego changing lanes (desire or a turn signal), set by update_lanes.
     self.vision_model = None
+    self.ego_change_active = False  # Current confirmed change, without the drawing post interval.
     self.ego_follow_active = False
     self.ego_follow_until = -math.inf
     self.ego_follow_time = None
     self.ego_follow_model = None
     self.ego_follow_motion = deque()
+    self.ego_change_motion = deque()  # One usable inner line may confirm a manual change.
     self.ego_targets = {}
     self.ego_drawn = {}
     self.ego_resume = {}
@@ -1588,6 +1590,7 @@ class _CcncVehiclePositionCorrection:
     if self.ego_follow_time is not None and not 0 <= now - self.ego_follow_time <= .15:
       self.ego_follow_until = -math.inf
       self.ego_follow_motion.clear()
+      self.ego_change_motion.clear()
     self.ego_follow_time = now
     self.ego_targets.clear()
     motion = self.ego_follow_motion
@@ -1601,16 +1604,25 @@ class _CcncVehiclePositionCorrection:
           line = lines[index]
           if (probabilities[index] < .1 or not math.isfinite(probabilities[index])
               or not _ccnc_valid_boundary(line.x, line.y) or line.x[0] > 0 or line.x[-1] < 5):
-            break
+            continue
           y0, ym, y5 = np.interp((0., 2.5, 5.), line.x, line.y)
           velocities.append(float(speed * (-3 * y0 + 4 * ym - y5) / 5.))
       if len(velocities) == 2 and abs(velocities[0] - velocities[1]) <= .5:
         motion.append((now, sum(velocities) * .5))
+      if len(velocities) == 1 or (len(velocities) == 2 and abs(velocities[0] - velocities[1]) <= .5):
+        self.ego_change_motion.append((now, sum(velocities) / len(velocities)))
     while motion and now - motion[0][0] > .3:
       motion.popleft()
     moving = (left != right and len(motion) >= 4 and motion[-1][0] - motion[0][0] >= .15
               and (1 if left else -1) * self._median([v for _, v in motion]) >= .3)
     state = str(getattr(getattr(md, 'meta', None), 'laneChangeState', 'off'))
+    confirmed = self.ego_change_motion
+    while confirmed and now - confirmed[0][0] > .3:
+      confirmed.popleft()
+    changing = (left != right and len(confirmed) >= 4 and confirmed[-1][0] - confirmed[0][0] >= .15
+                and (1 if left else -1) * self._median([v for _, v in confirmed]) >= .3)
+    self.ego_change_active = (bool(desire in (3, 4) or left or right)
+                              and (desire in (3, 4) or state in ('laneChangeStarting', 'laneChangeFinishing') or changing))
     if desire in (3, 4) or state in ('laneChangeStarting', 'laneChangeFinishing') or moving:
       self.ego_follow_until = now + 1.
     self.ego_follow_active = now <= self.ego_follow_until
@@ -1746,7 +1758,14 @@ class _CcncVehiclePositionCorrection:
         common_y = min(max(correction['output'], -5.4), 5.4) if slot else correction['output']
       aligned_y = correction['samples'][-1][2] if correction and correction['samples'] else common_y
       representable = old == 0 or (old == 1 and min(common_y, aligned_y) >= 0) or (old == 2 and max(common_y, aligned_y) <= 0)
-      if old == slot or selected[old] is not None or not representable:
+      road = correction.get('display_road') if correction else None
+      interior_ff = (slot == 0 and road is not None and road[2] is not None
+                     and all(math.isfinite(v) for v in (road[1], *road[2]))
+                     and min(road[2][0] - road[1], road[1] - road[2][1]) >= self.ROAD_BOUNDARY_RETURN_MARGIN)
+      # Only start a shortcut into an empty FF. An existing pending crossing keeps its debounce.
+      immediate_ff = (self.ego_change_active and previous_display[0] is None and saved['pending'] != slot
+                      and old in (1, 2) and interior_ff)
+      if old == slot or selected[old] is not None or not representable or immediate_ff:
         saved['slot'], saved['pending'] = slot, None
       else:
         if saved['pending'] != slot:
