@@ -1155,7 +1155,9 @@ def test_missing_outer_line_prefers_an_adjacent_candidate_without_removing_other
     if mode != 'alone':
       points.append(point(34, 12., -3., 10., motionState=2))
     radar.update(N(points=points), md, now, 0. if mode == 'stopped' else 10., lane_change=mode == 'ego_change')
-  assert radar.objects[radar.selected[2]].source == (34 if mode == 'prefer_adjacent' else 42)
+  # While ego changes lanes the outer line is used whatever its confidence (2026-10-17), so the adjacent car
+  # 3m right is RF and the car beyond that line is not.
+  assert radar.objects[radar.selected[2]].source == (34 if mode in ('prefer_adjacent', 'ego_change') else 42)
 
 
 @pytest.mark.parametrize('sign', [-1, 1])
@@ -1248,3 +1250,128 @@ def test_late_renumber_does_not_reassign_an_existing_ff_on_a_line_glitch():
   radar.update(N(points=[point(1, 12., 0., 10., motionState=2)]),
                selection_model(bounds=(3.2, -.4, -4., -7.6)), 1.25, 5.)
   assert radar.lane_offset == 0
+
+
+def lane_model(lines, probability):
+  """Model lane lines at constant model-frame y (right-positive), all with one confidence."""
+  return N(laneLines=[N(x=[0., 10., 30., 100.], y=[y] * 4) for y in lines],
+           laneLineProbs=[probability] * 4, orientationRate=N(z=[0.]), leadsV3=[])
+
+
+@pytest.mark.parametrize('changing', [True, False])
+def test_ego_lane_change_uses_low_confidence_line_positions(changing):
+  # Recorded 2026-10-17 (3ed/6, 3ed/32): when ego starts a lane change the model's line confidence drops to
+  # .01-.05 while the drawn positions stay continuous. The lane display already ignores the confidence then;
+  # the map uses the positions too instead of falling back to the straight corridor, which dropped the
+  # adjacent car and blinked FF. Without a lane change such lines stay unused.
+  radar = RadarMap()
+  for n in range(30):
+    points = [point(1, 30., 0., 10., motionState=2), point(2, 20., 3.5, 10., motionState=2)]
+    radar.update(N(points=points), lane_model((-5.4, -1.8, 1.8, 5.4), .02), n * .05, 10., lane_change=changing)
+  sources = [None if k is None else radar.objects[k].source for k in radar.selected]
+  assert sources[0] == 1
+  assert sources[1] == (2 if changing else None)
+
+
+def test_ego_lane_change_follows_egos_own_crossing():
+  # Ego has crossed its left line (now .2m right of ego) before the model renumbers its lines. While ego
+  # changes lanes the roles follow ego's crossing at once: the car in the new lane is FF and the old lead RF.
+  radar = RadarMap()
+  for n in range(30):
+    points = [point(1, 20., 1.6, 10., motionState=2), point(2, 15., -2., 10., motionState=2)]
+    radar.update(N(points=points), lane_model((-3.4, .2, 3.8, 7.4), .02), n * .05, 10., lane_change=True)
+  sources = [None if k is None else radar.objects[k].source for k in radar.selected]
+  assert radar.lane_offset == -1
+  assert sources[0] == 1 and sources[2] == 2
+
+
+def test_ego_lane_change_keeps_the_shift_until_the_model_renumbers():
+  # Recorded 2026-10-17 (3ed/32 52.0-52.6s): right after ego crosses, the old line can wobble back just
+  # left of ego (+.3m) while the model still numbers it as ego's line. Releasing the shift then toggled the
+  # new lead between LF and FF; during a lane change the shift holds until the model renumbers its lines
+  # (the new left line then lies about a lane width away).
+  radar = RadarMap()
+  points = lambda: [point(1, 20., 1.6, 10., motionState=2), point(2, 15., -2., 10., motionState=2)]
+  n = 0
+  for lines, count in (((-3.4, .2, 3.8, 7.4), 30), ((-3.9, -.3, 3.3, 6.9), 10)):
+    for _ in range(count):
+      radar.update(N(points=points()), lane_model(lines, .02), n * .05, 10., lane_change=True)
+      n += 1
+      assert n <= 30 or radar.lane_offset == -1
+  sources = [None if k is None else radar.objects[k].source for k in radar.selected]
+  assert sources[0] == 1 and sources[2] == 2
+  for _ in range(10):
+    radar.update(N(points=points()), lane_model((-6.8, -3.2, .4, 4.0), .02), n * .05, 10., lane_change=True)
+    n += 1
+  assert radar.lane_offset == 0
+
+
+def test_ego_lane_change_alignment_follows_the_existing_selector():
+  # Recorded 2026-10-17 (3ed/6 57-60s): during ego's change the map's road alignment drew the old lead left of
+  # ego while the existing selector drew it right, as it is. The change uses the existing references: the
+  # model's current inner lines (any confidence), and for FF within 80 m the planned path once they are weak.
+  md = N(laneLines=[N(x=[0., 50., 100.], y=[y, y + d, y + 2 * d]) for y, d in ((-5.4, 0.), (-1.8, -.5), (1.8, -.5), (5.4, 0.))],
+         position=N(x=[0., 50., 100.], y=[0., -2., -4.]))
+  alignment = module._model_alignment
+  assert alignment(md, 1, 50., 3., 1.) == pytest.approx(2.5)   # side car: line bend only
+  assert alignment(md, 0, 50., 0., 0.) == pytest.approx(-.5)   # confident lines: line bend
+  assert alignment(md, 0, 50., 0., 1.) == pytest.approx(-2.)   # weak lines: planned path
+  assert alignment(md, 0, 50., 0., .5) == pytest.approx(-1.25)  # eased between the two
+  assert alignment(md, 0, 90., 0., 1.) == pytest.approx(-.9)   # no path reference beyond 80 m
+  assert alignment(None, 0, 50., 0., 1.) is None
+
+
+def test_old_lead_beyond_the_new_lead_moves_to_the_side_slot_during_the_shift():
+  # Recorded 2026-10-17 (3ed/32 51.88-52.29s): ego has crossed into the left lane before the model renumbers
+  # its lines. The old lead (25 m, now right of ego) lies beyond the new lead, and the beyond-the-lead checks
+  # read the physical line pair 1/2 - during the shift the right lane - as ego's lane: it left every slot.
+  radar = RadarMap()
+  for n in range(30):
+    points = [point(1, 15., 1.6, 10., motionState=2), point(2, 25., -1.9, 10., motionState=2)]
+    radar.update(N(points=points), lane_model((-3.4, .2, 3.8, 7.4), .02), n * .05, 10., lane_change=True)
+  sources = [None if k is None else radar.objects[k].source for k in radar.selected]
+  assert radar.lane_offset == -1
+  assert sources[0] == 1 and sources[2] == 2
+
+
+def test_cancelled_lane_change_returns_the_lane_roles_with_the_signal_still_on():
+  # Review 2026-10-17 (P1): after ego crossed its left line, a cancelled change brings that line back
+  # gradually. With the signal still on, the shift held until the line was a full metre back and the
+  # neighbour stayed FF. Half a metre back for LANE_RETURN_TIME ends it; a model renumber still ends it at once.
+  radar = RadarMap()
+  points = lambda: [point(1, 20., 1.6, 10., motionState=2), point(2, 15., -2., 10., motionState=2)]
+  n = 0
+  for lines, count in (((-3.4, .2, 3.8, 7.4), 30), ((-4.2, -.6, 3.0, 6.6), 10)):
+    for _ in range(count):
+      radar.update(N(points=points()), lane_model(lines, .02), n * .05, 10., lane_change=True)
+      n += 1
+    if count == 30:
+      assert radar.lane_offset == -1
+  sources = [None if k is None else radar.objects[k].source for k in radar.selected]
+  assert radar.lane_offset == 0
+  assert sources[0] == 2 and sources[1] == 1
+
+
+def test_position_only_lines_do_not_align_the_display_or_survive_a_map_reset():
+  # Review 2026-10-17 (P2, P3): lines kept from their positions alone decide slots, not the display's road
+  # alignment (a centre lock taken on them held a leaving lead in 3e1/13), and display state built on a map
+  # ends when that map resets.
+  radar = RadarMap()
+  for n in range(30):
+    radar.update(N(points=[point(1, 20., 0., 10., motionState=2)]), lane_model((-5.4, -1.8, 1.8, 5.4), .02), n * .05, 10.,
+                 lane_change=True)
+  assert radar.weak == {0, 1, 2, 3}
+  assert module._road_alignment(radar, 0, 20., 0.)[1:] == (('map', None), None)
+  # Review r2: an invalid next model keeps the stored lines, and they stay position-only.
+  broken = lane_model((-5.4, -1.8, 1.8, 5.4), .02)
+  broken.laneLines = [N(x=[0., 10., 30.], y=[]) for _ in range(4)]
+  radar.update(N(points=[point(1, 20., 0., 10., motionState=2)]), broken, 1.5, 10., lane_change=True)
+  assert radar.weak == {0, 1, 2, 3}
+  assert module._road_alignment(radar, 0, 20., 0.)[1:] == (('map', None), None)
+  # A confident observation ends it.
+  radar.update(N(points=[point(1, 20., 0., 10., motionState=2)]), lane_model((-5.4, -1.8, 1.8, 5.4), .9), 1.55, 10.,
+               lane_change=True)
+  assert not radar.weak
+  generation = radar.generation
+  radar.update(N(points=[]), lane_model((-5.4, -1.8, 1.8, 5.4), .02), 5., 10., lane_change=True)  # time gap
+  assert radar.generation is not generation

@@ -163,6 +163,7 @@ class CcncRadarMap:
   # reported .9-1.3m beyond it and nothing changes. Nor does it get one if it drove through ego's lane:
   # its recorded positions TRAIL_NEAR-TRAIL_FAR ahead of ego all lie within TRAIL_ROOM of ego's lane lines.
   LEAD_BEYOND, LEAD_MARGIN, LEAD_CURVE = 5., 1.2, 2.
+  LANE_RETURN_TIME = .3  # s
   TRAIL_STEP, TRAIL_NEAR, TRAIL_FAR, TRAIL_ROOM = 3., 5., 25., .3
   # Beyond LEAD_SIDE_X a side slot behind a displayed lead is not given at all, unless the vehicle is within
   # LEAD_SIDE_PAST of that lead: the far lane geometry is off by up to a lane width there and video cannot
@@ -240,6 +241,10 @@ class CcncRadarMap:
     self.remembered = [False, False, False]
     self.vision_leads = []  # Vision leads at BRIDGE_PROB or more: (x, y, speed or None), map frame.
     self.lane_change = False  # Ego changing lanes (model desire or a turn signal).
+    self.ego_change = False  # Ego actually crossing: lane desire, or a signal with lateral motion.
+    self.lane_return = None  # Since when a shifted line has stayed back on its original side.
+    self.weak = set()  # Lines kept from their positions alone during a change: slots only, not the display.
+    self.generation = object()  # Display state built on this map ends when the map is reset.
     self.reports = {}  # Radar id -> recent (stamp, x, y) reports, ego frame.
     self.jumps = {}  # Radar id -> stamp of its last lateral jump.
     self.hold = None  # (key, lateral, centred, speed): the FF object at its last report inside ego's lane.
@@ -342,9 +347,18 @@ class CcncRadarMap:
         continue
       old = self.lanes.get(i)
       if probability < .1:
-        if old is not None:
-          old.probability *= .9
-        continue
+        if not self.ego_change or i > 3:
+          if old is not None:
+            old.probability *= .9
+          continue
+        # While ego changes lanes the model's line confidence collapses, but its current positions stay
+        # continuous (the lane display ignores the confidence then too): use them, never as strong.
+        probability = .1
+        self.weak.add(i)
+      else:
+        # Only a confident observation of the line ends its position-only standing; an invalid or skipped
+        # model keeps the stored line (and its standing) as it was.
+        self.weak.discard(i)
       # Keep one bracketing point at each edge for interpolation, not the full 190m curve.
       xs = [p[0] for p in coords]
       first = max(0, bisect_left(xs, self.MIN_X) - 1)
@@ -377,23 +391,38 @@ class CcncRadarMap:
     if self.model_stamp is None or not 0. <= self.now - self.model_stamp <= .25:
       self.lane_offset = 0
       return
-    # Require an empty FF and a displayed destination-side car before starting.
-    x = 10.
+    # Require an empty FF and a displayed destination-side car before starting, unless ego is changing
+    # lanes: then follow ego's own crossing of the line near the car.
+    free = self.ego_change
+    x = 5. if free else 10.
     def boundary(i):
       lane = self.lanes.get(i)
       return interpolate(self.geometry.get(i, []), x) if lane is not None and lane.probability >= .1 else None
     left, right = boundary(1), boundary(2)
     offset = self.lane_offset
-    if offset == -1 and (left is None or left >= .1):
+    # During ego's lane change the shift ends when the model renumbers its lines (the old line then lies a
+    # lane width away), not when the line drifts back across ego's position.
+    # A cancelled change brings the line back gradually: half a metre back on its original side for
+    # LANE_RETURN_TIME also ends the shift.
+    back = 1. if free else .1
+    returned = (offset == -1 and left is not None and left >= .5) or (offset == 1 and right is not None and right <= -.5)
+    if not returned:
+      self.lane_return = None
+    elif self.lane_return is None:
+      self.lane_return = self.now
+    cancelled = returned and self.now - self.lane_return >= self.LANE_RETURN_TIME - 1e-6
+    if offset == -1 and (left is None or left >= back or cancelled):
       offset = 0
-    elif offset == 1 and (right is None or right <= -.1):
+    elif offset == 1 and (right is None or right <= -back or cancelled):
       offset = 0
     if offset == 0:
-      if left is not None and left < -.3 and self.selected[0] is None and self.selected[1] is not None and self.selected[2] is None:
+      self.lane_return = None
+    if offset == 0:
+      if left is not None and left < (0. if free else -.3) and (free or (self.selected[0] is None and self.selected[1] is not None and self.selected[2] is None)):
         outer = boundary(0)
         if outer is not None and outer > .1 and 1.8 <= outer - left <= 5.:
           offset = -1
-      elif right is not None and right > .3 and self.selected[0] is None and self.selected[2] is not None and self.selected[1] is None:
+      elif right is not None and right > (0. if free else .3) and (free or (self.selected[0] is None and self.selected[2] is not None and self.selected[1] is None)):
         outer = boundary(3)
         if outer is not None and outer < -.1 and 1.8 <= right - outer <= 5.:
           offset = 1
@@ -476,7 +505,9 @@ class CcncRadarMap:
     """Where the vehicle drove through the stretch TRAIL_NEAR-TRAIL_FAR ahead of ego: for each recorded point, how
     far it lies outside ego's own lane lines (negative inside). The lines are trusted at that range; the
     model draws curves beyond 30m too straight (recorded 2026-10-13)."""
-    lines = [self.geometry.get(i) for i in (1, 2) if i in self.lanes and self.lanes[i].probability >= .1]
+    # Ego's lines through the lane reference: during a late renumber the physical pair 1/2 is a side lane.
+    lines = [self.geometry.get(i) for i in (1 + self.lane_offset, 2 + self.lane_offset)
+             if i in self.lanes and self.lanes[i].probability >= .1]
     if len(lines) < 2:
       return []
     offsets = []
@@ -496,7 +527,7 @@ class CcncRadarMap:
       return False
     if x > (self.LEAD_SIDE_HOLD_X if self.holding else self.LEAD_SIDE_X) and x > lead_x + self.LEAD_SIDE_PAST:
       return True
-    left, right = interpolate(self.geometry.get(1, []), x), interpolate(self.geometry.get(2, []), x)
+    left, right = (interpolate(self.geometry.get(i + self.lane_offset, []), x) for i in (1, 2))
     if left is not None and right is not None and abs(.5 * (left + right)) > self.LEAD_CURVE:
       if (y - left if slot == 1 else right - y) < self.LEAD_MARGIN:
         return True
@@ -1382,7 +1413,7 @@ class CcncRadarMap:
     return min(candidates)[2] if candidates else None
 
   def update(self, live, model, now, v_ego, *, radar_time=None, model_time=None, yaw_rate=None, reverse=False,
-             select=True, lane_curves=None, a_ego=None, blindspot=(False, False), evidence=None, lane_change=False):
+             select=True, lane_curves=None, a_ego=None, blindspot=(False, False), evidence=None, lane_change=False, ego_change=None):
     """Return FF/LF/RF objects; retained state is never fed back to raw radar.
 
     ``yaw_rate`` is left-positive in rad/s. If omitted, use the current model's
@@ -1406,6 +1437,9 @@ class CcncRadarMap:
     self.stopped = stopped
     self.blindspot = tuple(blindspot)
     self.lane_change = bool(lane_change)
+    # Low-confidence lines and ego's own crossing only during an actual change; a signal alone (straight on,
+    # roundabouts) keeps the ordinary policy. Offline callers without the extension pass lane_change only.
+    self.ego_change = self.lane_change if ego_change is None else bool(ego_change)
     # Offline: {radar track id: (radar motion class, reported distance)} read from the raw
     # track message. A live build would carry the class on each RadarPoint as motionState.
     self.evidence = evidence or {}
@@ -1527,11 +1561,13 @@ class CcncRadarMap:
                 walls=self.wall_geometry)
 
 
-_live = SimpleNamespace(tracker=None, raw=None, radar_time=0., model=None, model_time=0., failed=False, filters={})
+_live = SimpleNamespace(tracker=None, raw=None, radar_time=0., model=None, model_time=0., failed=False, filters={}, ego_blend=(None, 0., 0.), aligned={}, handover={}, generation=None)
 
 
 def reset_live():
   _live.tracker, _live.raw, _live.model, _live.filters = CcncRadarMap(), None, None, {}
+  _live.ego_blend = None, 0., 0.
+  _live.aligned, _live.handover, _live.generation = {}, {}, None
 
 
 def _road_alignment(tracker, slot, x, y):
@@ -1550,9 +1586,44 @@ def _road_alignment(tracker, slot, x, y):
   if not inner or (len(inner) == 2 and not all(2.3 <= left - right <= 4.8 for left, right in zip(*inner))):
     return y, ('map', None), None
   shift = sum(here - near for here, near in inner) / len(inner)
+  # Lines kept from their positions alone still bend the drawing with the road, but are no reference for
+  # the centre lock or its bounds (3e1/13: a lock taken on them held a leaving lead for seconds).
+  if any(i + tracker.lane_offset in tracker.weak for i in (1, 2) if i in lines):
+    return y - shift, ('map', None), None
   left, right = ((1, 2), (0, 1), (2, 3))[slot]
   bounds = (lines[left][0] - shift, lines[right][0] - shift) if left in lines and right in lines else None
   return y - shift, ('lane', 'center' if len(inner) == 2 else 1 in lines), bounds
+
+
+def _bend(curve, x):
+  """Lateral bend of one model curve from its start to x (np.interp's end clamp), or None."""
+  xs, ys = list(curve[0]), list(curve[1])
+  stop = next((i for i in range(1, len(xs)) if xs[i] <= xs[i - 1]), len(xs))
+  points = list(zip(xs[:stop], ys[:stop])) if len(xs) == len(ys) else []
+  if len(points) < 2 or not all(math.isfinite(v) for point in points for v in point):
+    return None
+  return interpolate(points, min(max(x, points[0][0]), points[-1][0])) - points[0][1]
+
+
+def _model_alignment(md, slot, x, y, path):
+  """While ego changes lanes, align like the existing selector: the radar lateral bent from ego to x by the
+  model's current inner lines (whatever their confidence), and for FF within 80 m by the planned path as
+  far as ``path`` (0-1) says the lines are uncertain. The map's road alignment kept the old lead on the old
+  lane's side of ego's path (3ed/6 drawn left, the existing selector right)."""
+  if md is None:
+    return None
+  lines = getattr(md, 'laneLines', ())
+  bends = [b for b in (_bend((lines[i].x, lines[i].y), x) for i in (1, 2) if len(lines) > i) if b is not None]
+  lane = sum(bends) / len(bends) if bends else None
+  if slot == 0 and path > 0. and x <= 80.:
+    route = _bend((md.position.x, md.position.y), x)
+    if route is not None:
+      lane = route if lane is None else lane + path * (route - lane)
+  return None if lane is None else y + lane
+
+
+EGO_ALIGN_TIME = .5  # s, ego's change and the path reference
+EGO_HANDOVER_TIME = .3  # s, one vehicle moving to another slot
 
 
 def _correct_positions(tracker, correction, values, frame, md, ext):
@@ -1563,6 +1634,21 @@ def _correct_positions(tracker, correction, values, frame, md, ext):
   observations = {o.key: (o.born, round(o.seen * 100.)) for o in tracker.objects.values()}
   correction.update_centers(centers[0], centers[1], frame, observations)
   filters = {}
+  # The existing selector's alignment while ego changes lanes, eased in and out over EGO_ALIGN_TIME so that
+  # the change of reference does not step the drawing.
+  model = _live.model if 0. <= frame * .01 - _live.model_time <= .25 else None
+  if _live.generation is not tracker.generation:
+    _live.generation, _live.ego_blend, _live.aligned, _live.handover = tracker.generation, (None, 0., 0.), {}, {}
+  stamp, blend, path = _live.ego_blend
+  dt = min(max((frame - stamp) * .01, 0.), .25) if stamp is not None else 0.
+  # The confirmed change only, so that the blend has left before the existing end hand-over a second later.
+  blend = min(max(blend + (1. if correction.ego_follow_active else -1.) * dt / EGO_ALIGN_TIME, 0.), 1.)
+  # The existing FF takes the path reference once the selected line drops below 0.5 confidence.
+  probs = list(getattr(model, 'laneLineProbs', ()))[1:3] if model is not None else []
+  uncertain = len(probs) == 2 and max(probs) < .5
+  path = min(max(path + (1. if uncertain else -1.) * dt / EGO_ALIGN_TIME, 0.), 1.) if blend > 0. else 0.
+  _live.ego_blend = frame, blend, path
+  handover, drawn = (_live.handover, {}) if blend > 0. else ({}, {})
   for slot, (distance, lateral, detect) in enumerate(tracker.SLOT_FIELDS):
     obj = tracker.objects.get(tracker.selected[slot])
     if obj is None or not values[detect]:
@@ -1574,6 +1660,23 @@ def _correct_positions(tracker, correction, values, frame, md, ext):
       output = saved['output'] if saved is not None and saved['birth'] == obj.born else y
     else:
       aligned, reference, bounds = _road_alignment(tracker, slot, x, y)
+      target = _model_alignment(model, slot, x, y, path) if blend > 0. else None
+      if target is not None:
+        aligned += blend * (target - aligned)
+      if blend > 0.:
+        # The same vehicle moving to another slot changes reference (path for FF, lines for a side car):
+        # carry the drawn alignment across and ease it onto the new one.
+        last = _live.aligned.get(obj.key)
+        if last is not None and last[0] == obj.born and last[1] != slot and 0 <= frame - last[3] <= 15:
+          handover[obj.key] = obj.born, last[2] - aligned, frame
+        carried = handover.get(obj.key)
+        if carried is not None and carried[0] == obj.born:
+          left = 1. - (frame - carried[2]) * .01 / EGO_HANDOVER_TIME
+          if left > 0.:
+            aligned += carried[1] * left
+          else:
+            del handover[obj.key]
+        drawn[obj.key] = obj.born, slot, aligned, frame
       previous = _live.filters.get(obj.key)
       if previous is None or previous[0] != obj.born or not 0 <= frame - previous[1] <= 15:
         previous = (obj.born, frame, ext._CcncRadarPositionFilter(x, True), ext._CcncRadarPositionFilter(aligned, False))
@@ -1590,6 +1693,7 @@ def _correct_positions(tracker, correction, values, frame, md, ext):
       output = min(max(output, -5.4), 5.4)
       values[lateral] = min(max(float(output if slot == 1 else -output), 0.), 12.7)
   _live.filters = filters
+  _live.aligned, _live.handover = drawn, handover
   correction.stabilize_slots(values, tracker.selected, observations, frame, bypass=tracker.holding)
 
 
@@ -1610,10 +1714,12 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
     if md is not None and md is not _live.model:
       _live.model, _live.model_time = md, now
     desire = str(getattr(getattr(md, 'meta', None), 'desire', ''))
+    signal = bool(getattr(out, 'leftBlinker', False) or getattr(out, 'rightBlinker', False))
     tracker.update(live, md, now, out.vEgo, radar_time=_live.radar_time, model_time=_live.model_time,
                    reverse=str(out.gearShifter) == 'reverse', a_ego=out.aEgo,
                    blindspot=(out.leftBlindspot, out.rightBlindspot),
-                   lane_change=desire in ('laneChangeLeft', 'laneChangeRight') or bool(getattr(out, 'leftBlinker', False) or getattr(out, 'rightBlinker', False)))
+                   lane_change=desire in ('laneChangeLeft', 'laneChangeRight') or signal,
+                   ego_change=desire in ('laneChangeLeft', 'laneChangeRight') or signal)
     for side, center in enumerate((state.lf_center, state.rf_center)):
       lane_center = ext._ccnc_side_lane_center(md, side)
       if lane_center is not None:
