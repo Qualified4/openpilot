@@ -1,5 +1,7 @@
 # Repository memory
 
+- On 2026-10-17, origin/carrot-wip 5405f5a4 (one commit: mute planner signal notices while current leadOne is present, without changing control) is merged into ccnc-hda1 on f563d8b0. Only AGENTS.md conflicted; all complete entries from both sides retained, CCNC first. CCNC extension/map bytes and all five Ccnc settings are unchanged; catalog baseline remains f104b56c. Checks: CCNC952, map167 and signal/planner/lead-brake631 (including9 new lead-alert cases) pass. Desktop checks reuse ASCII capnp staging, a native Params lookup double and private pinned OpenCV. Incoming drive-review limitations remain documented; no claim of fixed creeping. No native build, closed-loop/vehicle validation, timing, push or deployment. Evidence .analysis/archive/2026-10-17/carrot-merge-notices.
+
 - On 2026-10-17, on e6d201b6, confirmed ego-change side->FF first crossings skip debounce only into an empty FF, with finite two-boundary point clearance >= existing ROAD_BOUNDARY_RETURN_MARGIN .35m; already-pending crossings retain ordinary debounce. Davin allowed one valid inner line for >=4 fresh observations/.15s/heading-derived >=.3m/s confirmation; separate current activation leaves old two-line drawing/post histories unchanged. Near reindex .10/.15m gave zero benefit on175 segments; .20m delayed3e1/18 and lost its whiteSUV for2 sends, so bd map/reindex stays unchanged. Accepted175/205449: 6 windows/24 sends, FF gaps in108 windows11599->11575; 3e1/18 FF53.540->53.335s/gap8->4 sends (.4->.2s, target0-.1s remains). Presence/raw selection/distance/signal-only35 differences0; keeping98steps/237returns/p95, global1541steps, FF/LF/RF flicker and old20repeat windows unchanged; current-activation FF-side repeats21->21. Cutin123, FFexit41/52, departing85, outward37 and ego common18 p90 .330s have no added delay. All6 improved +5 suspect video windows reviewed. Production/prototype205449 signatures match; HEAD baseline independently matches; CCNC952+map167 pass. Evidence .analysis/archive/2026-10-17/ccnc-ff-gap; no timing/push/deploy.
 
 - On 2026-10-17, Davin accepted bd on d1a2b368: fresh model lane-change/no-inner-line corridor FF capped at80m, plus guarded late lane-role reindex (.3m entry/.1m return at10m; empty FF, destination-side selection, opposite side empty). Keep straight corridor; no position-path selection or longer lane memory. 175 segments/205449 sends: 3e1/18 firstFF53.740->53.540s, FFgap12->8 sends; 3e6/8 far178m10->0, new21m firstFF39.135s unchanged. Far source removals79 sends/5 windows are excluded under Davin's >80m FF/side selection policy; other source losses0. All >.3m steps1549->1541, keeping steps98/returns237/p95 and FF flicker263 unchanged; maneuver added delays0. Changed139 sends, production/prototype signatures identical for all205449; CCNC943+map167 pass. Unused prototype path calculations removed without output differences. Evidence .analysis/archive/2026-10-17/ccnc-ego-selection; no timing/push/deploy.
@@ -2609,3 +2611,21 @@
   parameter name. Run the Wiki validator and focused generator tests after editing.
 - Generated setting pages carry the same authoring-guide URL in a hidden `CARROT:AUTHORING` marker
   so an agent working from the Wiki checkout alone can discover the canonical rules.
+
+- On 2026-10-17, user requested muting signal notices with a lead and analysis
+  of today's creeping/stopping. Gate all planner signal notices on current
+  leadOne.status, any range, before navigation processing; preserve raw display,
+  control, unrelated warnings and unconsumed notice cooldown. 724 tests pass;
+  paired recorded-input replay20,384 updates changes no control outputs and
+  removes42 notices (default context, not native/MPC replay). Read-only vehicle
+  already runs2ef833b2/mode2. Collected/hash-verified99qlogs,17rlogs,3videos.
+  11:05:20 red stop: transient vision lead32.6m opens the new2m exception for
+  ~449ms; no pedal, peak0.627m/s and ~1.53m speed-integrated travel. Crossing
+  traffic is visible; exact object identity unproven. This is a remaining
+  regression in immediate lead bypass, NOT fixed by notice muting. 12:01 lead
+  fixed4.15m but filtered stop crosses2.15m:16 hold/exception transitions.
+  13:47 small0.141m/s/~0.20m movement follows actual gap opening with guard
+  continuously bypassed. Do not call all creeping signal flicker or relax red
+  further. Require separate validation of lead continuity/assignment and range
+  stability. Publish both branches single-parent; no vehicle install. See
+  docs/signal_drive_review_20261017.md; recordings remain private.
