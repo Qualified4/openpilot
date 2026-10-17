@@ -215,6 +215,7 @@ class CcncRadarMap:
     self.bands = []
     self.band_points = {}  # Object key -> (sign, reference, road distance, offset, odometer when measured, inside a lane).
     self.band_early = set()  # Keys taken by prediction, for inspection.
+    self.lane_offset = 0
     self.lanes = {}
     self.geometry = {}
     self.pose = (0., 0., 0.)
@@ -363,14 +364,47 @@ class CcncRadarMap:
       points = sorted([ego for _, ego in behind] + placed[:40])
       self.geometry[i] = [p for j, p in enumerate(points) if j == 0 or p[0] > points[j - 1][0] + .001]
 
+  def _lane_view(self, x):
+    # Keep the stored physical lines; only their roles follow ego across a late renumber.
+    indices = {i: i + self.lane_offset for i in range(4) if 0 <= i + self.lane_offset < 4}
+    indices.update({4: 4, 5: 5})
+    bounds = {i: interpolate(self.geometry.get(j, []), x) for i, j in indices.items()}
+    usable = {i for i, j in indices.items() if j in self.lanes and self.lanes[j].probability >= .1 and bounds[i] is not None}
+    strong = {i for i in usable if self.lanes[indices[i]].probability >= .6 and self.lanes[indices[i]].consistent >= 3}
+    return bounds, usable, strong
+
+  def _update_lane_reference(self):
+    if self.model_stamp is None or not 0. <= self.now - self.model_stamp <= .25:
+      self.lane_offset = 0
+      return
+    # Require an empty FF and a displayed destination-side car before starting.
+    x = 10.
+    def boundary(i):
+      lane = self.lanes.get(i)
+      return interpolate(self.geometry.get(i, []), x) if lane is not None and lane.probability >= .1 else None
+    left, right = boundary(1), boundary(2)
+    offset = self.lane_offset
+    if offset == -1 and (left is None or left >= .1):
+      offset = 0
+    elif offset == 1 and (right is None or right <= -.1):
+      offset = 0
+    if offset == 0:
+      if left is not None and left < -.3 and self.selected[0] is None and self.selected[1] is not None and self.selected[2] is None:
+        outer = boundary(0)
+        if outer is not None and outer > .1 and 1.8 <= outer - left <= 5.:
+          offset = -1
+      elif right is not None and right > .3 and self.selected[0] is None and self.selected[2] is not None and self.selected[1] is None:
+        outer = boundary(3)
+        if outer is not None and outer < -.1 and 1.8 <= right - outer <= 5.:
+          offset = 1
+    self.lane_offset = offset
+    self.lane_change = self.lane_change or offset != 0
+
   def _lane(self, x, y, respect_walls=False, moving=False, settled=False):
     """Lane slot of an ego-frame position, with the existing selector's lane policy:
     inner lines from probability .1, an adjacent lane bounded by its outer line and/or
     the road edge with 1.8m of room, a wider outer margin for moving vehicles."""
-    bounds = {i: interpolate(points, x) for i, points in self.geometry.items()}
-    # Indices: [outer left, inner left, inner right, outer right, left road edge, right road edge].
-    usable = {i for i, lane in self.lanes.items() if lane.probability >= .1 and bounds.get(i) is not None}
-    strong = {i for i in usable if self.lanes[i].probability >= .6 and self.lanes[i].consistent >= 3}
+    bounds, usable, strong = self._lane_view(x)
     walls = [wy for wy in (interpolate(points, x) for points in self.wall_geometry) if wy is not None] if respect_walls else []
     if {1, 2} <= usable:
       a, b = bounds[1], bounds[2]
@@ -381,8 +415,15 @@ class CcncRadarMap:
           b = max(b, wy)
       if 1.8 <= a - b <= 5. and b <= y <= a:
         return 0, {1, 2} <= strong and min(a - y, y - b) >= .35, abs(y - .5 * (a + b))
-    elif not usable.intersection((1, 2)) and abs(y) <= 1.2:
-      return 0, False, abs(y)  # No lane lines at all: straight-ahead corridor, never trusted.
+    elif not usable.intersection((1, 2)):
+      meta = getattr(self.model, 'meta', None)
+      changing = (str(getattr(meta, 'desire', '')) in ('laneChangeLeft', 'laneChangeRight')
+                  or str(getattr(meta, 'laneChangeState', 'off')) in ('laneChangeStarting', 'laneChangeFinishing'))
+      # A distant interpolation gap alone must not enable the no-line distance cap.
+      limited = (self.model_stamp is not None and 0. <= self.now - self.model_stamp <= .25 and changing
+                 and not any(i in self.lanes and self.lanes[i].probability >= .1 for i in (1, 2)))
+      if (not limited or x <= 80.) and abs(y) <= 1.2:
+        return 0, False, abs(y)  # Keep the straight corridor; no model-path selection.
     for slot, inner, line, edge, sign in ((1, 1, 0, 4, 1.), (2, 2, 3, 5, -1.)):
       if inner not in usable:
         continue
@@ -1189,7 +1230,8 @@ class CcncRadarMap:
 
   def _ego_lines(self, x):
     """Ego's left and right lane lines at x (None where unusable)."""
-    return tuple(interpolate(self.geometry.get(i, []), x) if i in self.lanes and self.lanes[i].probability >= .1 else None for i in (1, 2))
+    bounds, usable, _ = self._lane_view(x)
+    return tuple(bounds.get(i) if i in usable else None for i in (1, 2))
 
   def _centre(self, x):
     """Middle of ego's lane lines at x, or None."""
@@ -1378,6 +1420,7 @@ class CcncRadarMap:
       self._update_lanes(model, model_time, lane_curves)
       self.model, self.model_stamp = model, model_time
     self.usable = live is not None and 0. <= now - radar_time <= .15
+    self._update_lane_reference()
     self.leads = [(lead.x[0] - 1.52, -lead.y[0]) for lead in getattr(model, 'leadsV3', ())
                   if lead.prob >= .8 and len(lead.x) and len(lead.y)] if model is not None and 0. <= now - model_time <= .25 else []
     self.vision_leads = [(lead.x[0] - 1.52, -lead.y[0], float(lead.v[0]) if len(getattr(lead, 'v', ())) and math.isfinite(lead.v[0]) else None)
@@ -1496,7 +1539,8 @@ def _road_alignment(tracker, slot, x, y):
   object, in the form the existing position correction takes (left-positive metres)."""
   lines = {}
   for i in range(4):
-    lane, points = tracker.lanes.get(i), tracker.geometry.get(i)
+    physical = i + tracker.lane_offset
+    lane, points = tracker.lanes.get(physical), tracker.geometry.get(physical)
     if lane is None or lane.probability < .1 or not points:
       continue
     here, near = interpolate(points, x), interpolate(points, min(max(0., points[0][0]), points[-1][0]))
@@ -1592,7 +1636,12 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
         values[detect] = (state.lf_detect if slot == 1 else state.rf_detect).apply(closing)
     correction = state.radar_display_tracker.position_correction
     if correction is not None:
-      _correct_positions(tracker, correction, values, frame, md, ext)
+      old_change = correction.lane_change
+      correction.lane_change = old_change or tracker.lane_offset != 0
+      try:
+        _correct_positions(tracker, correction, values, frame, md, ext)
+      finally:
+        correction.lane_change = old_change
     # Rear blind-spot icons, as in the existing display.
     offset = (state.r_lane_f.value - state.l_lane_f.value) / 2 if model_lanes else 0.
     for prefix, active, distance, lateral in (('LR', out.leftBlindspot, state.lr_distance, 2.8 - offset),

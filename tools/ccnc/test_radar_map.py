@@ -1187,3 +1187,64 @@ def test_body_reflection_continuation_does_not_bypass_track_identity_checks(chan
   now = .8 if changed == 'time' else .5
   radar.update(N(points=[point(source, 7.5, y, speed, motionState=2)]), model(.2 if changed == 'uncertain' else .95), now, 0., lane_change=changed == 'ego_lane_change')
   assert len(radar.objects) == 2 and max(radar.objects) != key
+
+
+def selection_model(bounds=(5.4, 1.8, -1.8, -5.4), probability=.95, changing=True):
+  md = model(probability)
+  md.laneLines = [N(x=[0., 10., 30., 200.], y=[-bound] * 4) for bound in bounds]
+  md.meta = N(desire='laneChangeLeft' if changing else 'none',
+              laneChangeState='laneChangeStarting' if changing else 'off')
+  return md
+
+
+def run_selection(points, make_model):
+  radar = RadarMap()
+  for i in range(25):
+    radar.update(N(points=[point(key, x, y, 10., motionState=2) for key, x, y in points]),
+                 make_model(), i * .05, 5.)
+  return radar
+
+
+@pytest.mark.parametrize('changing,expected', [(True, None), (False, 1)])
+def test_no_lane_far_corridor_cap_only_during_model_lane_change(changing, expected):
+  radar = run_selection([(1, 178., 0.)], lambda: selection_model(probability=0., changing=changing))
+  key = radar.selected[0]
+  assert (None if key is None else radar.objects[key].source) == expected
+
+
+def test_no_lane_corridor_keeps_straight_reference_instead_of_model_path():
+  def make_model():
+    md = selection_model(probability=0.)
+    md.position = N(x=[0., 10., 30., 200.], y=[0., -1.5, -4.5, -4.5], yStd=[.01] * 4)
+    return md
+  radar = run_selection([(1, 21., 0.), (2, 21., 3.)], make_model)
+  assert radar.objects[radar.selected[0]].source == 1
+
+
+def test_late_left_renumber_promotes_new_lead_and_keeps_old_lead_on_right():
+  def make_model():
+    md = selection_model(bounds=(3.2, -.4, -4., -7.6), changing=False)
+    md.laneLineProbs = [.95, .95, 0., 0.]
+    md.roadEdges = [N(x=[0., 200.], y=[y] * 2) for y in (-7.6, 7.6)]
+    return md
+  radar = run_selection([(1, 12., 1.3), (2, 5., -1.5)], make_model)
+  assert radar.lane_offset == -1
+  assert radar.objects[radar.selected[0]].source == 1
+  assert radar.objects[radar.selected[2]].source == 2
+
+
+def test_late_renumber_hysteresis_and_model_renumber_reset():
+  radar = run_selection([(1, 12., 1.3)], lambda: selection_model(bounds=(3.2, -.4, -4., -7.6)))
+  for i, left in enumerate((-.2, -.1, .05, -.25, -.15, .05), 25):
+    radar.update(N(points=[]), selection_model(bounds=(left + 3.6, left, left - 3.6, left - 7.2)), i * .05, 5.)
+    assert radar.lane_offset == -1
+  radar.update(N(points=[]), selection_model(), 1.6, 5.)
+  assert radar.lane_offset == 0
+
+
+def test_late_renumber_does_not_reassign_an_existing_ff_on_a_line_glitch():
+  radar = run_selection([(1, 12., 0.)], selection_model)
+  assert radar.selected[0] is not None
+  radar.update(N(points=[point(1, 12., 0., 10., motionState=2)]),
+               selection_model(bounds=(3.2, -.4, -4., -7.6)), 1.25, 5.)
+  assert radar.lane_offset == 0
