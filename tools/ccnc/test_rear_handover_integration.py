@@ -1,4 +1,5 @@
 """Native CAN packing through the live entry point; no socket or control writes."""
+import binascii
 import copy
 from types import SimpleNamespace as N
 
@@ -16,9 +17,12 @@ from tools.ccnc.test_radar_map_integration import geometry  # noqa: TID251
 
 
 @pytest.mark.parametrize('use_map', [False, True])
-def test_native_live_entry_default_off_and_display_bit_allowlist(display, use_map):  # noqa: F811
+@pytest.mark.parametrize('bsd_interrupt', [False, True])
+@pytest.mark.parametrize('enhanced', [False, True])
+def test_native_live_entry_radar_option_enables_handover_and_display_bit_allowlist(display, use_map, bsd_interrupt, enhanced):  # noqa: F811
   params, cs, _ = display
-  params.update(CcncRadarVehicles=True, CcncModelLanes=2, CcncVehiclePositionCorrection=True, CcncRadarMap=use_map)
+  params.update(CcncRadarVehicles=True, CcncModelLanes=2 if enhanced else 0,
+                CcncVehiclePositionCorrection=enhanced, CcncRadarMap=use_map)
   msg = CANPacker('hyundai_canfd_generated').dbc.name_to_msg['CCNC_0x162']
   cs.ccnc_0x162 = dict.fromkeys(msg.sigs, 0)
   for key, value in {'COUNTER': 7, 'ALERTS_2': 3, 'VIBRATE': 1, 'BCA_LEFT': 1, 'BCA_RIGHT': 1}.items():
@@ -40,6 +44,7 @@ def test_native_live_entry_default_off_and_display_bit_allowlist(display, use_ma
     results, handoffs, events = [], 0, []
     for i in range(110):
       frame = 5*i
+      cs.out.leftBlindspot = bsd_interrupt and 40 <= i < 50
       cs.modelV2 = geometry(frame*.01)
       cs.modelV2.meta.desire = N(raw=0)
       cs.modelV2.meta.desireState = []
@@ -48,11 +53,14 @@ def test_native_live_entry_default_off_and_display_bit_allowlist(display, use_ma
       cs.live_tracks = N(points=[N(trackId=21, dRel=3.1-.1*i, yRel=3.5, vRel=-2., vLead=8., yvRel=0.,
         radarSource='frontRadar', measured=True, trackState=2, motionState=2)] if i <= 20 else [])
       values = main.create_ccnc_messages(N(flags=HyundaiFlags.CAMERA_SCC.value), packer, N(ECAN=0, CAM=2), frame,
-        N(enabled=True, latActive=True), cs, hud, 0., False, False, 0, False, 0, 0, rear_handover=enabled)
+        N(enabled=True, latActive=True), cs, hud, 0., False, False, 0, False, 0, 0,
+        **({} if enabled else {'rear_handover': False}))
       results.append(values)
       if enabled:
         handoffs += sum(e['event'] == 'handoff' for e in ext.state.rear_handover.events)
         events.extend(ext.state.rear_handover.events)
+        if cs.out.leftBlindspot:
+          assert ext.state.rear_handover.fronts == ext.state.rear_handover.rears == [None, None]
       else:
         assert ext.state.rear_handover is None
       assert cs.ccnc_0x162 == raw_source
@@ -64,6 +72,7 @@ def test_native_live_entry_default_off_and_display_bit_allowlist(display, use_ma
   allowed |= {'LF_DETECT', 'RF_DETECT', 'LR_DETECT', 'RR_DETECT', 'CHECKSUM'}
   changed = 0
   previous_front = None
+  previous_counter = None
   for old_messages, new_messages in zip(before, after, strict=True):
     assert [(a, b) for a, _, b in old_messages] == [(a, b) for a, _, b in new_messages]
     for (address, old, _), (_, new, _) in zip(old_messages, new_messages, strict=True):
@@ -71,6 +80,12 @@ def test_native_live_entry_default_off_and_display_bit_allowlist(display, use_ma
         assert old == new
         continue
       changed += old != new
+      for data in (old, new):
+        crc = binascii.crc_hqx(data[2:] + address.to_bytes(2, 'little'), 0) ^ 0x9F5B
+        assert int.from_bytes(data[:2], 'little') == crc
+      if previous_counter is not None:
+        assert new[2] == (previous_counter+1) % 256
+      previous_counter = new[2]
       front_detect = get_raw_value(new, msg.sigs['LF_DETECT'])
       rear_detect = get_raw_value(new, msg.sigs['LR_DETECT'])
       if rear_detect and not front_detect and previous_front is not None:
@@ -80,3 +95,24 @@ def test_native_live_entry_default_off_and_display_bit_allowlist(display, use_ma
         if key not in allowed:
           assert get_raw_value(old, signal) == get_raw_value(new, signal), key
   assert handoffs == 1 and changed > 0, events
+
+
+@pytest.mark.parametrize('use_map', [False, True])
+@pytest.mark.parametrize('radar_enabled,hda2', [(False, False), (True, False), (True, True)])
+def test_radar_option_and_hda2_gate_clear_handover_memory(display, use_map, radar_enabled, hda2):  # noqa: F811
+  params, _, send = display
+  params.update(CcncRadarVehicles=radar_enabled, CcncRadarMap=use_map)
+  flags = HyundaiFlags.CAMERA_SCC.value | (HyundaiFlags.CANFD_HDA2.value if hda2 else 0)
+  send(0, flags=flags)
+  policy = ext.state.rear_handover
+  assert (policy is not None) == (radar_enabled and not hda2)
+  if policy is not None:
+    policy.fronts[0] = {'key': (1, 0)}
+    policy.rears[1] = {'key': (2, 0)}
+    params['CcncRadarVehicles'] = False
+    send(100, flags=flags)
+    assert ext.state.rear_handover is None
+    params['CcncRadarVehicles'] = True
+    send(200, flags=flags)
+    assert ext.state.rear_handover is not policy
+    assert ext.state.rear_handover.fronts == ext.state.rear_handover.rears == [None, None]

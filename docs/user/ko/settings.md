@@ -263,7 +263,7 @@ VW MEB(ID.4 포함)에도 수동 조향비와 학습 비율이 적용됩니다. 
 | CANFD·HDA | `CanfdHDA2`, `HyundaiCanfdClusterDirectTx`, `CanfdDebug`, `HDPuse` | HDA2 차량, 계기판 직접 송신과 CAN FD 디버그·HDP 기능 |
 | [CCNC 계기판 표시](#ccnc-display) | `CcncLaneColor` | CCNC 가속·모드 차선 색상 · 기본 OFF(0) |
 | [CCNC 계기판 표시](#ccnc-display) | `CcncModelLanes` | CCNC 모델 차선 · 끔(0) / 일반(1) / 정밀(2), 초기값 0 |
-| [CCNC 계기판 표시](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 레이더 차량 표시 · 기본 OFF(0) |
+| [CCNC 계기판 표시](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 레이더 차량 표시 · 가상 후방 인계 포함, 기본 OFF(0) |
 | [CCNC 계기판 표시](#ccnc-display) | `CcncVehiclePositionCorrection` | 차량 위치 보정 · 레이더 차량 표시의 하위 옵션, 기본 OFF(0) |
 | [CCNC 계기판 표시](#ccnc-display) | `CcncRadarMap` | 레이더 지도 · 레이더 차량 표시의 하위 옵션, 기본 OFF(0) |
 | 레이더 | `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC 레이더, 전방 트랙 좌우 보정, 코너 레이더와 당근레이더 처리·컷인 감도 |
@@ -329,7 +329,11 @@ Bosch MRRevo14F 수신을 지원하는 버전에서 Bosch MRRevo14F 후보 차�
 
 차선이 잠시 보이지 않아도 계속 감지되는 기존 측면 차량은 최대 2초 또는 자차 이동 30m 중 먼저 도달하는 시점까지 표시를 이어갈 수 있습니다. 차량 감지가 끊기거나 대상이 바뀌면 이 표시 유지가 끝납니다. 이 항목을 켜거나 끌 때는 유지하던 차량 표시를 다시 판단합니다.
 
-후측방 차량 아이콘은 사각지대 감지 알림이며 실제 거리나 정확한 위치를 나타내지 않습니다. 아이콘의 간격으로 차간거리나 차선 변경 가능 여부를 판단하지 마세요.
+이 옵션을 켜면 확인된 옆 차량이 표시 원점을 지나 자차 뒤로 이동할 때 같은 쪽 후방으로 가상 인계합니다. 마지막 상대속도를 기준으로 이동시키고 관측이 끊긴 시간이 길어지면 퇴장 속도를 높이며, 인계 후 최대 6초 안에 삭제합니다.
+
+새 옆 차량이 나타나도 기존 가상 후방은 유지하고, 새 차량의 인계가 성립할 때 가까운 새 차량으로 교체합니다. 사각지대 감지가 켜지면 가상 추적을 버리고 기존 BSD 표시를 우선하며, 감지가 꺼져도 과거 가상 차량을 복원하지 않습니다. 차선 변경이나 추적 신뢰도 상실 때도 가상 기억을 버립니다.
+
+후측방 아이콘은 사각지대 알림 또는 짧은 가상 추적이며 실제 후방 거리나 정확한 위치를 나타내지 않습니다. 아이콘의 간격으로 차간거리나 차선 변경 가능 여부를 판단하지 마세요. 가상 인계의 실제 계기판 표시 품질과 추가 연산 부하는 아직 실차에서 검증하지 않았습니다.
 
 #### 차량 위치 보정
 

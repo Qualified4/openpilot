@@ -259,7 +259,7 @@ This category contains 20 menu settings, two sub-options on the **CCNC HDA1 rada
 | CAN FD/HDA | `CanfdHDA2`, `HyundaiCanfdClusterDirectTx`, `CanfdDebug`, `HDPuse` | HDA2 selection, cluster direct send, CAN FD diagnostics, and HDP |
 | [CCNC display](#ccnc-display) | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes · Off (0) / Standard (1) / Refined (2), default 0 |
-| [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Default OFF (0) |
+| [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Includes virtual rear handover; default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | Vehicle position correction · Sub-option of radar vehicles, default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncRadarMap` | Radar map · Sub-option of radar vehicles, default OFF (0) |
 | Radar | `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC radar, front-track orientation, corner radar, and Carrot Radar processing and cut-in sensitivity |
@@ -330,7 +330,11 @@ Memory that retains side vehicles after detection is lost while stopped or appro
 
 If lane markings briefly disappear, previously detected side vehicles that remain continuously detected may stay displayed for up to two seconds or 30 m of ego travel, whichever comes first. This continuation ends if detection is interrupted or the target changes. Switching this option on or off reassesses retained vehicle displays.
 
-Rear-side vehicle icons indicate blind-spot detection, not actual distance or precise position. Do not use icon spacing to judge following distance or whether a lane change is safe.
+Enabling this option also hands a confirmed adjacent vehicle to the rear slot on the same side when it passes the display origin and moves behind ego. The virtual display follows the last relative speed, retires faster as observations age, and is removed within six seconds of handover.
+
+A newly appearing front-side vehicle does not erase the current virtual rear vehicle; it replaces that rear slot only when its own handover qualifies. Blind-spot detection discards virtual tracking and takes priority, and clearing the alert never restores an old virtual vehicle. Lane changes or loss of tracking confidence also discard virtual memory.
+
+Rear-side icons represent blind-spot alerts or brief virtual tracking, not measured rear distance or precise position. Do not use icon spacing to judge following distance or whether a lane change is safe. Physical-cluster display quality and the added processing cost of virtual handover have not yet been validated in a vehicle.
 
 #### Vehicle position correction
 

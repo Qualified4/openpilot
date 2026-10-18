@@ -960,7 +960,7 @@ def create_alt2_adas_button_request(packer, CAN, frame, CC, CS, stopping):
 def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                          disp_angle, left_lane_warning, right_lane_warning,
                          enable_corner_radar, stopping, canfd_debug, paddle_mode, hud_lateral=None, *, extended_ccnc=None,
-                         rear_handover=False):
+                         rear_handover=True):
   ret = []
   if extended_ccnc is None:
     if not hasattr(create_ccnc_messages, '_display_options') or frame % 100 == 0:
