@@ -12,6 +12,7 @@ from openpilot.common.params import Params
 from openpilot.common.filter_simple import FirstOrderFilter
 from opendbc.car.hyundai import ccnc_debug
 from opendbc.car.hyundai import ccnc_lane_marking
+from opendbc.car.hyundai import ccnc_parking
 from opendbc.car.hyundai import hyundaicanfd_ccnc_extension as ccnc_extension
 from opendbc.car.hyundai import hyundaicanfd_ccnc_radar_map as ccnc_radar_map
 from opendbc.car.common.conversions import Conversions as CV
@@ -1173,6 +1174,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LANELINE_RIGHT"] = 4 if (frame // 50) % 2 == 0 else 1
           else:
             values["LANELINE_RIGHT"] = lane_color if hud_control.rightLaneVisible else 0
+
+        # Parking-lot lane hide: highest lane display priority (over yellow/green/white); display only.
+        if not hasattr(create_ccnc_messages, '_parking'):
+          create_ccnc_messages._parking = ccnc_parking.ParkingLaneHide()
+        parking_hidden = create_ccnc_messages._parking.update(frame * DT_CTRL, CS.out.vEgo, md, CS.out.leftBlinker,
+                                                              CS.out.rightBlinker, desire)
+        ccnc_parking.apply(values, parking_hidden)
 
         values["LCA_LEFT_ARROW"] = 2 if CS.out.leftBlinker else 0
         values["LCA_RIGHT_ARROW"] = 2 if CS.out.rightBlinker else 0
