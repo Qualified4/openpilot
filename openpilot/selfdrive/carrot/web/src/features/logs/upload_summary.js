@@ -44,3 +44,27 @@ export function dashcamUploadStats(items) {
 
   return stats;
 }
+
+// Remaining upload time from the job's own byte counters and average speed.
+// Rounded coarser as it grows (5 s under a minute, 10 s under an hour, then
+// minutes) so the label does not jump on every progress poll.
+export function dashcamUploadEta(snapshot) {
+  const total = Number(snapshot?.bytes_total) || 0;
+  const current = Number(snapshot?.bytes_current) || 0;
+  const speed = Number(snapshot?.bytes_per_second) || 0;
+  const remaining = total - current;
+  if (!(speed > 0) || !(remaining > 0)) return null;
+  const seconds = remaining / speed;
+  if (!Number.isFinite(seconds) || seconds > 24 * 3600) return null;
+  if (seconds < 60) return { hours: 0, minutes: 0, seconds: Math.max(5, Math.ceil(seconds / 5) * 5) };
+  if (seconds < 3600) {
+    let minutes = Math.floor(seconds / 60);
+    let rest = Math.round((seconds - minutes * 60) / 10) * 10;
+    if (rest === 60) { minutes += 1; rest = 0; }
+    return minutes >= 60 ? { hours: 1, minutes: 0, seconds: 0 } : { hours: 0, minutes, seconds: rest };
+  }
+  let hours = Math.floor(seconds / 3600);
+  let minutes = Math.round((seconds - hours * 3600) / 60);
+  if (minutes === 60) { hours += 1; minutes = 0; }
+  return { hours, minutes, seconds: 0 };
+}

@@ -26,7 +26,7 @@ import {
   createDashcamUploadProgressModel,
   dashcamUploadProgressState,
 } from "./upload_progress.js";
-import { dashcamUploadStats } from "./upload_summary.js";
+import { dashcamUploadEta, dashcamUploadStats } from "./upload_summary.js";
 
 // Logs page — Dashcam tab.
 // Route + segment virtual listing, FFmpeg thumb/preview lazy load,
@@ -1410,6 +1410,19 @@ function dashcamUploadPhaseLabel(phase, status = "") {
   return getUIText(key, fallback);
 }
 
+function dashcamUploadEtaLabel(snapshot) {
+  const eta = dashcamUploadEta(snapshot);
+  if (!eta) return "";
+  const time = eta.hours > 0
+    ? getUIText("upload_eta_hours", "{hours}h {minutes}m", eta)
+    : eta.minutes > 0
+      ? eta.seconds > 0
+        ? getUIText("upload_eta_minutes", "{minutes}m {seconds}s", eta)
+        : getUIText("upload_eta_minutes_only", "{minutes}m", eta)
+      : getUIText("upload_eta_seconds", "{seconds}s", eta);
+  return getUIText("upload_eta", "about {time} left", { time });
+}
+
 function dashcamUploadProgressView(snapshot = {}, totalFallback = 0, stats = null, stateOverride = null) {
   const current = Math.max(0, Number(snapshot.step_current || 0));
   const total = Math.max(0, Number(snapshot.step_total || totalFallback || 0));
@@ -1431,6 +1444,8 @@ function dashcamUploadProgressView(snapshot = {}, totalFallback = 0, stats = nul
   if (!isPreparing && bytesTotal > 0) {
     summary = `${formatLogBytes(Math.min(bytesCurrent, bytesTotal))} / ${formatLogBytes(bytesTotal)}`;
     if (bytesPerSecond > 0) summary += ` · ${formatLogBytes(bytesPerSecond)}/s`;
+    const eta = dashcamUploadEtaLabel(snapshot);
+    if (eta) summary += ` · ${eta}`;
   }
   return {
     message,
