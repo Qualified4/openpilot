@@ -10,3 +10,4 @@ import "./egpu_model.js";
 import "./bluetooth.js";
 import "./runtime.js";
 import "./settings_qr.js";
+import "./ccnc_debug.js";

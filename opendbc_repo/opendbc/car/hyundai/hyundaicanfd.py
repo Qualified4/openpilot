@@ -9,6 +9,7 @@ from opendbc.car.hyundai.values import HyundaiFlags, HyundaiExtFlags
 from opendbc.car.hyundai.stopping import MOVING_SPEED, STOP_LOWER_BAND
 from openpilot.common.params import Params
 from openpilot.common.filter_simple import FirstOrderFilter
+from opendbc.car.hyundai import ccnc_debug
 from opendbc.car.hyundai import hyundaicanfd_ccnc_extension as ccnc_extension
 from opendbc.car.hyundai import hyundaicanfd_ccnc_radar_map as ccnc_radar_map
 from opendbc.car.common.conversions import Conversions as CV
@@ -1039,6 +1040,19 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
     # --- 0x161/0x200/0x1ea/0x162 (frame%5) ---
     if frame % 5 == 0:
+      # Reuse this schedule, bus, RX templates and packer. Only the explicit
+      # display allowlist is replaced; native warnings suspend the debug lease.
+      debug_warning = bool(left_lane_warning or right_lane_warning or
+                           getattr(hud_control, "leftLaneDepart", False) or
+                           getattr(hud_control, "rightLaneDepart", False) or
+                           getattr(hud_control, "driverMonitoringAlert", 0))
+      for side in ("left", "right"):
+        line = getattr(CS.out, side + "LaneLine", 0)
+        debug_warning |= (line % 10 not in (0, 5)) if lane_line_check >= 1 else (line // 10 == 2)
+      for source in (CS.adrv_0x161, CS.ccnc_0x162):
+        debug_warning |= any(value for key, value in (source or {}).items()
+                             if key.startswith(("ALERTS_", "SOUNDS_")) or key in ("VIBRATE", "BCA_LEFT", "BCA_RIGHT"))
+      debug_values = ccnc_debug.live.poll(CP, CC, CS, warning=debug_warning)
       lat_active = CC.latActive
 
       if CS.adrv_0x161 is not None:
@@ -1169,6 +1183,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                                      lane_color_enabled, model_lanes, frame)
 
         _apply_driver_monitoring_alert(values, hud_control, CS.adrv_0x161)
+        values.update(debug_values.get("ADRV_0x161", {}))
         ret.append(packer.make_can_msg("ADRV_0x161", CAN.ECAN, values, rx_counter = rx_counter))
 
       if CS.adrv_0x200 is not None:
@@ -1220,6 +1235,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           values["FAULT_LSS"] = 0
           values["FAULT_DAS"] = 0
 
+        values.update(debug_values.get("CCNC_0x162", {}))
         ret.append(packer.make_can_msg("CCNC_0x162", CAN.ECAN, values, rx_counter=rx_counter))
 
     # --- NEW_MSG_4B9 (corner radar keep-alive?) ---

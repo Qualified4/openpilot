@@ -4,6 +4,7 @@ from . import (
   bluetooth,
   carrot_navi,
   cars,
+  ccnc_debug,
   dashcam,
   egpu_model,
   intro,
@@ -46,6 +47,7 @@ def register_all(app: web.Application) -> None:
   web_settings.register(app)
   ssh_keys.register(app)
   cars.register(app)
+  ccnc_debug.register(app)
   system.register(app)
   terminal.register(app)
   dashcam.register(app)

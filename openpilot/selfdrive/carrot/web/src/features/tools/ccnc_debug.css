@@ -1,0 +1,14 @@
+.ccnc-debug summary { cursor: pointer; font-weight: 650; padding: 12px; }
+.ccnc-debug, .ccnc-debug-body { min-width: 0; max-width: 100%; box-sizing: border-box; }
+.ccnc-debug-body { padding: 12px; }
+.ccnc-debug p { line-height: 1.5; overflow-wrap: anywhere; }
+.ccnc-debug fieldset { border: 1px solid var(--border, #777); border-radius: 8px; margin: 12px 0; min-width: 0; padding: 12px; }
+.ccnc-debug label { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.ccnc-debug legend { max-width: 100%; }
+.ccnc-debug input[type="checkbox"] { width: 20px; height: 20px; }
+.ccnc-debug input[type="number"] { width: 100px; }
+.ccnc-debug input, .ccnc-debug select { color: var(--text, inherit); background: var(--bg, #222); border: 1px solid #888; border-radius: 4px; padding: 6px; max-width: 100%; }
+.ccnc-debug input:invalid { outline: 2px solid #ed8e44; }
+.ccnc-debug-fields, .ccnc-debug-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.ccnc-debug output { display: block; margin-top: 12px; overflow-wrap: anywhere; }
+.ccnc-debug pre { max-height: 380px; overflow: auto; }
