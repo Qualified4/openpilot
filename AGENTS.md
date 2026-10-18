@@ -1,5 +1,7 @@
 # Repository memory
 
+- On 2026-10-19, merged origin/carrot-wip 163c000e (6 commits: GPS source/profile selection, bounded proclog metadata and inherited heap handling, device memory observations, Wi-Fi HUD recovery wait and signal-review records) into ccnc-hda1 on 77a74c56. Only AGENTS.md conflicted; both complete blocks retained, CCNC first. All 102 protected CCNC/lane-type/tool files and six Ccnc option definitions are unchanged. CCNC checks1336 pass/3 native skips, lane checks103 and signal/planner checks527 pass. Broader incoming-feature testing was stopped at the user request; no extra runtime or upstream test changes are included. Desktop checks use ASCII capnp staging, Params/OpenCV adaptations; no native device build, vehicle validation, timing, push or deployment. Evidence .analysis/archive/2026-10-19/carrot-merge.
+
 - On 2026-10-18, Carrot Web Tools → CCNC Debug adds preview and explicit live display overrides on the existing HDA1 CAMERA_SCC RX-paced 0x161/0x162 route only. Five independent vehicle slots default DETECT6; strict DBC widths/endianness/factors, FF 7-bit signed-wrap convention (-6.4..6.3m), sides0..12.7m, front/rear distance204.7/25.5m. Left/right line codes/positions independent; curvature/direction shared by actual DBC; 8/10/14 explicitly undocumented. Ephemeral same-origin single-browser lease600ms, heartbeat150ms; P or N+brake, zero speed, disengaged controls, valid CAN and both RX templates<150ms; warnings/motion/invalid/expired/disconnected/OFF restore normal output, unsafe sessions require manual rearm. Direct-TX mode cannot arm. Only display allowlist changes; counters/CRC and warnings use existing generator/Panda logic, no control/safety code changes. Ccnc options, Xiaoge and concurrent PP-LCNet/lane-type work untouched. Python/C1290 pass/3 native-packer skips, websocket3, Node12; headless Edge preview/edit/arm/motion-disarm/rearm/OFF/mobile pass. Desktop C harness uses a scratch-only duplicate-putui removal; no production harness change. No vehicle install, physical cluster verification, timing or deployment. See docs/ccnc_debug_20261018.md and .analysis/archive/2026-10-18/ccnc-debug.
 
 - On 2026-10-18, dfff5764 (Opus, reviewed by Astra in three rounds, accepted on round3) fixes CCNC map flicker while ego changes lanes. Only during ego's change (map lane_change = desire 3/4 or signal): lines below .1 confidence keep their current positions as position-only `weak` lines for slots and reindexing, never strong, never a centre-lock/bounds reference (they still bend the drawing; `weak` ends only on a confident observation, survives an invalid model); free reindex at x=5m/0m, released by the model renumber (line >=1.0m back) or a cancel (>=.5m back for LANE_RETURN_TIME .3s, signal still on); `_behind_lead`/`_trail` read lines through lane_offset. While ego_follow_active the drawing uses the existing selector's references (model inner-line bend for sides; planned path within 80m for FF once both inner lines <.5), eased by EGO_ALIGN_TIME .5s; one vehicle moving between slots eases its alignment over EGO_HANDOVER_TIME .3s (.2/.3/.5 measured; shorter start drew FF ahead of raw yRel in 3ed/6). Display state resets with the map's generation. Rejected: raw yRel (far curve FF 2-7m off), model lines only (3ed/6 still wrong side), gating low-confidence lines on confirmed lateral motion (gains vanish: confidence collapse also stops motion confirmation), .1m release (3ed/32 LF<->FF ping-pong). 182 segments/213,845 sends, signal/desire windows: short gaps FF/LF/RF 192/39/148 -> 94/45/90 (sum 379 -> 232), >.5m jumps 320 -> 289; no confirmed 50m vehicle loss; outside-window sends unchanged vs HEAD on Opus 26-segment set; 3ed/32 old lead FF->RF without a gap, 3ed/6 FF on the correct side. Davin accepted the added delays (cut-in/departing/common18 within ~.05s). Remaining: LF short gaps +6 (366/29 largest), unconfirmed video scenes (358/10 roundabout LF, 3e6/5 46.6 LF) in .analysis/archive/2026-10-17/ccnc-lanechange-review-r3/VIEWER_SCENES.csv. 1,147 tests pass. No timing, push or deployment.
@@ -1048,6 +1050,84 @@
   NAS shared-source bundle/fingerprint checked locally, but current wip-only
   publishing and lead replay do not deploy/recalculate this CCNC display map.
   See docs/ccnc_front_radar_detection.md and private 2026-10-11 point-map archive.
+
+- On 2026-10-18, user again reports90% versus~80% after reboot. Completed2h
+  capture has1412 samples/118 inventories: available421.45->375.51MiB,
+  minimum326.65. Proclogd PSS14.64->52.81MiB; at10:21 private dirty rises38.62MiB
+  with RSS only+0.36MiB, then plateaus. GC-induced shared-page copying reproduced
+  in native isolated forks; exact live GC trigger remains inferred. Fix daemon-
+  entry GC freeze before runtime resources, keeping new cycles collectible and
+  parent unchanged. Separately prune exited metadata and validatePID/starttime:
+  2000 native byte-identical publications retain2 entries versus old2001; PID
+  reuse now refreshes metadata. Exact-main native GC private-dirty delta13.28->
+  1.66MiB; desktop20pass/2Linuxskips. Nativepytest unavailable, standalone native
+  assertions pass. No vehicle install/restart; old manager preimports module.
+  Model/DM/UI GPU inventories unchanged, HUD lifecycle median+0.59MiB, S3 often
+  disconnected. Does NOT explain all80->90%, prove Wi-Fi/eGPU cause, or establish
+  long stability. Publish both branches single-parent; raw evidence private.
+  See docs/proclog_memory_20261018.md. Supersedes pending2h status below.
+
+- On 2026-10-18, user explicitly removed the Ioniq5PE-only CAN GPS restriction.
+  Use actual DBC profile eligibility across Hyundai/Kia/Genesis: named0x374,
+  eight bytes, two unsigned LE32 coordinates at0/32, scale1e-6/offset0. Optional
+  registration covers CANFD and legacy parser paths; current legacy DBC lacks
+  the profile. All CANFD configurations pass synthetic reception on configured
+  bus, including late arrival; absent/incompatible profiles stay inactive.
+  Preserve priority, original timestamps, motion/freeze/course checks. Nav155/
+  wip134 focused tests pass with desktop OS doubles. Real driving evidence is
+  still Ioniq5PE only; no vehicle install or new CPU claim. This supersedes the
+  model-name restriction below. Both maintained branches, single-parent. See
+  docs/vehicle_can_gps_20261018.md.
+
+
+- On 2026-10-18, repeated S3 TCP failures persist after background downloads end;
+  Omada has both clients associated, C4 5GHz/-67dBm and S3 2.4GHz/-71dBm.
+  Remove only the Wi-Fi path's repeated10s shared-USB settling delay, preserving
+  loading wait and wired policy.45 focused tests pass; selective guarded HUD
+  install, no model/router/firmware change. Publish nav0adebf127c/wip2c479eaedf,
+  single-parent. This improves recovery delay, not the original disconnect cause.
+  User redirects C3/eGPU memory comparison to own C4:129qlogs show warmed evening
+  82-83% versus morning88-89%; overall increase remains incompletely attributed.
+  Native preimport comparison creates no sockets/threads; disabled HUD does not
+  start a Wi-Fi sender. Same-boot600s live retry observation ends with unchanged
+  ~393MiB available, HUD inactivePSS83.75-84.01MiB, active~182-186, stable oldION;
+  model/eGPU PSS changes~0.1MiB, GPU inventories unchanged. No new leak reproduced
+  or memory fix claimed. Some older95% samples include withdrawn diagnostic
+  compilation; do not use this to dismiss earlier92%. Read-only low-priority
+  observer PID273288 runs at most2h/32MiB under /data/carrot/diagnostics; result
+  pending, do not claim completed stability. Concurrent60s model/DM1200/1199
+  valid consecutive at19.99856/19.99491Hz, not strict>=20. See
+  docs/s3_disconnect_followup_20261018.md and docs/memory_scope_followup_20261018.md.
+
+- On 2026-10-18, user requested external-nav > phone > vehicle > device GPS.
+  Ioniq5PE bus0/0x374 contains positive LE32 lat/lon*1e-6: 20 segments/1195
+  original samples near1Hz. No OEM heading/fix-quality decoded; restrict profile
+  to this model/validated hemisphere. Optional receive-only monitor requires
+  three plausible samples, original timestamps, motion/freeze/freshness checks;
+  derived >=5m course is separately valid, disabled in reverse, never north by
+  default. Independent sources prevent lower-priority overwrite. Raw replay
+  119551 CAN events accepts1166 fixes, rejects6 acquisition/23 moving repeats;
+  829 have course. Nav188 tests pass/9 native-render skips, desktop OS doubles.
+  No vehicle install/native CPU/closed-loop claim. Publish both maintained
+  branches single-parent, preserving model architecture; wip also needs existing
+  nav receipt/sequence handling. See docs/vehicle_can_gps_20261018.md. Raw private.
+
+
+- On 2026-10-18, user reported worse signals and requested evening/morning review.
+  Read-only/hash-verified213 files; actual drives10ea/10eb run087f862d81 with
+  unchanged918654b8 tracker. Upper/central selectors remain OFFLINE, not the cause.
+  Morning08:17:02 visible green is read, but box/ID mismatch repeatedly resets
+  guard confirmation; right arrow+round green15x8 fails1.7 aspect gate. Actual
+  hold persists until driver gas04.390, despite model stop distance rising~49m.
+  Evening twilight near-red miss is proposal failure, not highest-row selection;
+  later green confirms in~1.24–1.49s but lead bypass already removed veto.
+  Measured evening9.29–12.87Hz, morning7.70–12.07Hz. New20-segment/12,492-observer
+  central replay removes7 greens, changes0/20,955 nominal and0/20,951 +20ms guard
+  updates, one release each; no solution or closed-loop claim. User proposes
+  remembering central red housings and accepting strong same-housing transitions.
+  Target whole-housing continuity/arrow separation, not brightness-only release.
+  No vehicle/code/model change; publish records both branches, single-parent.
+  See docs/signal_drive_review_20261018.md; raw evidence remains private.
 
 - On 2026-10-17, user requested locationd CPU optimization, then rejected the
   small benefit and explicitly requested stopping, original code and records
