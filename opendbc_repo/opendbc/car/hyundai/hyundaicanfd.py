@@ -959,7 +959,8 @@ def create_alt2_adas_button_request(packer, CAN, frame, CC, CS, stopping):
 
 def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                          disp_angle, left_lane_warning, right_lane_warning,
-                         enable_corner_radar, stopping, canfd_debug, paddle_mode, hud_lateral=None, *, extended_ccnc=None):
+                         enable_corner_radar, stopping, canfd_debug, paddle_mode, hud_lateral=None, *, extended_ccnc=None,
+                         rear_handover=False):
   ret = []
   if extended_ccnc is None:
     if not hasattr(create_ccnc_messages, '_display_options') or frame % 100 == 0:
@@ -984,7 +985,8 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
     create_ccnc_messages._radar_map = radar_map
     ccnc_radar_map.reset_live()
     ccnc_extension.configure(lane_color_enabled, model_lanes, False, position_correction, model_lane_mode)
-  ccnc_extension.configure(lane_color_enabled, model_lanes, radar_vehicles, position_correction, model_lane_mode)
+  ccnc_extension.configure(lane_color_enabled, model_lanes, radar_vehicles, position_correction, model_lane_mode,
+                           rear_handover=rear_handover)
   interlock_active = longitudinal_interlock_active(CS)
   display_lead = _display_lead(getattr(CS, "radarState", None))
   lead_visible = display_lead is not None

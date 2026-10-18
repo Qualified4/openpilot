@@ -11,6 +11,7 @@ import numpy as np
 
 from opendbc.car import structs
 from opendbc.car.common.conversions import Conversions as CV
+from opendbc.car.hyundai.hyundaicanfd_ccnc_rear import RearHandover
 from openpilot.common.params import Params
 
 
@@ -3141,6 +3142,14 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
       values["RR_DETECT_LATERAL"] = BSD_LATERAL_FIXED + center_lane_offset
       values["RR_DETECT"] = 1
 
+    if state.rear_handover is not None:
+      selected = []
+      for key in display_tracker.selected:
+        entry = display_tracker.tracks.get(key)
+        selected.append((int(getattr(entry[3], 'ccnc_source_id', key)), entry[0]) if entry else None)
+      state.rear_handover.update(values, CS, md, frame, selected, (state.lr_distance, state.rr_distance),
+                                 ('selector', display_tracker))
+
   except:
     values = CS.ccnc_0x162.copy()
     values["FF_DISTANCE"] = 24
@@ -3163,9 +3172,10 @@ state = SimpleNamespace()
 _options = None
 
 
-def configure(lane_color, model_lanes, radar_vehicles, position_correction=False, model_lane_mode=2):
+def configure(lane_color, model_lanes, radar_vehicles, position_correction=False, model_lane_mode=2, *, rear_handover=False):
   global _options
-  options = (lane_color, model_lanes, radar_vehicles, position_correction, model_lane_mode)
+  rear_handover = bool(rear_handover and radar_vehicles)
+  options = (lane_color, model_lanes, radar_vehicles, position_correction, model_lane_mode, rear_handover)
   if options == _options:
     return
   if _options is None or lane_color != _options[0]:
@@ -3182,6 +3192,11 @@ def configure(lane_color, model_lanes, radar_vehicles, position_correction=False
       _CcncVehiclePositionCorrection(state.lf_center.value, state.rf_center.value)
       if radar_vehicles and position_correction else None)
     state.radar_display_tracker.temporal = _CcncTemporalTracks() if radar_vehicles and position_correction else None
+  if _options is None or rear_handover != _options[5] or radar_vehicles != _options[2]:
+    state.rear_handover = RearHandover() if rear_handover else None
+    if _options is not None and _options[5] and not rear_handover:
+      state.lr_distance.reset(15.)
+      state.rr_distance.reset(15.)
   _options = options
 
 

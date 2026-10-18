@@ -1756,6 +1756,17 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
         values[prefix + '_DETECT_DISTANCE'] = distance.apply(8 if active else 16)
         values[prefix + '_DETECT_LATERAL'] = lateral
         values[prefix + '_DETECT'] = 2 if active else 1
+    if state.rear_handover is not None:
+      selected = []
+      proven = []
+      for slot, key in enumerate(tracker.selected):
+        obj = tracker.objects.get(key)
+        selected.append((obj.source, obj.born) if obj is not None else None)
+        if slot:
+          proven.append(bool(obj is not None and not obj.structure and not obj.superseded
+                             and tracker._radar_vehicle(obj) and not tracker._crossing(obj)))
+      state.rear_handover.update(values, CS, md, frame, selected, (state.lr_distance, state.rr_distance),
+                                 ('map', tracker.generation), proven=proven)
     return values
   except Exception:
     if not _live.failed:
