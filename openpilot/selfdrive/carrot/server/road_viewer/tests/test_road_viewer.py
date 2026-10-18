@@ -200,6 +200,8 @@ def test_real_pair_persistence_and_auth(server):
 
 
 def test_real_multi_segment_response_loss_and_retry(server, monkeypatch):
+  monkeypatch.setattr(uploader, 'PARALLEL_FILES', 1)  # Resume semantics after a failure, in file order.
+
   async def run():
     await connect(server)
     segments = [recording(0), recording(1, video=False)]
@@ -238,7 +240,7 @@ def test_real_multi_segment_response_loss_and_retry(server, monkeypatch):
     assert retry_job['result']['uploaded'] == 2
     assert not any('/files/0?' in suffix for suffix, _ in puts[first_puts:])
     assert sum('/files/0?offset=0' == suffix for suffix, _ in puts) == 1
-    assert all(size <= uploader.BLOCK_SIZE for _, size in puts)
+    assert all(size <= server[0].CHUNK_SIZE for _, size in puts)
     stored = list(server[0].recording_paths())
     assert len(stored) == 2
     for directory in stored:
@@ -250,6 +252,54 @@ def test_real_multi_segment_response_loss_and_retry(server, monkeypatch):
     secret = config.load()['device_secret']
     public = json.dumps(jobs.snapshot(retry_job))
     assert secret not in public and checkpoint['session']['token'] not in public
+  asyncio.run(run())
+
+
+def test_parallel_files_keep_per_file_order_and_resume(server, monkeypatch):
+  async def run():
+    await connect(server)
+    segments = [recording(0), recording(1)]
+    for segment in segments:  # Several chunks per file with either server chunk size.
+      (Path(paths.segment_dir(segment)) / 'qcamera.ts').write_bytes(os.urandom(2 * server[0].CHUNK_SIZE + 5))
+    original = client.session_request
+    offsets, inflight, peak, failed, attempt = {}, 0, 0, False, 0
+
+    async def tracked(http, url, session, method='GET', suffix='', data=None):
+      nonlocal inflight, peak, failed
+      if method != 'PUT':
+        return await original(http, url, session, method, suffix, data)
+      index, offset = suffix.removeprefix('/files/').split('?offset=')
+      offsets.setdefault((attempt, int(index)), []).append(int(offset))
+      if index == '2' and not failed:
+        failed = True
+        raise client.Error('tls_error')  # Permanent: the whole batch stops and is resumed.
+      inflight += 1
+      peak = max(peak, inflight)
+      try:
+        await asyncio.sleep(0.02)  # Let the other files' requests overlap.
+        return await original(http, url, session, method, suffix, data)
+      finally:
+        inflight -= 1
+
+    monkeypatch.setattr(client, 'session_request', tracked)
+    job = jobs.create_job(segments)
+    await jobs.start_job(job, runner=uploader.run_job)
+    assert job['status'] == 'failed' and job['result']['error'] == 'tls_error'
+    attempt = 1
+    retry_job = jobs.create_job(segments)
+    retry_job['_road_viewer'] = copy.deepcopy(job['_road_viewer'])
+    await jobs.start_job(retry_job, runner=uploader.run_job)
+    assert retry_job['status'] == 'done', retry_job['result']
+    assert 2 <= peak <= uploader.PARALLEL_FILES
+    for sent in offsets.values():  # Within one attempt every file is sent strictly in order.
+      assert sent == sorted(set(sent)), offsets
+    stored = list(server[0].recording_paths())
+    assert len(stored) == 2
+    for directory in stored:
+      metadata = server[0].read_meta(directory)
+      source = Path(paths.DASHCAM_ROOT) / metadata['files']['rlog.zst'].removesuffix('--rlog.zst')
+      for name in ('rlog.zst', 'qcamera.ts'):
+        assert (directory / name).read_bytes() == (source / name).read_bytes()
   asyncio.run(run())
 
 

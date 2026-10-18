@@ -15,7 +15,8 @@ from ..features.dashcam.catalog import segment_file_summary, segment_is_complete
 from ..features.dashcam.paths import file_size_label, route_name, segment_dir, segment_index
 from . import client, config
 
-BLOCK_SIZE = 256 * 1024
+BLOCK_SIZE = 256 * 1024  # Local read size for hashing.
+PARALLEL_FILES = 3  # Different files only: the server appends each file strictly in order.
 ROUTE = re.compile(r'(?:[0-9a-fA-F]{8}--[0-9a-fA-F]{10}|\d{4}-\d{2}-\d{2}--\d{2}-\d{2}-\d{2})')
 
 
@@ -147,14 +148,25 @@ async def transfer(job, http, credentials, checkpoint):
     return
   checkpoint['session'] = session
   chunk_size = session.get('chunk_size')
-  if type(chunk_size) is not int or not 1 <= chunk_size <= BLOCK_SIZE:
+  if type(chunk_size) is not int or not 1 <= chunk_size <= client.MAX_CHUNK_SIZE:
     raise client.Error('invalid_response')
   received = offsets(session, files)
   checkpoint['received'] = received
   total = sum(item['size'] for item in files)
   started, original = time.monotonic(), sum(received)
-  # One reader/request at a time both onroad and offroad; no new worker pool.
-  for index, item in enumerate(files):
+  finished = set()
+
+  def report(item):
+    current = sum(received)
+    jobs.progress(job, phase='uploading', message=f"{item['segment']} / {item['name']}",
+                  bytes_current=current, bytes_total=total, percent=8 + 89 * current / total,
+                  current=sum(all(received[i] == f['size'] for i, f in enumerate(files) if f['segment'] == segment)
+                              for segment in job['segments']),
+                  phase_current=len(finished), phase_total=len(files),
+                  bytes_per_second=int((current - original) / max(0.01, time.monotonic() - started)))
+
+  async def send(index):
+    item = files[index]
     with await asyncio.to_thread(open_source, item) as source:
       failures = 0
       while received[index] < item['size']:
@@ -179,16 +191,33 @@ async def transfer(job, http, credentials, checkpoint):
           failures += 1
           await asyncio.sleep(0.5 * failures)
           status = await retry(job, lambda: client.session_request(http, credentials['url'], session))
-          received[:] = offsets(status, files)  # Response may have been lost AFTER a successful write.
-        current = sum(received)
-        jobs.progress(job, phase='uploading', message=f"{item['segment']} / {item['name']}",
-                      bytes_current=current, bytes_total=total, percent=8 + 89 * current / total,
-                      current=sum(all(received[i] == f['size'] for i, f in enumerate(files) if f['segment'] == segment)
-                                  for segment in job['segments']),
-                      phase_current=index + 1, phase_total=len(files),
-                      bytes_per_second=int((current - original) / max(0.01, time.monotonic() - started)))
+          # Response may have been lost AFTER a successful write. Only this file: other
+          # files have their own requests in flight and track their own acknowledged offsets.
+          received[index] = offsets(status, files)[index]
+        report(item)
       if fingerprint(source) != item['fingerprint'] or not await asyncio.to_thread(segment_is_complete, item['segment']):
         raise client.Error('file_changed')
+    finished.add(index)
+    report(item)
+
+  # Up to PARALLEL_FILES files at once, each one strictly in order. A single request at a
+  # time leaves the uplink idle for every round trip and server write.
+  queue = iter(range(len(files)))
+
+  async def worker():
+    for index in queue:  # Shared iterator: each file is taken by exactly one worker.
+      await send(index)
+
+  tasks = [asyncio.create_task(worker()) for _ in range(min(PARALLEL_FILES, len(files)))]
+  try:
+    done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+    for task in tasks:
+      if task in done and task.exception():
+        raise task.exception()
+  finally:
+    for task in tasks:
+      task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
   jobs.ensure_not_canceled(job)
   jobs.progress(job, phase='notifying', message='Road Viewer: registering batch', percent=98)
   result = await retry(job, lambda: client.session_request(http, credentials['url'], session, 'POST', '/finish'))

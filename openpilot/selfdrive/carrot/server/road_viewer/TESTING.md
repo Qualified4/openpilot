@@ -81,6 +81,12 @@ revoke endpoint: remove server access from Road Viewer's device management UI.
 
 ## Validation limits
 
-Desktop tests do not validate C3/C4 timing under driving load. This adapter uses
-one file reader/request at a time onroad and offroad, bounded 256 KiB blocks,
-threaded disk reads, and no idle polling or driving-process scheduling changes.
+Desktop tests do not validate C3/C4 timing under driving load. This adapter sends
+up to three files at once (`PARALLEL_FILES`), each strictly in order, in chunks of
+the server-chosen size (Road Viewer 0.9.1: 2 MiB; older servers 256 KiB; at most
+`client.MAX_CHUNK_SIZE` 8 MiB in memory per request, announced as
+`X-RV-Max-Chunk`). Disk reads are threaded; there is
+no idle polling or driving-process scheduling change. One request at a time left
+the uplink idle for every round trip and server write: on a simulated 5 Mbps,
+60–150 ms RTT link one sequential 256 KiB stream reached 340–460 KB/s, three
+files with 2 MiB chunks 580–605 KB/s (link limit 625 KB/s).
