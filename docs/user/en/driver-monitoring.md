@@ -1,5 +1,7 @@
 # Driver monitoring
 
+The [CCNC lane marking experiment](settings.md#ccnc-display) uses the forward road camera and is enabled separately from driver monitoring.
+
 `DriverMonitoringEnabled` defaults to ON and saves your choice across drives and restarts. While monitoring is enabled, `DriverMonitoringMode` defaults to `0: Standard`; select `1: Experimental` separately. Mode changes apply live at roughly half-second intervals without rebooting. Switching preserves accumulated monitoring time, warning counts and lockout, and ends the previous interaction grace and forward-attention streak. Old `DisableDM` values do not opt into experimental monitoring.
 
 > [!CAUTION]

@@ -1,0 +1,38 @@
+{
+ "version": 1,
+ "architecture": "StripNet",
+ "params": 21532,
+ "model_sha256": "0482597d210eb0d416b32ea0dce395476eb30b036004715a4615eac252015795",
+ "input": {
+  "name": "strip_ycbcr",
+  "shape": [
+   3,
+   128,
+   96
+  ],
+  "dtype": "float32",
+  "range": "raw 0..255 Y,Cb,Cr",
+  "strip": "profile_scanner.strip_geometry + sample (4.5-20 m, 96 metric columns over +-0.75 m), uint8, rows INTER_AREA (INTER_LINEAR if <128) resized to 128, far rows first"
+ },
+ "outputs": {
+  "line_type": [
+   "dashed",
+   "solid"
+  ],
+  "color": [
+   "white",
+   "yellow"
+  ]
+ },
+ "threshold": 0.9,
+ "yellow_dashed": "not a learned class; reported as unknown",
+ "training": {
+  "source": ".analysis/lane-model-20261018 (frozen before test)",
+  "train_frames": 8900,
+  "validation_frames": 1750,
+  "seed": 1,
+  "labels": "human_confirmed > scanner auto > scanner pool > ai review; test routes excluded"
+ },
+ "validation_display_eval": "StripNet frozen at 0.90: display 84.0%, display accuracy 97.2%, longest wrong display 0.8 s (docs/ccnc_lane_profile_scanner_20261018.md)",
+ "deviceValidated": false
+}

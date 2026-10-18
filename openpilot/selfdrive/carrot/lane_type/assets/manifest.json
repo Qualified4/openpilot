@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "architecture": "PP-LCNet-0.25x",
+  "model_sha256": "ea76f53a26cff8f0182700f39216475bd4b2454d5967dc48d991dd0b451b132f",
+  "input_shape": [
+    3,
+    192,
+    64
+  ],
+  "type_classes": [
+    "dashed",
+    "solid"
+  ],
+  "color_classes": [
+    "white",
+    "yellow"
+  ],
+  "pretrained_url": "https://paddle-imagenet-models-name.bj.bcebos.com/dygraph/legendary_models/PPLCNet_x0_25_pretrained.pdparams",
+  "pretrained_sha256": "916a60d5db8669709550bd799e0ca95ab55c1fbd3154cf762dc48112d0f47afe",
+  "pretrained_tensors": 144,
+  "dataset_sha256": "7eb37bc6001800adff956c580cc14aaa2071fdefb5882e4d3eb94b8ebbda2965",
+  "seed": 42,
+  "epochs": 30,
+  "best_epoch": 2,
+  "reviewed_samples": {
+    "train": 30,
+    "validation": 8,
+    "test": 21
+  },
+  "route_counts": {
+    "train": 3,
+    "validation": 3,
+    "test": 3
+  },
+  "label_counts": {
+    "train": {
+      "type": {
+        "dashed": 12,
+        "solid": 18
+      },
+      "color": {
+        "white": 25,
+        "yellow": 5
+      }
+    },
+    "validation": {
+      "type": {
+        "dashed": 6,
+        "solid": 2
+      },
+      "color": {
+        "white": 6,
+        "yellow": 2
+      }
+    },
+    "test": {
+      "type": {
+        "dashed": 13,
+        "solid": 8
+      },
+      "color": {
+        "white": 14,
+        "yellow": 7
+      }
+    }
+  },
+  "trainable_parameters": 245308,
+  "onnx_parity_max_abs": 7.599592208862305e-07,
+  "batch_norm": "frozen_pretrained_running_statistics",
+  "accuracyValidated": false,
+  "deviceValidated": false,
+  "canTransmitEnabled": false,
+  "confidenceCalibrated": false,
+  "status": "experimental_small_visually_reviewed_dataset"
+}

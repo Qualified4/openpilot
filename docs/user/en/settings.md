@@ -251,7 +251,7 @@ On supported Tesla vehicles with the additional vehicle bus detected, the device
 <a id="vehicle-hardware"></a>
 ## Vehicle and hardware
 
-This category contains 20 menu settings, two sub-options on the **CCNC HDA1 radar vehicles** detail screen, and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. The five CCNC instrument cluster options let you choose display features as described below.
+This category contains 21 menu settings, two sub-options on the **CCNC HDA1 radar vehicles** detail screen, and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. CCNC display settings, including lane type and color display, are described below.
 
 | Group | Parameters | Purpose |
 |---|---|---|
@@ -259,6 +259,7 @@ This category contains 20 menu settings, two sub-options on the **CCNC HDA1 rada
 | CAN FD/HDA | `CanfdHDA2`, `HyundaiCanfdClusterDirectTx`, `CanfdDebug`, `HDPuse` | HDA2 selection, cluster direct send, CAN FD diagnostics, and HDP |
 | [CCNC display](#ccnc-display) | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes · Off (0) / Standard (1) / Refined (2), default 0 |
+| [CCNC display](#ccnc-display) | `CcncLaneTypeDetection` | CCNC lane type & color display · Off(0) / Scanner(1) / StripNet(2), default 0 |
 | [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Includes virtual rear handover; default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | Vehicle position correction · Sub-option of radar vehicles, default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncRadarMap` | Radar map · Sub-option of radar vehicles, default OFF (0) |
@@ -302,7 +303,7 @@ In modes `EnableRadarTracks=1`–`3`, a confirmed departing front lead can recei
 <a id="ccnc-display"></a>
 ### CCNC instrument cluster display
 
-Under **Vehicle and hardware → CAN FD/HDA**, each of the five options can be switched independently. **Vehicle position correction** and **Radar map** are on the detail screen opened from **CCNC HDA1 radar vehicles**; they have no effect while radar vehicles is off (the screen does not grey them out). All are off by default, and changes appear within about one second. These settings adjust the instrument cluster display.
+Under **Vehicle and hardware → CAN FD/HDA**, configure the CCNC display options. **Vehicle position correction** and **Radar map** are on the detail screen opened from **CCNC HDA1 radar vehicles**; they have no effect while radar vehicles is off (the screen does not grey them out). All are off by default, and changes appear within about one second.
 
 #### CCNC acceleration/mode lane color
 
@@ -321,6 +322,14 @@ Refined does not discard curvature solely because of low lane confidence during 
 Compute cost: in seven PC replay passes over eight logs with the other three options off, Standard increased average total display-processing time by about 21% (0.168 ms → 0.202 ms) versus OFF, and Refined by about 39% (0.168 ms → 0.234 ms). These times include CAN message generation and packing, not an increase in whole-device CPU usage.
 
 Turn off to use the default lane and icon display. Trailer-related lane-change restrictions take priority. Nearby vehicle display is controlled separately by the next option.
+
+#### CCNC lane type & color display
+
+Recognizes whether each lane line is solid or dashed and white or yellow, and shows it on the CCNC cluster. Choose **Off** (existing lane display, nothing runs), **Scanner** (1-D lane profile scanner) or **StripNet** (light learned model). Only the selected recognizer runs, in its own background process that reuses the existing camera frames and model lane positions.
+
+Lane priority for each side separately: a recognized **yellow** line shows **orange solid**, even when a lane change is otherwise shown as available; otherwise, when the existing lane-change-available condition is met, the line is **green** (solid or dashed as recognized); otherwise it is **white** solid or dashed. A result must be seen twice within 0.4 s and expires 0.5 s after the last evidence; unknown or expired results keep the existing display. Existing lane-departure blinking, blind-spot and lane-line warnings, lane position, curvature and lane-change animation are unchanged.
+
+This option changes only the cluster display. It does not change whether a lane change is allowed, the lane-change logic, steering or the driving model. Device CPU load and recognition accuracy on the road are not yet measured.
 
 #### CCNC HDA1 radar vehicles
 

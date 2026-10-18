@@ -421,6 +421,7 @@
             "HDPuse",
             "CcncLaneColor",
             "CcncModelLanes",
+            "CcncLaneTypeDetection",
             "CcncRadarVehicles",
             "CcncVehiclePositionCorrection",
             "CcncRadarMap"
@@ -1892,6 +1893,40 @@
           "关闭",
           "普通",
           "精细"
+        ]
+      }
+    },
+    {
+      "group": "시작",
+      "name": "CcncLaneTypeDetection",
+      "title": "CCNC 차선 종류·색상 표시",
+      "descr": "차선의 실선·점선과 흰색·노란색을 인식해 CCNC 계기판 차선 색상과 형태에 반영합니다. 노란선은 주황 실선, 차선 변경 가능 시 녹색, 그 외 흰색. 표시 전용, 차선 변경·조향 제어 영향 없음. 끔: 기존 표시, Scanner: 1차원 스캐너, StripNet: 경량 모델. 기기 부하 미측정",
+      "egroup": "START",
+      "etitle": "CCNC lane type & color display",
+      "edescr": "Recognises solid/dashed and white/yellow lane lines and reflects them in the CCNC cluster lane color and shape. Yellow shows orange solid, lane-change-available green, otherwise white. Display only; no effect on lane change or steering control. Off: existing display, Scanner: 1-D scanner, StripNet: light model. Device load unmeasured",
+      "cgroup": "启动设置",
+      "ctitle": "CCNC 车道线类型·颜色显示",
+      "cdescr": "识别实线/虚线和白色/黄色车道线，并反映到CCNC仪表车道颜色和形状。黄线显示橙色实线，可变道时绿色，其余白色。仅用于显示，不影响变道和转向控制。关闭：原有显示，Scanner：一维扫描器，StripNet：轻量模型。设备负载未测量",
+      "min": 0,
+      "max": 2,
+      "default": 0,
+      "unit": 1,
+      "control": "select",
+      "options": {
+        "ko": [
+          "끔",
+          "Scanner",
+          "StripNet"
+        ],
+        "en": [
+          "Off",
+          "Scanner",
+          "StripNet"
+        ],
+        "zh": [
+          "关闭",
+          "Scanner",
+          "StripNet"
         ]
       }
     },

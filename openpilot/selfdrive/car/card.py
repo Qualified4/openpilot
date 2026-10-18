@@ -33,6 +33,7 @@ from openpilot.selfdrive.carrot.xiaoge.xiaoge_vision import (
   parse_xiaoge_vision_payload,
   xiaoge_blindspot_vision,
 )
+from openpilot.selfdrive.carrot.lane_type import marking as lane_marking
 
 REPLAY = "REPLAY" in os.environ
 XIAOGE_LANE_ERROR_LOG_INTERVAL_NS = 5_000_000_000
@@ -81,7 +82,7 @@ class Car:
   def __init__(self, CI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
     self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'carrotMan', 'longitudinalPlan',
-                                   'radarState', 'modelV2', 'drivingModelData', 'customReservedRawData0', 'liveTracks',
+                                   'radarState', 'modelV2', 'drivingModelData', 'customReservedRawData0', 'customReservedRawData2', 'liveTracks',
                                    'liveParameters', 'livePose', 'selfdriveState', 'lateralPlan'])
     self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'customReservedRawData1'])
 
@@ -187,6 +188,7 @@ class Car:
     self.card_diag_slow_process = 0
     self.card_diag_can_timeouts = 0
     self.xiaoge_vision_result: XiaogeVisionResult | None = None
+    self.lane_marking = None  # latest display-only lane marking packet (customReservedRawData2), parsed
     self.xiaoge_blindspot_sources = (False, False, False, False)
     self.xiaoge_blindspot_sources_published = None
     self.xiaoge_blindspot_sources_published_ns = 0
@@ -232,6 +234,13 @@ class Car:
         if sm_done_ns - self.xiaoge_vision_error_log_at_ns >= XIAOGE_LANE_ERROR_LOG_INTERVAL_NS:
           cloudlog.warning(f"invalid Xiaoge vision payload: {error}")
           self.xiaoge_vision_error_log_at_ns = sm_done_ns
+    if self.sm.updated['customReservedRawData2']:
+      # Small JSON at <= 20 Hz; only the newest packet is kept. The CCNC sender checks its expiry.
+      try:
+        self.lane_marking = lane_marking.parse(bytes(self.sm['customReservedRawData2']), sm_done_ns)
+      except (UnicodeDecodeError, ValueError, TypeError):
+        self.lane_marking = None
+    self.CI.CS.ccnc_lane_marking = self.lane_marking
     left_oem, right_oem = bool(CS.leftBlindspot), bool(CS.rightBlindspot)
     left_vision, right_vision = xiaoge_blindspot_vision(self.xiaoge_vision_result, sm_done_ns)
     self.xiaoge_blindspot_sources = (left_oem, right_oem, left_vision, right_vision)
