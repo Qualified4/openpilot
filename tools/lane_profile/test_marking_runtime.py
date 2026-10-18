@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import sys
 from types import SimpleNamespace as N
 
@@ -161,7 +162,7 @@ def test_daemon_main_loop_with_fake_ipc(monkeypatch):
       i = state['queue'].pop(0)
       self.frame_id, self.timestamp_eof = i, eof(i)
       return N(width=w, height=h, stride=w, uv_offset=w*h, data=nv12.tobytes(), frame_id=i)  # camerad stamps the slot
-  messaging = types.SimpleNamespace(SubMaster=SM, PubMaster=lambda s: N(send=lambda name, msg: sent.append(json.loads(msg.customReservedRawData2))),
+  messaging = types.SimpleNamespace(SubMaster=SM, PubMaster=lambda s: N(send=lambda name, msg: sent.append(json.loads(getattr(msg, name)))),
                                     new_message=lambda name, size, valid: N())
   # Fake the cereal package itself: the real one needs capnp schemas (and msgq) that are unavailable here.
   monkeypatch.setitem(sys.modules, 'openpilot.cereal', types.SimpleNamespace(messaging=messaging, __path__=[]))
@@ -212,3 +213,31 @@ def test_buffer_drop_reason_hold_time_and_slot_frame_id():
   assert buffer_drop_reason(12, buf, 0, MAX_HOLD_NS - 1) is None
   assert buffer_drop_reason(12, buf, 0, MAX_HOLD_NS) == 'hold'      # held 0.5 s: dropped even with the same id
   assert buffer_drop_reason(11, buf, 0, 1) == 'frame_id'            # slot already republished with another frame
+
+
+def test_lane_marking_channel_exists_in_the_real_cereal_schema(tmp_path):
+  """card subscribes to and marking_daemon publishes customReservedRawData2: it must be a real Event member and service
+  (a missing member made card crash at start on the device). Schema copied to an ASCII temp path for capnp."""
+  import re
+  import shutil
+  capnp = pytest.importorskip('capnp')
+  root = Path(__file__).resolve().parents[2]
+  for directory in ('openpilot/cereal', 'opendbc_repo/opendbc/car'):
+    for source in (root/directory).rglob('*.capnp'):
+      target = tmp_path/source.relative_to(root)
+      target.parent.mkdir(parents=True, exist_ok=True)
+      shutil.copyfile(source, target)
+  c, car = tmp_path/'openpilot/cereal', tmp_path/'opendbc_repo/opendbc/car'
+  log = capnp.SchemaParser().load(str(c/'log.capnp'), imports=[str(c), str(c/'include'), str(car), str(car/'include')])
+  services = (root/'openpilot/cereal/services.py').read_text(encoding='utf-8')
+  card = (root/'openpilot/selfdrive/car/card.py').read_text(encoding='utf-8')
+  subscribed = re.findall(r"'(\w+)'", re.search(r'self\.sm = messaging\.SubMaster\(\[(.*?)\]', card, re.S).group(1))
+  assert 'customReservedRawData2' in subscribed
+  fields = log.Event.schema.fields
+  for name in subscribed:
+    assert f'"{name}":' in services and name in fields, name
+  event = log.Event.new_message()
+  event.init('customReservedRawData2', 26)  # what messaging.new_message(name, size=...) does
+  event.customReservedRawData2 = b'{"type":"ccncLaneMarking"}'
+  with log.Event.from_bytes(event.to_bytes()) as read:
+    assert bytes(read.customReservedRawData2) == b'{"type":"ccncLaneMarking"}'

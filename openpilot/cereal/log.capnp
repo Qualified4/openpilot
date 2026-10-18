@@ -2724,6 +2724,7 @@ struct Event {
     navRouteNavd @125 :NavRoute;
     navInstructionCarrot @126 :NavInstruction;
     customReservedRawData1 @154 :Data;
+    customReservedRawData2 @155 :Data;
 
     # DO change the name of the field and struct
     # DON'T change the ID (e.g. @107)
