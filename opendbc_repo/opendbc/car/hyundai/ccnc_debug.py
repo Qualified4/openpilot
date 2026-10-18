@@ -15,7 +15,13 @@ from opendbc.car.hyundai.values import HyundaiFlags
 COMMAND_PATH = Path('/dev/shm/carrot-ccnc-debug.json')
 STATUS_PATH = Path('/dev/shm/carrot-ccnc-debug-status.json')
 LEASE_SECONDS = 0.6
-RX_SECONDS = 0.15
+# 20 Hz messages; a few late card cycles are not a lost camera.
+RX_SECONDS = 0.5
+# Output stops at once for any unsafe state. Only a change of the vehicle's own
+# state that lasts this long ends the session (manual re-enable); a flickering
+# signal, a late frame or a slow browser only pauses it.
+LATCH_REASONS = frozenset(('vehicle moving', 'select P, or N with brake held', 'controls active'))
+LATCH_SECONDS = 0.5
 MESSAGES = {'lanes': 'ADRV_0x161', 'vehicles': 'CCNC_0x162'}
 SLOTS = ('LF', 'FF', 'RF', 'LR', 'RR')
 LANE_CODES = (1, 2, 4, 6, 8, 10, 14)
@@ -210,6 +216,7 @@ class DebugOverride:
     self.command_path, self.status_path = Path(command_path), Path(status_path)
     self.session = None
     self.blocked = None
+    self.unsafe_since = None
     self.checked = False
 
   def poll(self, CP, CC, CS, warning=False, now=None):
@@ -227,25 +234,31 @@ class DebugOverride:
       if not isinstance(session, str) or not session:
         raise ValueError('session required')
       if session != self.session:
-        self.session, self.blocked = session, None
+        self.session, self.blocked, self.unsafe_since = session, None, None
       updated = command['updated_at']
       if type(updated) not in (int, float) or not math.isfinite(updated):
         raise ValueError('invalid lease timestamp')
-      age = now - updated
-      if not 0 <= age < LEASE_SECONDS:
-        self.blocked = 'settings expired'
+      expired = not 0 <= now - updated < LEASE_SECONDS
       if not self.checked:
         schema()
         self.checked = True
       reason = safety_reason(CP, CC, CS, now)
-      if config['transmit'] and (reason or warning):
-        self.blocked = reason or 'warning active'
-      active = config['transmit'] and self.blocked is None and reason is None
+      if config['transmit'] and reason in LATCH_REASONS:
+        self.unsafe_since = now if self.unsafe_since is None else self.unsafe_since
+        if now - self.unsafe_since >= LATCH_SECONDS:
+          self.blocked = reason
+      else:
+        self.unsafe_since = None
+      pause = reason or ('warning active' if warning else None) or ('settings expired' if expired else None)
+      active = config['transmit'] and self.blocked is None and pause is None
       selected = overrides(config) if active else {}
       active = active and any(selected.values())
+      idle = 'no field selected' if config['transmit'] and self.blocked is None and pause is None else 'preview'
       write_json(self.status_path, {'session': session, 'updated_at': now, 'active': active,
-                                   'reason': self.blocked or reason or ('transmitting' if active else 'preview'),
-                                   'disarmed': self.blocked is not None, 'fields': selected})
+                                   'reason': self.blocked or pause or ('transmitting' if active else idle),
+                                   'disarmed': self.blocked is not None,
+                                   'paused': self.blocked is None and pause is not None and config['transmit'],
+                                   'fields': selected})
       return selected
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
       self.blocked = 'invalid debug configuration or vehicle state'

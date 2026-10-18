@@ -19,7 +19,15 @@ def feature(monkeypatch, tmp_path):
   return module
 
 
-def test_web_lease_preview_live_edits_off_disconnect_and_timeout(feature):
+async def reply(ws):
+  """The server also pushes status on its own; skip to the answer to an edit."""
+  while True:
+    message = await ws.receive_json(timeout=3.)
+    if 'preview' in message or 'error' in message:
+      return message
+
+
+def test_web_lease_live_edits_server_renewal_disarm_and_disconnect(feature):
   async def run():
     app = web.Application()
     feature.register(app)
@@ -34,41 +42,46 @@ def test_web_lease_preview_live_edits_off_disconnect_and_timeout(feature):
       config['vehicles_enabled'] = True
       config['vehicles']['LF']['enabled'] = True
       await ws.send_json(config)
-      message = await ws.receive_json()
-      assert message['preview']['CCNC_0x162']['fields']['LF_DETECT']['raw'] == 6
-      assert not debug.COMMAND_PATH.exists()  # Preview never publishes a lease.
+      assert (await reply(ws))['preview']['CCNC_0x162']['fields']['LF_DETECT']['raw'] == 6
+      assert not debug.COMMAND_PATH.exists()  # transmit=False never publishes a lease.
       config['transmit'] = True
       await ws.send_json(config)
-      await ws.receive_json()
+      await reply(ws)
       original = debug.read_json(debug.COMMAND_PATH)
       config['vehicles']['LF']['distance'] = 22.2
       await ws.send_json(config)
-      await ws.receive_json()
+      await reply(ws)
       edited = debug.read_json(debug.COMMAND_PATH)
       assert edited['session'] == original['session']
       assert edited['config']['vehicles']['LF']['distance'] == 22.2
-      assert edited['updated_at'] >= original['updated_at']
-      # A controller safety rejection cannot be bypassed with heartbeat traffic.
+      # A quiet or slow browser keeps the session: the server renews the lease.
+      await asyncio.sleep(3 * debug.LEASE_SECONDS)
+      renewed = debug.read_json(debug.COMMAND_PATH)
+      assert renewed['session'] == original['session']
+      assert feature.time.monotonic() - renewed['updated_at'] < debug.LEASE_SECONDS
+      # A controller safety stop is final for the session: lease removed, socket closed.
       debug.write_json(debug.STATUS_PATH, {'session': original['session'], 'updated_at': feature.time.monotonic(),
                                            'active': False, 'disarmed': True, 'reason': 'vehicle moving'})
-      await ws.send_json(config)
-      assert (await ws.receive_json())['status']['disarmed']
+      seen = []
+      while True:
+        message = await ws.receive(timeout=3.)
+        if message.type != WSMsgType.TEXT:
+          break
+        seen.append(message.json()['status'])
+      assert seen and seen[-1]['disarmed'] and seen[-1]['reason'] == 'vehicle moving'
+      assert message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING)
       assert not debug.COMMAND_PATH.exists()
-      config['transmit'] = False
+      # Turning it on again is a new session.
+      await asyncio.sleep(.05)
+      ws = await client.ws_connect('/ws/ccnc_debug', headers={'Origin': origin})
       await ws.send_json(config)
-      await ws.receive_json()
-      config['transmit'] = True
-      await ws.send_json(config)
-      await ws.receive_json()
+      await reply(ws)
       assert debug.read_json(debug.COMMAND_PATH)['session'] != original['session']
       await ws.close()
-      # A subsequent connection is also an acknowledgement that finally ran.
-      ws = await client.ws_connect('/ws/ccnc_debug', headers={'Origin': origin})
-      assert not debug.COMMAND_PATH.exists()
-      await ws.send_json(config)
-      await ws.receive_json()
-      assert debug.COMMAND_PATH.exists()
-      assert (await ws.receive(timeout=2.)).type in (WSMsgType.CLOSE, WSMsgType.CLOSED)
+      for _ in range(50):
+        if not debug.COMMAND_PATH.exists():
+          break
+        await asyncio.sleep(.02)
       assert not debug.COMMAND_PATH.exists()
   asyncio.run(run())
 
@@ -88,11 +101,11 @@ def test_web_rejects_cross_origin_second_owner_and_invalid_values(feature):
       config = debug.defaults()
       config['transmit'] = True
       await ws.send_json(config)
-      await ws.receive_json()
+      await reply(ws)
       assert debug.COMMAND_PATH.exists()
       config['vehicles']['LF']['lateral'] = -.1
       await ws.send_json(config)
-      assert (await ws.receive_json())['error']
+      assert (await reply(ws))['error']
       assert not debug.COMMAND_PATH.exists()
       await ws.close()
   asyncio.run(run())

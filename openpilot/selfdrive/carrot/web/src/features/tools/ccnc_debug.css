@@ -2,13 +2,21 @@
 .ccnc-debug, .ccnc-debug-body { min-width: 0; max-width: 100%; box-sizing: border-box; }
 .ccnc-debug-body { padding: 12px; }
 .ccnc-debug p { line-height: 1.5; overflow-wrap: anywhere; }
-.ccnc-debug fieldset { border: 1px solid var(--border, #777); border-radius: 8px; margin: 12px 0; min-width: 0; padding: 12px; }
+.ccnc-debug-note { color: var(--md-on-surface-var); font-size: 13px; }
+.ccnc-debug fieldset { border: 1px solid var(--md-stroke-soft, #777); border-radius: 8px; margin: 12px 0; min-width: 0; padding: 12px; }
 .ccnc-debug label { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
-.ccnc-debug legend { max-width: 100%; }
-.ccnc-debug input[type="checkbox"] { width: 20px; height: 20px; }
-.ccnc-debug input[type="number"] { width: 100px; }
-.ccnc-debug input, .ccnc-debug select { color: var(--text, inherit); background: var(--bg, #222); border: 1px solid #888; border-radius: 4px; padding: 6px; max-width: 100%; }
-.ccnc-debug input:invalid { outline: 2px solid #ed8e44; }
-.ccnc-debug-fields, .ccnc-debug-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-.ccnc-debug output { display: block; margin-top: 12px; overflow-wrap: anywhere; }
+.ccnc-debug legend { max-width: 100%; font-weight: 750; }
+.ccnc-debug input[type="checkbox"]:not(.c-switch__input) { width: 20px; height: 20px; }
+.ccnc-debug select { color: var(--md-on-surface, inherit); background: var(--md-surface-cont-h, #222); border: 1px solid var(--md-outline-var, #888); border-radius: 6px; padding: 8px; max-width: 100%; }
+.ccnc-debug-master { display: flex !important; flex-wrap: nowrap !important; justify-content: space-between; gap: 12px; width: 100%; font-weight: 800; }
+.ccnc-debug-master > span:first-child { flex: 1 1 auto; min-width: 0; }
+.ccnc-debug output[data-debug-status] { display: block; margin: 10px 0; padding: 8px 12px; border-radius: 8px; background: var(--md-surface-cont-h); font-weight: 750; overflow-wrap: anywhere; }
+.ccnc-debug-fields { display: grid; gap: 12px; }
+.ccnc-debug-slider { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: "label label label value" "minus range plus plus"; align-items: center; gap: 6px 8px; }
+.ccnc-debug-slider__label { grid-area: label; font-size: 13px; color: var(--md-on-surface-var); }
+.ccnc-debug-slider .val { grid-area: value; min-width: 72px; text-align: right; }
+.ccnc-debug-slider [data-dir="-1"] { grid-area: minus; }
+.ccnc-debug-slider [data-dir="1"] { grid-area: plus; justify-self: start; }
+.ccnc-debug-slider .smallBtn { min-width: 44px; padding: 0 12px; }
+.ccnc-debug-slider input[type="range"] { grid-area: range; width: 100%; min-width: 0; height: 32px; accent-color: var(--md-primary); }
 .ccnc-debug pre { max-height: 380px; overflow: auto; }

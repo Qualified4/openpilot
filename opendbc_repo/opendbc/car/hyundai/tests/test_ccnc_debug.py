@@ -118,12 +118,7 @@ def test_allowlist_groups_and_slots_are_independent():
     debug.validate(config)
 
 
-@pytest.mark.parametrize('failure', ['canValid', 'canTimeout', 'standstill', 'vEgo', 'vEgoRaw', 'wheel', 'gear',
-                                    'gas', 'control', 'lat', 'long', 'rx', 'rx_future', 'warning', 'hda2', 'direct', 'blindspot'])
-def test_unsafe_state_reverts_and_requires_new_arm(tmp_path, failure):
-  live = lease(tmp_path)
-  cp, cc, cs = vehicle()
-  assert live.poll(cp, cc, cs, now=100.) == debug.overrides(selected())
+def break_state(failure, cp, cc, cs):
   if failure in ('canValid', 'standstill'):
     setattr(cs.out, failure, False)
   elif failure == 'canTimeout':
@@ -149,12 +144,64 @@ def test_unsafe_state_reverts_and_requires_new_arm(tmp_path, failure):
   elif failure == 'direct':
     cp.flags |= HyundaiFlags.CANFD_CLUSTER_DIRECT_TX
   elif failure.startswith('rx'):
-    cs.cp_cam.ts_nanos['ADRV_0x161']['COUNTER'] = int((99.8 if failure == 'rx' else 101.) * 1e9)
-  assert live.poll(cp, cc, cs, warning=failure == 'warning', now=100.) == {}
+    cs.cp_cam.ts_nanos['ADRV_0x161']['COUNTER'] = int((99.4 if failure == 'rx' else 101.) * 1e9)
+
+
+LATCHING = ['standstill', 'vEgo', 'vEgoRaw', 'wheel', 'gear', 'control', 'lat', 'long']
+PAUSING = ['canValid', 'canTimeout', 'gas', 'rx', 'rx_future', 'warning', 'hda2', 'direct', 'blindspot']
+
+
+@pytest.mark.parametrize('failure', LATCHING + PAUSING)
+def test_unsafe_state_reverts_at_once_and_brief_glitches_resume(tmp_path, failure):
+  live = lease(tmp_path)
   cp, cc, cs = vehicle()
-  assert live.poll(cp, cc, cs, now=100.) == {}  # Returning to P/valid CAN does not rearm.
+  assert live.poll(cp, cc, cs, now=100.) == debug.overrides(selected())
+  break_state(failure, cp, cc, cs)
+  assert live.poll(cp, cc, cs, warning=failure == 'warning', now=100.) == {}  # Normal output immediately.
+  assert debug.read_json(live.status_path)['paused']
+  cp, cc, cs = vehicle()
+  debug.write_json(live.command_path, {'session': 'arm1', 'updated_at': 100.3, 'config': selected()})
+  assert live.poll(cp, cc, cs, now=100.3) == debug.overrides(selected())  # Same session resumes.
+  assert not debug.read_json(live.status_path)['disarmed']
+
+
+@pytest.mark.parametrize('failure', LATCHING)
+def test_lasting_vehicle_state_change_requires_new_arm(tmp_path, failure):
+  live = lease(tmp_path)
+  cp, cc, cs = vehicle()
+  assert live.poll(cp, cc, cs, now=100.)
+  break_state(failure, cp, cc, cs)
+  for now in (100., 100.25, 100.5):
+    debug.write_json(live.command_path, {'session': 'arm1', 'updated_at': now, 'config': selected()})
+    assert live.poll(cp, cc, cs, now=now) == {}
   assert debug.read_json(live.status_path)['disarmed']
-  debug.write_json(live.command_path, {'session': 'arm2', 'updated_at': 100., 'config': selected()})
+  cp, cc, cs = vehicle(now=101.)
+  debug.write_json(live.command_path, {'session': 'arm1', 'updated_at': 101., 'config': selected()})
+  assert live.poll(cp, cc, cs, now=101.) == {}  # Returning to P does not rearm this session.
+  debug.write_json(live.command_path, {'session': 'arm2', 'updated_at': 101., 'config': selected()})
+  assert live.poll(cp, cc, cs, now=101.)
+
+
+@pytest.mark.parametrize('failure', PAUSING)
+def test_lasting_transient_problem_never_ends_the_session(tmp_path, failure):
+  live = lease(tmp_path)
+  cp, cc, cs = vehicle()
+  assert live.poll(cp, cc, cs, now=100.)
+  break_state(failure, cp, cc, cs)
+  for now in (100., 101., 105.):
+    debug.write_json(live.command_path, {'session': 'arm1', 'updated_at': now, 'config': selected()})
+    if failure.startswith('rx'):
+      cs.cp_cam.ts_nanos['ADRV_0x161']['COUNTER'] = int((now - .6 if failure == 'rx' else now + 1.) * 1e9)
+    assert live.poll(cp, cc, cs, warning=failure == 'warning', now=now) == {}
+  assert not debug.read_json(live.status_path)['disarmed']
+  cp, cc, cs = vehicle(now=105.)
+  assert live.poll(cp, cc, cs, now=105.) == debug.overrides(selected())
+
+
+def test_rx_a_few_cycles_late_is_not_stale(tmp_path):
+  live = lease(tmp_path)
+  cp, cc, cs = vehicle()
+  cs.cp_cam.ts_nanos['ADRV_0x161']['COUNTER'] = int(99.7 * 1e9)  # 300 ms: a busy card loop, not a lost camera
   assert live.poll(cp, cc, cs, now=100.)
 
 
@@ -240,7 +287,7 @@ def test_existing_generator_only_changes_allowlisted_bits_and_crc(monkeypatch, t
       assert get_raw_value(data, sig) == round(value / sig.factor) % (1 << sig.size)
   assert send(6) == []  # Never adds a new schedule.
   warning_output = send(5, warning=True)
-  assert send(5) == normal
+  assert send(5) == active  # A native warning only pauses; the same session resumes once it clears.
   live.command_path.unlink()
   assert warning_output == send(5, warning=True)
   assert (cs.adrv_0x161, cs.ccnc_0x162) == original
