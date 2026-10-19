@@ -29,6 +29,7 @@ def test_native_live_entry_radar_option_enables_handover_and_display_bit_allowli
     if key in msg.sigs:
       cs.ccnc_0x162[key] = value
   cs.out.aEgo = 0.
+  cs.out.vEgo = 10.  # the track's vLead 8 = vEgo + vRel -2
   cs.out.canValid = True
   raw_source = copy.deepcopy(cs.ccnc_0x162)
   hud = structs.CarControl().hudControl
@@ -73,7 +74,8 @@ def test_native_live_entry_radar_option_enables_handover_and_display_bit_allowli
   changed = 0
   previous_front = None
   previous_counter = None
-  for old_messages, new_messages in zip(before, after, strict=True):
+  previous_rear = 0
+  for i, (old_messages, new_messages) in enumerate(zip(before, after, strict=True)):
     assert [(a, b) for a, _, b in old_messages] == [(a, b) for a, _, b in new_messages]
     for (address, old, _), (_, new, _) in zip(old_messages, new_messages, strict=True):
       if address != 0x162:
@@ -88,9 +90,12 @@ def test_native_live_entry_radar_option_enables_handover_and_display_bit_allowli
       previous_counter = new[2]
       front_detect = get_raw_value(new, msg.sigs['LF_DETECT'])
       rear_detect = get_raw_value(new, msg.sigs['LR_DETECT'])
-      if rear_detect and not front_detect and previous_front is not None:
-        assert previous_front <= .2, 'handoff skipped the last drawn front distance'
+      if rear_detect and not previous_rear and not (bsd_interrupt and 40 <= i < 50):
+        # No gap: LR appears in the very send in which the car leaves LF (DaBin 10-19), at 0.
+        assert previous_front is not None and not front_detect, 'the handed-over car vanished from every slot'
+        assert get_raw_value(new, msg.sigs['LR_DETECT_DISTANCE']) == 0
       previous_front = get_raw_value(new, msg.sigs['LF_DETECT_DISTANCE'])*.1 if front_detect else None
+      previous_rear = rear_detect
       for key, signal in msg.sigs.items():
         if key not in allowed:
           assert get_raw_value(old, signal) == get_raw_value(new, signal), key
@@ -126,6 +131,7 @@ def test_rear_exception_skips_only_the_rear_memory(display, monkeypatch, use_map
   msg = CANPacker('hyundai_canfd_generated').dbc.name_to_msg['CCNC_0x162']
   cs.ccnc_0x162 = dict.fromkeys(msg.sigs, 0)
   cs.out.aEgo = 0.
+  cs.out.vEgo = 10.
   cs.out.canValid = True
   hud = structs.CarControl().hudControl
   hud.leftLaneVisible = hud.rightLaneVisible = True
