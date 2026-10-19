@@ -4,13 +4,13 @@ Applied per side to the existing lane code only where the existing policy shows 
 lane-change-available green 6). Priority: recognised yellow -> orange solid 4 (also over green);
 otherwise the existing green condition keeps green with the recognised shape (solid 6 / dashed 10);
 otherwise white with the recognised shape (solid 2 / dashed 8). UNKNOWN, expired or disabled leaves the
-existing code untouched, as do grey 0 (low confidence), hidden lines, departure blinking and the existing
-warning orange, which are decided outside this function. Display only: lane-change permission is not read or changed.
+existing code untouched (SideDisplay's lapsed grey aside), as do grey 0 (low confidence), hidden lines,
+departure blinking and the existing warning orange, which are decided outside this function. Display only: lane-change permission is not read or changed.
 
 ``marking`` is card's latest parsed packet: {'left': {'type': (value, expires_ns)|None, 'color': ...}, ...}.
 """
 WHITE_SOLID, ORANGE_SOLID, GREEN_SOLID, WHITE_DASHED, GREEN_DASHED = 2, 4, 6, 8, 10
-HOLD_S, GREEN_ON_S, STOP_SPEED = 2., 1., .5
+HOLD_S, GREEN_ON_S, STOP_SPEED, HOLD_STOP_SPEED = 5., 1., .5, 2.
 LOW_PROB_ON, LOW_PROB_OFF, LOW_PROB_S, MAX_DT = .3, .5, 1., .2
 
 
@@ -44,20 +44,29 @@ class SideDisplay:
   """Display memory of one side (display only; no control input is read or written).
 
   - hold: the last fresh type and the last fresh colour (each head separately) fill a missing head for HOLD_S while
-    driving and without a time limit while stopped (v < STOP_SPEED); a new fresh value replaces it at once;
-    a blinker or lane change clears it.
+    driving and without a time limit while stopped or creeping (v < HOLD_STOP_SPEED, 2 m/s: slow queues) or changing
+    lanes (blinker, desire, laneChangeState: the last confirmed line stays through the change; the HOLD_S clock
+    restarts when it ends);
+    a new fresh value replaces it at once.
+  - lapsed grey (``enabled``, the recogniser option on): once a head's hold has run out while driving, the line is
+    shown grey 0 instead of the existing solid-looking base until the recogniser confirms that head again. Only a
+    head the code needs counts: the colour always, the type only for a white line (yellow is orange solid either
+    way). A head never confirmed since start leaves the existing base, as does ``enabled`` False.
   - green (lane change available) turns on only after GREEN_ON_S of continuous availability, off at once.
-  - low: lane prob < LOW_PROB_ON for LOW_PROB_S of driving -> grey 0; released at >= LOW_PROB_OFF; frozen while stopped.
+  - low: lane prob < LOW_PROB_ON for LOW_PROB_S of driving -> grey 0; released at >= LOW_PROB_OFF; frozen while stopped
+    (v < STOP_SPEED, 0.5 m/s).
   """
   def __init__(self):
     self.hold = {'type': None, 'color': None}  # head -> (value, last fresh time)
+    self.lapsed = {'type': False, 'color': False}  # head -> hold ran out, no fresh value since
     self.green, self.green_s, self.low, self.low_s, self.last_t = None, 0., False, 0., None
 
-  def update(self, t, v_ego, lane_change_available, prob, changing, kind, color):
-    """Returns (green, low, kind, colour) for this frame."""
+  def update(self, t, v_ego, lane_change_available, prob, changing, kind, color, enabled=True):
+    """Returns (green, low, kind, colour, lapsed) for this frame; lapsed True -> show grey 0."""
     dt = 0. if self.last_t is None else min(max(t - self.last_t, 0.), MAX_DT)
     self.last_t = t
     stopped = v_ego < STOP_SPEED
+    slow = v_ego < HOLD_STOP_SPEED  # hold without a time limit
 
     available = bool(lane_change_available)
     self.green_s = self.green_s + dt if available else 0.
@@ -73,14 +82,19 @@ class SideDisplay:
 
     shown = {}
     for head, value, classes in (('type', kind, ('dashed', 'solid')), ('color', color, ('white', 'yellow'))):
-      held = None if changing else self.hold[head]
+      held = self.hold[head]
       if value in classes:
         held = (value, t)
-      elif held is not None and (stopped or t - held[1] <= HOLD_S):
+        self.lapsed[head] = False
+      elif held is not None and (slow or changing or t - held[1] <= HOLD_S):
         value = held[0]
-        if stopped:
+        if slow or changing:
           held = (value, t)
-      else:
+      elif held is not None:
         held = None
+        self.lapsed[head] = True
       self.hold[head], shown[head] = held, value
-    return self.green, self.low, shown['type'], shown['color']
+    lapsed = bool(enabled) and (
+      (shown['color'] not in ('white', 'yellow') and self.lapsed['color']) or
+      (shown['color'] == 'white' and shown['type'] not in ('dashed', 'solid') and self.lapsed['type']))
+    return self.green, self.low, shown['type'], shown['color'], lapsed

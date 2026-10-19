@@ -26,6 +26,11 @@ MAX_FRAME_OFFSET_NS = 50_000_000  # one frame period; a two-frame (100 ms) offse
 # frame r+18, before camerad republishes it, so the oldest buffered frame has ~0.7 s from recv() until its pixels can
 # change (.analysis/lane-marking-vipc-buffer-20261019). Frames held this long are not processed or published.
 MAX_HOLD_NS = 500_000_000
+# StripNet: a lane line prob below LANE_PROB_MIN is not inferred. A short dip (LANE_PROB_LOST <= prob, for at most
+# LANE_DIP_MAX_NS since the side first fell below LANE_PROB_MIN) is 'lane_prob_dip': the frame is skipped (unknown, not
+# entered in the strip filter's windows) and neither those windows nor DisplayPolicy are emptied. Below LANE_PROB_LOST,
+# or a dip lasting longer, is 'not_detected', which empties both.
+LANE_PROB_MIN, LANE_PROB_LOST, LANE_DIP_MAX_NS = .5, .3, 1_000_000_000
 
 
 def requested(started, params, CP=None):
@@ -86,16 +91,18 @@ class Recogniser:
   """Only the selected engine is constructed (the other is never imported or loaded).
 
   StripNet (mode 2) always runs its type and colour results through a strip_filter.StripFilter, by default the
-  asymmetric A8/4 type filter (strip_filter.LONG_M / SHORT_M) with the strip_filter.COLOR_M colour window, applied
+  asymmetric A8/4 type filter (strip_filter.LONG_M / SHORT_M) with the strip_filter.COLOR_M colour window and the
+  latch (strip_filter.LATCH: the last confident type / colour is kept until the other one is confident), applied
   to each side's filter_input result before it leaves process(). ``strip_filter`` is for tests and replays only:
   None builds that default, another StripFilter is used instead of it, and False turns the filter off (the raw
   filter_input results, both heads). The Scanner (mode 1) has no filter unless one is passed, and ignores it."""
   def __init__(self, mode, strip_filter=None):
     self.mode = mode
     if strip_filter is None and mode == 2:
-      from openpilot.selfdrive.carrot.lane_type.strip_filter import COLOR_M, LONG_M, SHORT_M, StripFilter
-      strip_filter = StripFilter('asym', long_m=LONG_M, short_m=SHORT_M, color_m=COLOR_M)
+      from openpilot.selfdrive.carrot.lane_type.strip_filter import COLOR_M, LATCH, LONG_M, SHORT_M, StripFilter
+      strip_filter = StripFilter('asym', long_m=LONG_M, short_m=SHORT_M, color_m=COLOR_M, latch=LATCH)
     self.strip_filter = strip_filter or None
+    self.dip_since = {}  # side -> camera stamp of the first frame below LANE_PROB_MIN (StripNet)
     if mode == 1:
       from openpilot.selfdrive.carrot.lane_type.profile_scanner import ProfileScanner
       self.scanners = {side: ProfileScanner(side) for side in ('left', 'right')}
@@ -115,6 +122,22 @@ class Recogniser:
         scanner.reset()
     if self.strip_filter is not None:
       self.strip_filter.reset()
+    self.dip_since.clear()
+
+  def _skip_reason(self, side, frame):
+    """StripNet: why this side is not inferred ('lane_change', 'not_detected', 'lane_prob_dip'), or None."""
+    prob, stamp = frame['probs'][side], frame['stamp']
+    if prob >= LANE_PROB_MIN:
+      self.dip_since.pop(side, None)
+    else:
+      since = self.dip_since.setdefault(side, stamp)
+      if stamp < since:
+        since = self.dip_since[side] = stamp
+    if frame['lane_change']:
+      return 'lane_change'
+    if prob >= LANE_PROB_MIN:
+      return None
+    return 'lane_prob_dip' if prob >= LANE_PROB_LOST and stamp - since <= LANE_DIP_MAX_NS else 'not_detected'
 
   def process(self, y_plane, uv_plane, frame):
     """frame: lines/probs per side, rpy, k, stamp (camera EOF ns), odometer, leads, lane_change."""
@@ -129,8 +152,9 @@ class Recogniser:
     from openpilot.selfdrive.carrot.lane_type.strip_model import strip_input
     strips, sides = [], []
     for side in ('left', 'right'):
-      if frame['lane_change'] or frame['probs'][side] < .5:
-        out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason='lane_change' if frame['lane_change'] else 'not_detected')
+      skip = self._skip_reason(side, frame)
+      if skip:
+        out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason=skip)
         continue
       s = strip_input(y_plane, uv_plane, frame['lines'][side], frame['rpy'], frame['k'])
       if s is None:
@@ -148,8 +172,8 @@ class Recogniser:
       from openpilot.selfdrive.carrot.lane_type.strip_filter import p_dashed, p_yellow
       for side in ('left', 'right'):
         # filter_input drops the model's probabilities, so P(dashed) / P(yellow) come from the model output;
-        # reset-reason sides (no inference) are passed too and empty the windows. Unlearned yellow-dashed frames
-        # stay out of both.
+        # reset-reason sides (no inference) are passed too and empty the windows; a lane_prob_dip side is passed
+        # without probabilities, so it is skipped and keeps them. Unlearned yellow-dashed frames stay out of both.
         r = models.get(side)
         learned = r is not None and r['reason'] == 'strip_model'
         p, py = (p_dashed(r), p_yellow(r)) if learned else (None, None)

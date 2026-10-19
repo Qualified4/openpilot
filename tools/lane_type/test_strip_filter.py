@@ -1,4 +1,4 @@
-"""StripNet temporal filter in marking_daemon.Recogniser (A8/4 type + 8 m colour window by default on the StripNet path), with a fake
+"""StripNet temporal filter in marking_daemon.Recogniser (A8/4 type + 8 m colour window + latch by default on the StripNet path), with a fake
 StripModel that returns queued probabilities in order, so no model, OpenCV or camera frame is needed."""
 import numpy as np
 import pytest
@@ -45,11 +45,13 @@ def step(rec, i, p, color=.99, **kw):
 
 
 def expected_raw(f, p, color):
-  """The pre-filter Recogniser output (filter_input of the model decision or of the skip reason)."""
+  """The pre-filter Recogniser output (filter_input of the model decision or of the skip reason); a prob in
+  [0.3, 0.5) is a single-frame dip here (the frames before it are at 1.0)."""
   out = {}
   for side in ('left', 'right'):
     if f['lane_change'] or f['probs'][side] < .5:
-      out[side] = filter_input('unknown', 'unknown', 0., 0., f['stamp'], reason='lane_change' if f['lane_change'] else 'not_detected')
+      reason = 'lane_change' if f['lane_change'] else 'lane_prob_dip' if f['probs'][side] >= .3 else 'not_detected'
+      out[side] = filter_input('unknown', 'unknown', 0., 0., f['stamp'], reason=reason)
     elif f['lines'][side] == 'bad':
       out[side] = filter_input('unknown', 'unknown', 0., 0., f['stamp'], reason='invalid_lane_geometry')
     else:
@@ -59,25 +61,32 @@ def expected_raw(f, p, color):
   return out
 
 
+def unlatched():
+  """The default filter without the latch (A8/4 + 8 m colour window): the window tests check the windows themselves."""
+  return strip_filter.StripFilter('asym', long_m=strip_filter.LONG_M, short_m=strip_filter.SHORT_M, color_m=strip_filter.COLOR_M)
+
+
 CASES = [(.98, .99, {}), (.02, .99, {}), (.85, .99, {}), (.99, .02, {}), (.98, .99, {'lane_change': True}),
          (.98, .99, {'probs': (.3, 1.)}), (.02, .99, {'lines': ('bad', 'R')}), (.02, .01, {})]
 
 
-def test_stripnet_default_is_a8_4_and_false_turns_it_off():
+def test_stripnet_default_is_a8_4_latch_and_false_turns_it_off():
   default, explicit_none, off = Recogniser(2), Recogniser(2, strip_filter=None), Recogniser(2, strip_filter=False)
   for rec in (default, explicit_none):
     f = rec.strip_filter
     assert (f.kind, f.long_m, f.short_m) == ('asym', strip_filter.LONG_M, strip_filter.SHORT_M) == ('asym', 8., 4.)
     assert f.color_m == strip_filter.COLOR_M == 8.
+    assert f.latch is strip_filter.LATCH is True  # DaBin 10-19: the latch is the default
   assert default.strip_filter is not explicit_none.strip_filter  # one filter (one set of windows) per Recogniser
   assert off.strip_filter is None and Recogniser(1).strip_filter is None
-  assert strip_filter.make('A8/4').color_m is None  # the replay variants filter type only
-  reference = strip_filter.StripFilter('asym', long_m=8., short_m=4., color_m=8.)
+  assert strip_filter.make('A8/4').color_m is None and not strip_filter.make('A8/4').latch  # comparison: type only, no latch
+  assert vars(strip_filter.make('A8/4L')) == vars(default.strip_filter)  # 'A8/4L' is the default
+  reference = strip_filter.StripFilter('asym', long_m=8., short_m=4., color_m=8., latch=True)
   for i, (p, color, kw) in enumerate(CASES):
     raw = expected_raw(frame(i, **kw), p, color)
     # off: the raw filter_input results, untouched
     assert step(off, i, p, color, **kw) == raw
-    # default: those results through A8/4, with the P(dashed) handed to it
+    # default: those results through A8/4 + latch, with the P(dashed) handed to it
     got = step(default, i, p, color, **kw)
     for side in ('left', 'right'):
       pd, py = got[side]['typePDashed'], got[side]['colorPYellow']
@@ -92,7 +101,7 @@ def types(outputs, side='left'):
 
 
 def test_a8_4_holds_solid_to_dashed_until_long_window_and_releases_dashed_on_short_window():
-  rec = Recogniser(2)
+  rec = Recogniser(2, unlatched())
   i = 0
   for _ in range(12):  # 1 m per frame: the 8 m window holds 9 frames, the 4 m window 5
     assert step(rec, i, .02)['left']['type'] == 'solid'
@@ -191,7 +200,7 @@ def colors(outputs, side='left'):
 def test_colour_window_holds_short_flips_and_follows_a_sustained_change():
   """1 m per frame: the 8 m colour window holds 9 frames; certainty-weighted mean P(yellow), 0.90 on the winning
   side's mean (mean P(yellow) or 1 - mean, as for a raw decision)."""
-  rec = Recogniser(2)
+  rec = Recogniser(2, unlatched())
   i = 0
   for _ in range(12):
     assert step(rec, i, .02, color=.01)['left']['color'] == 'yellow'
@@ -285,3 +294,72 @@ def test_off_passes_colour_through():
   rec = Recogniser(2, strip_filter=False)
   out = [step(rec, i, .02, color=c) for i, c in enumerate([.01, .99, .01])]
   assert colors(out) == ['yellow', 'white', 'yellow']
+
+
+def test_short_lane_prob_dip_skips_the_frame_and_keeps_the_windows():
+  from openpilot.selfdrive.carrot.lane_type.display import DisplayPolicy
+  rec, policy = Recogniser(2), DisplayPolicy()
+  side = rec.strip_filter.sides
+  for i in range(12):
+    out = step(rec, i, .02)
+    confirmed = policy.confirm({'cameraMonoTimeNanos': i*FRAME_NS, **out}, i*FRAME_NS)
+  assert out['left']['type'] == 'solid' and confirmed['left']['type']['value'] == 'solid'
+  items, colors = list(side['left'].items), list(side['left'].colors)
+  for i in range(12, 15):  # 0.45 for three frames: skipped, unknown, nothing entered or emptied
+    out = step(rec, i, .02, probs=(.45, 1.))
+    confirmed = policy.confirm({'cameraMonoTimeNanos': i*FRAME_NS, **out}, i*FRAME_NS)
+    assert out['left']['reason'] == 'lane_prob_dip' and (out['left']['type'], out['left']['color']) == ('unknown', 'unknown')
+    assert out['left']['typePDashed'] is None and out['left']['colorPYellow'] is None
+    # nothing new enters; only frames now more than 8 m behind age out, as on any frame
+    assert list(side['left'].items) == [x for x in items if i - x[1] <= 8.] and side['left'].state == 'solid'
+    assert list(side['left'].colors) == [x for x in colors if i - x[1] <= 8.] and len(side['left'].colors) >= 6
+    assert confirmed['left']['type']['value'] == 'solid'  # DisplayPolicy keeps its confirmed heads (0.5 s expiry)
+  out = step(rec, 15, .02)  # recovered: the kept window confirms at once
+  assert out['left']['type'] == 'solid' and out['left']['color'] == 'white'
+  assert out['right']['type'] == 'solid'  # the other side was never touched
+
+
+@pytest.mark.parametrize('probs', [[.25], [.45]*25])  # one frame below 0.3; 0.45 for 1.25 s (> 1 s)
+def test_deep_or_long_lane_prob_dip_resets(probs):
+  rec = Recogniser(2)
+  for i in range(12):
+    step(rec, i, .02)
+  reasons = [step(rec, 12 + j, .02, probs=(p, 1.))['left']['reason'] for j, p in enumerate(probs)]
+  assert reasons[-1] == 'not_detected' and len(rec.strip_filter.sides['left'].items) == 0
+  if len(probs) > 1:  # 0.45 stays a dip for 1 s after the first frame below 0.5, then resets
+    assert reasons[:21] == ['lane_prob_dip']*21 and set(reasons[21:]) == {'not_detected'}
+  i = 12 + len(probs)
+  assert step(rec, i, .98)['left']['type'] == 'dashed'  # emptied: judged on its own
+  # back above 0.5 the dip clock restarts: a new short dip is skipped again
+  assert step(rec, i + 1, .98, probs=(.45, 1.))['left']['reason'] == 'lane_prob_dip'
+
+
+def test_default_latch_keeps_the_last_confident_label_and_resets():
+  """DaBin 10-19: the StripNet default latches type and colour (A8/4L); 'A8/4' without it stays for comparison."""
+  rec = Recogniser(2)
+  assert rec.strip_filter.latch and strip_filter.make('A8/4L').latch and not strip_filter.make('A8/4').latch
+  i, outs = 0, []
+  for p in [.02]*12 + [.98]*8:
+    outs.append(step(rec, i, p))
+    i += 1
+  kinds = types(outs)
+  # A8/4 shows unknown for 5 frames at solid->dashed; the latch keeps solid (with its confidence) until dashed is
+  # certain, on the same frame A8/4 shows it
+  assert kinds[12:17] == ['solid']*5 and kinds[17:] == ['dashed']*3 and 'unknown' not in kinds
+  assert outs[14]['left']['typeConfidence'] == outs[11]['left']['typeConfidence']
+  # a lane prob dip is not a reset: dip frames pass through unknown, the latch stays and shows again at once
+  dips = [step(rec, i + j, .98, probs=(.45, 1.)) for j in range(3)]
+  assert types(dips) == ['unknown']*3 and rec.strip_filter.sides['left'].latched['type'][0] == 'dashed'
+  i += 3
+  assert step(rec, i, .5)['left']['type'] == 'dashed'  # an uncertain frame: the latched dashed
+  i += 1
+  out = step(rec, i, .98, probs=(.2, 1.))  # reset: the latch is emptied with the windows
+  assert out['left']['type'] == 'unknown' and rec.strip_filter.sides['left'].latched == {}
+
+
+def test_default_latch_keeps_the_colour_through_a_flip():
+  """The colour window test's frames through the default: yellow stays through the flip (no unknown) and white shows
+  on the same frame as without the latch."""
+  rec = Recogniser(2)
+  c = colors([step(rec, i, .02, color=.01) for i in range(12)] + [step(rec, i, .02, color=.99) for i in range(12, 24)])
+  assert c[:20] == ['yellow']*20 and c[20:] == ['white']*4  # 12 yellow + 2 flip + 6 (white on the 7th of to_white)

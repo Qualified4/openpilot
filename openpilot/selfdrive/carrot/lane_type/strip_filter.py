@@ -1,8 +1,8 @@
 """Temporal filter for StripNet type and colour results.
 
 The StripNet path always uses it: ``marking_daemon.Recogniser(2)`` builds the asymmetric type filter with LONG_M /
-SHORT_M (A8/4) plus the colour window COLOR_M by default; the ``strip_filter`` argument (another StripFilter, or
-False for none) is for tests and replays.
+SHORT_M (A8/4) plus the colour window COLOR_M and the latch (LATCH) by default (replay variant 'A8/4L'); the
+``strip_filter`` argument (another StripFilter, or False for none) is for tests and replays.
 It runs inside ``Recogniser.process`` (StripNet branch), so it sits between the model and
 ``display.DisplayPolicy.confirm``:
 per side it takes the raw ``filter_input`` result plus the model's P(dashed) and P(yellow) and returns a result
@@ -23,11 +23,19 @@ Variants (``StripFilter(kind, **params)``):
   asym long/short dashed->solid decided on the short window, solid->dashed only when the long window's mean
                   P(dashed) exceeds 0.5; when the state turns solid the long window is emptied down to the short
                   one, so dashed frames still in the long window cannot turn it straight back to dashed
+  latch           (``latch=True``; the StripNet default, DaBin 10-19; replay variant 'A8/4L') type and colour keep
+                  their last confident label and its confidence while the window is not certain enough (no unknown
+                  between confident labels); a label changes only on a confident result of the other class (window
+                  mean past 0.5 and confidence >= 0.90). Resets empty the latch too. Frames without probabilities
+                  (no inference, lane_prob_dip) still pass through as they are. 'A8/4' (no latch) is kept for
+                  comparison.
 The other variants and the ``make`` name table are kept for the replay harness.
 Windows are emptied on the same reset reasons DisplayPolicy uses, on trackingReset, and on a camera stamp gap
-or step back (DistanceEvidence's 0.3 s rule). Distance windows are also capped at DistanceEvidence's 3 s, so a
-stopped car does not hold old frames indefinitely. The model's 0.90 head threshold is applied to the filtered
-confidence (|mean - 0.5| * 2 for distance windows), as StripModel.decide applies it to the raw one.
+or step back (DistanceEvidence's 0.3 s rule). A 'lane_prob_dip' frame (a short lane prob dip, see
+marking_daemon.LANE_PROB_MIN) is not a reset: it comes without probabilities, so it passes through as unknown,
+enters no window and keeps the camera stamp chain (no gap). Distance windows are also capped at
+DistanceEvidence's 3 s, so a stopped car does not hold old frames indefinitely. The model's 0.90 head threshold is
+applied to the filtered confidence (|mean - 0.5| * 2 for distance windows), as StripModel.decide applies it to the raw one.
 """
 from collections import deque
 
@@ -38,6 +46,7 @@ MAX_GAP_NS = 300_000_000
 THRESHOLD = 0.90
 LONG_M, SHORT_M = 8., 4.  # the StripNet path's default asymmetric filter (A8/4)
 COLOR_M = 8.  # the StripNet path's default colour window
+LATCH = True  # the StripNet path keeps the last confident type / colour (A8/4L)
 
 
 def p_dashed(model_result):
@@ -61,28 +70,42 @@ class _Side:
     self.items = deque()  # (stamp, odometer, label_or_p, weight)
     self.state = None     # asym: last decided type
     self.colors = deque()  # (stamp, odometer, P(yellow), weight)
+    self.latched = {}  # latch: head -> (label, confidence)
     self.last_stamp = None
 
   def clear(self):
     self.items.clear()
     self.state = None
     self.colors.clear()
+    self.latched.clear()
 
 
 class StripFilter:
-  def __init__(self, kind='none', n=5, m=12., long_m=12., short_m=4., threshold=THRESHOLD, color_m=None):
+  def __init__(self, kind='none', n=5, m=12., long_m=12., short_m=4., threshold=THRESHOLD, color_m=None, latch=False):
     if kind not in ('none', 'median', 'distance', 'asym'):
       raise ValueError(kind)
     self.kind, self.n, self.m, self.long_m, self.short_m, self.threshold = kind, n, m, long_m, short_m, threshold
-    self.color_m = color_m
+    self.color_m, self.latch = color_m, latch
     self.sides = {}
 
   def reset(self):
     self.sides.clear()
 
-  def _typed(self, result, kind, confidence, stamp):
+  def _latch(self, s, head, label, confidence, confident):
+    """latch: a confident label is stored; otherwise the stored one is returned (label, confidence, confident)."""
+    if not self.latch:
+      return label, confidence, confident
+    if confident:
+      s.latched[head] = (label, confidence)
+    elif head in s.latched:
+      return (*s.latched[head], True)
+    return label, confidence, confident
+
+  def _typed(self, result, kind, confidence, stamp, s=None):
     out = dict(result)
     confident = kind in ('dashed', 'solid') and confidence >= self.threshold
+    if s is not None:
+      kind, confidence, confident = self._latch(s, 'type', kind, confidence, confident)
     out['type'] = kind if confident else 'unknown'
     out['typeConfidence'] = float(confidence) if confident else 0.
     out['typeMonoTimeNanos'] = stamp
@@ -117,6 +140,7 @@ class StripFilter:
     confidence = max(m, 1. - m)  # the winning side's mean probability, as a raw decision's confidence
     color = 'yellow' if m > .5 else 'white' if m < .5 else 'unknown'
     confident = color != 'unknown' and confidence >= self.threshold
+    color, confidence, confident = self._latch(s, 'color', color, confidence, confident)
     out = dict(result)
     out['color'] = color if confident else 'unknown'
     out['colorConfidence'] = float(confidence) if confident else 0.
@@ -130,12 +154,12 @@ class StripFilter:
         while len(s.items) > self.n:
           s.items.popleft()
       if p is None or not s.items:
-        return result if p is None else self._typed(result, 'unknown', 0., stamp)
+        return result if p is None else self._typed(result, 'unknown', 0., stamp, s)
       votes = {k: [w for _, _, v, w in s.items if v == k] for k in ('dashed', 'solid')}
       kind = max(votes, key=lambda k: len(votes[k]))
       if 2*len(votes[kind]) <= len(s.items):
-        return self._typed(result, 'unknown', 0., stamp)
-      return self._typed(result, kind, sum(votes[kind])/len(votes[kind]), stamp)
+        return self._typed(result, 'unknown', 0., stamp, s)
+      return self._typed(result, kind, sum(votes[kind])/len(votes[kind]), stamp, s)
     if p is not None:
       s.items.append((stamp, odometer, p, abs(p - .5)*2))
     span = self.m if self.kind == 'distance' else max(self.long_m, self.short_m)
@@ -150,7 +174,7 @@ class StripFilter:
       return sum(q*w for q, w in xs)/total if total > 0 else .5
     if self.kind == 'distance':
       m = mean(self.m)
-      return self._typed(result, 'dashed' if m > .5 else 'solid' if m < .5 else 'unknown', abs(m - .5)*2, stamp)
+      return self._typed(result, 'dashed' if m > .5 else 'solid' if m < .5 else 'unknown', abs(m - .5)*2, stamp, s)
     short, long = mean(self.short_m), mean(self.long_m)
     if s.state == 'dashed':
       kind, m = ('solid', short) if short < .5 else ('dashed', short)
@@ -168,7 +192,7 @@ class StripFilter:
       while s.items and odometer - s.items[0][1] > self.short_m:
         s.items.popleft()
     s.state = kind
-    return self._typed(result, kind or 'unknown', abs(m - .5)*2, stamp)
+    return self._typed(result, kind or 'unknown', abs(m - .5)*2, stamp, s)
 
 
 VARIANTS = {
@@ -176,7 +200,8 @@ VARIANTS = {
   'M3': {'kind': 'median', 'n': 3}, 'M5': {'kind': 'median', 'n': 5}, 'M7': {'kind': 'median', 'n': 7},
   'D8': {'kind': 'distance', 'm': 8.}, 'D12': {'kind': 'distance', 'm': 12.}, 'D15': {'kind': 'distance', 'm': 15.},
   'A12/4': {'kind': 'asym', 'long_m': 12., 'short_m': 4.}, 'A15/4': {'kind': 'asym', 'long_m': 15., 'short_m': 4.},
-  'A8/4': {'kind': 'asym', 'long_m': LONG_M, 'short_m': SHORT_M},
+  'A8/4': {'kind': 'asym', 'long_m': LONG_M, 'short_m': SHORT_M},  # no latch, type only: comparison
+  'A8/4L': {'kind': 'asym', 'long_m': LONG_M, 'short_m': SHORT_M, 'color_m': COLOR_M, 'latch': LATCH},  # the StripNet default
 }
 
 
