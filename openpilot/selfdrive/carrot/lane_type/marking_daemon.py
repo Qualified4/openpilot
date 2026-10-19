@@ -83,9 +83,19 @@ def buffer_drop_reason(frame_id, buf, recv_ns, now_ns, max_hold_ns=MAX_HOLD_NS):
 
 
 class Recogniser:
-  """Only the selected engine is constructed (the other is never imported or loaded)."""
-  def __init__(self, mode):
+  """Only the selected engine is constructed (the other is never imported or loaded).
+
+  StripNet (mode 2) always runs its type results through a strip_filter.StripFilter, by default the asymmetric
+  A8/4 filter (strip_filter.LONG_M / SHORT_M), applied to each side's filter_input result before it leaves
+  process(). ``strip_filter`` is for tests and replays only: None builds that default, another StripFilter is
+  used instead of it, and False turns the filter off (the raw filter_input results). The Scanner (mode 1) has no
+  filter unless one is passed, and ignores it."""
+  def __init__(self, mode, strip_filter=None):
     self.mode = mode
+    if strip_filter is None and mode == 2:
+      from openpilot.selfdrive.carrot.lane_type.strip_filter import LONG_M, SHORT_M, StripFilter
+      strip_filter = StripFilter('asym', long_m=LONG_M, short_m=SHORT_M)
+    self.strip_filter = strip_filter or None
     if mode == 1:
       from openpilot.selfdrive.carrot.lane_type.profile_scanner import ProfileScanner
       self.scanners = {side: ProfileScanner(side) for side in ('left', 'right')}
@@ -98,10 +108,13 @@ class Recogniser:
       raise ValueError('lane marking mode must be 1 (Scanner) or 2 (StripNet)')
 
   def reset(self):
-    """Forget tracking that may hold samples from a reused buffer (StripNet keeps no per-frame state)."""
+    """Forget tracking that may hold samples from a reused buffer (StripNet itself keeps no per-frame state; its
+    strip filter's windows are emptied)."""
     if self.scanners:
       for scanner in self.scanners.values():
         scanner.reset()
+    if self.strip_filter is not None:
+      self.strip_filter.reset()
 
   def process(self, y_plane, uv_plane, frame):
     """frame: lines/probs per side, rpy, k, stamp (camera EOF ns), odometer, leads, lane_change."""
@@ -125,10 +138,20 @@ class Recogniser:
         continue
       strips.append(s)
       sides.append(side)
+    models = {}
     for side, r in zip(sides, self.model.infer(strips), strict=True):
       # The strip model's own confident dashed decision is its pattern evidence.
       out[side] = filter_input(r['type'], r['color'], r['typeConfidence'], r['colorConfidence'], frame['stamp'],
                                dashed_observed=r['type'] == 'dashed', reason=r['reason'])
+      models[side] = r
+    if self.strip_filter is not None:
+      from openpilot.selfdrive.carrot.lane_type.strip_filter import p_dashed
+      for side in ('left', 'right'):
+        # filter_input drops the model's probability, so P(dashed) comes from the model output; reset-reason
+        # sides (no inference) are passed too and empty the window. Unlearned yellow-dashed frames stay out of it.
+        r = models.get(side)
+        p = p_dashed(r) if r is not None and r['reason'] == 'strip_model' else None
+        out[side] = dict(self.strip_filter.update(side, out[side], p, frame['stamp'], frame['odometer']), typePDashed=p)
     return out
 
 
