@@ -26,9 +26,15 @@ Variants (``StripFilter(kind, **params)``):
   latch           (``latch=True``; the StripNet default, DaBin 10-19; replay variant 'A8/4L') type and colour keep
                   their last confident label and its confidence while the window is not certain enough (no unknown
                   between confident labels); a label changes only on a confident result of the other class (window
-                  mean past 0.5 and confidence >= 0.90). Resets empty the latch too. Frames without probabilities
-                  (no inference, lane_prob_dip) still pass through as they are. 'A8/4' (no latch) is kept for
-                  comparison.
+                  mean past 0.5 and confidence >= 0.90). The colour head changes only after COLOR_LATCH_FRAMES
+                  consecutive confident frames of the other colour (DaBin 10-19: a window that touches white >= 0.90
+                  for one frame on a yellow line must not show white); until then the stored colour is shown, and a
+                  frame that is not confident of the other colour (uncertain, or confident of the stored one) starts
+                  the count again. Frames without probabilities neither count nor break it. With no stored colour
+                  (after a reset, or the first one) the first confident colour is stored at once. The type head
+                  changes on the first confident frame. Resets empty the latch and the count too. Frames without
+                  probabilities (no inference, lane_prob_dip) still pass through as they are. 'A8/4' (no latch) is
+                  kept for comparison.
 The other variants and the ``make`` name table are kept for the replay harness.
 Windows are emptied on the same reset reasons DisplayPolicy uses, on trackingReset, and on a camera stamp gap
 or step back (DistanceEvidence's 0.3 s rule). A 'lane_prob_dip' frame (a short lane prob dip, see
@@ -47,6 +53,7 @@ THRESHOLD = 0.90
 LONG_M, SHORT_M = 8., 4.  # the StripNet path's default asymmetric filter (A8/4)
 COLOR_M = 8.  # the StripNet path's default colour window
 LATCH = True  # the StripNet path keeps the last confident type / colour (A8/4L)
+COLOR_LATCH_FRAMES = 10  # consecutive confident frames of the other colour before the latched colour changes (0.5 s at 20 fps)
 
 
 def p_dashed(model_result):
@@ -71,6 +78,7 @@ class _Side:
     self.state = None     # asym: last decided type
     self.colors = deque()  # (stamp, odometer, P(yellow), weight)
     self.latched = {}  # latch: head -> (label, confidence)
+    self.flips = 0  # latch: consecutive confident frames of a colour other than the latched one
     self.last_stamp = None
 
   def clear(self):
@@ -78,6 +86,7 @@ class _Side:
     self.state = None
     self.colors.clear()
     self.latched.clear()
+    self.flips = 0
 
 
 class StripFilter:
@@ -86,15 +95,23 @@ class StripFilter:
       raise ValueError(kind)
     self.kind, self.n, self.m, self.long_m, self.short_m, self.threshold = kind, n, m, long_m, short_m, threshold
     self.color_m, self.latch = color_m, latch
+    self.color_latch_frames = COLOR_LATCH_FRAMES  # replays set 1 for the first-confident-frame latch (7c5ba9cb)
     self.sides = {}
 
   def reset(self):
     self.sides.clear()
 
   def _latch(self, s, head, label, confidence, confident):
-    """latch: a confident label is stored; otherwise the stored one is returned (label, confidence, confident)."""
+    """latch: a confident label is stored; otherwise the stored one is returned (label, confidence, confident).
+    The colour head stores a different colour only on its color_latch_frames-th consecutive confident frame."""
     if not self.latch:
       return label, confidence, confident
+    if head == 'color':
+      if confident and head in s.latched and s.latched[head][0] != label:
+        s.flips += 1
+        if s.flips < self.color_latch_frames:
+          return (*s.latched[head], True)
+      s.flips = 0
     if confident:
       s.latched[head] = (label, confidence)
     elif head in s.latched:

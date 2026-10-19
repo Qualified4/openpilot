@@ -359,7 +359,65 @@ def test_default_latch_keeps_the_last_confident_label_and_resets():
 
 def test_default_latch_keeps_the_colour_through_a_flip():
   """The colour window test's frames through the default: yellow stays through the flip (no unknown) and white shows
-  on the same frame as without the latch."""
+  COLOR_LATCH_FRAMES - 1 frames after the frame it shows on without the latch."""
   rec = Recogniser(2)
-  c = colors([step(rec, i, .02, color=.01) for i in range(12)] + [step(rec, i, .02, color=.99) for i in range(12, 24)])
-  assert c[:20] == ['yellow']*20 and c[20:] == ['white']*4  # 12 yellow + 2 flip + 6 (white on the 7th of to_white)
+  c = colors([step(rec, i, .02, color=.01) for i in range(12)] + [step(rec, i, .02, color=.99) for i in range(12, 32)])
+  # without the latch white shows on frame 20 (12 yellow + 2 flip + 6); the latch needs 10 confident white frames
+  assert c[:29] == ['yellow']*29 and c[29:] == ['white']*3
+
+
+Y, W, UNSURE = .01, .99, .5  # step(color=...): P(white) of the fake model; 0.5 is no colour decision
+
+
+def single_frame_windows():
+  """The default filter (latch, COLOR_LATCH_FRAMES) with windows of one frame (1 m per frame), so the window result is
+  the frame's own decision and only the latch rules are left."""
+  rec = Recogniser(2)
+  f = rec.strip_filter
+  assert f.latch and f.color_latch_frames == strip_filter.COLOR_LATCH_FRAMES == 10
+  f.color_m = f.long_m = f.short_m = .5
+  return rec
+
+
+def run_colours(rec, colour_seq, start=0, **kw):
+  return [step(rec, start + i, .02, color=c, **kw) for i, c in enumerate(colour_seq)]
+
+
+def test_colour_latch_ignores_a_flip_shorter_than_ten_frames():
+  rec = single_frame_windows()
+  out = run_colours(rec, [Y]*12 + [W]*9 + [Y]*3)
+  assert colors(out) == ['yellow']*24  # the first confident colour is shown at once, the 9 white frames are not
+  assert [o['left']['colorConfidence'] for o in out] == pytest.approx([.99]*24)  # the latched yellow's confidence
+  assert rec.strip_filter.sides['left'].flips == 0
+
+
+def test_colour_latch_follows_ten_consecutive_frames_of_the_other_colour():
+  rec = single_frame_windows()
+  c = colors(run_colours(rec, [Y]*12 + [W]*10 + [Y]))
+  assert c[:21] == ['yellow']*21 and c[21] == 'white'  # the 10th white frame
+  assert c[22] == 'white'  # and back the same way: one yellow frame does not change it
+
+
+def test_colour_latch_count_restarts_when_the_flip_is_broken():
+  rec = single_frame_windows()
+  out = run_colours(rec, [Y]*12 + [W]*9 + [UNSURE] + [W]*9 + [Y] + [W]*9)  # uncertain, then confident yellow
+  assert colors(out) == ['yellow']*len(out)
+  # a frame without probabilities (a lane prob dip) neither counts nor breaks the run
+  i = len(out)
+  out = run_colours(rec, [Y] + [W]*5, i) + run_colours(rec, [W], i + 6, probs=(.45, 1.)) + run_colours(rec, [W]*5, i + 7)
+  assert colors(out) == ['yellow']*6 + ['unknown'] + ['yellow']*4 + ['white']  # the 10th white frame across the dip
+
+def test_colour_latch_takes_the_first_confident_colour_at_once_after_a_reset():
+  rec = single_frame_windows()
+  run_colours(rec, [Y]*12 + [W]*5)
+  assert rec.strip_filter.sides['left'].flips == 5
+  out = step(rec, 17, .02, color=W, probs=(.2, 1.))  # not_detected: windows, latch and count emptied
+  assert out['left']['color'] == 'unknown' and rec.strip_filter.sides['left'].latched == {}
+  assert rec.strip_filter.sides['left'].flips == 0
+  assert colors(run_colours(rec, [UNSURE, W], 18)) == ['unknown', 'white']  # no warm-up wait
+
+
+def test_type_latch_still_changes_on_one_confident_frame():
+  rec = single_frame_windows()
+  kinds = types([step(rec, i, p, color=W) for i, p in enumerate([.02]*12 + [.98] + [.02] + [.5])])  # white: yellow dashed is unlearned
+  assert kinds == ['solid']*12 + ['dashed', 'solid', 'solid']
