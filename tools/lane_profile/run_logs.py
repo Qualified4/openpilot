@@ -9,13 +9,15 @@ from bisect import bisect_right
 import gzip
 import json
 from multiprocessing import Pool
+import os
 from pathlib import Path
 import time
 from types import SimpleNamespace as N
 
 import numpy as np
 
-INVENTORY = Path('.analysis/archive/2026-10-18/lane-type-retrain/data/inventory.json')
+# LANE_INVENTORY: a path-converted copy of the inventory (e.g. Windows F:\ paths -> VM/WSL mounts); default unchanged.
+INVENTORY = Path(os.environ.get('LANE_INVENTORY', '.analysis/archive/2026-10-18/lane-type-retrain/data/inventory.json'))
 REVIEWED = [Path('.analysis/lane-model-comparison-20261018')/f for f in
             ('approved-test-long.json', 'approved-train-validation.json', 'approved-extra-train.json', 'approved-extra-validation.json')]
 TYPE = {'unknown': 0, 'dashed': 1, 'solid': 2}

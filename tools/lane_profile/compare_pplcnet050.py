@@ -16,10 +16,12 @@ from tools.lane_profile.compare_models import evaluate_probs, operating_point  #
 from tools.lane_profile.dataset_io import load_set  # noqa: TID251
 from tools.lane_profile.train_strip import Export, Net, predict, tensors, train  # noqa: TID251
 
-ARCH, AUG, SEEDS = 'pplcnet050', 'plus', (0, 1, 2)
+ARCH, AUG, SEEDS = 'pplcnet050', 'plus', (0, 1, 2)  # --arch/--aug override (default: the PP-LCNet-0.5 run)
 
 
 def main(a):
+  global ARCH, AUG
+  ARCH, AUG = a.arch, a.aug
   device = 'cuda'
   out = Path(a.output)
   (out/'runs').mkdir(parents=True, exist_ok=True)
@@ -75,5 +77,7 @@ if __name__ == '__main__':
   p.add_argument('--test', required=True)
   p.add_argument('--output', required=True)
   p.add_argument('--epochs', type=int, default=40)
+  p.add_argument('--arch', default=ARCH, help='train_strip.Net arch (stripnet for the stage-1 retrain)')
+  p.add_argument('--aug', default=AUG, choices=('base', 'plus'))
   p.add_argument('--pretrained', default='.analysis/lane-model-comparison-20261018/pretrained/PPLCNet_x0_5_pretrained.pdparams')
   main(p.parse_args())
