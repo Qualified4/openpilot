@@ -276,3 +276,45 @@ def test_slowest_qualified_vehicle_reaches_exit_before_the_six_second_limit():
   assert sum(e['event'] == 'handoff' for e in d.events) == 1
   assert d.events[-1]['event'] == 'distance_end'
   assert not any(e['event'] == 'timeout' for e in d.events)
+
+
+class SliceRejectingList:
+  """Fallback for a VM without pycapnp: indexes and iterates like a capnp list reader, rejects slices."""
+  def __init__(self, values): self.values = list(values)
+  def __len__(self): return len(self.values)
+  def __iter__(self): return iter(self.values)
+  def __getitem__(self, index):
+    if not isinstance(index, int):
+      raise TypeError('an integer is required')
+    return self.values[index]
+
+
+def capnp_model():
+  try:
+    from openpilot.cereal import log
+  except ImportError:
+    return N(laneLineProbs=SliceRejectingList([.9]*4), meta=N(desire='none', laneChangeState='off')), False
+  builder = log.ModelDataV2.new_message()
+  builder.laneLineProbs = [.9]*4
+  return builder.as_reader(), True  # the car hands card a reader, which rejects laneLineProbs[1:3]
+
+
+@pytest.mark.parametrize('side', [0, 1])
+def test_capnp_lane_line_probs_reader_does_not_raise_and_tracks_the_front(side):
+  md, _ = capnp_model()
+  with pytest.raises(TypeError):
+    md.laneLineProbs[1:3]  # the bug: slicing a list reader
+  d = Drive(side)
+  for i in range(8):
+    point = N(trackId=1, dRel=2.6-.1*i, yRel=3. if side == 0 else -3., vRel=-2., vLead=18., measured=True,
+              trackState=2, motionState=2, radarSource='frontRadar')
+    d.cs.live_tracks = N(points=[point])
+    selected = [None, None, None]
+    selected[side+1] = (1, 0)
+    values = {}
+    for k, lateral in (('LF', 3.), ('RF', 3.), ('LR', 2.8), ('RR', 2.8)):
+      values.update({k+'_DETECT': 0, k+'_DETECT_DISTANCE': 0., k+'_DETECT_LATERAL': lateral})
+    values.update({('LF', 'RF')[side]+'_DETECT': 2, ('LF', 'RF')[side]+'_DETECT_DISTANCE': .8*point.dRel})
+    d.policy.update(values, d.cs, md, i*5, selected, d.filters, 'same-context')
+    assert not any(e['event'] in ('confidence_lost', 'clock_or_context') for e in d.policy.events if i)
+  assert d.policy.fronts[side] is not None and d.policy.fronts[side]['source'] == 1

@@ -1146,30 +1146,48 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           values["LANELINE_LEFT"] = 2 if hud_control.leftLaneVisible else 0
           values["LANELINE_RIGHT"] = 2 if hud_control.rightLaneVisible else 0
         else:
-          lane_color = 6 if md is not None and md.meta.laneChangeAvailableLeft else 2
-          if model_lanes and not lat_active:
-            lane_color = 0
+          # Per-side display memory (hold / stop hold / green-on delay / low-prob grey), like _parking below.
+          if not hasattr(create_ccnc_messages, '_lane_display'):
+            create_ccnc_messages._lane_display = {side: ccnc_lane_marking.SideDisplay() for side in ('left', 'right')}
           lane_marking_now = time.monotonic_ns() if lane_marking else 0
-          lane_color = ccnc_lane_marking.lane_code(lane_color, lane_marking, 'left', lane_marking_now)
+          lane_changing = (bool(CS.out.leftBlinker) or bool(CS.out.rightBlinker) or desire in (3, 4) or
+                           str(getattr(getattr(md, 'meta', None), 'laneChangeState', 'off')) != 'off')
+          lane_probs = getattr(md, 'laneLineProbs', ())
+          lane_probs = list(lane_probs) if md is not None and len(lane_probs) >= 3 else None
+
+          lane_green, lane_low, lane_kind, lane_paint = create_ccnc_messages._lane_display['left'].update(
+            frame * DT_CTRL, CS.out.vEgo, md is not None and md.meta.laneChangeAvailableLeft,
+            lane_probs[1] if lane_probs else None, lane_changing, *ccnc_lane_marking.heads(lane_marking, 'left', lane_marking_now))
+          lane_color = 6 if lane_green else 2
+          if model_lanes and not lat_active:
+            lane_color = 2  # lat off: white base; green only while lat is active
+          if lane_low:
+            lane_color = 0  # grey: lane line not confident (recognised type is not applied over it)
+          lane_color = ccnc_lane_marking.code(lane_color, lane_kind, lane_paint)
           if lane_line_check >= 1:
             lane_line_warn_left = CS.out.leftLaneLine % 10 not in (0, 5)
           else:
             lane_line_warn_left = CS.out.leftLaneLine // 10 == 2
-          lane_color = 4 if lane_line_warn_left or CS.out.leftBlindspot else lane_color
+          lane_color = 4 if lane_line_warn_left else lane_color
           if hud_control.leftLaneDepart:
             values["LANELINE_LEFT"] = 4 if (frame // 50) % 2 == 0 else 1
           else:
             values["LANELINE_LEFT"] = lane_color if hud_control.leftLaneVisible else 0
 
-          lane_color = 6 if md is not None and md.meta.laneChangeAvailableRight else 2
+          lane_green, lane_low, lane_kind, lane_paint = create_ccnc_messages._lane_display['right'].update(
+            frame * DT_CTRL, CS.out.vEgo, md is not None and md.meta.laneChangeAvailableRight,
+            lane_probs[2] if lane_probs else None, lane_changing, *ccnc_lane_marking.heads(lane_marking, 'right', lane_marking_now))
+          lane_color = 6 if lane_green else 2
           if model_lanes and not lat_active:
+            lane_color = 2
+          if lane_low:
             lane_color = 0
-          lane_color = ccnc_lane_marking.lane_code(lane_color, lane_marking, 'right', lane_marking_now)
+          lane_color = ccnc_lane_marking.code(lane_color, lane_kind, lane_paint)
           if lane_line_check >= 1:
             lane_line_warn_right = CS.out.rightLaneLine % 10 not in (0, 5)
           else:
             lane_line_warn_right = CS.out.rightLaneLine // 10 == 2
-          lane_color = 4 if lane_line_warn_right or CS.out.rightBlindspot else lane_color
+          lane_color = 4 if lane_line_warn_right else lane_color
           if hud_control.rightLaneDepart:
             values["LANELINE_RIGHT"] = 4 if (frame // 50) % 2 == 0 else 1
           else:

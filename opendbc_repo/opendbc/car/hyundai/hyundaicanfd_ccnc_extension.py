@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from opendbc.car import structs
+from opendbc.car.carlog import carlog
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai.hyundaicanfd_ccnc_rear import RearHandover
 from openpilot.common.params import Params
@@ -3147,8 +3148,14 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
       for key in display_tracker.selected:
         entry = display_tracker.tracks.get(key)
         selected.append((int(getattr(entry[3], 'ccnc_source_id', key)), entry[0]) if entry else None)
-      state.rear_handover.update(values, CS, md, frame, selected, (state.lr_distance, state.rr_distance),
-                                 ('selector', display_tracker))
+      try:
+        state.rear_handover.update(values, CS, md, frame, selected, (state.lr_distance, state.rr_distance),
+                                   ('selector', display_tracker))
+      except Exception:
+        # Rear handover is display memory only: skip it, never the whole vehicle display.
+        if not getattr(state.rear_handover, 'failed', False):
+          state.rear_handover.failed = True
+          carlog.exception('CCNC rear handover failed; skipping it')
 
   except:
     values = CS.ccnc_0x162.copy()

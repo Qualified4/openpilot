@@ -1765,8 +1765,14 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
         if slot:
           proven.append(bool(obj is not None and not obj.structure and not obj.superseded
                              and tracker._radar_vehicle(obj) and not tracker._crossing(obj)))
-      state.rear_handover.update(values, CS, md, frame, selected, (state.lr_distance, state.rr_distance),
-                                 ('map', tracker.generation), proven=proven)
+      try:
+        state.rear_handover.update(values, CS, md, frame, selected, (state.lr_distance, state.rr_distance),
+                                   ('map', tracker.generation), proven=proven)
+      except Exception:
+        # Rear handover is display memory only: skip it, never the whole vehicle display.
+        if not getattr(state.rear_handover, 'failed', False):
+          state.rear_handover.failed = True
+          carlog.exception('CCNC rear handover failed; skipping it')
     return values
   except Exception:
     if not _live.failed:

@@ -25,6 +25,7 @@ def display(monkeypatch):
   monkeypatch.setattr(ccnc_extension, "Params", lambda: N(get_int=lambda key: 3))
   monkeypatch.delattr(main.create_ccnc_messages, "_display_options", raising=False)
   monkeypatch.delattr(main.create_ccnc_messages, "_radar_map", raising=False)
+  monkeypatch.delattr(main.create_ccnc_messages, "_lane_display", raising=False)
   monkeypatch.setattr(ccnc_extension, "state", N())
   monkeypatch.setattr(ccnc_extension, "_options", None)
   ccnc_extension.reset()
@@ -292,7 +293,7 @@ def test_model_option_controls_sla_lfa_lka_and_inactive_lane_display(display, mo
   assert active["LFA_ICON"] == (3 if model_lanes else 2)
   assert active["LKA_ICON"] == (0 if model_lanes else 4)
   inactive = dict(send(5, lat_active=False))["ADRV_0x161"]
-  assert inactive["LANELINE_LEFT"] == inactive["LANELINE_RIGHT"] == (0 if model_lanes else 6)
+  assert inactive["LANELINE_LEFT"] == inactive["LANELINE_RIGHT"] == (2 if model_lanes else 6)  # lat off: white, never green
   assert inactive["LKA_ICON"] == (0 if model_lanes else 3)
 
 

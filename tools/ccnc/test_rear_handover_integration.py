@@ -116,3 +116,48 @@ def test_radar_option_and_hda2_gate_clear_handover_memory(display, use_map, rada
     send(200, flags=flags)
     assert ext.state.rear_handover is not policy
     assert ext.state.rear_handover.fronts == ext.state.rear_handover.rears == [None, None]
+
+
+@pytest.mark.parametrize('use_map', [False, True])
+def test_rear_exception_skips_only_the_rear_memory(display, monkeypatch, use_map):  # noqa: F811
+  """A rear handover exception must not replace the vehicle display (map reset / fixed fallback values)."""
+  params, cs, _ = display
+  params.update(CcncRadarVehicles=True, CcncModelLanes=2, CcncVehiclePositionCorrection=True, CcncRadarMap=use_map)
+  msg = CANPacker('hyundai_canfd_generated').dbc.name_to_msg['CCNC_0x162']
+  cs.ccnc_0x162 = dict.fromkeys(msg.sigs, 0)
+  cs.out.aEgo = 0.
+  cs.out.canValid = True
+  hud = structs.CarControl().hudControl
+  hud.leftLaneVisible = hud.rightLaneVisible = True
+  logged = []
+  for module in (ext, radar_map):
+    monkeypatch.setattr(module, 'carlog', N(exception=lambda *a, **k: logged.append(a)), raising=False)
+
+  def replay(rear):
+    ext.reset()
+    radar_map.reset_live()
+    for name in ('_display_options', '_radar_map'):
+      if hasattr(main.create_ccnc_messages, name):
+        delattr(main.create_ccnc_messages, name)
+    packer = CANPacker('hyundai_canfd_generated')
+    out = []
+    for i in range(40):
+      frame = 5*i
+      cs.modelV2 = geometry(frame*.01)
+      cs.modelV2.meta.desire = N(raw=0)
+      cs.modelV2.meta.desireState = []
+      cs.modelV2.meta.laneChangeAvailableLeft = cs.modelV2.meta.laneChangeAvailableRight = True
+      cs.modelV2.position.yStd = [0.]*4
+      cs.live_tracks = N(points=[N(trackId=21, dRel=20.-.2*i, yRel=3.5, vRel=-2., vLead=8., yvRel=0.,
+        radarSource='frontRadar', measured=True, trackState=2, motionState=2)])
+      messages = main.create_ccnc_messages(N(flags=HyundaiFlags.CAMERA_SCC.value), packer, N(ECAN=0, CAM=2), frame,
+        N(enabled=True, latActive=True), cs, hud, 0., False, False, 0, False, 0, 0, rear_handover=rear)
+      out.append([data for address, data, _ in messages if address == 0x162])
+      if use_map:
+        assert radar_map._live.tracker is not None
+    return out
+
+  baseline = replay(False)
+  monkeypatch.setattr(ext.RearHandover, 'update', lambda self, *a, **k: (_ for _ in ()).throw(TypeError('an integer is required')))
+  assert replay(True) == baseline
+  assert len(logged) == 1

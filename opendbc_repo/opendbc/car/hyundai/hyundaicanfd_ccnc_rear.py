@@ -60,7 +60,7 @@ class RearHandover:
     changing = (getattr(CS.out, 'leftBlinker', False) or getattr(CS.out, 'rightBlinker', False)
                 or str(getattr(meta, 'desire', '')) in ('laneChangeLeft', 'laneChangeRight')
                 or str(getattr(meta, 'laneChangeState', 'off')) != 'off')
-    probs = getattr(md, 'laneLineProbs', ())
+    probs = list(getattr(md, 'laneLineProbs', ()))  # pycapnp list readers reject slicing
     blocked = ('clock_or_context' if self.context != context or not 0 < dt <= .2 else
                'reverse' if str(getattr(CS.out, 'gearShifter', '')) == 'reverse' else
                'lane_change' if changing else
