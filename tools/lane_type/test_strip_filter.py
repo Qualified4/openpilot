@@ -1,4 +1,4 @@
-"""StripNet temporal filter in marking_daemon.Recogniser (A8/4 by default on the StripNet path), with a fake
+"""StripNet temporal filter in marking_daemon.Recogniser (A8/4 type + 8 m colour window by default on the StripNet path), with a fake
 StripModel that returns queued probabilities in order, so no model, OpenCV or camera frame is needed."""
 import numpy as np
 import pytest
@@ -68,9 +68,11 @@ def test_stripnet_default_is_a8_4_and_false_turns_it_off():
   for rec in (default, explicit_none):
     f = rec.strip_filter
     assert (f.kind, f.long_m, f.short_m) == ('asym', strip_filter.LONG_M, strip_filter.SHORT_M) == ('asym', 8., 4.)
+    assert f.color_m == strip_filter.COLOR_M == 8.
   assert default.strip_filter is not explicit_none.strip_filter  # one filter (one set of windows) per Recogniser
   assert off.strip_filter is None and Recogniser(1).strip_filter is None
-  reference = strip_filter.make('A8/4')
+  assert strip_filter.make('A8/4').color_m is None  # the replay variants filter type only
+  reference = strip_filter.StripFilter('asym', long_m=8., short_m=4., color_m=8.)
   for i, (p, color, kw) in enumerate(CASES):
     raw = expected_raw(frame(i, **kw), p, color)
     # off: the raw filter_input results, untouched
@@ -78,9 +80,10 @@ def test_stripnet_default_is_a8_4_and_false_turns_it_off():
     # default: those results through A8/4, with the P(dashed) handed to it
     got = step(default, i, p, color, **kw)
     for side in ('left', 'right'):
-      pd = got[side]['typePDashed']
+      pd, py = got[side]['typePDashed'], got[side]['colorPYellow']
       assert (pd is None) if raw[side]['reason'] != 'strip_model' else pd == pytest.approx(p)
-      assert got[side] == dict(reference.update(side, raw[side], pd, i*FRAME_NS, float(i)), typePDashed=pd)
+      assert (py is None) if raw[side]['reason'] != 'strip_model' else py == pytest.approx(1. - color)
+      assert got[side] == dict(reference.update(side, raw[side], pd, i*FRAME_NS, float(i), py), typePDashed=pd, colorPYellow=py)
   assert all('typePDashed' not in side for side in raw.values())
 
 
@@ -113,7 +116,7 @@ def test_a8_4_holds_solid_to_dashed_until_long_window_and_releases_dashed_on_sho
   # opposite change showed dashed; no dashed is shown again while the long window still holds dashed frames
   assert types(to_solid)[:4] == ['unknown']*4 and types(to_solid)[4:] == ['solid']*2
   assert types(to_solid).index('solid') < types(to_dashed).index('dashed')
-  # colour passes through untouched
+  # a steady colour stays: weighted mean P(yellow) 0.01 -> white, confidence 1 - 0.01 (was |0.01 - 0.5| * 2 = 0.98)
   assert all(o['left']['color'] == 'white' and o['left']['colorConfidence'] == pytest.approx(.99) for o in to_dashed + to_solid)
 
 
@@ -150,8 +153,9 @@ def test_reset_reasons_empty_the_window(reset, side, reason):
   assert len(rec.strip_filter.sides[side].items) == 9 and rec.strip_filter.sides[side].state == 'solid'
   out = step(rec, 12, .98, **reset)
   raw = expected_raw(frame(12, **reset), .98, .99)[side]
-  assert out[side] == dict(raw, typePDashed=None) and out[side]['reason'] == reason
+  assert out[side] == dict(raw, typePDashed=None, colorPYellow=None) and out[side]['reason'] == reason
   assert len(rec.strip_filter.sides[side].items) == 0 and rec.strip_filter.sides[side].state is None
+  assert len(rec.strip_filter.sides[side].colors) == 0
   # with the window emptied, the next dashed frames are judged on their own instead of waiting for 5 of 9
   assert step(rec, 13, .98)[side]['type'] == 'dashed'
   if reason != 'lane_change':  # the other side kept its solid window and still holds the change back
@@ -167,6 +171,8 @@ def test_unlearned_yellow_dashed_passes_through_without_entering_the_window():
   out = step(rec, 5, .99, color=.02)
   assert out['left']['reason'] == 'yellow_dashed_not_learned' and out['left']['type'] == 'unknown'
   assert out['left']['typePDashed'] is None and len(rec.strip_filter.sides['left'].items) == n
+  assert out['left']['color'] == 'unknown' and out['left']['colorPYellow'] is None
+  assert len(rec.strip_filter.sides['left'].colors) == n
 
 
 def test_recogniser_reset_empties_the_filter():
@@ -176,3 +182,106 @@ def test_recogniser_reset_empties_the_filter():
   assert rec.strip_filter.sides
   rec.reset()
   assert rec.strip_filter.sides == {}
+
+
+def colors(outputs, side='left'):
+  return [o[side]['color'] for o in outputs]
+
+
+def test_colour_window_holds_short_flips_and_follows_a_sustained_change():
+  """1 m per frame: the 8 m colour window holds 9 frames; certainty-weighted mean P(yellow), 0.90 on the winning
+  side's mean (mean P(yellow) or 1 - mean, as for a raw decision)."""
+  rec = Recogniser(2)
+  i = 0
+  for _ in range(12):
+    assert step(rec, i, .02, color=.01)['left']['color'] == 'yellow'
+    i += 1
+  # two confident white frames inside a yellow line: the raw model flips, the window keeps yellow-or-unknown
+  flip = []
+  for _ in range(2):
+    flip.append(step(rec, i, .02, color=.99))
+    i += 1
+  assert 'white' not in colors(flip)
+  # a sustained white line: white only once the window's weighted mean P(yellow) is 0.10 or less
+  to_white = []
+  for _ in range(10):
+    to_white.append(step(rec, i, .02, color=.99))
+    i += 1
+  c = colors(to_white)
+  assert 'yellow' not in c and c[-1] == 'white' and c.index('white') > 0
+  assert to_white[-1]['left']['colorConfidence'] == pytest.approx(.99) and to_white[-1]['left']['colorMonoTimeNanos'] == (i-1)*FRAME_NS
+  # with confident frames (weight 0.98) the mean reaches 0.10 only when all 9 frames in the window are white (8 of 9
+  # give 0.119): the 9th white frame (2 flip frames + 7) is the first white, as with the old 0.05 bound
+  assert c.index('white') == 6
+  # symmetric: the change back to yellow also shows on its 9th frame
+  to_yellow = []
+  for _ in range(10):
+    to_yellow.append(step(rec, i, .02, color=.01))
+    i += 1
+  assert colors(to_yellow).index('yellow') == 8 and 'white' not in colors(to_yellow)
+
+
+@pytest.mark.parametrize('p_yellow, shown', [(.92, 'yellow'), (.95, 'yellow'), (.88, 'unknown'), (.08, 'white')])
+def test_colour_window_shows_a_steady_colour_the_raw_model_would_show(p_yellow, shown):
+  """DaBin 10-19 (fe/2 R 19.06): a steady P(yellow) 0.87-0.95 is yellow raw (>= 0.90) but was unknown in the window,
+  whose |mean - 0.5| * 2 >= 0.90 asked for mean >= 0.95. The window's confidence is now the winning side's mean."""
+  rec = Recogniser(2)
+  out = [step(rec, i, .02, color=1.-p_yellow) for i in range(12)]
+  assert colors(out) == [shown]*12
+  confidence = max(p_yellow, 1.-p_yellow)
+  assert [o['left']['colorConfidence'] for o in out] == pytest.approx([confidence if shown != 'unknown' else 0.]*12)
+
+
+def test_colour_window_is_bounded_by_distance():
+  rec = Recogniser(2)
+  for i in range(30):
+    step(rec, i, .02, color=.01)
+  assert len(rec.strip_filter.sides['left'].colors) == 9  # frames within 8 m (0..8 m back)
+
+
+@pytest.mark.parametrize('reset, side', [({'lane_change': True}, 'left'), ({'probs': (.2, 1.)}, 'left'),
+                                         ({'lines': ('bad', 'R')}, 'left')])
+def test_reset_reasons_empty_the_colour_window(reset, side):
+  rec = Recogniser(2)
+  for i in range(12):
+    step(rec, i, .02, color=.01)
+  assert len(rec.strip_filter.sides[side].colors) == 9
+  step(rec, 12, .02, color=.01, **reset)
+  assert len(rec.strip_filter.sides[side].colors) == 0
+  # with the window emptied, a white line is shown at once instead of waiting out the yellow frames
+  assert step(rec, 13, .02, color=.99)[side]['color'] == 'white'
+
+
+def test_stamp_gap_empties_both_windows():
+  rec = Recogniser(2)
+  for i in range(12):
+    step(rec, i, .02, color=.01)
+  # 0.3 s+ gap between camera frames (the next frame is 7 frame periods later)
+  assert step(rec, 18, .02, color=.99)['left']['color'] == 'white'
+  assert len(rec.strip_filter.sides['left'].colors) == 1 and len(rec.strip_filter.sides['left'].items) == 1
+
+
+def test_colour_window_leaves_the_type_result_unchanged():
+  """Same frames through A8/4 without and with the colour window: every type field is identical."""
+  import random
+  rng = random.Random(0)
+  plain = strip_filter.StripFilter('asym', long_m=8., short_m=4.)
+  coloured = strip_filter.StripFilter('asym', long_m=8., short_m=4., color_m=8.)
+  type_keys = ('type', 'typeConfidence', 'typeMonoTimeNanos', 'dashedPatternObserved', 'dashedPatternMonoTimeNanos', 'reason')
+  for i in range(400):
+    p, c = rng.random(), rng.random()
+    r = FakeStripModel().decide(np.array([p, 1. - p]), np.array([1. - c, c]))
+    reason = rng.choice([r['reason']]*12 + ['not_detected'])
+    raw = filter_input(r['type'], r['color'], r['typeConfidence'], r['colorConfidence'], i*FRAME_NS,
+                       dashed_observed=r['type'] == 'dashed', reason=reason)
+    learned = reason == 'strip_model'
+    pd, py = (strip_filter.p_dashed(r), strip_filter.p_yellow(r)) if learned else (None, None)
+    a = plain.update('left', raw, pd, i*FRAME_NS, i*.8)
+    b = coloured.update('left', raw, pd, i*FRAME_NS, i*.8, py)
+    assert {k: a[k] for k in type_keys} == {k: b[k] for k in type_keys}
+
+
+def test_off_passes_colour_through():
+  rec = Recogniser(2, strip_filter=False)
+  out = [step(rec, i, .02, color=c) for i, c in enumerate([.01, .99, .01])]
+  assert colors(out) == ['yellow', 'white', 'yellow']

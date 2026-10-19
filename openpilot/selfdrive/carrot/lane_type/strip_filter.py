@@ -1,12 +1,20 @@
-"""Temporal filter for StripNet type results.
+"""Temporal filter for StripNet type and colour results.
 
-The StripNet path always uses it: ``marking_daemon.Recogniser(2)`` builds the asymmetric filter with LONG_M / SHORT_M
-(A8/4) by default; the ``strip_filter`` argument (another StripFilter, or False for none) is for tests and replays.
+The StripNet path always uses it: ``marking_daemon.Recogniser(2)`` builds the asymmetric type filter with LONG_M /
+SHORT_M (A8/4) plus the colour window COLOR_M by default; the ``strip_filter`` argument (another StripFilter, or
+False for none) is for tests and replays.
 It runs inside ``Recogniser.process`` (StripNet branch), so it sits between the model and
 ``display.DisplayPolicy.confirm``:
-per side it takes the raw ``filter_input`` result plus the model's P(dashed) and returns a result dict of the
-same form. Only the type head is changed; colour (value, confidence, stamp) passes through untouched, so the
-yellow-first display is unaffected. ``DisplayPolicy`` and the Scanner path are not touched.
+per side it takes the raw ``filter_input`` result plus the model's P(dashed) and P(yellow) and returns a result
+dict of the same form. ``DisplayPolicy`` and the Scanner path are not touched.
+
+Colour (``color_m``, None = colour passes through untouched, as in every ``make`` variant): certainty-weighted mean
+P(yellow) over the last ``color_m`` metres, 0.5 split, one symmetric window (a yellow->white error is as bad as a
+white->yellow one). It has its own window but shares the type filter's resets, 0.3 s gap rule and 3 s cap. Its
+confidence is the winning side's weighted mean probability (mean P(yellow), or 1 - mean), held to the same 0.90
+threshold as a raw colour decision (DaBin 10-19; |mean - 0.5| * 2 >= 0.90 meant mean >= 0.95). Unlearned
+yellow-dashed frames do not enter it (their colour passes through as the model left it, unknown). The type result
+is computed exactly as without the colour window.
 
 Variants (``StripFilter(kind, **params)``):
   none            raw result unchanged (baseline)
@@ -29,6 +37,7 @@ RESET_REASONS = ('lane_change', 'tracking_lost', 'tracking_lost_or_stale', 'inva
 MAX_GAP_NS = 300_000_000
 THRESHOLD = 0.90
 LONG_M, SHORT_M = 8., 4.  # the StripNet path's default asymmetric filter (A8/4)
+COLOR_M = 8.  # the StripNet path's default colour window
 
 
 def p_dashed(model_result):
@@ -39,22 +48,33 @@ def p_dashed(model_result):
   return c if model_result['typeCandidate'] == 'dashed' else 1. - c
 
 
+def p_yellow(model_result):
+  """P(yellow) from StripModel.decide's output (two-class softmax), or None without a model output."""
+  if not isinstance(model_result, dict) or model_result.get('colorCandidate') not in ('white', 'yellow'):
+    return None
+  c = float(model_result['colorConfidence'])
+  return c if model_result['colorCandidate'] == 'yellow' else 1. - c
+
+
 class _Side:
   def __init__(self):
     self.items = deque()  # (stamp, odometer, label_or_p, weight)
     self.state = None     # asym: last decided type
+    self.colors = deque()  # (stamp, odometer, P(yellow), weight)
     self.last_stamp = None
 
   def clear(self):
     self.items.clear()
     self.state = None
+    self.colors.clear()
 
 
 class StripFilter:
-  def __init__(self, kind='none', n=5, m=12., long_m=12., short_m=4., threshold=THRESHOLD):
+  def __init__(self, kind='none', n=5, m=12., long_m=12., short_m=4., threshold=THRESHOLD, color_m=None):
     if kind not in ('none', 'median', 'distance', 'asym'):
       raise ValueError(kind)
     self.kind, self.n, self.m, self.long_m, self.short_m, self.threshold = kind, n, m, long_m, short_m, threshold
+    self.color_m = color_m
     self.sides = {}
 
   def reset(self):
@@ -70,10 +90,10 @@ class StripFilter:
     out['dashedPatternMonoTimeNanos'] = stamp
     return out
 
-  def update(self, side, result, p, stamp, odometer):
-    """result: filter_input dict for this side; p: P(dashed) of the model output used for it (None if no
-    inference ran, or the frame must not enter the window); stamp: camera EOF ns; odometer: travel m."""
-    if self.kind == 'none':
+  def update(self, side, result, p, stamp, odometer, py=None):
+    """result: filter_input dict for this side; p / py: P(dashed) / P(yellow) of the model output used for it
+    (None if no inference ran, or the frame must not enter the windows); stamp: camera EOF ns; odometer: travel m."""
+    if self.kind == 'none' and self.color_m is None:
       return result
     s = self.sides.setdefault(side, _Side())
     if (result.get('trackingReset') or result.get('reason') in RESET_REASONS or
@@ -82,6 +102,28 @@ class StripFilter:
     s.last_stamp = stamp
     if result.get('reason') in RESET_REASONS:
       return result
+    out = result if self.kind == 'none' else self._type(s, result, p, stamp, odometer)
+    return out if self.color_m is None else self._color(s, out, py, stamp, odometer)
+
+  def _color(self, s, result, py, stamp, odometer):
+    if py is not None:
+      s.colors.append((stamp, odometer, py, abs(py - .5)*2))
+    while s.colors and (odometer - s.colors[0][1] > self.color_m or stamp - s.colors[0][0] > WINDOW_NS):
+      s.colors.popleft()
+    if py is None:
+      return result
+    total = sum(w for _, _, _, w in s.colors)
+    m = sum(q*w for _, _, q, w in s.colors)/total if total > 0 else .5
+    confidence = max(m, 1. - m)  # the winning side's mean probability, as a raw decision's confidence
+    color = 'yellow' if m > .5 else 'white' if m < .5 else 'unknown'
+    confident = color != 'unknown' and confidence >= self.threshold
+    out = dict(result)
+    out['color'] = color if confident else 'unknown'
+    out['colorConfidence'] = float(confidence) if confident else 0.
+    out['colorMonoTimeNanos'] = stamp
+    return out
+
+  def _type(self, s, result, p, stamp, odometer):
     if self.kind == 'median':
       if result.get('type') in ('dashed', 'solid'):
         s.items.append((stamp, odometer, result['type'], float(result['typeConfidence'])))
