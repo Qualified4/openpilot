@@ -19,9 +19,10 @@ unreachable dns_error tls_error invalid_response invalid_url credentials_corrupt
 file_changed file_not_allowed segment_incomplete local_file_error local_settings_error retry_unavailable
 upload_running pairing_busy upload_failed'''.split())
 TRANSIENT = frozenset(('unreachable', 'dns_error', 'upload_busy', 'offset_conflict'))
-# Largest chunk accepted (memory per request). Announced so Road Viewer >= 0.9.1 can use
-# 2 MiB chunks; older servers ignore it and older uploaders, which omit it, keep 256 KiB.
+# Largest accepted payload (memory per request). Streaming servers can negotiate
+# 8 MiB; original RV1 caps at 2 MiB and older servers keep 256 KiB.
 MAX_CHUNK_SIZE = 8 * 1024 * 1024
+STREAM_CHECKSUM = 'sha256-stream'
 
 
 class Error(Exception):
@@ -78,8 +79,11 @@ async def pair(http, url, code):
 
 async def begin(http, credentials, manifest):
   body = json.dumps(manifest, separators=(',', ':')).encode()
+  headers = {**signed_headers(credentials, body), 'X-RV-Max-Chunk': str(MAX_CHUNK_SIZE)}
+  if any(file['sha256'] is None for segment in manifest['segments'] for file in segment['files']):
+    headers['X-RV-Checksum'] = STREAM_CHECKSUM
   return await request(http, credentials['url'], 'POST', '/api/device/uploads', data=body,
-                       headers={**signed_headers(credentials, body), 'X-RV-Max-Chunk': str(MAX_CHUNK_SIZE)})
+                       headers=headers)
 
 
 async def session_request(http, url, session, method='GET', suffix='', data=None):
@@ -87,5 +91,6 @@ async def session_request(http, url, session, method='GET', suffix='', data=None
   if not re.fullmatch(r'[0-9a-f]{32}', str(session.get('id', ''))) or not isinstance(session.get('token'), str):
     raise Error('invalid_response')
   return await request(http, url, method, '/api/device/uploads/' + session['id'] + suffix, data=data,
-                       headers={'Authorization': 'Bearer ' + session['token'], 'Content-Type': 'application/octet-stream'},
+                       headers={'Authorization': 'Bearer ' + session['token'],
+                                'Content-Type': 'application/json' if suffix == '/finish' and data else 'application/octet-stream'},
                        deadline=180 if suffix == '/finish' else 120 if method == 'PUT' else 45)

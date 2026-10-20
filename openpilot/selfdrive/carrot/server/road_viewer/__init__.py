@@ -66,32 +66,43 @@ def register(app):
           selected = body.get('segments', [body.get('segment')])
           if not isinstance(selected, list) or not 1 <= len(selected) <= 50:
             raise client.Error('invalid_segments')
-          segments, _ = await request_upload_segments(request)
-          segments = list(dict.fromkeys(segments))
+          previous = jobs.jobs().get(str(body.get('retry_job_id')), {}) if body.get('retry_job_id') else None
+          if previous is not None:
+            # Completed originals may have been rotated off the device already.
+            # Only the exact earlier, validated selection can resume its checkpoint.
+            if previous.get('segments') != selected:
+              raise client.Error('retry_unavailable')
+            segments = previous['segments']
+          else:
+            segments, _ = await request_upload_segments(request)
+            segments = list(dict.fromkeys(segments))
           credentials = await asyncio.to_thread(config.load)
           if not credentials:
             raise client.Error('disconnected')
           options = {key: body.get(key, False) for key in ('include_front', 'include_wide')}
           if any(type(value) is not bool for value in options.values()):
             raise client.Error('invalid_file')
-          summaries = await asyncio.to_thread(uploader.discover, segments, options)
+          checkpoint = previous.get('_road_viewer') if previous is not None else None
+          if previous is not None and (not checkpoint or checkpoint['device_id'] != credentials['device_id']):
+            raise client.Error('retry_unavailable')
+          completed = {summary['segment'] for batch in checkpoint.get('batches', []) if batch and batch.get('complete')
+                       for summary in batch['summaries']} if checkpoint else set()
+          pending = [segment for segment in segments if segment not in completed]
+          summaries = await asyncio.to_thread(uploader.discover, pending, previous.get('road_viewer_options', {}) if previous else options) if pending else []
           if action == 'summary':
             return web.json_response({'ok': True, 'summaries': summaries})
           running = jobs.running_job()
           if running:
             return web.json_response({'ok': False, 'error': 'upload_running', 'job_id': running['id']}, status=409)
-          checkpoint = None
           if body.get('retry_job_id'):
-            old = jobs.jobs().get(str(body['retry_job_id']), {})
-            checkpoint = old.get('_road_viewer')
-            if old.get('segments') != segments or not checkpoint or checkpoint['device_id'] != credentials['device_id']:
-              raise client.Error('retry_unavailable')
             checkpoint = copy.deepcopy(checkpoint)
-            options = old.get('road_viewer_options', {})
-            if old.get('error') in ('session_expired', 'session_not_found'):
-              checkpoint['manifest']['batch_id'] = secrets.token_urlsafe(24)
-              checkpoint.pop('session', None)
-              checkpoint.pop('received', None)
+            options = previous.get('road_viewer_options', {})
+            if previous.get('error') in ('session_expired', 'session_not_found'):
+              for batch in checkpoint.get('batches', [checkpoint]):
+                if batch and not batch.get('complete'):
+                  batch['manifest']['batch_id'] = secrets.token_urlsafe(24)
+                  batch.pop('session', None)
+                  batch.pop('received', None)
           job = jobs.create_job(segments)
           job['upload_target'] = 'road_viewer'
           job['road_viewer_options'] = options

@@ -14,6 +14,7 @@ import ssl
 import subprocess
 import sys
 import threading
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
 
 import aiohttp
@@ -105,8 +106,36 @@ def server(tmp_path, monkeypatch):
   spec.loader.exec_module(implementation)
   implementation.auto_convert = False
   cert, key = tmp_path / 'cert.pem', tmp_path / 'key.pem'
-  subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(key), '-out', str(cert),
-                  '-days', '1', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost'],
+  # Backdate only this disposable test certificate to tolerate host/WSL clock
+  # jitter. TLS trust, hostname and expiry verification stay enabled.
+  (tmp_path / 'index').touch()
+  (tmp_path / 'serial').write_text('01\n')
+  ca = tmp_path / 'openssl.cnf'
+  ca.write_text(f'''[ca]
+default_ca=test_ca
+[test_ca]
+database={tmp_path.as_posix()}/index
+serial={tmp_path.as_posix()}/serial
+new_certs_dir={tmp_path.as_posix()}
+default_md=sha256
+policy=any_name
+x509_extensions=tls
+[any_name]
+commonName=supplied
+[tls]
+subjectAltName=DNS:localhost
+basicConstraints=critical,CA:TRUE
+keyUsage=critical,keyCertSign,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+''')
+  csr = tmp_path / 'request.pem'
+  subprocess.run(['openssl', 'req', '-new', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(key), '-out', str(csr),
+                  '-subj', '/CN=localhost'],
+                 check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+  now = datetime.now(UTC)
+  subprocess.run(['openssl', 'ca', '-selfsign', '-batch', '-notext', '-config', str(ca), '-keyfile', str(key),
+                  '-in', str(csr), '-out', str(cert), '-startdate', (now - timedelta(days=1)).strftime('%Y%m%d%H%M%SZ'),
+                  '-enddate', (now + timedelta(days=1)).strftime('%Y%m%d%H%M%SZ')],
                  check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
   class Handler(WSGIRequestHandler):
@@ -215,7 +244,7 @@ def test_real_multi_segment_response_loss_and_retry(server, monkeypatch):
     async def interrupted(http, url, session, method='GET', suffix='', data=None):
       nonlocal lost, failed
       if method == 'PUT':
-        puts.append((suffix, len(data)))
+        puts.append((session['id'], suffix, len(data)))
         if '/files/1?' in suffix and not failed:
           failed = True
           raise client.Error('tls_error')  # Permanent failure leaves later files pending.
@@ -230,7 +259,7 @@ def test_real_multi_segment_response_loss_and_retry(server, monkeypatch):
     await jobs.start_job(job, runner=uploader.run_job)
     assert job['status'] == 'failed', job['result']
     checkpoint = job['_road_viewer']
-    assert checkpoint['received'][0] == checkpoint['files'][0]['size']
+    assert checkpoint['batches'][0]['received'][0] == checkpoint['batches'][0]['files'][0]['size']
     assert len(list(server[0].UPLOADS.iterdir())) == 1
     first_puts = len(puts)
     retry_job = jobs.create_job(segments)
@@ -238,9 +267,10 @@ def test_real_multi_segment_response_loss_and_retry(server, monkeypatch):
     await jobs.start_job(retry_job, runner=uploader.run_job)
     assert retry_job['status'] == 'done', retry_job['result']
     assert retry_job['result']['uploaded'] == 2
-    assert not any('/files/0?' in suffix for suffix, _ in puts[first_puts:])
-    assert sum('/files/0?offset=0' == suffix for suffix, _ in puts) == 1
-    assert all(size <= server[0].CHUNK_SIZE for _, size in puts)
+    assert not any('/files/0?' in suffix and session == checkpoint['batches'][0]['session']['id']
+                   for session, suffix, _ in puts[first_puts:])
+    assert sum('/files/0?offset=0' == suffix for _, suffix, _ in puts) == 2
+    assert all(size <= server[0].CHUNK_SIZE for _, _, size in puts)
     stored = list(server[0].recording_paths())
     assert len(stored) == 2
     for directory in stored:
@@ -251,16 +281,17 @@ def test_real_multi_segment_response_loss_and_retry(server, monkeypatch):
         assert (directory / 'qcamera.ts').read_bytes() == (source / 'qcamera.ts').read_bytes()
     secret = config.load()['device_secret']
     public = json.dumps(jobs.snapshot(retry_job))
-    assert secret not in public and checkpoint['session']['token'] not in public
+    assert secret not in public and checkpoint['batches'][0]['session']['token'] not in public
   asyncio.run(run())
 
 
 def test_parallel_files_keep_per_file_order_and_resume(server, monkeypatch):
   async def run():
     await connect(server)
-    segments = [recording(0), recording(1)]
+    segments = [recording(0)]
     for segment in segments:  # Several chunks per file with either server chunk size.
       (Path(paths.segment_dir(segment)) / 'qcamera.ts').write_bytes(os.urandom(2 * server[0].CHUNK_SIZE + 5))
+      (Path(paths.segment_dir(segment)) / 'fcamera.hevc').write_bytes(b'\x00\x00\x01\x40\x01' + os.urandom(server[0].CHUNK_SIZE))
     original = client.session_request
     offsets, inflight, peak, failed, attempt = {}, 0, 0, False, 0
 
@@ -283,6 +314,7 @@ def test_parallel_files_keep_per_file_order_and_resume(server, monkeypatch):
 
     monkeypatch.setattr(client, 'session_request', tracked)
     job = jobs.create_job(segments)
+    job['road_viewer_options'] = {'include_front': True}
     await jobs.start_job(job, runner=uploader.run_job)
     assert job['status'] == 'failed' and job['result']['error'] == 'tls_error'
     attempt = 1
@@ -294,11 +326,11 @@ def test_parallel_files_keep_per_file_order_and_resume(server, monkeypatch):
     for sent in offsets.values():  # Within one attempt every file is sent strictly in order.
       assert sent == sorted(set(sent)), offsets
     stored = list(server[0].recording_paths())
-    assert len(stored) == 2
+    assert len(stored) == 1
     for directory in stored:
       metadata = server[0].read_meta(directory)
       source = Path(paths.DASHCAM_ROOT) / metadata['files']['rlog.zst'].removesuffix('--rlog.zst')
-      for name in ('rlog.zst', 'qcamera.ts'):
+      for name in ('rlog.zst', 'qcamera.ts', 'fcamera.hevc'):
         assert (directory / name).read_bytes() == (source / name).read_bytes()
   asyncio.run(run())
 
@@ -533,7 +565,8 @@ def test_optional_video_selection_and_manifest():
     assert ('fcamera.hevc' in names) == front
     assert ('ecamera.hevc' in names) == wide
     assert summary['totalSize'] == default['totalSize'] + front * 11 + wide * 10
-    job = jobs.create_job([segment]);job['road_viewer_options'] = options
+    job = jobs.create_job([segment])
+    job['road_viewer_options'] = options
     checkpoint = asyncio.run(uploader.prepare(job))
     assert [item['kind'] for item in checkpoint['manifest']['segments'][0]['files']] == names
   (directory / 'ecamera.hevc').unlink()
@@ -546,7 +579,8 @@ def test_optional_video_selection_and_manifest():
 def test_optional_videos_over_real_https_resume(server, monkeypatch):
   async def run():
     await connect(server)
-    segment = recording();directory = Path(paths.segment_dir(segment))
+    segment = recording()
+    directory = Path(paths.segment_dir(segment))
     payload = b'\x00\x00\x01\x40\x01' + b'hq' * uploader.BLOCK_SIZE
     (directory / 'fcamera.hevc').write_bytes(payload)
     (directory / 'ecamera.hevc').write_bytes(payload + b'wide')
@@ -560,7 +594,8 @@ def test_optional_videos_over_real_https_resume(server, monkeypatch):
         raise client.Error('unreachable')
       return result
     monkeypatch.setattr(client, 'session_request', lose_chunk)
-    job = jobs.create_job([segment]);job['road_viewer_options'] = {'include_front': True, 'include_wide': True}
+    job = jobs.create_job([segment])
+    job['road_viewer_options'] = {'include_front': True, 'include_wide': True}
     await jobs.start_job(job, runner=uploader.run_job)
     assert job['status'] == 'done', repr(job.get('result'))
     assert lost
@@ -570,3 +605,163 @@ def test_optional_videos_over_real_https_resume(server, monkeypatch):
       assert (stored[0] / name).read_bytes() == (directory / name).read_bytes()
     assert server[0].storage_policy.reserved() == 0
   asyncio.run(run())
+
+
+def test_streaming_reads_once_and_completes_each_segment_before_next(server, monkeypatch):
+  if not hasattr(server[0], 'STREAM_CHUNK_SIZE'):
+    pytest.skip('This check needs a server with streaming checksums')
+  async def run():
+    await connect(server)
+    segments = [recording(0), recording(1)]
+    opened, reads, begins = [], {}, []
+    original_open, original_begin = uploader.open_source, client.begin
+
+    class Source:
+      def __init__(self, item):
+        self.source = original_open(item)
+        self.key = (item['segment'], item['name'])
+        opened.append(self.key)
+
+      def read(self, size):
+        data = self.source.read(size)
+        reads[self.key] = reads.get(self.key, 0) + len(data)
+        return data
+
+      def __enter__(self): return self
+      def __exit__(self, *args): self.source.close()
+      def __getattr__(self, name): return getattr(self.source, name)
+
+    async def begin(http, credentials, manifest):
+      count = len(begins)
+      assert len(manifest['segments']) == 1
+      assert len(server[0].recording_paths()) == count  # Earlier segment already registered.
+      assert all(segment == segments[count] or segment in segments[:count] for segment, _ in opened)
+      assert not any(segment == segments[count] and size for (segment, _), size in reads.items())
+      assert all(f['sha256'] is None for f in manifest['segments'][0]['files'])
+      begins.append(manifest)
+      return await original_begin(http, credentials, manifest)
+
+    monkeypatch.setattr(uploader, 'open_source', Source)
+    monkeypatch.setattr(client, 'begin', begin)
+    monkeypatch.setattr(server[0], 'file_digest', lambda path: pytest.fail(f'unexpected full-file server scan: {path.name}'))
+    job = jobs.create_job(segments)
+    await jobs.start_job(job, runner=uploader.run_job)
+    assert job['status'] == 'done', job['result']
+    assert job['result']['uploaded'] == 2
+    assert job['step_current'] == 2
+    for summary in uploader.discover(segments):
+      for item in summary['files']:
+        assert reads[(summary['segment'], item['name'])] == item['size']
+    assert len(begins) == 2
+  asyncio.run(run())
+
+
+def test_completed_segment_survives_later_failure_and_http_retry_with_deleted_original(server, monkeypatch):
+  from aiohttp import web
+  from aiohttp.test_utils import TestClient, TestServer
+  import shutil
+
+  async def run():
+    await connect(server)
+    segments = [recording(0), recording(1)]
+    original_begin = client.begin
+    starts = []
+    failed = False
+
+    async def interrupt(http, credentials, manifest):
+      nonlocal failed
+      number = manifest['segments'][0]['segment']
+      starts.append(number)
+      if number == 1 and not failed:
+        failed = True
+        raise client.Error('tls_error')
+      return await original_begin(http, credentials, manifest)
+
+    monkeypatch.setattr(client, 'begin', interrupt)
+    job = jobs.create_job(segments)
+    await jobs.start_job(job, runner=uploader.run_job)
+    assert job['status'] == 'failed'
+    assert job['result']['uploaded'] == 1
+    assert [item['ok'] for item in job['result']['results']] == [True, False]
+    assert len(server[0].recording_paths()) == 1
+    completed_starts = starts.count(0)
+    shutil.rmtree(paths.segment_dir(segments[0]))
+    app = web.Application()
+    register(app)
+    async with TestClient(TestServer(app)) as browser:
+      response = await browser.post('/api/road-viewer/start', json={'segments': segments, 'retry_job_id': job['id']})
+      assert response.status == 200, await response.text()
+      resumed = jobs.jobs()[(await response.json())['job_id']]
+      await resumed['_task']
+      assert resumed['status'] == 'done', resumed['result']
+      assert resumed['result']['uploaded'] == 2
+      assert starts.count(0) == completed_starts
+      assert len(server[0].recording_paths()) == 2
+  asyncio.run(run())
+
+
+def test_legacy_server_fallback_hashes_one_segment_at_a_time(server, monkeypatch):
+  async def run():
+    await connect(server)
+    segments = [recording(0), recording(1)]
+    original_begin = client.begin
+    modes = []
+
+    async def old_server(http, credentials, manifest):
+      streaming = any(f['sha256'] is None for s in manifest['segments'] for f in s['files'])
+      modes.append(streaming)
+      if streaming:
+        raise client.Error('invalid_file')
+      assert len(server[0].recording_paths()) == manifest['segments'][0]['segment']
+      return await original_begin(http, credentials, manifest)
+
+    monkeypatch.setattr(client, 'begin', old_server)
+    job = jobs.create_job(segments)
+    await jobs.start_job(job, runner=uploader.run_job)
+    assert job['status'] == 'done', job['result']
+    assert modes == [True, False, False]
+    assert job['result']['uploaded'] == 2
+  asyncio.run(run())
+
+
+def test_lost_all_finish_responses_resume_receipt_without_resending_completed_files(server, monkeypatch):
+  async def run():
+    await connect(server)
+    segments = [recording(0), recording(1)]
+    original = client.session_request
+    puts, lost = [], 0
+
+    async def lose_finish(http, url, session, method='GET', suffix='', data=None):
+      nonlocal lost
+      result = await original(http, url, session, method, suffix, data)
+      if method == 'PUT':
+        puts.append((session['id'], suffix))
+      if suffix == '/finish' and lost < 3:
+        lost += 1
+        raise client.Error('unreachable')
+      return result
+
+    monkeypatch.setattr(client, 'session_request', lose_finish)
+    job = jobs.create_job(segments)
+    await jobs.start_job(job, runner=uploader.run_job)
+    assert job['status'] == 'failed'
+    assert len(server[0].recording_paths()) == 1
+    session_id = job['_road_viewer']['batches'][0]['session']['id']
+    before = list(puts)
+    resumed = jobs.create_job(segments)
+    resumed['_road_viewer'] = copy.deepcopy(job['_road_viewer'])
+    await jobs.start_job(resumed, runner=uploader.run_job)
+    assert resumed['status'] == 'done', resumed['result']
+    assert not any(session == session_id for session, _ in puts[len(before):])
+    assert len(server[0].recording_paths()) == 2
+  asyncio.run(run())
+
+
+@pytest.mark.parametrize('cap,size,seconds,expected', [
+  (8 * 1024 * 1024, 1024 * 1024, .05, 8 * 1024 * 1024),
+  (8 * 1024 * 1024, 1024 * 1024, 16, 256 * 1024),
+  (2 * 1024 * 1024, 1024 * 1024, .05, 2 * 1024 * 1024),
+  (65536, 65536, 10, 65536),
+])
+def test_adaptive_chunks_stay_within_server_limit(cap, size, seconds, expected):
+  assert uploader.next_chunk_size(cap, size, seconds) == expected

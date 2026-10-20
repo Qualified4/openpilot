@@ -1,6 +1,7 @@
 """Protocol adapter for the existing dashcam upload Job and file catalog."""
 import asyncio
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -77,8 +78,35 @@ def open_source(item):
     raise
 
 
-async def prepare(job):
-  summaries = await asyncio.to_thread(discover, job['segments'], job.get('road_viewer_options'))
+def read_payload(source, offset, size, digest):
+  source.seek(offset)
+  payload = source.read(size)
+  if digest is not None:
+    digest.update(payload)
+  return payload
+
+
+def next_chunk_size(maximum, size, seconds):
+  # Aim for four seconds of useful work per request, bounded by the server's
+  # negotiated cap. Fast links amortize RTT; slow links keep requests small.
+  return min(maximum, max(256 * 1024, int(size * 4 / max(.01, seconds) / 65536) * 65536))
+
+
+def progress(job, *, phase, message, current_bytes=0, **kwargs):
+  checkpoint = job.get('_road_viewer', {})
+  batches = checkpoint.get('batches', [])
+  completed = [batch for batch in batches if batch and batch.get('complete')]
+  done_count = sum(len(batch['summaries']) for batch in completed)
+  done_bytes = sum(sum(item['size'] for item in batch['files']) for batch in completed)
+  total_bytes = sum(summary['totalSize'] for summary in checkpoint.get('summaries', []))
+  current_bytes += done_bytes
+  jobs.progress(job, phase=phase, message=message, current=done_count,
+                bytes_current=current_bytes, bytes_total=total_bytes,
+                percent=97 * current_bytes / max(1, total_bytes) + 2 * done_count / len(job['segments']), **kwargs)
+
+
+async def prepare(job, segments=None, *, hash_files=True, report=True):
+  summaries = await asyncio.to_thread(discover, segments or job['segments'], job.get('road_viewer_options'))
   files = []
   manifest = {'batch_id': secrets.token_urlsafe(24), 'segments': []}
   for summary in summaries:
@@ -90,21 +118,22 @@ async def prepare(job):
       with await asyncio.to_thread(open_source, item) as source:
         item['fingerprint'] = fingerprint(source)
         read = 0
-        while True:
+        while hash_files:
           jobs.ensure_not_canceled(job)
           block = await asyncio.to_thread(source.read, BLOCK_SIZE)
           if not block:
             break
           digest.update(block)
           read += len(block)
-          jobs.progress(job, phase='preparing', message=f"{item['segment']} / {item['name']}",
-                        phase_current=read, phase_total=item['size'])
-        if fingerprint(source) != item['fingerprint'] or read != item['size']:
+          if report:
+            progress(job, phase='preparing', message=f"{item['segment']} / {item['name']}",
+                     phase_current=read, phase_total=item['size'], bytes_per_second=0)
+        if fingerprint(source) != item['fingerprint'] or (hash_files and read != item['size']):
           raise client.Error('file_changed')
       files.append(item)
-      entry['files'].append({'kind': item['name'], 'size': item['size'], 'sha256': digest.hexdigest()})
+      entry['files'].append({'kind': item['name'], 'size': item['size'], 'sha256': digest.hexdigest() if hash_files else None})
     manifest['segments'].append(entry)
-  return {'manifest': manifest, 'files': files, 'summaries': summaries}
+  return {'manifest': manifest, 'files': files, 'summaries': summaries, 'streaming': not hash_files}
 
 
 def offsets(response, files):
@@ -146,57 +175,90 @@ async def transfer(job, http, credentials, checkpoint):
   if session.get('state') == 'completed':
     validate_result(session.get('result'))
     return
+  if checkpoint.get('streaming') and session.get('checksum_mode') != client.STREAM_CHECKSUM:
+    raise client.Error('invalid_response')
   checkpoint['session'] = session
   chunk_size = session.get('chunk_size')
   if type(chunk_size) is not int or not 1 <= chunk_size <= client.MAX_CHUNK_SIZE:
     raise client.Error('invalid_response')
   received = offsets(session, files)
   checkpoint['received'] = received
-  total = sum(item['size'] for item in files)
   started, original = time.monotonic(), sum(received)
   finished = set()
+  checksums = [None] * len(files)
 
   def report(item):
     current = sum(received)
-    jobs.progress(job, phase='uploading', message=f"{item['segment']} / {item['name']}",
-                  bytes_current=current, bytes_total=total, percent=8 + 89 * current / total,
-                  current=sum(all(received[i] == f['size'] for i, f in enumerate(files) if f['segment'] == segment)
-                              for segment in job['segments']),
-                  phase_current=len(finished), phase_total=len(files),
-                  bytes_per_second=int((current - original) / max(0.01, time.monotonic() - started)))
+    progress(job, phase='uploading', message=f"{item['segment']} / {item['name']}", current_bytes=current,
+             phase_current=len(finished), phase_total=len(files),
+             bytes_per_second=int((current - original) / max(0.01, time.monotonic() - started)))
 
   async def send(index):
     item = files[index]
     with await asyncio.to_thread(open_source, item) as source:
       failures = 0
+      send_size = min(chunk_size, 1024 * 1024)
+      digest, hashed = hashlib.sha256(), 0
+
+      async def align_digest(offset):
+        nonlocal digest, hashed
+        if not checkpoint.get('streaming') or hashed == offset:
+          return
+        # Resume/reconcile only: ordinary uploads hash each transmitted byte once.
+        digest, hashed = hashlib.sha256(), 0
+        await asyncio.to_thread(source.seek, 0)
+        while hashed < offset:
+          jobs.ensure_not_canceled(job)
+          block = await asyncio.to_thread(source.read, min(BLOCK_SIZE, offset - hashed))
+          if not block:
+            raise client.Error('file_changed')
+          digest.update(block)
+          hashed += len(block)
+
       while received[index] < item['size']:
         jobs.ensure_not_canceled(job)
         if fingerprint(source) != item['fingerprint']:
           raise client.Error('file_changed')
         offset = received[index]
-        await asyncio.to_thread(source.seek, offset)
-        payload = await asyncio.to_thread(source.read, min(chunk_size, item['size'] - offset))
+        await align_digest(offset)
+        previous_digest = digest.copy()
+        payload = await asyncio.to_thread(read_payload, source, offset, min(send_size, item['size'] - offset),
+                                         digest if checkpoint.get('streaming') else None)
         if not payload:
           raise client.Error('file_changed')
+        if checkpoint.get('streaming'):
+          hashed += len(payload)
         try:
+          requested_at = time.monotonic()
           response = await client.session_request(http, credentials['url'], session, 'PUT',
                                                    f'/files/{index}?offset={offset}', payload)
           if response.get('received') != offset + len(payload):
             raise client.Error('invalid_response')
           received[index] = response['received']
+          send_size = next_chunk_size(chunk_size, len(payload), time.monotonic() - requested_at)
           failures = 0
         except client.Error as exc:
           if exc.code not in client.TRANSIENT or failures >= 2:
             raise
           failures += 1
+          send_size = max(min(chunk_size, 256 * 1024), send_size // 2)
           await asyncio.sleep(0.5 * failures)
           status = await retry(job, lambda: client.session_request(http, credentials['url'], session))
           # Response may have been lost AFTER a successful write. Only this file: other
           # files have their own requests in flight and track their own acknowledged offsets.
           received[index] = offsets(status, files)[index]
+          if checkpoint.get('streaming') and received[index] == offset:
+            digest, hashed = previous_digest, offset
         report(item)
+      if checkpoint.get('streaming') and received[index] == item['size'] and item.get('sha256'):
+        checksums[index] = item['sha256']
+      else:
+        await align_digest(item['size'])
+        checksums[index] = digest.hexdigest()
       if fingerprint(source) != item['fingerprint'] or not await asyncio.to_thread(segment_is_complete, item['segment']):
         raise client.Error('file_changed')
+      if checkpoint.get('streaming'):
+        item['sha256'] = checksums[index]
     finished.add(index)
     report(item)
 
@@ -219,8 +281,10 @@ async def transfer(job, http, credentials, checkpoint):
       task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
   jobs.ensure_not_canceled(job)
-  jobs.progress(job, phase='notifying', message='Road Viewer: registering batch', percent=98)
-  result = await retry(job, lambda: client.session_request(http, credentials['url'], session, 'POST', '/finish'))
+  progress(job, phase='notifying', message=f"Road Viewer: registering {checkpoint['summaries'][0]['segment']}",
+           current_bytes=sum(received), bytes_per_second=0)
+  body = json.dumps({'sha256': checksums}).encode() if checkpoint.get('streaming') else None
+  result = await retry(job, lambda: client.session_request(http, credentials['url'], session, 'POST', '/finish', body))
   validate_result(result)
 
 
@@ -229,10 +293,24 @@ def validate_result(result):
     raise client.Error('invalid_response')
 
 
+def segment_results(checkpoint):
+  results, received_bytes = [], 0
+  for summary in checkpoint.get('summaries', []):
+    batch = next((b for b in checkpoint['batches'] if b and any(s['segment'] == summary['segment'] for s in b['summaries'])), None)
+    complete = bool(batch and batch.get('complete'))
+    received = batch.get('received', []) if batch else []
+    selected = [(i, f) for i, f in enumerate(batch['files']) if f['segment'] == summary['segment']] if batch else []
+    transferred = bool(selected) and all(i < len(received) and received[i] == f['size'] for i, f in selected)
+    received_bytes += sum(f['size'] if complete else received[i] if i < len(received) else 0 for i, f in selected)
+    results.append(dict(summary, ok=complete, transferred=complete or transferred))
+  return results, received_bytes
+
+
 async def run_job(job):
   checkpoint = job.get('_road_viewer')
   code, canceled, success = '', False, False
   credentials = None
+  active = None
   async with aiohttp.ClientSession() as http:
     try:
       credentials = await asyncio.to_thread(config.load)
@@ -241,10 +319,40 @@ async def run_job(job):
       if checkpoint and checkpoint.get('device_id') != credentials['device_id']:
         raise client.Error('retry_unavailable')
       if checkpoint is None:
-        checkpoint = await prepare(job)
-        checkpoint['device_id'] = credentials['device_id']
-        job['_road_viewer'] = checkpoint
-      await transfer(job, http, credentials, checkpoint)
+        summaries = await asyncio.to_thread(discover, job['segments'], job.get('road_viewer_options'))
+        checkpoint = {'device_id': credentials['device_id'], 'summaries': summaries,
+                      'batches': [None] * len(summaries), 'streaming': True}
+      elif 'batches' not in checkpoint:
+        # Keep an already prepared RV1 batch resumable across an in-process update.
+        checkpoint = {'device_id': credentials['device_id'], 'summaries': checkpoint['summaries'],
+                      'batches': [checkpoint], 'streaming': False}
+      job['_road_viewer'] = checkpoint
+      for index, batch in enumerate(checkpoint['batches']):
+        jobs.ensure_not_canceled(job)
+        if batch and batch.get('complete'):
+          continue
+        active = index
+        if batch is None:
+          progress(job, phase='preparing', message=job['segments'][index], bytes_per_second=0)
+          batch = await prepare(job, [job['segments'][index]], hash_files=not checkpoint['streaming'])
+          checkpoint['batches'][index] = batch
+          checkpoint['summaries'][index] = batch['summaries'][0]
+        try:
+          await transfer(job, http, credentials, batch)
+        except client.Error as exc:
+          if exc.code not in ('invalid_file', 'invalid_batch') or not batch.get('streaming') or batch.get('session'):
+            raise
+          # Older servers require hashes in the initial manifest. Probe only once,
+          # then retain their existing protocol for the rest of this selection.
+          checkpoint['streaming'] = False
+          batch = await prepare(job, [job['segments'][index]])
+          checkpoint['batches'][index] = batch
+          checkpoint['summaries'][index] = batch['summaries'][0]
+          await transfer(job, http, credentials, batch)
+        batch['complete'] = True
+        job['partial_results'], _ = segment_results(checkpoint)
+        jobs.append(job, 'Road Viewer: completed ' + ', '.join(s['segment'] for s in batch['summaries']))
+        progress(job, phase='notifying', message='Road Viewer: segment complete', bytes_per_second=0)
       success = True
     except jobs.UploadCanceled:
       canceled = True
@@ -257,23 +365,25 @@ async def run_job(job):
     except Exception:
       code = 'upload_failed'  # Never publish raw exceptions, URLs with tokens, or response bodies.
     finally:
-      if (canceled or code in ('file_changed', 'segment_incomplete', 'local_file_error')) and checkpoint:
-        if credentials and checkpoint.get('session'):
+      if (canceled or code in ('file_changed', 'segment_incomplete', 'local_file_error')) and checkpoint and active is not None:
+        batch = checkpoint['batches'][active]
+        if credentials and batch and not batch.get('complete') and batch.get('session'):
           try:
-            await client.session_request(http, credentials['url'], checkpoint['session'], 'DELETE')
+            await client.session_request(http, credentials['url'], batch['session'], 'DELETE')
           except Exception:
             pass  # Offline sessions expire on the server (15 min idle / 2 h absolute).
+        if canceled:
+          job.pop('_road_viewer', None)
+        elif batch and not batch.get('complete'):
+          checkpoint['batches'][active] = None
+      if canceled:
         job.pop('_road_viewer', None)
   if code:
     config.last_error = code
-  summaries = checkpoint['summaries'] if checkpoint else []
-  received = checkpoint.get('received', []) if checkpoint else []
-  files = checkpoint['files'] if checkpoint else []
-  results = [dict(summary, ok=success, transferred=success or all(i < len(received) and received[i] == f['size']
-             for i, f in enumerate(files) if f['segment'] == summary['segment'])) for summary in summaries]
-  result = {'ok': success, 'target': 'road_viewer', 'uploaded': len(job['segments']) if success else 0,
+  results, received_bytes = segment_results(checkpoint) if checkpoint and 'batches' in checkpoint else ([], 0)
+  result = {'ok': success, 'target': 'road_viewer', 'uploaded': sum(item['ok'] for item in results),
             'total': len(job['segments']), 'results': results,
-            'bytes_received': sum(f['size'] for f in files) if success else sum(received),
+            'bytes_received': received_bytes,
             'error': code or None, 'message': code or ('Upload complete' if success else 'Upload canceled'),
             'canceled': canceled}
   if not success and not canceled and job.get('_road_viewer'):

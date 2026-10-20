@@ -1313,7 +1313,7 @@ function dashcamUploadResultHtml(result) {
       const status = ok
         ? getUIText("upload_status_complete", "Complete")
         : result.target === "road_viewer" && item.transferred
-          ? getUIText("rv_pending_registration", "Waiting for batch completion")
+          ? getUIText("rv_pending_registration", "Waiting for this segment to be verified and registered")
           : getUIText("upload_status_failed", "Failed");
       return `<div class="app-dialog__metaResult">
         <code class="app-dialog__metaCode">${escapeHtml(String(item?.segment || ""))}</code>
@@ -1342,7 +1342,7 @@ function dashcamUploadResultHtml(result) {
       uploaded: Number(result?.uploaded || 0),
       total: Number(result?.total || 0),
     }))}</div>
-    ${result.target === "road_viewer" && result.error ? `<p>${escapeHtml(roadViewerError(result.error))}</p><p>${escapeHtml(getUIText("rv_retry_hint", "Files already received are kept until the session expires. Retry resumes those files; the batch is registered only when all files finish."))}</p>` : ""}
+    ${result.target === "road_viewer" && result.error ? `<p>${escapeHtml(roadViewerError(result.error))}</p><p>${escapeHtml(getUIText("rv_retry_hint", "Completed segments are kept. Retry resumes unfinished segments from received offsets. Each segment is verified and registered separately."))}</p>` : ""}
     ${resultList}
     <div class="app-dialog__metaSummary">
       <span>${escapeHtml(qcameraLabel)}</span>
@@ -1428,7 +1428,7 @@ function dashcamUploadProgressView(snapshot = {}, totalFallback = 0, stats = nul
   const total = Math.max(0, Number(snapshot.step_total || totalFallback || 0));
   const phase = String(snapshot.phase || "preparing").trim().toLowerCase();
   const progressState = stateOverride || dashcamUploadProgressState(snapshot);
-  const showSegmentCount = total > 0 && (phase === "queued" || phase === "preparing" || phase === "uploading");
+  const showSegmentCount = total > 0 && (phase === "queued" || phase === "preparing" || phase === "uploading" || phase === "notifying");
   const segmentLabel = showSegmentCount
     ? getUIText("upload_segment_progress", "Segments {current}/{total}", { current, total })
     : "";

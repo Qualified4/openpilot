@@ -72,7 +72,10 @@ corresponding `CARROT_DATA_DIR/state` directory. Job/checkpoint data is memory-o
 matching existing upload jobs (12 finished jobs retained). A restart clears retry
 history. Completed received chunks are reused while the server session exists;
 idle expiry is 15 minutes and absolute expiry is 2 hours. An expired session may
-require retransmission. A batch is registered only after all files are received.
+require retransmission of its unfinished segment. Each segment is verified and
+registered before the next starts; completed segments remain available after a
+later failure or cancellation. Retry skips completed segments, including originals
+already rotated off the device. A lost completion response is reconciled by receipt.
 
 Local disconnect removes credentials and retry checkpoints, cancels active
 uploads, and attempts to release the upload session. An unreachable server clears
@@ -83,10 +86,31 @@ revoke endpoint: remove server access from Road Viewer's device management UI.
 
 Desktop tests do not validate C3/C4 timing under driving load. This adapter sends
 up to three files at once (`PARALLEL_FILES`), each strictly in order, in chunks of
-the server-chosen size (Road Viewer 0.9.1: 2 MiB; older servers 256 KiB; at most
+an adaptive size (starting at 1 MiB, targeting about four seconds per request),
+bounded by the server-chosen cap (streaming extension: 8 MiB; original RV1: 2 MiB;
+older servers 256 KiB; at most
 `client.MAX_CHUNK_SIZE` 8 MiB in memory per request, announced as
 `X-RV-Max-Chunk`). Disk reads are threaded; there is
 no idle polling or driving-process scheduling change. One request at a time left
 the uplink idle for every round trip and server write: on a simulated 5 Mbps,
 60–150 ms RTT link one sequential 256 KiB stream reached 340–460 KB/s, three
 files with 2 MiB chunks 580–605 KB/s (link limit 625 KB/s).
+
+
+## Streaming and early segment completion
+
+New Road Viewer builds negotiate `X-RV-Checksum: sha256-stream` and null manifest
+hashes. Sources are hashed while their payloads are read in the worker thread,
+then the final hash list is sent in the segment finish request. All source
+fingerprint, acknowledged-offset, TLS, HMAC, receiver checksum and storage checks
+remain enforced. The receiver hashes accepted chunks as they are written and
+uses those hashes only while file identity/stat match. Restart or mutation falls
+back to disk verification. Unsupported older servers fall back to per-segment
+prehashing once, without retrying authentication errors as negotiation failures.
+
+The integration tests assert a single source read, no normal receiver video
+reread, early per-segment registration, partial success counts, resume after
+finished originals were deleted, lost finish responses and legacy fallback.
+Receiver tests additionally cover malformed/missing finish checksums, corruption,
+restart, repeated chunks, negotiated size limits and concurrent finish guards.
+No deployed Home Assistant storage or physical vehicle is involved.

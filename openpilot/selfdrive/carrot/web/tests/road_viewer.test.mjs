@@ -198,3 +198,24 @@ test('video choices default off, can be selected independently, and cancel sends
     });
   }
 });
+
+test('partial segment completion keeps successful rows and identifies only unfinished registration', () => {
+  const source = readFileSync(new URL('../src/features/logs/dashcam.js', import.meta.url), 'utf8');
+  const fn = source.slice(source.indexOf('function dashcamUploadResultHtml('), source.indexOf('async function showDashcamUploadResult('));
+  const render = runInNewContext(`${fn}; dashcamUploadResultHtml`, {
+    DASHCAM_UPLOAD_RESULT_VISIBLE_LIMIT: 10,
+    dashcamUploadStats: () => ({ qcamera: 2, rlog: 2 }),
+    dashcamUploadSummaryLabel: () => 'summary',
+    escapeHtml: String,
+    roadViewerError: () => 'network error',
+    getUIText: (_key, fallback, values = {}) => fallback.replace(/\{(\w+)\}/g, (_, key) => values[key]),
+  });
+  const html = render({ target: 'road_viewer', uploaded: 1, total: 2, error: 'unreachable', results: [
+    { segment: 'first--0', ok: true, transferred: true },
+    { segment: 'second--1', ok: false, transferred: true },
+  ] });
+  assert.ok(html.includes('Upload complete 1/2'));
+  assert.ok(html.includes('data-tone="success">Complete'));
+  assert.ok(html.includes('Waiting for this segment to be verified and registered'));
+  assert.ok(html.includes('Retry resumes unfinished segments'));
+});
