@@ -851,3 +851,33 @@ def test_new_array_point_cannot_create_stop_or_approach_memory(display, monkeypa
   assert values['LF_DETECT']==2
   assert values['LF_DETECT_DISTANCE']==2.32
   assert tr.stop_holds[0][0]==99
+
+
+@pytest.mark.parametrize("use_map", [False, True])
+def test_short_bsd_gap_slides_the_same_rear_car_toward_16_and_back(display, use_map):
+  """10-20 segment 8: a 0.2 s gap in the OEM BSD flag turned RR white car 4 -> grey car 3 -> 4. The car now keeps its
+  code and only slides: toward 16 while off, back toward 8 when BSD returns; a lasting off slides out to 16."""
+  params, cs, send = display
+  params[KEYS[2]] = True
+  params[MAP_KEY] = use_map
+  cs.ccnc_0x162 = dict.fromkeys(CANPacker("hyundai_canfd_generated").dbc.name_to_msg["CCNC_0x162"].sigs, 0)
+  cs.modelV2 = N(meta=cs.modelV2.meta, position=cs.modelV2.position, laneLineProbs=[.9] * 4, orientationRate=N(z=[0.]),
+                 leadsV3=[], roadEdges=[N(x=[0., 10., 30., 100.], y=[y] * 4) for y in (-7., 7.)], roadEdgeStds=[.5, .5],
+                 laneLines=[N(x=[0., 10., 30., 100.], y=[y] * 4) for y in (-5.4, -1.8, 1.8, 5.4)])
+  cs.live_tracks = N(points=[])
+  shown = []
+  for i, bsd in enumerate([True] * 40 + [False] * 4 + [True] * 20 + [False] * 120):
+    cs.out.rightBlindspot = bsd
+    values = dict(send(i * 5))["CCNC_0x162"]
+    shown.append((bsd, values["RR_DETECT"], values["RR_DETECT_DISTANCE"]))
+  on = shown[39]
+  assert on[1] == 4 and on[2] < 12  # sliding in toward 8
+  gap = shown[40:44]
+  assert all(code == on[1] for _, code, _ in gap)  # no grey 3 / hidden 0 in the gap
+  assert all(b[2] > a[2] for a, b in zip([on, *gap], gap, strict=False))  # moving toward 16
+  back = shown[44:64]
+  assert all(code == 4 for _, code, _ in back) and back[-1][2] < gap[-1][2]  # and back toward 8
+  out = shown[64:]
+  drawn = [d for _, code, d in out if code]
+  assert all(code == 4 for _, code, _ in out if code) and drawn == sorted(drawn) and drawn[-1] >= 14.5
+  assert not out[-1][1]  # converged past 15: dropped by the existing rule

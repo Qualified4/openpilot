@@ -1755,7 +1755,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
       if active or distance.value < 15:
         values[prefix + '_DETECT_DISTANCE'] = distance.apply(8 if active else 16)
         values[prefix + '_DETECT_LATERAL'] = lateral
-        values[prefix + '_DETECT'] = 2 if active else 1
+        values[prefix + '_DETECT'] = 2  # BSD on or sliding out to 16: the same car, no grey/white flip (ext policy)
     if state.rear_handover is not None:
       selected = []
       proven = []

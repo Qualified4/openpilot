@@ -3124,6 +3124,9 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     center_lane_offset = (state.r_lane_f.value - state.l_lane_f.value) / 2 if model_lanes else 0.0
 
     # --- 후측방은 BSD 경고 시 고정 위치에 두부 출력. HDA1은 후측방 레이더 정보가 안채워져서 옴 ---
+    # BSD on: the LPF slides the car to 8; off: the same car (same code) slides back to 16 and is dropped past 15.
+    # A short BSD gap (10-20 segment 8: 0.2 s) only moves it a little toward 16 and back; the code used to switch to
+    # the grey car 1 for the gap (white 4 -> grey 3 -> white 4 on the cluster).
     BSD_LATERAL_FIXED = 2.8
     if CS.out.leftBlindspot:
       values["LR_DETECT_DISTANCE"] = state.lr_distance.apply(8)
@@ -3132,7 +3135,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     elif state.lr_distance.value < 15:
       values["LR_DETECT_DISTANCE"] = state.lr_distance.apply(16)
       values["LR_DETECT_LATERAL"] = BSD_LATERAL_FIXED - center_lane_offset
-      values["LR_DETECT"] = 1
+      values["LR_DETECT"] = 2  # same car as under BSD: it slides out to 16, never a grey/white flip
 
     if CS.out.rightBlindspot:
       values["RR_DETECT_DISTANCE"] = state.rr_distance.apply(8) # 8m
@@ -3141,7 +3144,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     elif state.rr_distance.value < 15:
       values["RR_DETECT_DISTANCE"] = state.rr_distance.apply(16)
       values["RR_DETECT_LATERAL"] = BSD_LATERAL_FIXED + center_lane_offset
-      values["RR_DETECT"] = 1
+      values["RR_DETECT"] = 2  # same car as under BSD: it slides out to 16, never a grey/white flip
 
     if state.rear_handover is not None:
       selected = []
