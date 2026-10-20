@@ -13,6 +13,8 @@ not passed the origin LR/RR stays at 0, however slow the pass (bounded only by M
 0 -> 16. The only pass exclusion is a car still 3 m or more ahead (reported or extrapolated); a stopped car
 (vLead < 0) and a car leaving for the outer lane are not handed over either; BSD wins.
 
+vRel is the median of the same radar id's last reports (rain, 10-20): the raw value jumps 2-6 m/s between reports.
+
 Unreported motion is extrapolated as the saved vRel scaled by the ego speed of each send over the ego speed when it
 was saved, clamped to 0-1.5 (DaBin, 10-19): the gap closes in proportion to how far the ego car still travels. When
 the ego car stops beside a car it stays put (LR/RR at 0 until MAX_TIME), and braking through a real pass still reaches
@@ -20,6 +22,7 @@ the origin. A car saved with the ego car below 0.5 m/s does not move at all.
 """
 from collections import deque
 import math
+import statistics
 
 
 class RearHandover:
@@ -28,8 +31,6 @@ class RearHandover:
   CONFIRM_TIME = .3
   FRONT_COAST_TIME = 1.
   COAST_MIN_X = -2.
-  # Measured vRel noise is 1.2-1.6 m/s between 0.05 s reports (16-segment replay); 1+2*dt reset qualification.
-  VREL_GATE = 2.
   # Alongside, the same radar id's yRel moves 0.3-0.5 m in one report (3fe/3 27.0): it must not reset a qualified car.
   QUALIFIED_Y_GATE = 1.
   # Trial display-retirement bounds, evaluated by replay, not physical rear motion.
@@ -51,6 +52,28 @@ class RearHandover:
   # Extrapolation scale vEgo now / vEgo at the anchor: bounded, and none when the anchor was at a standstill.
   RATIO_MAX = 1.5
   ANCHOR_MIN_EGO = .5
+  # Rain (00000404): one car's vRel jumps 2-6 m/s between 0.05 s reports while x/y stay within 1 m. Identity,
+  # qualification, extrapolation and retreat use the median of the last VREL_N reports of the same radar id, and the
+  # identity gates rely on x/y: the vRel gate only rejects a different object (it was 2 m/s, which reset 26 qualified
+  # cars near the origin in that drive).
+  VREL_N = 7  # a count of reports (0.35 s at 20 Hz), not a time window
+  X_GATE = 1.
+  VREL_GATE = 8.
+  # Not stopped (median vLead), relative to ego: a 0.7 m/s object passed at 21 m/s is a structure in Doppler noise (3dd/5 35.3 s);
+  # a slow queue passed at 7-14 m/s (404/10 33-40 s, 1.5-2.5 m/s) is not. Without radar motion (motionState 2 under
+  # 3 reports, map proof only) the object must also move at MOVING_VLEAD.
+  MOVING_FRACTION = .15
+  # Radar-moving objects (motionState 2 at least 3 times): below 10 m/s ego this stays at most vLead >= 0 as before,
+  # so a queue car stopped beside a creeping ego still hands over (3fd/4 DaBin 10-19, 404/20 29.4 s review 10-20);
+  # at 18.5-21 m/s it needs 1.3-1.7 m/s (structures 3dd/5, 3e1/6). Map proof only: also MOVING_VLEAD.
+  MOVING_SLACK = 1.5
+  MOVING_SLACK_MAP = .5
+  MOVING_VLEAD = 1.
+  MOVING_N = 40  # 40 reports: 2 s at 20 Hz; fewer or missing reports make it longer (a count, not a time window)
+  # MAX_TIME no longer removes the car where it is drawn: it slides out to 16 at least this fast (display m/s),
+  # bounded by MAX_TIME + EXIT_GRACE.
+  EXIT_FORCED_SPEED = 4.
+  EXIT_GRACE = 4.
 
   def __init__(self):
     self.fronts = [None, None]
@@ -106,9 +129,16 @@ class RearHandover:
 
   def _continuous(self, saved, point, limit):
     elapsed = point['stamp']-saved['seen']
-    return (0 < elapsed <= limit and abs(point['x']-saved['x']-self._dx(saved, saved['seen'], point['stamp'])) <= .5+2*elapsed
+    return (0 < elapsed <= limit and abs(point['x']-saved['x']-self._dx(saved, saved['seen'], point['stamp'])) <= self.X_GATE+2*elapsed
             and abs(point['y']-saved['y']) <= (self.QUALIFIED_Y_GATE if saved['qualified'] else .25)+elapsed
             and abs(point['vrel']-saved['vrel']) <= self.VREL_GATE+2*elapsed)
+
+  def _median(self, saved, name, raw, n=None):
+    # A plain list: memories hold no reader or container types besides lists (reader-lifetime test).
+    hist = saved.setdefault(name, [])
+    hist.append(raw)
+    del hist[:-(n or self.VREL_N)]
+    return statistics.median(hist)
 
   def _anchor_rate(self, saved):
     # Display metres per raw metre at the anchor, so the drawn distance reaches 0 when the extrapolated raw x does
@@ -137,7 +167,12 @@ class RearHandover:
     if point is not None and point['stamp'] > saved['seen'] and not self._continuous(saved, point, self.FRONT_COAST_TIME):
       point = None  # The radar id now describes another object: no news about this car.
     x = point['x'] if point is not None else saved['x']+self._dx(saved, saved['seen'], now)
-    vlead = point['vlead'] if point is not None else saved['vlead']
+    # Stopped: the last 3 reports (0.15 s), so a car that just stopped is caught; one noisy report is not enough.
+    recent = list(saved.get('vlead_hist', []))
+    if point is not None and point['stamp'] > saved['seen']:
+      recent.append(point['vlead'])  # this send's report is not in the history yet (review 10-20 item 2)
+    recent = recent[-3:]
+    vlead = statistics.median(recent) if recent else saved['vlead']
     # Was x >= 1 m. This radar keeps reporting a passing car at 1-3 m (trackState 3) while the map still draws or
     # has just replaced it, so 1 m discarded every real pass. A car 3 m ahead only lost its slot: it did not pass.
     # Qualification is kept once acquired (motion evidence); stopping (vLead < 0) is checked again here.
@@ -148,8 +183,8 @@ class RearHandover:
       return
     self.fronts[side] = None
     self._drop(self.rears, side, 'rear_replaced', values, filters)  # One rear slot per side: the newest car wins.
-    self.consumed[side].append(saved['key'])
-    saved.update(phase='coast', aliases=[], distance=0., shown=now, start=None, speed=0.,
+    self.consumed[side].extend([saved['key'], *saved['aliases']])
+    saved.update(phase='coast', distance=0., shown=now, start=None, speed=0.,
                  coast_y=point['y'] if point is not None else saved['y'])
     self.rears[side] = saved
     filters[side].reset(0.)
@@ -222,15 +257,25 @@ class RearHandover:
       saved = self.rears[side]
       if saved is None:
         continue
-      if now-saved['shown'] >= self.MAX_TIME:
+      # A car still at LR/RR 0 (coast: not past the origin) is removed at MAX_TIME as before. One already moving back
+      # slides on to 16 instead of vanishing mid-screen, bounded by MAX_TIME + EXIT_GRACE (review 10-20: kept
+      # separate from the qualification changes).
+      if now-saved['shown'] >= self.MAX_TIME+(self.EXIT_GRACE if saved['phase'] == 'rear' else 0.):
         self._drop(self.rears, side, 'timeout', values, filters)
         continue
+      if saved['phase'] == 'rear' and now-saved['shown'] >= self.MAX_TIME and not saved.get('forced'):
+        saved['forced'] = now
+        self.events.append({'side': side, 'event': 'forced_exit', 'source': saved['source'], 'distance': saved['distance']})
       if saved['phase'] == 'rear' and saved['start'] < now:
         # Integrate a bounded ramp analytically, including its start/cap within
         # a step. Changing the send interval cannot create a position jump.
         ramp_start = max(saved['seen']+self.EXIT_DELAY, saved['start'])
+        if saved.get('forced'):
+          ramp_start = min(ramp_start, saved['forced'])
         ramp0, ramp1 = max(0., now-dt-ramp_start), max(0., now-ramp_start)
         base = self._retreat(saved)
+        if saved.get('forced'):
+          base = max(base, self.EXIT_FORCED_SPEED)
         cap = max(0., (self.EXIT_MAX_SPEED-base)/self.EXIT_ACCEL)
 
         def integral(t, cap_time=cap):
@@ -248,6 +293,19 @@ class RearHandover:
 
   def _observe_front(self, side, front, values, filters, key, points, proven, hold, now):
     saved = self.fronts[side]
+    # The map can re-key the same radar id (two map objects of one track, 404/14 38-40 s): the radar keeps the id while it
+    # is the same object, so the memory continues under the new key; the old one stays an alias.
+    # Only with a fresh raw report of that id continuous with the memory and a proven send: without one the new key
+    # may be another object (a 20 m front car must not be merged into the passing one, review 10-20 item 1).
+    rekey = None
+    if saved and key is not None and key != saved['key'] and key[0] == saved['source'] and proven and not hold:
+      rekey = self._sample(points.get(key[0]), self.raw_stamp)
+    if (rekey is not None and rekey['stamp'] > saved['seen']
+        and self._continuous(saved, rekey, self.STALE_HOLD+.05+1e-6)):
+      if saved['key'] not in saved['aliases']:
+        saved['aliases'].append(saved['key'])
+      saved['aliases'] = [k for k in saved['aliases'] if k != key]  # The map re-keyed the same radar id: keep its history.
+      saved['key'] = key
     if saved and key is not None and key != saved['key']:
       if saved['qualified']:
         self._start_coast(side, 'object_replaced', values, filters, points, now)
@@ -283,20 +341,28 @@ class RearHandover:
         self._drop(self.fronts, side, 'identity_innovation', values, filters)
       if not continuous:
         saved = dict(key=key, source=key[0], first=point['stamp'], first_x=point['x'], hits=0, moving_hits=0,
-                     phase='front', qualified=False)
+                     phase='front', qualified=False, aliases=[])
         self.fronts[side] = saved
-      saved.update(x=point['x'], y=point['y'], vrel=point['vrel'], vlead=point['vlead'], v_anchor=self.v_ego,
+      vrel, vlead = self._median(saved, 'vrel_hist', point['vrel']), self._median(saved, 'vlead_hist', point['vlead'])
+      vlead_long = self._median(saved, 'vlead_long', point['vlead'], self.MOVING_N)
+      saved.update(x=point['x'], y=point['y'], vrel=vrel, vrel_raw=point['vrel'], vlead=vlead, v_anchor=self.v_ego,
                    seen=point['stamp'], update=now,
                    distance=float(values[front+'_DETECT_DISTANCE']), lateral=float(values[front+'_DETECT_LATERAL']),
                    drawn_distance=float(values[front+'_DETECT_DISTANCE']), drawn_stamp=now,
                    drawn_lateral=float(values[front+'_DETECT_LATERAL']), detect=int(values[front+'_DETECT']))
       saved['hits'] += 1
-      saved['moving_hits'] += int(point['vehicle'])
+      saved['radar_moving'] = saved.get('radar_moving', 0)+int(point['vehicle'])
+      # Map path: the map's vehicle proof (moving or Doppler-confirmed, not structure/crossing) is motion evidence; the
+      # radar reports a slow queue the ego passes as motionState 0 throughout (404/10 33-40 s).
+      saved['moving_hits'] += int(point['vehicle'] or (self.context is not None and self.context[0] == 'map'))
       # Once acquired, qualification survives later motionState/trackState changes (the radar drops both alongside).
       saved['qualified'] = saved['qualified'] or (
         saved['hits'] >= 4 and saved['moving_hits'] >= 3 and now-saved['first'] >= self.CONFIRM_TIME
-        and saved['first_x']-point['x'] >= .25 and -.3 >= point['vrel'] >= -self.EXIT_MAX_SPEED/self.SCALE
-        and point['vlead'] >= 0.)
+        and saved['first_x']-point['x'] >= .25 and -.3 >= vrel  # A fast pass is kept; its retreat is capped at 8.
+        # vRel is radial: alongside, a structure's relative speed falls toward 0 and its vLead rises (3e1/6 43.2 s: 0.4
+        # -> 2.6 m/s within 1 s at 18.5 m/s). Judge "moving" by the median over the whole recent history.
+        and vlead_long >= (self.MOVING_FRACTION*self.v_ego-self.MOVING_SLACK if saved['radar_moving'] >= 3 else
+                           max(self.MOVING_FRACTION*self.v_ego-self.MOVING_SLACK_MAP, self.MOVING_VLEAD)))
       return  # Measured front motion/position is left entirely unchanged.
     if saved is None:
       return
@@ -338,8 +404,9 @@ class RearHandover:
         return
       # Any later report of this car (trackState 3 included) re-anchors the extrapolation, keeping the drawn offset.
       predicted = saved['x']+self._dx(saved, saved['seen'], point['stamp'])
+      vrel, vlead = self._median(saved, 'vrel_hist', point['vrel']), self._median(saved, 'vlead_hist', point['vlead'])
       saved.update(signed=self._signed(saved, now)+saved['rate']*(point['x']-predicted), update=now,
-                   x=point['x'], y=point['y'], vrel=point['vrel'], vlead=point['vlead'], v_anchor=self.v_ego,
+                   x=point['x'], y=point['y'], vrel=vrel, vrel_raw=point['vrel'], vlead=vlead, v_anchor=self.v_ego,
                    seen=point['stamp'])
       self._anchor_rate(saved)
     # A discontinuous report is another object under the reused radar id: it is ignored, not a reason to drop.

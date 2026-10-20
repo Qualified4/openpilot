@@ -180,10 +180,16 @@ def test_invalid_tracking_cancels_rear_without_leaving_a_gray_ghost(reason):
 def test_explicit_time_limit_and_velocity_cap():
   d = Drive()
   i, _, rear = d.handoff()
-  d.policy.MAX_TIME = .2
-  for j in range(i+1, i+8):
+  d.policy.MAX_TIME, d.policy.EXIT_GRACE = .2, 1.
+  drawn = []
+  for j in range(i+1, i+40):
     v, _ = d.step(j)
-  assert not v[rear+'_DETECT'] and any(e['event'] == 'timeout' for e in d.events)
+    drawn.append(v[rear+'_DETECT_DISTANCE'] if v[rear+'_DETECT'] else None)
+  # At MAX_TIME the car is not removed where it is drawn: it slides out (forced exit) and ends at 16 or the grace.
+  assert any(e['event'] == 'forced_exit' for e in d.events)
+  shown = [x for x in drawn if x is not None]
+  assert shown == sorted(shown) and drawn[-1] is None
+  assert any(e['event'] in ('distance_end', 'timeout') for e in d.events)
   d = Drive()
   d.policy.EXIT_MAX_SPEED = 2.
   i, _, _ = d.handoff()
@@ -871,3 +877,75 @@ def test_own_low_prob_drops_the_front_and_qualifies_nothing():
     d.step(i, x=max(4.-.15*i, .2), speed=-3.)
     assert d.policy.fronts[0] is None and d.policy.rears[0] is None
   assert not any(e['event'] in ('coast', 'handoff') for e in d.events)
+
+
+def test_rain_vrel_noise_keeps_a_qualified_car_and_hands_it_over():
+  """00000404 (rain): the same radar id's vRel jumps 2-6 m/s between reports while x/y follow the car."""
+  d = Drive()
+  noise = [0., 4., -3., 2.5, -4., 3., -2., 4.5]
+  for i in range(14):
+    d.step(i, x=3.4-.12*i, speed=-2.4+noise[i % len(noise)])
+  assert d.policy.fronts[0]['qualified']
+  assert not any(e['event'] == 'identity_innovation' for e in d.events)
+  v, _ = d.step(14)  # it leaves LF
+  assert v['LR_DETECT'] and any(e['event'] == 'coast' for e in d.events)
+
+
+def test_object_passed_at_high_speed_with_little_speed_of_its_own_is_not_qualified():
+  """3dd/5 35.3 s: at 21 m/s a 0.7 m/s object (Doppler noise on a structure) is not a moving car."""
+  d = Drive()
+  d.cs.out.vEgo = 21.
+  for i in range(15):
+    d.step(i, x=9.-.5*i, speed=-20.3, vlead=.7)
+  assert not d.policy.fronts[0]['qualified']
+
+
+def test_same_source_new_map_key_without_a_raw_report_does_not_hide_the_new_front_car():
+  """Review 10-20 item 1: the map selects (1, 1) at 20 m while liveTracks has no report of id 1. The qualified (1, 0)
+  car goes to LR as before; the new front car stays drawn and is not consumed."""
+  d = Drive()
+  d.seed()
+  v = dict(d.history[-1])
+  v.update(LF_DETECT=2, LF_DETECT_DISTANCE=20., LR_DETECT=0)
+  d.cs.live_tracks = N(points=[])
+  d.policy.update(v, d.cs, d.md, 75, [None, (1, 1), None], d.filters, 'same-context')
+  assert v['LF_DETECT'] == 2 and v['LR_DETECT'] == 2
+  assert (1, 1) not in d.policy.consumed[0] and d.policy.rears[0]['key'] == (1, 0)
+
+
+def test_same_source_new_map_key_with_a_continuous_report_keeps_the_memory():
+  """404/14 38-40 s: the map alternates two keys of one radar id; a continuous raw report keeps the qualification."""
+  d = Drive()
+  for i in range(10):
+    d.step(i, x=4.-.15*i, speed=-3.)
+  assert d.policy.fronts[0]['qualified']
+  values, _ = d.step(10, x=4.-1.5, speed=-3., drawn=(1, .8*2.5))
+  saved = d.policy.fronts[0]
+  d.cs.live_tracks = N(points=[N(trackId=1, dRel=2.35, yRel=3., vRel=-3., vLead=17., measured=True, trackState=2,
+                                 motionState=2, radarSource='frontRadar')])
+  v = {k: values[k] for k in values}
+  v.update(LF_DETECT=2, LF_DETECT_DISTANCE=.8*2.35, LR_DETECT=0)
+  d.policy.update(v, d.cs, d.md, 55, [None, (1, 7), None], d.filters, 'same-context')
+  assert d.policy.fronts[0] is saved and saved['key'] == (1, 7) and saved['qualified'] and v['LF_DETECT'] == 2
+
+
+def test_stopped_check_includes_the_newest_report():
+  """Review 10-20 item 2: vLead 1, then -1 twice; the second -1 arrives with the front replacement: stopped."""
+  d = Drive()
+  d.cs.out.vEgo = 4.
+  d.seed(speed=-3., vlead=1.)
+  assert d.policy.fronts[0]['qualified']
+  d.cs.out.vEgo = 2.
+  d.step(15, x=1.1, speed=-3., vlead=-1.)
+  v, _ = d.step(16, x=1., speed=-3., vlead=-1., drawn=(2, 20.))
+  assert not v['LR_DETECT'] and any(e['event'] == 'stopped' for e in d.policy.events)
+
+
+def test_queue_car_stopped_beside_a_slow_ego_still_qualifies():
+  """404/20 29.4 s (review 10-20 item 3): a car stopped in the next lane's queue (vLead ~0.1, radar motionState 2)
+  passed at 7.5 m/s qualifies as before."""
+  d = Drive()
+  d.cs.out.vEgo = 7.5
+  for i in range(15):
+    d.step(i, x=6.-.35*i, speed=-7.4, vlead=.1)
+  assert d.policy.fronts[0]['qualified']
