@@ -421,3 +421,26 @@ def test_type_latch_still_changes_on_one_confident_frame():
   rec = single_frame_windows()
   kinds = types([step(rec, i, p, color=W) for i, p in enumerate([.02]*12 + [.98] + [.02] + [.5])])  # white: yellow dashed is unlearned
   assert kinds == ['solid']*12 + ['dashed', 'solid', 'solid']
+
+
+@pytest.mark.parametrize('blinker, lcs, prob, y, v, reason', [
+  (True, False, .8, 1.5, 9., None),             # blinker alone at lane-change speed, confident line beside the car
+  (True, False, .8, -1.5, 9., None),
+  (True, False, .8, 1.5, 8.3, None),
+  (True, False, .8, 1.5, 5., 'lane_change'),    # below 30 km/h (turns): reset as before
+  (True, False, .8, 1.5, None, 'lane_change'),  # no speed in the frame: reset
+  (True, False, .8, .6, 9., 'lane_change'),     # the line being crossed
+  (True, False, .6, 1.5, 9., 'lane_change'),    # not confident enough
+  (True, True, .8, 1.5, 9., 'lane_change'),     # laneChangeState on: reset as before
+  (False, True, .9, 1.8, 9., 'lane_change'),
+  (False, False, .4, 1.8, 5., 'lane_prob_dip'),
+])
+def test_blinker_alone_infers_a_confident_line_beside_the_car(blinker, lcs, prob, y, v, reason):
+  rec = Recogniser(2)
+  f = dict(frame(0, lane_change=blinker or lcs, probs=(prob, 1.)), blinker=blinker, lcs_change=lcs,
+           lines={'left': {'y': [y, y]}, 'right': {'y': [1.8, 1.8]}})
+  if v is not None:
+    f['v_ego'] = v
+  assert rec._skip_reason('left', f) == reason
+  f.pop('blinker'), f.pop('lcs_change'), f.pop('v_ego', None)  # a frame without the split flags: any lane change resets, as before
+  assert rec._skip_reason('left', f) == ('lane_change' if blinker or lcs else reason)

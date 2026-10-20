@@ -4,14 +4,15 @@ Applied per side to the existing lane code only where the existing policy shows 
 lane-change-available green 6). Priority: recognised yellow -> orange solid 4 (also over green);
 otherwise the existing green condition keeps green with the recognised shape (solid 6 / dashed 10);
 otherwise white with the recognised shape (solid 2 / dashed 8). UNKNOWN, expired or disabled leaves the
-existing code untouched (SideDisplay's lapsed grey aside), as do grey 0 (low confidence), hidden lines,
+existing code untouched (SideDisplay's lapsed grey and start-up hide aside), as do grey 0 (low confidence), hidden lines,
 departure blinking and the existing warning orange, which are decided outside this function. Display only: lane-change permission is not read or changed.
 
 ``marking`` is card's latest parsed packet: {'left': {'type': (value, expires_ns)|None, 'color': ...}, ...}.
 """
 WHITE_SOLID, ORANGE_SOLID, GREEN_SOLID, WHITE_DASHED, GREEN_DASHED = 2, 4, 6, 8, 10
 HOLD_S, GREEN_ON_S, STOP_SPEED, HOLD_STOP_SPEED = 5., 1., .5, 2.
-LOW_PROB_ON, LOW_PROB_OFF, LOW_PROB_S, MAX_DT = .3, .5, 1., .2
+LOW_PROB_OFF, LOW_PROB_S, MAX_DT = .5, 1.5, .2
+HIDDEN = 14
 
 
 def _head(marking, side, head, now_ns):
@@ -51,18 +52,28 @@ class SideDisplay:
   - lapsed grey (``enabled``, the recogniser option on): once a head's hold has run out while driving, the line is
     shown grey 0 instead of the existing solid-looking base until the recogniser confirms that head again. Only a
     head the code needs counts: the colour always, the type only for a white line (yellow is orange solid either
-    way). A head never confirmed since start leaves the existing base, as does ``enabled`` False.
+    way). While changing lanes a head whose hold already ran out shows its last confirmed value again (DaBin, 10-20).
+  - unseen (``enabled``): no colour confirmed since start (card start) -> hidden 14 instead of the solid-looking base
+    (DaBin, 10-20: no white solid before an orange line is recognised). No timeout: a recogniser that never confirms
+    keeps the line hidden. ``enabled`` False leaves the existing base.
   - green (lane change available) turns on only after GREEN_ON_S of continuous availability, off at once.
-  - low: lane prob < LOW_PROB_ON for LOW_PROB_S of driving -> grey 0; released at >= LOW_PROB_OFF; frozen while stopped
-    (v < STOP_SPEED, 0.5 m/s).
+  - low: lane prob < LOW_PROB_OFF for LOW_PROB_S (1.5 s) of continuous driving -> grey 0; released at >= LOW_PROB_OFF;
+    frozen while stopped (v < STOP_SPEED, 0.5 m/s). Was < 0.3 for 1 s: in intersections the prob wanders 0.1-0.45 and
+    rarely stayed below 0.3 for 1 s, so the last line stayed on through them (10-20 review, item 3).
+    Not while changing lanes once a colour has been confirmed (no speed condition, DaBin 10-20): low is off and does not
+    accumulate, so the last confirmed line stays through the change, also when grey was already on as it started.
+    Before any confirmation low applies as before. There is no creeping-distance hide here: ccnc_parking.ParkingLaneHide
+    already hides lines in a car park.
   """
   def __init__(self):
     self.hold = {'type': None, 'color': None}  # head -> (value, last fresh time)
     self.lapsed = {'type': False, 'color': False}  # head -> hold ran out, no fresh value since
+    self.last = {'type': None, 'color': None}  # head -> last confirmed value, kept for the card's lifetime
     self.green, self.green_s, self.low, self.low_s, self.last_t = None, 0., False, 0., None
 
   def update(self, t, v_ego, lane_change_available, prob, changing, kind, color, enabled=True):
-    """Returns (green, low, kind, colour, lapsed) for this frame; lapsed True -> show grey 0."""
+    """Returns (green, low, kind, colour, lapsed, unseen) for this frame; lapsed True -> show grey 0, unseen True ->
+    hidden 14."""
     dt = 0. if self.last_t is None else min(max(t - self.last_t, 0.), MAX_DT)
     self.last_t = t
     stopped = v_ego < STOP_SPEED
@@ -73,8 +84,10 @@ class SideDisplay:
     if self.green is None or not available or self.green_s >= GREEN_ON_S:
       self.green = available
 
-    if prob is not None and not stopped:
-      self.low_s = self.low_s + dt if prob < LOW_PROB_ON else 0.
+    if changing and self.last['color'] is not None:
+      self.low, self.low_s = False, 0.
+    elif prob is not None and not stopped:
+      self.low_s = self.low_s + dt if prob < LOW_PROB_OFF else 0.
       if self.low_s >= LOW_PROB_S:
         self.low = True
       elif prob >= LOW_PROB_OFF:
@@ -86,10 +99,15 @@ class SideDisplay:
       if value in classes:
         held = (value, t)
         self.lapsed[head] = False
+        self.last[head] = value
       elif held is not None and (slow or changing or t - held[1] <= HOLD_S):
         value = held[0]
         if slow or changing:
           held = (value, t)
+      elif changing and enabled and self.last[head] is not None:
+        value = self.last[head]
+        held = (value, t)
+        self.lapsed[head] = False
       elif held is not None:
         held = None
         self.lapsed[head] = True
@@ -97,4 +115,5 @@ class SideDisplay:
     lapsed = bool(enabled) and (
       (shown['color'] not in ('white', 'yellow') and self.lapsed['color']) or
       (shown['color'] == 'white' and shown['type'] not in ('dashed', 'solid') and self.lapsed['type']))
-    return self.green, self.low, shown['type'], shown['color'], lapsed
+    unseen = bool(enabled) and self.last['color'] is None
+    return self.green, self.low, shown['type'], shown['color'], lapsed, unseen

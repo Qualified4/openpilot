@@ -80,16 +80,16 @@ def test_cluster_low_prob_grey_and_stop_hold(display):  # noqa: F811
   cs.ccnc_lane_marking = marking(left=('dashed', 'white'), right=('dashed', 'white'))
   assert lanes(send, 0) == (10, 10)
   cs.modelV2.laneLineProbs = [.9, .2, .9, .9]
-  for frame in range(5, 100, 5):
-    assert lanes(send, frame) == (10, 10)  # < 1 s of low prob: unchanged
-  assert lanes(send, 100) == (0, 10)  # 1 s below 0.3 while driving: grey, recognised type not applied
-  cs.modelV2.laneLineProbs = [.9, .4, .9, .9]
-  assert lanes(send, 105) == (0, 10)  # hysteresis: released only at >= 0.5
+  for frame in range(5, 150, 5):
+    assert lanes(send, frame) == (10, 10)  # < 1.5 s of low prob: unchanged
+  assert lanes(send, 150) == (0, 10)  # 1.5 s below 0.5 while driving: grey, recognised type not applied
+  cs.modelV2.laneLineProbs = [.9, .45, .9, .9]
+  assert lanes(send, 155) == (0, 10)  # released only at >= 0.5
   cs.modelV2.laneLineProbs = [.9]*4
-  assert lanes(send, 110) == (10, 10)
+  assert lanes(send, 160) == (10, 10)
   cs.out.vEgo = .2  # stopped: lat off (white base), the last recognised type is kept without a time limit
   cs.ccnc_lane_marking = None
-  assert lanes(send, 115, lat_active=False) == (8, 8)
+  assert lanes(send, 165, lat_active=False) == (8, 8)
   assert lanes(send, 2000, lat_active=False) == (8, 8)
   cs.out.leftBlinker = True
   assert lanes(send, 2005, lat_active=False) == (8, 8)  # a blinker keeps the held type through the lane change
@@ -122,24 +122,25 @@ def test_cluster_lapsed_grey_only_with_the_type_option_on(display, monkeypatch):
 class TestSideDisplay:
   def test_hold_five_seconds_while_driving_then_lapsed_grey_until_confirmed(self):
     d = lm.SideDisplay()
-    assert d.update(0., 10., False, .9, False, 'dashed', 'white')[2:] == ('dashed', 'white', False)
-    assert d.update(4.9, 10., False, .9, False, None, None)[2:] == ('dashed', 'white', False)
-    assert d.update(5.1, 10., False, .9, False, None, None)[2:] == (None, None, True)
-    assert d.update(60., 10., False, .9, False, None, None)[2:] == (None, None, True)  # until the recogniser confirms
-    assert d.update(60.1, .1, False, .9, False, None, None)[2:] == (None, None, True)  # stopping does not bring it back
-    assert d.update(60.2, 10., False, .9, False, 'solid', 'white')[2:] == ('solid', 'white', False)
+    assert d.update(0., 10., False, .9, False, 'dashed', 'white')[2:5] == ('dashed', 'white', False)
+    assert d.update(4.9, 10., False, .9, False, None, None)[2:5] == ('dashed', 'white', False)
+    assert d.update(5.1, 10., False, .9, False, None, None)[2:5] == (None, None, True)
+    assert d.update(60., 10., False, .9, False, None, None)[2:5] == (None, None, True)  # until the recogniser confirms
+    assert d.update(60.1, .1, False, .9, False, None, None)[2:5] == (None, None, True)  # stopping does not bring it back
+    assert d.update(60.2, 10., False, .9, False, 'solid', 'white')[2:5] == ('solid', 'white', False)
     off = lm.SideDisplay()
     off.update(0., 10., False, .9, False, 'dashed', 'white', False)
-    assert off.update(5.1, 10., False, .9, False, None, None, False)[2:] == (None, None, False)  # option OFF: existing base
-    assert lm.SideDisplay().update(9., 10., False, .9, False, None, None)[4] is False  # never confirmed: existing base
+    assert off.update(5.1, 10., False, .9, False, None, None, False)[2:5] == (None, None, False)  # option OFF: existing base
+    assert lm.SideDisplay().update(9., 10., False, .9, False, None, None)[4:] == (False, True)  # never confirmed: hidden 14
+    assert lm.SideDisplay().update(9., 10., False, .9, False, None, None, False)[4:] == (False, False)  # OFF: existing base
 
   def test_lapsed_grey_counts_only_the_heads_the_code_needs(self):
     d = lm.SideDisplay()
     d.update(0., 10., False, .9, False, 'dashed', 'white')
-    assert d.update(4., 10., False, .9, False, None, 'yellow')[2:] == ('dashed', 'yellow', False)
-    assert d.update(5.5, 10., False, .9, False, None, 'yellow')[2:] == (None, 'yellow', False)  # type lapsed: yellow is orange anyway
-    assert d.update(5.6, 10., False, .9, False, None, 'white')[2:] == (None, 'white', True)  # white needs the type
-    assert d.update(5.7, 10., False, .9, False, 'solid', None)[2:] == ('solid', 'white', False)
+    assert d.update(4., 10., False, .9, False, None, 'yellow')[2:5] == ('dashed', 'yellow', False)
+    assert d.update(5.5, 10., False, .9, False, None, 'yellow')[2:5] == (None, 'yellow', False)  # type lapsed: yellow is orange anyway
+    assert d.update(5.6, 10., False, .9, False, None, 'white')[2:5] == (None, 'white', True)  # white needs the type
+    assert d.update(5.7, 10., False, .9, False, 'solid', None)[2:5] == ('solid', 'white', False)
     e = lm.SideDisplay()
     e.update(0., 10., False, .9, False, None, 'white')  # type never confirmed, colour lapses
     assert e.update(5.1, 10., False, .9, False, None, None)[4] is True
@@ -158,15 +159,15 @@ class TestSideDisplay:
     d = lm.SideDisplay()
     d.update(0., 3., False, .9, False, 'dashed', 'white')
     for t in (1., 5., 30., 120.):
-      assert d.update(t, .1, False, .9, False, None, None)[2:] == ('dashed', 'white', False)
-    assert d.update(124.9, 2., False, .9, False, None, None)[2:] == ('dashed', 'white', False)  # moving again: 5 s from the last stop
+      assert d.update(t, .1, False, .9, False, None, None)[2:5] == ('dashed', 'white', False)
+    assert d.update(124.9, 2., False, .9, False, None, None)[2:5] == ('dashed', 'white', False)  # moving again: 5 s from the last stop
     d.update(130., 10., False, .9, False, 'solid', 'yellow')
     for t in (130.1, 133., 137., 140.):  # blinker / desire / laneChangeState: the last confirmed line stays
-      assert d.update(t, 20., False, .9, True, None, None)[2:] == ('solid', 'yellow', False)
-    assert d.update(144.9, 20., False, .9, False, None, None)[2:] == ('solid', 'yellow', False)  # 5 s from the change's end
-    assert d.update(145.1, 20., False, .9, False, None, None)[2:] == (None, None, True)
+      assert d.update(t, 20., False, .9, True, None, None)[2:5] == ('solid', 'yellow', False)
+    assert d.update(144.9, 20., False, .9, False, None, None)[2:5] == ('solid', 'yellow', False)  # 5 s from the change's end
+    assert d.update(145.1, 20., False, .9, False, None, None)[2:5] == (None, None, True)
     d.update(150., 20., False, .9, True, 'dashed', 'white')
-    assert d.update(150.1, 20., False, .9, True, 'solid', None)[2:] == ('solid', 'white', False)  # new lane confirmed
+    assert d.update(150.1, 20., False, .9, True, 'solid', None)[2:5] == ('solid', 'white', False)  # new lane confirmed
 
   def test_creeping_below_two_metres_per_second_holds_without_a_time_limit(self):
     """DaBin 10-19 (fe/5 R 34.9 s: 5.9 s grey in a slow queue): the no-limit hold covers creeping (< 2 m/s), not just a
@@ -175,25 +176,25 @@ class TestSideDisplay:
     d = lm.SideDisplay()
     d.update(0., 5., False, .9, False, 'dashed', 'white')
     for t in (1., 5.1, 30., 60.):
-      assert d.update(t, 1.9, False, .9, False, None, None)[2:] == ('dashed', 'white', False)
-    assert d.update(64.9, 2., False, .9, False, None, None)[2:] == ('dashed', 'white', False)  # 2 m/s: 5 s from the last slow frame
-    assert d.update(65.1, 2., False, .9, False, None, None)[2:] == (None, None, True)
+      assert d.update(t, 1.9, False, .9, False, None, None)[2:5] == ('dashed', 'white', False)
+    assert d.update(64.9, 2., False, .9, False, None, None)[2:5] == ('dashed', 'white', False)  # 2 m/s: 5 s from the last slow frame
+    assert d.update(65.1, 2., False, .9, False, None, None)[2:5] == (None, None, True)
     low = lm.SideDisplay()
     t = 0.
     low.update(t, 1., False, .9, False, 'dashed', 'white')
-    for _ in range(21):  # creeping at 1 m/s: the hold stays, the low-prob clock runs (frozen only below 0.5 m/s)
+    for _ in range(31):  # creeping at 1 m/s: the hold stays, the low-prob clock runs (frozen only below 0.5 m/s)
       t += .05
       out = low.update(t, 1., False, .1, False, None, None)
-    assert out[1] is True and out[2:] == ('dashed', 'white', False)
+    assert out[1] is True and out[2:5] == ('dashed', 'white', False)
 
   def test_low_prob_grey_comes_before_the_hold(self):
     d = lm.SideDisplay()
     t = 0.
     d.update(t, 10., False, .9, False, 'dashed', 'white')
-    for _ in range(21):
+    for _ in range(31):
       t += .05
       out = d.update(t, 10., False, .1, False, None, None)
-    assert out[1] is True and out[2:] == ('dashed', 'white', False)  # low (grey 0) is applied by the caller first
+    assert out[1] is True and out[2:5] == ('dashed', 'white', False)  # low (grey 0) is applied by the caller first
 
   def test_green_on_after_one_second_off_at_once(self):
     d = lm.SideDisplay()
@@ -206,17 +207,17 @@ class TestSideDisplay:
     assert d.update(t + .1, 10., False, .9, False, None, None)[0] is False
     assert lm.SideDisplay().update(0., 10., True, .9, False, None, None)[0] is True  # first frame: no delay
 
-  def test_low_prob_one_second_release_at_half_and_frozen_while_stopped(self):
+  def test_low_prob_one_and_a_half_seconds_below_half_and_frozen_while_stopped(self):
     d = lm.SideDisplay()
     t = 0.
-    for _ in range(19):
+    for _ in range(29):
       t += .05
       assert d.update(t, 10., False, .1, False, None, None)[1] is False
     for _ in range(40):  # stopped: neither builds nor releases
       t += .05
       assert d.update(t, .2, False, .1, False, None, None)[1] is False
     states = []
-    for _ in range(3):  # 0.9 s built before the stop; ~0.1 s more of driving completes it
+    for _ in range(3):  # 1.4 s built before the stop; ~0.1 s more of driving completes it
       t += .05
       states.append(d.update(t, 10., False, .1, False, None, None)[1])
     assert states[0] is False and states[-1] is True
@@ -225,7 +226,52 @@ class TestSideDisplay:
     assert d.update(t + .05, 10., False, .45, False, None, None)[1] is True
     assert d.update(t + .1, 10., False, .5, False, None, None)[1] is False
     d.update(t + .15, 10., False, .1, False, None, None)
-    assert d.update(t + .2, 10., False, .35, False, None, None)[1] is False  # a short dip restarts the 1 s
+    assert d.update(t + .2, 10., False, .55, False, None, None)[1] is False  # >= 0.5 restarts the 1.5 s
+
+  def test_wandering_prob_below_half_turns_grey_after_one_and_a_half_seconds(self):
+    d = lm.SideDisplay()
+    t, states = 0., []
+    for i in range(40):  # an intersection: 0.2 / 0.4 alternating, never 0.3 continuously for long
+      t += .05
+      states.append(d.update(t, 12., False, .2 if i % 2 else .4, False, None, None)[1])
+    first = states.index(True)
+    assert 28 <= first <= 30 and all(states[first:])  # ~1.5 s
+
+  def test_changing_lanes_keeps_the_last_confirmed_line_instead_of_grey(self):
+    for v in (3., 15.):  # no speed condition
+      d = lm.SideDisplay()
+      d.update(0., v, False, .9, False, 'dashed', 'white')
+      t = 0.
+      for _ in range(60):  # 3 s of 0.05 prob with the blinker on
+        t += .05
+        out = d.update(t, v, False, .05, True, None, None)
+        assert out[1] is False and out[2:6] == ('dashed', 'white', False, False)
+    d = lm.SideDisplay()
+    d.update(0., 12., False, .9, False, 'solid', 'yellow')
+    t = 0.
+    for _ in range(40):
+      t += .05
+      out = d.update(t, 12., False, .1, False, None, None)
+    assert out[1] is True  # grey before the blinker
+    out = d.update(t + .05, 12., False, .1, True, None, None)
+    assert out[1] is False and out[2:5] == ('solid', 'yellow', False)  # blinker on: the last confirmed line again
+    lapsed = lm.SideDisplay()
+    lapsed.update(0., 12., False, .9, False, 'dashed', 'white')
+    assert lapsed.update(5.1, 12., False, .9, False, None, None)[2:5] == (None, None, True)
+    assert lapsed.update(5.2, 12., False, .9, True, None, None)[2:5] == ('dashed', 'white', False)  # also after lapsing
+    never = lm.SideDisplay()
+    t = 0.
+    for _ in range(31):
+      t += .05
+      out = never.update(t, 12., False, .1, True, None, None)
+    assert out[1] is True  # never confirmed: low applies as before (shown as 14 while unseen)
+
+  def test_hidden_until_the_first_colour_is_confirmed(self):
+    d = lm.SideDisplay()
+    assert d.update(0., 10., False, .9, False, None, None)[5] is True
+    assert d.update(.05, 10., False, .9, False, 'solid', None)[5] is True  # a type alone does not end it
+    assert d.update(.1, 10., False, .9, False, 'solid', 'yellow')[5] is False
+    assert d.update(60., 10., False, .9, False, None, None)[4:] == (True, False)  # lapsed grey later, never hidden again
 
 
 def test_off_and_expired_results_match_existing_display(display, monkeypatch):  # noqa: F811
@@ -238,6 +284,24 @@ def test_off_and_expired_results_match_existing_display(display, monkeypatch):  
   from opendbc.car.hyundai import hyundaicanfd as main
   monkeypatch.delattr(main.create_ccnc_messages, "_display_options", raising=False)
   cs.ccnc_lane_marking = marking(left=('solid', 'yellow'), right=('dashed', 'white'), expires=time.monotonic_ns() - 1)
-  assert dict(send())["ADRV_0x161"] == baseline  # expired: existing display
+  hidden = dict(baseline, LANELINE_LEFT=14, LANELINE_RIGHT=14)
+  assert dict(send())["ADRV_0x161"] == hidden  # expired, nothing confirmed since start: hidden
   cs.ccnc_lane_marking = None
-  assert dict(send())["ADRV_0x161"] == baseline  # no recogniser output yet
+  assert dict(send())["ADRV_0x161"] == hidden  # no recogniser output yet
+
+
+def test_cluster_start_hidden_until_confirmed_and_priorities(display):  # noqa: F811
+  params, cs, send = display
+  params["CcncLaneTypeDetection"] = 2
+  assert lanes(send, 0) == (14, 14)
+  cs.out.leftLaneLine = 20  # OEM lane warning wins over the start-up hide
+  assert lanes(send, 5) == (4, 14)
+  cs.out.leftLaneLine = 0
+  cs.modelV2.laneLineProbs = [.9, .1, .1, .9]
+  for frame in range(10, 200, 5):
+    assert lanes(send, frame) == (14, 14)  # hide wins over the low-prob grey
+  cs.modelV2.laneLineProbs = [.9]*4
+  cs.ccnc_lane_marking = marking(left=('solid', 'yellow'), right=('dashed', 'white'))
+  assert lanes(send, 205) == (4, 10)  # first confirmation: drawn at once
+  cs.ccnc_lane_marking = None
+  assert lanes(send, 210) == (4, 10)

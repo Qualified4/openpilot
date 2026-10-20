@@ -31,6 +31,13 @@ MAX_HOLD_NS = 500_000_000
 # entered in the strip filter's windows) and neither those windows nor DisplayPolicy are emptied. Below LANE_PROB_LOST,
 # or a dip lasting longer, is 'not_detected', which empties both.
 LANE_PROB_MIN, LANE_PROB_LOST, LANE_DIP_MAX_NS = .5, .3, 1_000_000_000
+# StripNet, blinker alone (laneChangeState off): at lane-change speed (vEgo >= BLINKER_INFER_SPEED, 30 km/h) a side
+# whose line is confident (prob >= BLINKER_PROB) and beside the car (|y at the first model point| >= BLINKER_Y m, not
+# the line being crossed) is inferred as usual; otherwise the blinker resets it ('lane_change'), as does any
+# laneChangeState other than off (10-20 segment 9: a blinker held through two lane changes kept the old white dashed
+# line for 10 s while the model saw the yellow solid one). Below the speed (turn lanes, intersections) the blinker
+# resets as before (10-20 segment 3 L 14.85 s: a turn-lane block marking taken for a white solid, DaBin 10-20).
+BLINKER_PROB, BLINKER_Y, BLINKER_INFER_SPEED = .7, 1., 8.3
 
 
 def requested(started, params, CP=None):
@@ -133,14 +140,20 @@ class Recogniser:
       since = self.dip_since.setdefault(side, stamp)
       if stamp < since:
         since = self.dip_since[side] = stamp
-    if frame['lane_change']:
+    if 'blinker' in frame:
+      blinker = frame['blinker'] and not (frame.get('v_ego', 0.) >= BLINKER_INFER_SPEED and prob >= BLINKER_PROB
+                                          and abs(frame['lines'][side]['y'][0]) >= BLINKER_Y)
+      if frame['lcs_change'] or blinker:
+        return 'lane_change'
+    elif frame['lane_change']:  # a frame without the split flags (older callers): any lane change resets
       return 'lane_change'
     if prob >= LANE_PROB_MIN:
       return None
     return 'lane_prob_dip' if prob >= LANE_PROB_LOST and stamp - since <= LANE_DIP_MAX_NS else 'not_detected'
 
   def process(self, y_plane, uv_plane, frame):
-    """frame: lines/probs per side, rpy, k, stamp (camera EOF ns), odometer, leads, lane_change."""
+    """frame: lines/probs per side, rpy, k, stamp (camera EOF ns), odometer, leads, lane_change (blinker or
+    laneChangeState), optionally blinker, lcs_change (laneChangeState != off) and v_ego separately for StripNet."""
     out = {}
     if self.mode == 1:
       for side in ('left', 'right'):
@@ -296,7 +309,9 @@ def main():
                'probs': {'left': float(model.laneLineProbs[1]), 'right': float(model.laneLineProbs[2])},
                'rpy': list(calibration.rpyCalib), 'k': k, 'stamp': stamp, 'odometer': odometer,
                'leads': [{'prob': lead.prob, 'x': [x - shift for x in lead.x], 'y': list(lead.y)} for lead in model.leadsV3],
-               'lane_change': bool(car.leftBlinker or car.rightBlinker or str(model.meta.laneChangeState) != 'off')}
+               'lane_change': bool(car.leftBlinker or car.rightBlinker or str(model.meta.laneChangeState) != 'off'),
+               'blinker': bool(car.leftBlinker or car.rightBlinker),
+               'lcs_change': str(model.meta.laneChangeState) != 'off', 'v_ego': float(car.vEgo)}
       raw = recogniser.process(y_plane, uv_plane, frame)
     except (ValueError, KeyError, AttributeError, cv2.error) as error:
       counters['errors'] += 1
