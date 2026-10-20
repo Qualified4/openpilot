@@ -51,7 +51,7 @@ class Drive:
       values.update({f+'_DETECT': 0, f+'_DETECT_DISTANCE': 0., f+'_DETECT_LATERAL': 3.,
                      r+'_DETECT': 0, r+'_DETECT_DISTANCE': 0., r+'_DETECT_LATERAL': 2.8})
       if blind or filter_.value < 15:
-        values.update({r+'_DETECT': 2 if blind else 1, r+'_DETECT_DISTANCE': filter_.apply(8 if blind else 16)})
+        values.update({r+'_DETECT': 2, r+'_DETECT_DISTANCE': filter_.apply(8 if blind else 16)})  # as the 0x162 policy
     selected = [ff, None, None]
     if drawn is not None:  # the selector draws (key, display distance) regardless of radar reports
       selected[self.side+1] = (drawn[0], 0)
@@ -142,7 +142,7 @@ def test_bsd_preempts_memory_and_keeps_the_existing_filter_policy():
   drawn = d.filters[0].value
   values, _ = d.step(i+3, bsd=False)
   assert values[rear+'_DETECT_DISTANCE'] == pytest.approx(drawn+.05*(16-drawn))
-  assert values[rear+'_DETECT'] == 1 and d.policy.sides[0] is None
+  assert values[rear+'_DETECT'] == 2 and d.policy.sides[0] is None
   for j in range(i+4, i+10):
     d.step(j, x=.3, key=1)
     assert not d.history[-1]['LF_DETECT']
@@ -158,7 +158,7 @@ def test_bsd_already_active_does_not_start_another_track():
   assert not d.events
 
 
-@pytest.mark.parametrize('reason', ['reverse', 'lane_change', 'confidence', 'clock', 'CAN'])
+@pytest.mark.parametrize('reason', ['reverse', 'lane_change', 'clock'])
 def test_invalid_tracking_cancels_rear_without_leaving_a_gray_ghost(reason):
   d = Drive()
   i, _, rear = d.handoff()
@@ -265,7 +265,7 @@ def test_unqualified_new_front_cannot_replace_rear_and_bsd_discards_both_memorie
   assert d.policy.fronts == d.policy.rears == [None, None]
   assert v['LR_DETECT_DISTANCE'] == pytest.approx(drawn+.05*(8-drawn))
   v, _ = d.step(i+12)
-  assert v['LR_DETECT'] == 1 and d.policy.rears[0] is None
+  assert v['LR_DETECT'] == 2 and d.policy.rears[0] is None
   assert not any(e['event'] == 'rear_replaced' for e in d.events)
 
 
@@ -809,3 +809,65 @@ def test_alias_key_moving_to_the_front_lane_slot_ends_the_rear_drawing():
   v, _ = d.step(11, x=2.35, key=7, speed=-3., show=False, ff=(7, 0))  # the map now draws it in FF
   assert d.policy.rears[0] is None and not v['LR_DETECT']
   assert [e['event'] for e in d.policy.events] == ['changed_lane_slot']
+
+
+def _coasting(side=0):
+  d = Drive(side)
+  rear = ('LR', 'RR')[side]
+  for i in range(10):
+    d.step(i, x=4.-.15*i, speed=-3.)
+  v, _ = d.step(10)
+  assert v[rear+'_DETECT'] and v[rear+'_DETECT_DISTANCE'] == 0 and d.policy.rears[side]['phase'] == 'coast'
+  return d, rear
+
+
+@pytest.mark.parametrize('side', [0, 1])
+def test_the_other_lines_low_prob_leaves_this_sides_front_and_rear_alone(side):
+  """10-20 segment 15: the right line's 0.097 used to drop the left car 0.1 s before its handoff."""
+  other = 2 if side == 0 else 1
+  d = Drive(side)
+  for i in range(8):
+    d.step(i, x=4.-.15*i, speed=-3.)
+  saved = d.policy.fronts[side]
+  hits = saved['hits']
+  d.md.laneLineProbs[other] = .09
+  d.step(8, x=4.-.15*8, speed=-3.)
+  assert d.policy.fronts[side] is saved and saved['hits'] == hits+1 and not d.policy.events
+  d, rear = _coasting(side)
+  d.md.laneLineProbs[other] = .09
+  v, _ = d.step(11)
+  assert v[rear+'_DETECT'] and v[rear+'_DETECT_DISTANCE'] == 0 and d.policy.rears[side]['phase'] == 'coast'
+  assert not any(e['event'] == 'confidence_lost' for e in d.policy.events)
+
+
+@pytest.mark.parametrize('side', [0, 1])
+@pytest.mark.parametrize('cause', ['prob', 'CAN'])
+def test_own_low_prob_drops_only_the_front_and_the_coast_still_hands_off(side, cause):
+  d, rear = _coasting(side)
+  if cause == 'prob':
+    d.md.laneLineProbs[1+side] = .09
+  else:
+    d.cs.out.canValid = False
+  handoff = None
+  for i in range(11, 40):
+    v, _ = d.step(i)
+    if handoff is None:
+      assert v[rear+'_DETECT'] and d.policy.rears[side] is not None
+    if any(e['event'] == 'handoff' for e in d.policy.events):
+      handoff = i
+      break
+  assert handoff is not None and not any(e['event'] == 'confidence_lost' for e in d.events)
+
+
+def test_own_low_prob_drops_the_front_and_qualifies_nothing():
+  d = Drive()
+  for i in range(8):
+    d.step(i, x=4.-.15*i, speed=-3.)
+  assert d.policy.fronts[0]['qualified']
+  d.md.laneLineProbs[1] = .09
+  d.step(8, x=4.-.15*8, speed=-3.)
+  assert d.policy.fronts[0] is None and [e['event'] for e in d.policy.events] == ['confidence_lost']
+  for i in range(9, 30):
+    d.step(i, x=max(4.-.15*i, .2), speed=-3.)
+    assert d.policy.fronts[0] is None and d.policy.rears[0] is None
+  assert not any(e['event'] in ('coast', 'handoff') for e in d.events)

@@ -170,9 +170,13 @@ class RearHandover:
     probs = list(getattr(md, 'laneLineProbs', ()))  # pycapnp list readers reject slicing
     blocked = ('clock_or_context' if self.context != context or not 0 < dt <= .2 else
                'reverse' if str(getattr(CS.out, 'gearShifter', '')) == 'reverse' else
-               'lane_change' if changing else
-               'confidence_lost' if md is None or len(probs) < 3 or not all(math.isfinite(p) and p >= .1 for p in probs[1:3])
-               or not getattr(CS.out, 'canValid', True) else None)
+               'lane_change' if changing else None)
+    # Per side (was: either lane line below 0.1 blocked both sides, 10-20 segment 15: the right line's 0.097 near a
+    # stop line dropped a left car 0.1 s before its handoff). A side whose own line is lost drops only its front
+    # memory and acquires nothing new; a car already handed to LR/RR keeps coasting/retiring, bounded by MAX_TIME
+    # and END_DISTANCE as always.
+    lost = [md is None or len(probs) < 3 or not getattr(CS.out, 'canValid', True)
+            or not (math.isfinite(probs[1+side]) and probs[1+side] >= .1) for side in (0, 1)]
     self.context, self.last = context, now
     v_ego = float(getattr(CS.out, 'vEgo', 0.))
     self.v_ego = v_ego if math.isfinite(v_ego) else 0.
@@ -195,6 +199,8 @@ class RearHandover:
         for memories in (self.fronts, self.rears):
           self._drop(memories, side, 'bsd' if blind[side] else blocked, values, filters, bsd=blind[side])
         continue  # The existing 8/16 BSD policy already ran, exactly once.
+      if lost[side]:
+        self._drop(self.fronts, side, 'confidence_lost', values, filters)
       for memories in (self.fronts, self.rears):
         saved = memories[side]
         if saved and {saved['key'], *saved.get('aliases', ())} & {selected[0], selected[2-side]}:
@@ -210,7 +216,8 @@ class RearHandover:
         elif own or values[front+'_DETECT_DISTANCE'] <= self.SCALE:
           values[front+'_DETECT'] = 0
         key = None  # Never seed another pass from any consumed identity epoch.
-      self._observe_front(side, front, values, filters, key, points, proven[side] or once, once, now)
+      if not lost[side]:
+        self._observe_front(side, front, values, filters, key, points, proven[side] or once, once, now)
       self._coast(side, front, values, filters, key, points, now)
       saved = self.rears[side]
       if saved is None:
