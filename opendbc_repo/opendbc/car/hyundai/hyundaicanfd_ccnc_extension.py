@@ -2656,6 +2656,18 @@ def _ccnc_basic_curve(md, speed, changing):
   return 0.0
 
 
+HDP_ALERT_SENDS = 10  # 0.5 s of ALERTS_5=19 ("HDP activating") per model outage: 0x161 goes out every 5th frame (20 Hz)
+
+
+def _model_lanes_absent(md):
+  """True while the model lane data the cluster lanes need is missing (no modelV2 yet, or empty lane lines)."""
+  try:
+    return (md is None or len(md.laneLineProbs) < 3 or len(md.laneLines) < 3 or
+            len(md.laneLines[1].y) == 0 or len(md.laneLines[2].y) == 0)
+  except (AttributeError, TypeError):
+    return True
+
+
 def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane_color=True, model_lanes=True, frame=None):
   # 주행 기어에서만 가속도·드라이브 모드에 따른 차로 색 변경
   if lane_color and CS.out.gearShifter == structs.CarState.GearShifter.drive:
@@ -2686,6 +2698,19 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
 
   if not model_lanes:
     return
+
+  # "HDP activating" alert (ALERTS_5=19), once for HDP_ALERT_SENDS sends (0.5 s): on the first call after start-up
+  # (card only starts sending once the eGPU model is up, so the cluster never saw the alert during the wait) and
+  # once more at every later model outage. The stock camera's own alert, if any, is not overridden.
+  absent = _model_lanes_absent(md)
+  if state.hdp_alert_pending or (absent and state.hdp_alert_armed):
+    state.hdp_alert_pending, state.hdp_alert_armed, state.hdp_alert_left = False, False, HDP_ALERT_SENDS
+  if not absent:
+    state.hdp_alert_armed = True
+  if state.hdp_alert_left > 0:
+    state.hdp_alert_left -= 1
+    if not values.get("ALERTS_5"):
+      values["ALERTS_5"] = 19  # ACTIVATING_HIGHWAY_DRIVING_PILOT_SYSTEM
 
   now = time.monotonic() if frame is None else frame * .01
   geometry = state.lane_geometry
@@ -2841,12 +2866,9 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
       values["LCA_LEFT_ICON"] = 1 if CS.out.leftBlindspot else 4 if CS.out.rightBlinker or not md.meta.laneChangeAvailableLeft else 2
       values["LCA_RIGHT_ICON"] = 1 if CS.out.rightBlindspot else 4 if CS.out.leftBlinker or not md.meta.laneChangeAvailableRight else 2
   except:
-    # Only show startup status while the required model lane data is absent.
-    # Calculation errors with populated lane data keep the original alert.
-    if (md is None or len(md.laneLineProbs) < 3 or len(md.laneLines) < 3 or
-        len(md.laneLines[1].y) == 0 or len(md.laneLines[2].y) == 0):
-      values["ALERTS_5"] = 19  # ACTIVATING_HIGHWAY_DRIVING_PILOT_SYSTEM
-    else:
+    # Model lane data absent: nothing to draw; the steering-angle curvature above is the backup, and the
+    # once-per-outage alert already ran. Calculation errors with populated lane data keep the original fallback.
+    if not absent:
       values["LANELINE_LEFT_POSITION"] = 30
       values["LANELINE_RIGHT_POSITION"] = 30
       values["LANE_HIGHLIGHT"] = 3
@@ -3220,6 +3242,7 @@ def reset_lanes():
   state.last_known_lane_width = 3.0
   state.l_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2)
   state.r_lane_f = NoiseFilter(3, 1.5, alpha_range=0.2)
+  state.hdp_alert_pending, state.hdp_alert_armed, state.hdp_alert_left = True, False, 0  # once at start, once per outage
 
   # LF/RF 표시 중심
   state.lf_center = NoiseFilter(3, 3.0, alpha_range=0.03)

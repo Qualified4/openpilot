@@ -266,6 +266,27 @@ def test_color_only_does_not_need_model(display):
   assert values["LANELINE_LEFT_POSITION"] == 15
 
 
+def test_hdp_activating_alert_once_at_start_and_once_per_model_outage(display):
+  """card starts sending only once the eGPU model is up, so the first calls carry ALERTS_5=19 for HDP_ALERT_SENDS
+  0x161 sends (0.5 s) even with the model present; a later model outage alerts once more, and a stock alert wins."""
+  params, cs, send = display
+  params[KEYS[1]] = True
+  n = ccnc_extension.HDP_ALERT_SENDS
+  alerts = [dict(send(5 * i))["ADRV_0x161"]["ALERTS_5"] for i in range(n + 4)]
+  assert alerts == [19] * n + [0] * 4
+  md, cs.modelV2 = cs.modelV2, None
+  alerts = [dict(send(5 * (n + 4 + i)))["ADRV_0x161"]["ALERTS_5"] for i in range(n + 2)]
+  assert alerts == [19] * n + [0] * 2
+  assert dict(send(0))["ADRV_0x161"].get("LFA_ICON") == 5  # steering-angle backup stays on
+  cs.modelV2 = md
+  assert dict(send(5 * (2 * n + 6)))["ADRV_0x161"]["ALERTS_5"] == 0  # no alert while the model keeps running
+  cs.modelV2 = None
+  cs.adrv_0x161["ALERTS_5"] = 7
+  assert dict(send(5 * (2 * n + 7)))["ADRV_0x161"]["ALERTS_5"] == 7  # the stock alert is not overridden
+  cs.adrv_0x161["ALERTS_5"] = 0
+  assert dict(send(5 * (2 * n + 8)))["ADRV_0x161"]["ALERTS_5"] == 19
+
+
 @pytest.mark.parametrize("animation", [False, True])
 def test_trailer_block_precedes_extended_lane_display(display, monkeypatch, animation):
   params, cs, send = display
