@@ -24,15 +24,32 @@ import torch.nn.functional as F
 from tools.lane_profile.dataset_io import COLORS, TYPES, load_set  # noqa: TID251
 
 
+NORMS = ('fixed', 'road', 'road-y')
+ROAD_ROWS, ROAD_COLS = 64, 16  # road reference: near half (rows 64-127 = ~4.5-10 m) x outer 16 columns each side (0.5-0.75 m)
+
+
 class Normalize(nn.Module):
-  """Raw YCbCr strip -> network input. Chroma is centred and amplified (lane colour is a small offset)."""
-  def __init__(self, rgb_imagenet=False):
+  """Raw YCbCr strip -> network input. Chroma is centred and amplified (lane colour is a small offset).
+
+  mode 'fixed' (default, unchanged): Y (Y-110)/50, Cb/Cr (C-128)/16.
+  mode 'road': Cb/Cr relative to the strip's own road, (C - road C)/8, road C = mean over rows ROAD_ROWS: and the outer
+  ROAD_COLS columns on both sides (the boundary runs down the centre columns); Y as 'fixed'.
+  mode 'road-y': as 'road' and Y relative to the strip mean, (Y - mean Y)/50.
+  Only slicing / mean / sub / div: exported inside the ONNX, so training and on-device inference use the same op."""
+  def __init__(self, rgb_imagenet=False, mode='fixed'):
     super().__init__()
+    if mode not in NORMS or (rgb_imagenet and mode != 'fixed'):
+      raise ValueError(f'normalisation {mode!r}')
     self.rgb = rgb_imagenet
+    self.mode = mode
 
   def forward(self, x):
     if not self.rgb:
-      return torch.cat(((x[:, :1] - 110.)/50., (x[:, 1:] - 128.)/16.), 1)
+      if self.mode == 'fixed':
+        return torch.cat(((x[:, :1] - 110.)/50., (x[:, 1:] - 128.)/16.), 1)
+      road = torch.cat((x[:, 1:, ROAD_ROWS:, :ROAD_COLS], x[:, 1:, ROAD_ROWS:, -ROAD_COLS:]), 3).mean((2, 3), keepdim=True)
+      y = x[:, :1] - (x[:, :1].mean((2, 3), keepdim=True) if self.mode == 'road-y' else 110.)
+      return torch.cat((y/50., (x[:, 1:] - road)/8.), 1)
     y, cb, cr = x[:, :1], x[:, 1:2] - 128., x[:, 2:] - 128.
     rgb = torch.cat((y + 1.402*cr, y - .344136*cb - .714136*cr, y + 1.772*cb), 1)/255.
     mean = torch.tensor([.485, .456, .406], device=x.device).view(1, 3, 1, 1)
@@ -93,10 +110,10 @@ class MobileNetHeads(nn.Module):
 
 
 class Net(nn.Module):
-  def __init__(self, arch):
+  def __init__(self, arch, norm='fixed'):
     super().__init__()
     self.arch = arch
-    self.norm = Normalize(rgb_imagenet=arch in ('pplcnet025', 'pplcnet050', 'mobilenetv3s'))
+    self.norm = Normalize(rgb_imagenet=arch in ('pplcnet025', 'pplcnet050', 'mobilenetv3s'), mode=norm)
     if arch == 'stripnet':
       self.model = StripNet()
     elif arch in ('pplcnet025', 'pplcnet050'):
@@ -180,6 +197,112 @@ def augment_plus(x, gen):
   return torch.cat((x[:, :1] + noise, x[:, 1:]), 1).clamp(0, 255)
 
 
+RAIN_P = {'desaturate': .5, 'darken': .5, 'blue': .3, 'red_blob': .3}  # per-sample probabilities (independent)
+RAIN_P_LITE = {**RAIN_P, 'blue': .15, 'red_blob': .15}  # plus-rain-lite: blue cast / red ellipse halved
+
+
+def augment_plus_rain(x, gen, p=None):
+  """augment_plus() (incl. augment()'s 50 % left/right flip) plus rain/night photometrics; labels unchanged.
+
+  desaturate: Cb/Cr pulled toward 128 by 0.3-1.0x (wet night paint is nearly grey); darken: Y x0.4-1.0 + luma noise
+  sigma 0-4; blue cast: Cb +2..+8 (wet road at night); red reflection: one soft ellipse (rows 4-20, cols 3-12 radius,
+  anywhere in the strip) with Cr +20..+50 at its centre (tail/brake light and its reflection; colour label unchanged:
+  the boundary under it keeps its own colour). Every draw is made for every sample so the stream is seed-deterministic.
+  p: probabilities (default RAIN_P; RAIN_P_LITE for plus-rain-lite). The draw order does not depend on p."""
+  p = RAIN_P if p is None else p
+  x = augment_plus(x, gen)
+  n, dev = x.shape[0], x.device
+  r = lambda *s: torch.rand(*s, device=dev, generator=gen)  # noqa: E731
+  y, cb, cr = x[:, :1], x[:, 1:2], x[:, 2:]
+  m, k = (r(n) < p['desaturate']).view(-1, 1, 1, 1), .3 + .7*r(n, 1, 1, 1)
+  cb, cr = torch.where(m, (cb - 128)*k + 128, cb), torch.where(m, (cr - 128)*k + 128, cr)
+  m, g, sd = (r(n) < p['darken']).view(-1, 1, 1, 1), .4 + .6*r(n, 1, 1, 1), 4*r(n, 1, 1, 1)
+  y = torch.where(m, y*g + torch.randn(y.shape, device=dev, generator=gen)*sd, y)
+  m, b = (r(n) < p['blue']).view(-1, 1, 1, 1), 2 + 6*r(n, 1, 1, 1)
+  cb = torch.where(m, cb + b, cb)
+  m = (r(n) < p['red_blob']).view(-1, 1, 1, 1)
+  h, w = x.shape[2], x.shape[3]
+  cy, cx, ry, rx, amp = r(n, 1, 1, 1)*h, r(n, 1, 1, 1)*w, 4 + 16*r(n, 1, 1, 1), 3 + 9*r(n, 1, 1, 1), 20 + 30*r(n, 1, 1, 1)
+  rows = torch.arange(h, device=dev, dtype=x.dtype).view(1, 1, h, 1)
+  cols = torch.arange(w, device=dev, dtype=x.dtype).view(1, 1, 1, w)
+  blob = (1 - ((rows - cy)/ry)**2 - ((cols - cx)/rx)**2).clamp(0, 1)
+  cr = cr + blob*amp*m
+  return torch.cat((y, cb, cr), 1).clamp(0, 255)
+
+
+def augment_plus_rain_lite(x, gen):
+  return augment_plus_rain(x, gen, RAIN_P_LITE)
+
+
+MORE_P = {'occlude': .3, 'drop_blur': .3, 'low_contrast': .3}  # plus-rain-more extras, per-sample probabilities (independent)
+DROP_SIGMAS = (1., 2., 3.)  # drop blur radius 2-6 px = 2 sigma, quantised to sigma 1/2/3 (one blurred copy per sigma per batch)
+
+
+def _gauss(x, sigma):
+  k = int(2*round(3*sigma) + 1)
+  g = torch.exp(-(torch.arange(k, device=x.device, dtype=x.dtype) - k//2)**2/(2*sigma**2))
+  g = g/g.sum()
+  c = x.shape[1]
+  x = F.conv2d(F.pad(x, (k//2, k//2, 0, 0), mode='replicate'), g.view(1, 1, 1, k).repeat(c, 1, 1, 1), groups=c)
+  return F.conv2d(F.pad(x, (0, 0, k//2, k//2), mode='replicate'), g.view(1, 1, k, 1).repeat(c, 1, 1, 1), groups=c)
+
+
+def augment_plus_rain_more(x, gen, p=None):
+  """augment_plus_rain() plus rain-drop / spray effects; labels unchanged. Applied twice per sample per epoch (AUG_REPEAT).
+
+  low contrast (30 %): Y = mean + (Y - mean)*0.5-1.0 (spray haze); drop blur (30 %): 2-4 soft discs (radius 6-14 px) where the
+  strip is replaced by a Gaussian blur of radius 2-6 px (sigma 1/2/3); occlusion (30 %): one horizontal band (height 8-24 px,
+  full width) or one disc (radius 6-16 px), 50/50, filled with the road colour = per-channel median of the bottom 16 rows
+  (wiper / drop / spray covering part of the boundary; the rest of the strip still carries the label).
+  Every draw is made for every sample so the stream is seed-deterministic."""
+  x = augment_plus_rain(x, gen, p)
+  n, dev = x.shape[0], x.device
+  h, w = x.shape[2], x.shape[3]
+  r = lambda *s: torch.rand(*s, device=dev, generator=gen)  # noqa: E731
+  rows = torch.arange(h, device=dev, dtype=x.dtype).view(1, 1, h, 1)
+  cols = torch.arange(w, device=dev, dtype=x.dtype).view(1, 1, 1, w)
+  # (c) contrast reduction
+  m, k = (r(n) < MORE_P['low_contrast']).view(-1, 1, 1, 1), .5 + .5*r(n, 1, 1, 1)
+  y = x[:, :1]
+  mean = y.mean((2, 3), keepdim=True)
+  x = torch.cat((torch.where(m, (y - mean)*k + mean, y), x[:, 1:]), 1)
+  # (b) local drop blur
+  m = (r(n) < MORE_P['drop_blur']).view(-1, 1, 1, 1)
+  count = 2 + (r(n)*3).long().clamp(max=2)                       # 2-4 discs
+  level = (r(n)*len(DROP_SIGMAS)).long().clamp(max=len(DROP_SIGMAS) - 1)  # radius 2-6 px -> sigma 1/2/3
+  cy, cx, rad = r(n, 4, 1, 1)*h, r(n, 4, 1, 1)*w, 6 + 8*r(n, 4, 1, 1)
+  d = ((rows.view(1, 1, h, 1) - cy.view(n, 4, 1, 1))**2 + (cols.view(1, 1, 1, w) - cx.view(n, 4, 1, 1))**2).sqrt()
+  on = (torch.arange(4, device=dev).view(1, 4) < count.view(-1, 1)).view(n, 4, 1, 1)
+  alpha = ((1.5 - d/rad.view(n, 4, 1, 1)).clamp(0, 1)*on).amax(1, keepdim=True)*m  # soft edge, 1 inside 0.5 r
+  if bool(m.any()):
+    xb = torch.stack([_gauss(x, s) for s in DROP_SIGMAS])[level, torch.arange(n, device=dev)]
+    x = x*(1 - alpha) + xb*alpha
+  # (a) occlusion with the road colour
+  m = (r(n) < MORE_P['occlude']).view(-1, 1, 1, 1)
+  band = (r(n) < .5).view(-1, 1, 1, 1)
+  start, length = r(n, 1, 1, 1)*h, 8 + 16*r(n, 1, 1, 1)
+  oy, ox, orad = r(n, 1, 1, 1)*h, r(n, 1, 1, 1)*w, 6 + 10*r(n, 1, 1, 1)
+  band_m = (rows >= start) & (rows < start + length) & (cols >= 0)
+  disc_m = ((rows - oy)**2 + (cols - ox)**2) <= orad**2
+  cover = torch.where(band, band_m, disc_m) & m
+  road = x[:, :, -16:, :].flatten(2).median(2).values.view(n, 3, 1, 1)
+  x = torch.where(cover, road, x)
+  return x.clamp(0, 255)
+
+
+RAIN_P_NORED = {**RAIN_P, 'red_blob': 0.}  # plus-rain-more-nored: no red ellipse (d-aug-more read a stopped car's tail light as yellow)
+
+
+def augment_plus_rain_more_nored(x, gen):
+  """augment_plus_rain_more() with the red-ellipse draw disabled (same draw order, so only that effect changes)."""
+  return augment_plus_rain_more(x, gen, p=RAIN_P_NORED)
+
+
+AUGMENTS = {'base': augment, 'plus': augment_plus, 'plus-rain': augment_plus_rain, 'plus-rain-lite': augment_plus_rain_lite,
+            'plus-rain-more': augment_plus_rain_more, 'plus-rain-more-nored': augment_plus_rain_more_nored}
+AUG_REPEAT = {'plus-rain-more': 2, 'plus-rain-more-nored': 2}  # passes over the training set per epoch (each pass: new order, new augmentation draws)
+
+
 def tensors(rows, x, device):
   xt = torch.from_numpy(x).permute(0, 3, 1, 2).float().to(device)
   t = torch.tensor([TYPES.index(r['type']) for r in rows], device=device)
@@ -221,31 +344,32 @@ def metrics(pt, pc, rows, threshold=0.):
   return res
 
 
-def train(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, pretrained, aug='base'):
+def train(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, pretrained, aug='base', norm='fixed', lr_scale=1.):
   torch.manual_seed(seed)
   gen = torch.Generator(device=device).manual_seed(seed)
-  net = Net(arch).to(device)
+  net = Net(arch, norm).to(device)
   if arch in ('pplcnet025', 'pplcnet050'):
     net.model.load_pretrained(pretrained[arch])
   elif arch == 'mobilenetv3s':
     net.model.load_pretrained(pretrained['mobilenetv3s'])
-  augment_fn = augment_plus if aug == 'plus' else augment
+  augment_fn = AUGMENTS[aug]
   X, T, C, W = tensors(train_rows, xtr, device)
   Xv, _, _, _ = tensors(val_rows, xva, device)
   # class-balanced weights from TRAIN only
   wt = torch.tensor([len(T)/(2*max(1, int((T == k).sum()))) for k in range(2)], device=device)
   wc = torch.tensor([len(C)/(2*max(1, int((C == k).sum()))) for k in range(2)], device=device)
-  lr = 2e-3 if arch == 'stripnet' else 1e-3
+  lr = (2e-3 if arch == 'stripnet' else 1e-3)*lr_scale  # lr_scale: OneCycle max lr factor (e-long: 0.5)
   opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-3)
-  steps = epochs*math.ceil(len(X)/256)
+  reps = AUG_REPEAT.get(aug, 1)
+  steps = epochs*reps*math.ceil(len(X)/256)
   sched = torch.optim.lr_scheduler.OneCycleLR(opt, lr, total_steps=steps, pct_start=.15)
   best, history = None, []
   start = time.monotonic()
   for epoch in range(epochs):
     net.train()
-    order = torch.randperm(len(X), device=device, generator=gen)
+    order = torch.cat([torch.randperm(len(X), device=device, generator=gen) for _ in range(reps)])
     total = 0.
-    for i in range(0, len(X), 256):
+    for i in range(0, len(order), 256):
       idx = order[i:i + 256]
       lt, lc = net(augment_fn(X[idx], gen))
       loss = ((F.cross_entropy(lt, T[idx], weight=wt, reduction='none') + F.cross_entropy(lc, C[idx], weight=wc, reduction='none'))*W[idx]).sum()/W[idx].sum()
@@ -257,7 +381,7 @@ def train(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, pretrained
     pt, pc = predict(net, Xv)
     m = metrics(pt, pc, val_rows)
     score = (m['type']['macro_recall_raw'] + m['color']['macro_recall_raw'])/2
-    history.append({'epoch': epoch, 'train_loss': total/len(X), 'val_type_macro_recall': m['type']['macro_recall_raw'],
+    history.append({'epoch': epoch, 'train_loss': total/len(order), 'val_type_macro_recall': m['type']['macro_recall_raw'],
                     'val_color_macro_recall': m['color']['macro_recall_raw'], 'val_score': score})
     if best is None or score > best[0]:
       best = (score, epoch, {k: v.detach().clone() for k, v in net.state_dict().items()})
@@ -303,9 +427,9 @@ def main(a):
   for arch in a.arch:
     for seed in a.seeds:
       net, info = train(arch, seed, train_rows, x[tr], val_rows, x[va], device, a.epochs,
-                        {'pplcnet025': Path(a.pretrained), 'mobilenetv3s': Path(a.mbv3)}, a.aug)
+                        {'pplcnet025': Path(a.pretrained), 'mobilenetv3s': Path(a.mbv3)}, a.aug, a.norm)
       pt, pc = predict(net, tensors(val_rows, x[va], device)[0])
-      run = {'arch': arch, 'seed': seed, 'aug': a.aug, **info, 'validation': metrics(pt, pc, val_rows)}
+      run = {'arch': arch, 'seed': seed, 'aug': a.aug, 'norm': a.norm, **info, 'validation': metrics(pt, pc, val_rows)}
       report['runs'].append(run)
       print(arch, seed, 'best epoch', info['best_epoch'], 'val score', round(info['best_val_score'], 4), 'params', info['params'], flush=True)
       if best is None or info['best_val_score'] > best[0]:
@@ -313,7 +437,8 @@ def main(a):
   _, arch, seed, net, pt, pc = best
   threshold = choose_threshold(pt, pc, val_rows)
   human_val = [i for i, r in enumerate(val_rows) if r['origin'] == 'human']
-  report['selected'] = {'arch': arch, 'seed': seed, 'aug': a.aug, 'threshold': threshold, 'selection': 'validation macro recall (type+colour)/2',
+  report['selected'] = {'arch': arch, 'seed': seed, 'aug': a.aug, 'norm': a.norm, 'threshold': threshold,
+                        'selection': 'validation macro recall (type+colour)/2',
                         'validation_at_threshold': metrics(pt, pc, val_rows, threshold),
                         'validation_human_only_at_threshold': metrics(pt[human_val], pc[human_val], [val_rows[i] for i in human_val], threshold)}
   torch.save(net.state_dict(), out/'model.pt')
@@ -326,7 +451,7 @@ def main(a):
   (out/'model-contract.json').write_text(json.dumps({'input': 'strip_ycbcr float32 N x 3 x 128 x 96, raw 0..255 (Y, Cb, Cr), rows far(20m)->near(4.5m)',
     'strip': 'tools/lane_profile/scanner.py strip_geometry+sample, rows INTER_AREA resized to 128', 'outputs': {'line_type': TYPES, 'color': COLORS},
     'threshold': threshold, 'yellow_dashed': 'not a learned class: dashed+yellow must be reported as unknown',
-    'arch': arch, 'aug': a.aug, 'trained_on': 'train routes only; selected on validation routes; test never used'}, indent=1), encoding='utf-8')
+    'arch': arch, 'aug': a.aug, 'norm': a.norm, 'trained_on': 'train routes only; selected on validation routes; test never used'}, indent=1), encoding='utf-8')
   print(json.dumps(report['selected'], indent=1)[:3000])
 
 
@@ -337,7 +462,8 @@ if __name__ == '__main__':
   p.add_argument('--arch', nargs='+', default=['stripnet', 'pplcnet025'])
   p.add_argument('--seeds', nargs='+', type=int, default=[0, 1, 2])
   p.add_argument('--epochs', type=int, default=40)
-  p.add_argument('--aug', choices=('base', 'plus'), default='base')
+  p.add_argument('--aug', choices=tuple(AUGMENTS), default='base')
+  p.add_argument('--norm', choices=NORMS, default='fixed', help='input normalisation inside the model/ONNX (Normalize)')
   p.add_argument('--mbv3', default='.analysis/lane-model-comparison-20261018/pretrained/mobilenet_v3_small-047dcff4.pth')
   p.add_argument('--pretrained', default='.analysis/lane-model-comparison-20261018/pretrained/PPLCNet_x0_25_pretrained.pdparams')
   main(p.parse_args())
