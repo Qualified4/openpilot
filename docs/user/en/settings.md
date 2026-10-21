@@ -105,12 +105,12 @@ Ignoring `x0.01`, `x0.001`, `cm`, `km/h`, or `%` can make a value appear one hun
 
 ## Settings map
 
-The current `carrot_settings.json` contains **203 parameters**. The driver-monitoring exception and `NNFF` are search only; the remaining entries appear in these menus:
+The current `carrot_settings.json` contains **204 parameters**. The driver-monitoring exception and `NNFF` are search only; the remaining entries appear in these menus:
 
 | Category | Count | Groups |
 |---|---:|---|
 | Driving control | 124 | Startup and auto, buttons and presets, steering, speed and deceleration, cruise and following gap |
-| Vehicle and hardware | 21 | Hyundai/Kia, CAN FD/HDA, radar, driver monitoring, vehicle assistance, device hardware |
+| Vehicle and hardware | 22 | Hyundai/Kia, CAN FD/HDA, radar, driver monitoring, vehicle assistance, device hardware |
 | Display | 34 | Information, path, brightness/on-road view, external HUD |
 | System | 12 | Recording/power, network/map, sound, software |
 
@@ -251,7 +251,7 @@ On supported Tesla vehicles with the additional vehicle bus detected, the device
 <a id="vehicle-hardware"></a>
 ## Vehicle and hardware
 
-This category contains 21 menu settings, two sub-options on the **CCNC HDA1 radar vehicles** detail screen, and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. CCNC display settings, including lane type and color display, are described below.
+This category contains 22 menu settings, two sub-options on the **CCNC HDA1 radar vehicles** detail screen, and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. CCNC display settings, including lane type and color display, are described below.
 
 | Group | Parameters | Purpose |
 |---|---|---|
@@ -259,7 +259,8 @@ This category contains 21 menu settings, two sub-options on the **CCNC HDA1 rada
 | CAN FD/HDA | `CanfdHDA2`, `HyundaiCanfdClusterDirectTx`, `CanfdDebug`, `HDPuse` | HDA2 selection, cluster direct send, CAN FD diagnostics, and HDP |
 | [CCNC display](#ccnc-display) | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes · Off (0) / Standard (1) / Refined (2), default 0 |
-| [CCNC display](#ccnc-display) | `CcncLaneTypeDetection` | CCNC lane type & color display · Off(0) / Scanner(1) / StripNet(2), default 0 |
+| [CCNC display](#ccnc-display) | `CcncLaneTypeDetection` | CCNC lane type & color display · Off(0) / StripNet(1), default 0 |
+| [CCNC display](#ccnc-display) | `LaneStripModel` | Lane type model · Current(0) / New model(1), default 0 |
 | [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Includes virtual rear handover; default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | Vehicle position correction · Sub-option of radar vehicles, default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncRadarMap` | Radar map · Sub-option of radar vehicles, default OFF (0) |
@@ -325,7 +326,9 @@ Turn off to use the default lane and icon display. Trailer-related lane-change r
 
 #### CCNC lane type & color display
 
-Recognizes whether each lane line is solid or dashed and white or yellow, and shows it on the CCNC cluster. Choose **Off** (existing lane display, nothing runs), **Scanner** (1-D lane profile scanner) or **StripNet** (light learned model). Only the selected recognizer runs, in its own background process that reuses the existing camera frames and model lane positions.
+Recognizes whether each lane line is solid or dashed and white or yellow, and shows it on the CCNC cluster. Choose **Off** (existing lane display, nothing runs) or **StripNet** (light learned model). The former Scanner (1-D lane profile scanner) choice is gone; a previously stored value (1 or 2) runs StripNet. The recognizer runs in its own background process that reuses the existing camera frames and model lane positions.
+
+**Lane type model** chooses the model StripNet uses: **Current** is the deployed model, **New model** the new model under test. If the new model files are missing or cannot be read, the current model runs. A change while driving applies within about one second without a restart; lane decisions start over, so the existing display may show briefly.
 
 Lane priority for each side separately: a recognized **yellow** line shows **orange solid**, even when a lane change is otherwise shown as available; otherwise, when the existing lane-change-available condition is met, the line is **green** (solid or dashed as recognized); otherwise it is **white** solid or dashed. A result must be seen twice within 0.4 s and expires 0.5 s after the last evidence; unknown or expired results keep the existing display. Existing lane-departure blinking, lane-line warnings, lane position, curvature and lane-change animation are unchanged. Blind-spot detection no longer turns the lane line orange; the blind-spot warning is shown by the rear-side icons.
 

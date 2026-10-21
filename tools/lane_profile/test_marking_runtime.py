@@ -60,9 +60,11 @@ def test_packet_parse_and_expiry_are_anchored_on_receive_time():
 def test_modes_and_selected_engine_only(monkeypatch):
   params = N(get_int=lambda key: 0)
   assert not requested(True, params)
-  for mode in (1, 2):
+  for mode in (1, 2):  # 1 = StripNet now; 2 = StripNet in the former 3-way selector: both run StripNet
     assert requested(True, N(get_int=lambda key, m=mode: m)) and not requested(False, N(get_int=lambda key, m=mode: m))
+    assert marking.mode_of(N(get_int=lambda key, m=mode: m)) == marking.STRIPNET == 2
   assert marking.mode_of(N(get_int=lambda key: 7)) == 0
+  # the Scanner engine stays available to offline replays (replay_marking.py), not to the daemon
   sys.modules.pop('openpilot.selfdrive.carrot.lane_type.strip_model', None)
   scanner = Recogniser(1)
   assert scanner.model is None and 'openpilot.selfdrive.carrot.lane_type.strip_model' not in sys.modules
@@ -110,7 +112,8 @@ def test_off_mode_entrypoint_imports_and_loads_nothing(monkeypatch):
 
 def test_daemon_main_loop_with_fake_ipc(monkeypatch):
   """Drive marking_daemon.main() end to end with fake VisionIPC/SubMaster/PubMaster on a synthetic yellow
-  solid boundary: exact frame sync, display confirmation, publication, mode switch and OFF exit."""
+  solid boundary: exact frame sync, display confirmation, publication, StripNet for both stored ON values (1, and the
+  former selector's 2: no recogniser rebuild between them) and OFF exit."""
   import types
   from openpilot.selfdrive.carrot.lane_type import marking_daemon as md
   from tools.lane_profile.synthetic import to_nv12_planes  # noqa: TID251
@@ -120,7 +123,10 @@ def test_daemon_main_loop_with_fake_ipc(monkeypatch):
   h, w = y.shape
   nv12 = np.concatenate((y, uv.reshape(h//2, w)))
   modes = iter([1]*6 + [2]*4 + [0]*10)
-  monkeypatch.setitem(sys.modules, 'openpilot.common.params', N(Params=lambda: N(get_int=lambda key: next(modes))))
+  monkeypatch.setitem(sys.modules, 'openpilot.common.params',
+                      N(Params=lambda: N(get_int=lambda key: next(modes) if key == marking.PARAM else 0)))
+  built = []
+  monkeypatch.setattr(md, 'Recogniser', lambda *a, **kw: built.append(a) or Recogniser(*a, **kw))
   monkeypatch.setattr(md, 'PARAM_CHECK_S', 0.)
   monkeypatch.setattr(md.os, 'nice', lambda n: None, raising=False)
   import time
@@ -170,16 +176,16 @@ def test_daemon_main_loop_with_fake_ipc(monkeypatch):
   # Fake the cereal package itself: the real one needs capnp schemas (and msgq) that are unavailable here.
   monkeypatch.setitem(sys.modules, 'openpilot.cereal', types.SimpleNamespace(messaging=messaging, __path__=[]))
   monkeypatch.setitem(sys.modules, 'openpilot.cereal.messaging', messaging)
-  monkeypatch.setitem(sys.modules, 'openpilot.common.swaglog', N(cloudlog=N(warning=lambda *a: None)))
+  monkeypatch.setitem(sys.modules, 'openpilot.common.swaglog', N(cloudlog=N(warning=lambda *a: None, info=lambda *a: None)))
   monkeypatch.setitem(sys.modules, 'msgq.visionipc', N(VisionIpcClient=Client, VisionStreamType=N(VISION_STREAM_ROAD=0)))
   camera = N(intrinsics=np.array(k, float), width=w, height=h)
   import openpilot.common.transformations.camera as cam
   monkeypatch.setattr(cam, 'DEVICE_CAMERAS', {('mici', 'os04c10'): N(fcam=camera)})
   md.main()
-  assert len(sent) >= 6 and sent[0]['mode'] == 'scanner' and sent[-1]['mode'] == 'stripnet'
+  assert len(sent) >= 6 and all(p['mode'] == 'stripnet' for p in sent) and built == [(2,)]
+  assert all(p['model']['slot'] == 0 and p['model']['version'] == 3 and p['model']['requested'] == 0 for p in sent)
   assert sent[0]['left']['color'] == 'unknown'  # first result is only pending in the display filter
-  scanner = [p for p in sent if p['mode'] == 'scanner']
-  assert any(p["left"]["color"] == "yellow" for p in scanner)
+  assert any(p['left']['color'] == 'yellow' for p in sent)  # the yellow solid boundary is confirmed by StripNet
   assert all(p['timing']['processingMs'] >= 0 and p['counters']['frame_mismatch'] == 0 for p in sent)
   assert all(p['timing']['frameMatch'] == 'exact' and p['timing']['frameOffsetMs'] == 0 for p in sent)  # from the buffer
   assert all(v == 0 for p in sent for c, v in p['counters'].items() if c.startswith('drop_'))

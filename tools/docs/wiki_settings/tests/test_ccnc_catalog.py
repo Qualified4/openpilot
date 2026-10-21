@@ -8,7 +8,8 @@ from test_generate import GENERATOR, VALIDATOR, COMMIT, STAMP
 from test_ci_check import CI_CHECK
 
 
-KEYS = ("CcncLaneColor", "CcncModelLanes", "CcncLaneTypeDetection", "CcncRadarVehicles", "CcncVehiclePositionCorrection", "CcncRadarMap")
+KEYS = ("CcncLaneColor", "CcncModelLanes", "CcncLaneTypeDetection", "LaneStripModel", "CcncRadarVehicles", "CcncVehiclePositionCorrection",
+        "CcncRadarMap")
 CATALOG = Path(__file__).resolve().parents[4] / "openpilot/selfdrive/carrot_settings.json"
 
 
@@ -20,7 +21,7 @@ class CcncCatalogTest(unittest.TestCase):
     self.assertEqual(len(result.pages), len(settings) * 3 + 2)
     params = {item["name"]: item for item in json.loads(CATALOG.read_text(encoding="utf-8"))["params"]}
     for key in KEYS:
-      self.assertEqual((params[key]["min"], params[key]["max"], params[key]["default"]), (0, 2 if key in ('CcncModelLanes', 'CcncLaneTypeDetection') else 1, 0))
+      self.assertEqual((params[key]["min"], params[key]["max"], params[key]["default"]), (0, 2 if key == 'CcncModelLanes' else 1, 0))
       for field in ("descr", "edescr", "cdescr"):
         for internal in ("liveTracks", "radarState", "leadOne", "leadTwo", "Params", "carrot-wip", "ccnc-hda1"):
           self.assertNotIn(internal, params[key][field])
@@ -32,7 +33,9 @@ class CcncCatalogTest(unittest.TestCase):
     self.assertEqual(params['CcncModelLanes']['control'], 'select')
     self.assertEqual(params['CcncModelLanes']['options']['ko'], ['끔', '일반', '정밀'])
     self.assertEqual(params['CcncLaneTypeDetection']['control'], 'select')
-    self.assertEqual(params['CcncLaneTypeDetection']['options']['en'], ['Off', 'Scanner', 'StripNet'])
+    self.assertEqual(params['CcncLaneTypeDetection']['options']['en'], ['Off', 'StripNet'])  # the Scanner is no longer offered
+    self.assertEqual(params['LaneStripModel']['control'], 'select')
+    self.assertEqual(params['LaneStripModel']['options']['ko'], ['현재', '새 모델'])
 
   def test_current_catalog_ci_report(self):
     with tempfile.TemporaryDirectory() as temp:

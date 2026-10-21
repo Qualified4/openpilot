@@ -1,4 +1,10 @@
-"""CCNC lane marking recogniser process (display only): Scanner or StripNet, never both.
+"""CCNC lane marking recogniser process (display only): StripNet, with the model slot chosen by LaneStripModel.
+
+The model (strip_model.load_slot: 0 the deployed assets/lane_strip.*, 1 the new assets/lane_strip_v4.*, falling back to the
+deployed one with a warning when those files are missing or invalid) is loaded at start and the param is polled every
+PARAM_CHECK_S; a change hot-swaps the model without a restart and starts the strip filter, dip timers and display filter from
+empty (Recogniser.swap_model). The active model (slot, manifest version, sha256 prefix) is logged and carried in every
+packet's 'model' entry. The profile Scanner (Recogniser mode 1) is kept for offline replays only and never runs here.
 
 Runs outside modeld/controlsd/card. Every new full-resolution road camera NV12 frame goes into a small buffer
 of the newest FRAME_BUFFER frames (older ones are dropped; buffers are camerad's shared memory, referenced not
@@ -14,7 +20,7 @@ import json
 import os
 import time
 
-from openpilot.selfdrive.carrot.lane_type.marking import MODES, PACKET_TYPE, PACKET_VERSION, mode_of
+from openpilot.selfdrive.carrot.lane_type.marking import MODES, PACKET_TYPE, PACKET_VERSION, mode_of, model_of
 
 PARAM_CHECK_S = 1.
 # Recorded timing (190 segments): modelV2 arrives 37-53 ms (p5-p99) after its frame, so with 50 ms frames the
@@ -115,7 +121,9 @@ def buffer_drop_reason(frame_id, buf, recv_ns, now_ns, max_hold_ns=MAX_HOLD_NS):
 
 
 class Recogniser:
-  """Only the selected engine is constructed (the other is never imported or loaded).
+  """Only the selected engine is constructed (the other is never imported or loaded). The daemon builds only StripNet
+  (mode 2); the Scanner (mode 1) remains for offline replays (tools/lane_profile/replay_marking.py) and is not offered on
+  the car any more. ``model`` (mode 2): the StripModel to use (strip_model.load_slot); None loads the deployed one.
 
   StripNet (mode 2) always runs its type and colour results through a strip_filter.StripFilter, by default the
   asymmetric A8/4 type filter (strip_filter.LONG_M / SHORT_M) with the strip_filter.COLOR_M colour window and the
@@ -123,7 +131,7 @@ class Recogniser:
   to each side's filter_input result before it leaves process(). ``strip_filter`` is for tests and replays only:
   None builds that default, another StripFilter is used instead of it, and False turns the filter off (the raw
   filter_input results, both heads). The Scanner (mode 1) has no filter unless one is passed, and ignores it."""
-  def __init__(self, mode, strip_filter=None):
+  def __init__(self, mode, strip_filter=None, model=None):
     self.mode = mode
     if strip_filter is None and mode == 2:
       from openpilot.selfdrive.carrot.lane_type.strip_filter import COLOR_M, LATCH, LONG_M, SHORT_M, StripFilter
@@ -135,8 +143,10 @@ class Recogniser:
       self.scanners = {side: ProfileScanner(side) for side in ('left', 'right')}
       self.model = None
     elif mode == 2:
-      from openpilot.selfdrive.carrot.lane_type.strip_model import StripModel
-      self.model = StripModel()
+      if model is None:
+        from openpilot.selfdrive.carrot.lane_type.strip_model import StripModel
+        model = StripModel()
+      self.model = model
       self.scanners = None
     else:
       raise ValueError('lane marking mode must be 1 (Scanner) or 2 (StripNet)')
@@ -150,6 +160,14 @@ class Recogniser:
     if self.strip_filter is not None:
       self.strip_filter.reset()
     self.dip_since.clear()
+
+  def swap_model(self, model):
+    """Hot swap of the StripNet model (LaneStripModel changed): the old model's evidence is dropped (strip filter windows,
+    latch and dip timers emptied), so the new model starts from a clean state; the caller resets its DisplayPolicy."""
+    if self.mode != 2:
+      raise ValueError('only the StripNet recogniser has a model to swap')
+    self.model = model
+    self.reset()
 
   def _skip_reason(self, side, frame):
     """StripNet: why this side is not inferred ('lane_change', 'not_detected', 'lane_prob_dip', 'lead_close'), or None."""
@@ -233,9 +251,13 @@ def filter_input(kind, color, type_conf, color_conf, stamp, *, dashed_observed=F
           'reason': reason, 'trackingReset': bool(reset)}
 
 
-def packet(mode, frame_id, camera_ns, raw, confirmed, now_ns, timing, counters):
+def packet(mode, frame_id, camera_ns, raw, confirmed, now_ns, timing, counters, model=None):
+  """``model``: the active StripModel.info() (slot, name, manifest version, sha256 prefix), carried as 'model' when given
+  (marking.parse ignores it)."""
   data = {'type': PACKET_TYPE, 'version': PACKET_VERSION, 'mode': MODES[mode], 'frameId': frame_id, 'cameraMonoTimeNanos': camera_ns,
           'publishMonoTimeNanos': now_ns, 'timing': timing, 'counters': counters}
+  if model is not None:
+    data['model'] = model
   for side in ('left', 'right'):
     heads = confirmed.get(side, {})
     entry = {'raw': {k: raw.get(side, {}).get(k) for k in ('type', 'color', 'typeConfidence', 'colorConfidence', 'reason')}}
@@ -273,6 +295,14 @@ def main():
   from openpilot.common.swaglog import cloudlog
   from openpilot.common.transformations.camera import DEVICE_CAMERAS
   from openpilot.selfdrive.carrot.lane_type.display import DisplayPolicy
+  from openpilot.selfdrive.carrot.lane_type.strip_model import load_slot
+
+  def load_model(slot):
+    model = load_slot(slot, warn=lambda message: cloudlog.warning('CCNC lane marking: %s', message))
+    info = model.info()
+    cloudlog.info('CCNC lane marking: StripNet model %s active (LaneStripModel=%d, slot %s, manifest v%s, sha256 %s)',
+                  info['name'], slot, info['slot'], info['version'], info['sha256'])
+    return model, {**info, 'requested': slot}
 
   if hasattr(os, 'sched_setaffinity'):
     background = set(os.sched_getaffinity(0)) & {0, 1, 2, 3}
@@ -284,20 +314,23 @@ def main():
   pm = messaging.PubMaster(['customReservedRawData2'])
   client = VisionIpcClient('camerad', VisionStreamType.VISION_STREAM_ROAD, False)  # every frame; FrameBuffer keeps 3
   frames = FrameBuffer()
-  recogniser, policy = Recogniser(mode), DisplayPolicy()
+  slot = model_of(params)
+  strip_net, model_info = load_model(slot)
+  recogniser, policy = Recogniser(mode, model=strip_net), DisplayPolicy()
   counters = {'processed': 0, 'exact': 0, 'nearest': 0, 'frame_mismatch': 0, 'stale_inputs': 0, 'errors': 0,
               'drop_hold_before': 0, 'drop_frame_id_before': 0, 'drop_hold_after': 0, 'drop_frame_id_after': 0}
   odometer, last_stamp, next_param = 0., None, time.monotonic() + PARAM_CHECK_S
   while True:
     if time.monotonic() >= next_param:
       next_param = time.monotonic() + PARAM_CHECK_S
-      new_mode = mode_of(params)
-      if new_mode not in MODES:
+      if mode_of(params) not in MODES:
         break
-      if new_mode != mode:
-        mode, recogniser = new_mode, Recogniser(new_mode)
+      new_slot = model_of(params)
+      if new_slot != slot:  # hot swap: no restart, the recogniser's and the display filter's state start empty
+        slot = new_slot
+        strip_net, model_info = load_model(slot)
+        recogniser.swap_model(strip_net)
         policy.reset()
-        odometer, last_stamp = 0., None
     sm.update(100)
     if not client.is_connected():
       if not client.connect(False):
@@ -360,7 +393,7 @@ def main():
     counters['processed'] += 1
     timing = {'processingMs': (now_ns - start_ns)/1e6, 'threadCpuMs': (time.thread_time_ns() - cpu_start)/1e6,
               'cameraToPublishMs': (now_ns - stamp)/1e6, 'frameOffsetMs': offset_s*1e3, 'frameMatch': kind}
-    payload = json.dumps(packet(mode, int(model.frameId), stamp, raw, confirmed, now_ns, timing, counters),
+    payload = json.dumps(packet(mode, int(model.frameId), stamp, raw, confirmed, now_ns, timing, counters, model_info),
                          separators=(',', ':'), allow_nan=False).encode()
     msg = messaging.new_message('customReservedRawData2', size=len(payload), valid=True)
     msg.customReservedRawData2 = payload

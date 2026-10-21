@@ -10,6 +10,9 @@ Manifest v4 (``outputs`` == OUTPUTS_V4, ONNX outputs ``color`` (N, 3) and ``type
 same two-class result the strip filter reads (StripModel.decide4); v1-v3 manifests (``outputs`` {line_type, color},
 two softmax heads) keep StripModel.decide unchanged. ``mirror_right`` (v4): marking_daemon flips the right strip's
 columns before inference so the ego side is on the same column side as on the left strip (see MIRROR_AXIS).
+
+Model slots (SLOTS, selected by the LaneStripModel param in marking_daemon, see load_slot): 0 = assets/lane_strip.{onnx,json}
+(the deployed model), 1 = assets/lane_strip_v4.{onnx,json} (the new model; falls back to slot 0 when missing or invalid).
 """
 import hashlib
 import json
@@ -31,6 +34,7 @@ OUTPUTS_V4 = {'color': list(COLORS_V4), 'type': list(TYPES_V4)}
 # ego side is the HIGH columns of the left strip and the LOW columns of the right strip. With mirror_right the right
 # strip is flipped on its column axis (the last one of 3 x rows x cols), putting its ego side on the high columns too.
 MIRROR_AXIS = -1
+SLOTS = {0: 'lane_strip', 1: 'lane_strip_v4'}  # file stem in ASSETS per LaneStripModel value
 
 
 def strip_of(manifest):
@@ -123,11 +127,13 @@ def strip_input(y_plane, uv_plane, line, rpy, k, half_m=HALF_M, cols=COLUMNS, ro
 
 
 class StripModel:
-  def __init__(self, directory=ASSETS, threshold=None):
+  def __init__(self, directory=ASSETS, threshold=None, name='lane_strip'):
+    """``name``: the file stem of the manifest / ONNX pair in ``directory`` (SLOTS)."""
     import cv2
     directory = Path(directory)
-    manifest = json.loads((directory/'lane_strip.json').read_text(encoding='utf-8'))
-    data = (directory/'lane_strip.onnx').read_bytes()
+    manifest = json.loads((directory/f'{name}.json').read_text(encoding='utf-8'))
+    data = (directory/f'{name}.onnx').read_bytes()
+    self.name, self.version, self.slot = name, manifest.get('version'), next((s for s, n in SLOTS.items() if n == name), None)
     outputs = manifest.get('outputs')
     if hashlib.sha256(data).hexdigest() != manifest['model_sha256'] or outputs not in (OUTPUTS_V3, OUTPUTS_V4):
       raise ValueError('lane strip model artifact contract mismatch')
@@ -156,6 +162,10 @@ class StripModel:
     self.net = cv2.dnn.readNetFromONNX(np.frombuffer(data, dtype=np.uint8))
     self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
     self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+
+  def info(self):
+    """What the daemon logs and publishes for the active model (packet 'model')."""
+    return {'slot': self.slot, 'name': self.name, 'version': self.version, 'sha256': self.model_hash[:12], 'v4': self.v4}
 
   def infer(self, strips):
     """strips: list of 3 x rows x cols float32 (self.strip) -> list of result dicts (same keys as result.unknown())."""
@@ -200,3 +210,18 @@ class StripModel:
     out = self.decide(np.array([dashed, 1. - dashed]), np.array([1. - yellow, yellow]), yellow_dashed_learned=True)
     out.update(extras)
     return out
+
+
+def load_slot(slot, directory=None, warn=None):
+  """StripModel of LaneStripModel slot ``slot`` (SLOTS). A slot other than 0 whose files are missing, unreadable or fail the
+  manifest / ONNX contract falls back to slot 0 (the deployed model), calling ``warn(message)`` first; an unknown slot is 0.
+  The returned model's ``slot`` is the slot actually loaded. ``directory`` None: ASSETS (looked up at call time)."""
+  import cv2
+  directory = ASSETS if directory is None else directory
+  if slot in SLOTS and slot != 0:
+    try:
+      return StripModel(directory, name=SLOTS[slot])
+    except (OSError, ValueError, KeyError, TypeError, cv2.error) as error:
+      if warn is not None:
+        warn(f'lane strip model slot {slot} ({SLOTS[slot]}) not loaded, using {SLOTS[0]}: {type(error).__name__}: {error}')
+  return StripModel(directory, name=SLOTS[0])

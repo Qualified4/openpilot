@@ -51,9 +51,9 @@ def test_default_off_manager_predicate_and_manual_entrypoint_do_not_load_or_impo
   assert requested(True, N(get_bool=lambda key:True))
   catalog = json.loads((ROOT/'openpilot/selfdrive/carrot_settings.json').read_text(encoding='utf-8'))
   item = next(p for p in catalog['params'] if p['name'] == 'CcncLaneTypeDetection')
-  # The option became the 3-way display mode (0 off, 1 Scanner, 2 StripNet); this legacy preview daemon is no
-  # longer registered with the manager (marking_daemon is), but it still stays inert with the option off.
-  assert (item['min'], item['max'], item['default']) == (0, 2, 0)
+  # The option is the display mode (0 off, 1 StripNet; the former 3-way selector's Scanner is gone); this legacy preview
+  # daemon is no longer registered with the manager (marking_daemon is), but it still stays inert with the option off.
+  assert (item['min'], item['max'], item['default']) == (0, 1, 0)
 
 
 def test_lane_marking_reaches_only_the_ccnc_display_path():

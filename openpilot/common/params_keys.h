@@ -217,6 +217,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CcncLaneColor", {PERSISTENT, BOOL, "0"}},
     {"CcncModelLanes", {PERSISTENT, INT, "0"}},
     {"CcncLaneTypeDetection", {PERSISTENT, INT, "0"}},
+    {"LaneStripModel", {PERSISTENT, INT, "0"}},
     {"CcncRadarMap", {PERSISTENT, BOOL, "0"}},
     {"CcncRadarVehicles", {PERSISTENT, BOOL, "0"}},
     {"CcncVehiclePositionCorrection", {PERSISTENT, BOOL, "0"}},
