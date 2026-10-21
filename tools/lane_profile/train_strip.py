@@ -774,10 +774,39 @@ def plot_history(hist, path):
                          chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))
 
 
-def unknown_weight(T, W, wt, share):
+def aug_class_mass(X, T, C, W, synth_p, device, seed):
+  """summed sample weight per type class after synth_double over one epoch (dry run, generator seed + 1000)."""
+  g = torch.Generator(device=device).manual_seed(seed + 1000)
+  S = torch.zeros(len(T2), device=device)
+  order = torch.randperm(len(X), device=device, generator=g)
+  for i in range(0, len(order), 256):
+    idx = order[i:i + 256]
+    _, tb = synth_double(X[idx], T[idx], C[idx], W[idx], g, synth_p)
+    S.index_add_(0, tb, W[idx])
+  return S
+
+
+def cap_dbl(T, W, wt, cap, unknown_share, S=None):
+  """scale the dbl_near / dbl_far weights so their summed mass share is <= cap, then re-solve the unknown weight. -> (wt, scale)."""
+  if S is None:
+    S = torch.stack([W[T == i].sum() for i in range(len(T2))])
+  m = wt*S
+  share = float((m[DBL_NEAR] + m[DBL_FAR])/m.sum())
+  if share <= cap:
+    return wt, 1.
+  a = float(m[DASHED] + m[SOLID])  # with unknown at u and dbl at cap: dbl mass = a * cap / (1 - cap - u)
+  scale = a*cap/(1 - cap - unknown_share)/float(m[DBL_NEAR] + m[DBL_FAR])
+  wt = wt.clone()
+  wt[DBL_NEAR] *= scale
+  wt[DBL_FAR] *= scale
+  return unknown_weight(T, W, wt, unknown_share, S), scale
+
+
+def unknown_weight(T, W, wt, share, S=None):
   """type weight of 'unknown' that gives it ``share`` of the effective (class weight x sample weight) training mass:
   w_u = share/(1 - share) * sum_{k != u} w_k S_k / S_u, S_k = summed sample weights of class k (before augmentation)."""
-  S = torch.stack([W[T == i].sum() for i in range(len(T2))])
+  if S is None:
+    S = torch.stack([W[T == i].sum() for i in range(len(T2))])
   if float(S[UNKNOWN]) <= 0:
     return wt
   rest = sum(float(wt[i]*S[i]) for i in range(len(T2)) if i != UNKNOWN)
@@ -786,16 +815,55 @@ def unknown_weight(T, W, wt, share):
   return wt
 
 
+BACKBONE = ('model.stem.', 'model.body.', 'model.profile.')
+
+
+def load_backbone(net, path):
+  """copy the stem / body / profile conv + BN tensors (same shapes in StripNet and StripNet2) from a StripNet state dict."""
+  state = torch.load(path, map_location='cpu')
+  own = net.state_dict()
+  take = {k: v for k, v in state.items() if k.startswith(BACKBONE) and k in own and own[k].shape == v.shape}
+  missing = [k for k in own if k.startswith(BACKBONE) and k not in take]
+  if missing:
+    raise ValueError(f'backbone init: missing {missing[:5]}')
+  net.load_state_dict(take, strict=False)
+  return {'path': str(path), 'sha256': hashlib.sha256(Path(path).read_bytes()).hexdigest(), 'tensors': len(take)}
+
+
+@torch.no_grad()
+def rebn(net, X, batch=256):
+  """BatchNorm running statistics re-estimated from X (cumulative average), as torch.optim.swa_utils.update_bn."""
+  bns = [m for m in net.modules() if isinstance(m, nn.modules.batchnorm._BatchNorm)]
+  moms = [m.momentum for m in bns]
+  for m in bns:
+    m.reset_running_stats()
+    m.momentum = None
+  net.train()
+  for i in range(0, len(X), batch):
+    net(X[i:i + batch])
+  for m, mo in zip(bns, moms, strict=True):
+    m.momentum = mo
+  net.eval()
+
+
+def effective_share_S(wt, S):
+  m = [float(w)*s for w, s in zip(wt, S, strict=True)]
+  return dict(zip(T2, [round(v/sum(m), 4) for v in m], strict=True))
+
+
 def effective_share(T, W, wt):
   S = torch.stack([W[T == i].sum() for i in range(len(T2))])*wt
   return dict(zip(T2, [round(float(v), 4) for v in S/S.sum()], strict=True))
 
 
 def train2(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, aug='plus-rain-more-nored', norm='fixed', lr_scale=1.,
-           synth_p=.12, blue_p=.05, out=None, unknown_share=None):
+           synth_p=.12, blue_p=.05, out=None, unknown_share=None, ema=0., init_from=None, backbone_lr=1., dbl_max_share=None):
   torch.manual_seed(seed)
   gen = torch.Generator(device=device).manual_seed(seed)
   net = Net(arch, norm).to(device)
+  init_info = None
+  if init_from:  # round 2b: backbone (stem / body / profile conv) from a StripNet checkpoint (deployed v3 = i-407-occ2 seed 0); heads random
+    init_info = load_backbone(net, init_from)
   augment_fn = AUGMENTS[aug]
   X, T, C, W = tensors2(train_rows, xtr, device)
   C = torch.where(T == UNKNOWN, torch.full_like(C, -100), C)      # unknown type: colour loss masked
@@ -803,14 +871,26 @@ def train2(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, aug='plus
   Cv = torch.where(Tv == UNKNOWN, torch.full_like(Cv, -100), Cv)
   wt = class_weights(T, len(T2), (DASHED, SOLID))
   share0 = effective_share(T, W, wt)
+  aug_mass, dbl_scale = None, None
   if unknown_share:  # round 2: unknown class weight set for a target effective share (default None: round-1 balanced/capped weight)
-    wt = unknown_weight(T, W, wt, unknown_share)
+    # round 2b: the share is solved on the class mix AFTER synth-double (a dry pass of one epoch with its own generator, so the
+    # training random stream is untouched); synth turns single lines into dbl_* (rare weight), which otherwise dilutes unknown
+    S = aug_class_mass(X, T, C, W, synth_p, device, seed) if synth_p > 0 else None
+    wt = unknown_weight(T, W, wt, unknown_share, S)
+    if dbl_max_share:  # round 2b: dbl_near + dbl_far together <= dbl_max_share of the (post-synth) type loss mass, then unknown re-solved
+      wt, dbl_scale = cap_dbl(T, W, wt, dbl_max_share, unknown_share, S)
+    aug_mass = None if S is None else [round(float(v), 2) for v in S]
   wc = class_weights(C, len(C2), (WHITE, YELLOW), ignore=-100)
   lr = 2e-3*lr_scale
-  opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-3)
+  bb = [p for n, p in net.named_parameters() if n.startswith(BACKBONE)]
+  hd = [p for n, p in net.named_parameters() if not n.startswith(BACKBONE)]
+  groups = [{'params': bb, 'lr': lr*backbone_lr}, {'params': hd, 'lr': lr}] if init_from else [{'params': list(net.parameters()), 'lr': lr}]
+  opt = torch.optim.AdamW(groups, lr=lr, weight_decay=1e-3)
   reps = AUG_REPEAT.get(aug, 1)
   steps = epochs*reps*math.ceil(len(X)/256)
-  sched = torch.optim.lr_scheduler.OneCycleLR(opt, lr, total_steps=steps, pct_start=.15)
+  sched = torch.optim.lr_scheduler.OneCycleLR(opt, [g['lr'] for g in groups], total_steps=steps, pct_start=.15)
+  ema_p = [p.detach().clone() for p in net.parameters()] if ema else None
+  n_step = 0
   swap = torch.tensor([DASHED, SOLID, DBL_FAR, DBL_NEAR, UNKNOWN], device=device)
   best, history, counts = None, [], torch.zeros(len(T2), device=device)
   start = time.monotonic()
@@ -818,6 +898,7 @@ def train2(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, aug='plus
     net.train()
     order = torch.cat([torch.randperm(len(X), device=device, generator=gen) for _ in range(reps)])
     tot = n_t = ok_t = n_c = ok_c = 0.
+    mass = torch.zeros(len(T2), device=device)  # round 2b: effective type-loss mass per class (sample weight x class weight, after synth/flip)
     for i in range(0, len(order), 256):
       idx = order[i:i + 256]
       xb, tb, cb = X[idx], T[idx], C[idx]
@@ -830,12 +911,19 @@ def train2(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, aug='plus
       counts += torch.bincount(tb, minlength=len(T2)).float()
       lt, lc = net(xb)
       lw = W[idx]
+      mass.index_add_(0, tb, lw*wt[tb])
       loss = ((F.cross_entropy(lt, tb, weight=wt, reduction='none') +
                F.cross_entropy(lc, cb, weight=wc, reduction='none', ignore_index=-100))*lw).sum()/lw.sum()
       opt.zero_grad(set_to_none=True)
       loss.backward()
       opt.step()
       sched.step()
+      n_step += 1
+      if ema_p is not None:
+        d = min(ema, (1 + n_step)/(10 + n_step))
+        with torch.no_grad():
+          for pe, pp in zip(ema_p, net.parameters(), strict=True):
+            pe.mul_(d).add_(pp.detach(), alpha=1 - d)
       tot += float(loss)*len(idx)
       n_t += len(idx)
       ok_t += float((lt.argmax(1) == tb).sum())
@@ -851,10 +939,21 @@ def train2(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, aug='plus
     history.append({'epoch': epoch, 'train_loss': tot/n_t, 'train_type_acc': ok_t/n_t, 'train_color_acc': ok_c/max(1, n_c),
                     'val_loss': float(vl), 'val_type_acc': m['type_acc'], 'val_color_acc': m['color_acc'],
                     'val_type_macro_f1': m['type_macro_f1'], 'val_color_macro_f1': m['color_macro_f1'], 'val_score': m['score'],
-                    **{f'val_f1_{k}': v for k, v in m['type_f1'].items()}, **{f'val_f1_{k}': v for k, v in m['color_f1'].items()}})
+                    **{f'val_f1_{k}': v for k, v in m['type_f1'].items()}, **{f'val_f1_{k}': v for k, v in m['color_f1'].items()},
+                    **{f'mass_{k}': float(v) for k, v in zip(T2, (mass/mass.sum()).tolist(), strict=True)}})
     if best is None or m['score'] > best[0]:
       best = (m['score'], epoch, {k: v.detach().clone() for k, v in net.state_dict().items()})
   net.load_state_dict(best[2])
+  ema_net, ema_m = None, None
+  if ema_p is not None:  # round 2b: EMA weights, BatchNorm statistics re-estimated on the (clean, un-augmented) TRAIN rows only
+    import copy
+    ema_net = copy.deepcopy(net)
+    with torch.no_grad():
+      for pe, pp in zip(ema_p, ema_net.parameters(), strict=True):
+        pp.copy_(pe)
+    rebn(ema_net, X)
+    pte, pce = predict2(ema_net, Xv)
+    ema_m = metrics2(pte, pce, Tv.cpu().numpy(), Cv.cpu().numpy())
   if out is not None:
     keys = list(history[0])
     lines = [','.join(keys)] + [','.join('' if h[k] is None else f'{h[k]:.6g}' if isinstance(h[k], float) else str(h[k]) for k in keys) for h in history]
@@ -864,8 +963,14 @@ def train2(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, aug='plus
   return net, {'best_epoch': best[1], 'best_val_score': best[0], 'history': history, 'gpu_seconds': time.monotonic() - start,
                'params': sum(p.numel() for p in net.parameters()), 'type_weights': wt.tolist(), 'color_weights': wc.tolist(),
                'train_type_share_after_aug': dict(zip(T2, [round(float(v), 4) for v in seen], strict=True)),
-               'effective_type_share_balanced': share0, 'effective_type_share': effective_share(T, W, wt), 'unknown_share_target': unknown_share,
-               'blue_shift': list(BLUE_SHIFT)}
+               'effective_type_share_balanced': share0, 'effective_type_share_pre_aug': effective_share(T, W, wt), 'unknown_share_target': unknown_share,
+               'aug_class_weight_sum': aug_mass, 'dbl_max_share': dbl_max_share, 'dbl_weight_scale': dbl_scale,
+
+               'effective_type_share_post_synth': None if aug_mass is None else effective_share_S(wt, aug_mass),
+               'mass_last_epoch': {k: v for k, v in history[-1].items() if k.startswith('mass_')},
+               'blue_shift': list(BLUE_SHIFT), 'init_from': init_info, 'backbone_lr': backbone_lr if init_from else None,
+               'ema_decay': ema or None, 'ema_val_score': ema_m and ema_m['score'],
+               'ema_val_type_f1': ema_m and ema_m['type_f1'], 'ema_net': ema_net}
 
 
 def main2(a):
@@ -898,7 +1003,14 @@ def main2(a):
   for arch in a.arch:
     for seed in a.seeds:
       net, info = train2(arch, seed, train_rows, x[tr], val_rows, x[va], a.device, a.epochs, a.aug, a.norm, a.lr_scale,
-                         a.synth_double, a.blue_hue, out, a.unknown_share)
+                         a.synth_double, a.blue_hue, out, a.unknown_share, a.ema, a.init_from, a.backbone_lr, a.dbl_max_share)
+      ema_net = info.pop('ema_net')
+      if ema_net is not None:  # round 2b: the EMA model of this seed, exported beside the best-epoch one
+        eo = out/'onnx'/(f'seed{seed}-ema.onnx' if len(a.arch) == 1 else f'{arch}-seed{seed}-ema.onnx')
+        info['ema_onnx'], info['ema_onnx_parity'] = eo.name, export2(ema_net, eo, scols, srows)
+        info['ema_onnx_sha256'] = _h.sha256(eo.read_bytes()).hexdigest()
+        torch.save(ema_net.state_dict(), out/'runs'/f'{arch}-{seed}-ema.pt')
+        del ema_net
       pt, pc = predict2(net, xv)
       ck = out/'runs'/f'{arch}-{seed}.pt'
       torch.save(net.state_dict(), ck)
@@ -935,6 +1047,11 @@ if __name__ == '__main__':
   p.add_argument('--synth-double', type=float, default=.12, help='StripNet2: per-sample probability of the synth-double augmentation (0: off)')
   p.add_argument('--blue-hue', type=float, default=.05, help='StripNet2: per-sample probability of the blue-hue augmentation (0: off)')
   p.add_argument('--lr-scale', type=float, default=1., help='StripNet2: OneCycle max lr factor')
+  p.add_argument('--dbl-max-share', type=float, default=None,
+                 help='StripNet2 with --unknown-share: cap of the dbl_near + dbl_far type-loss mass share after synth (round 2b 0.20)')
+  p.add_argument('--ema', type=float, default=0., help='StripNet2: EMA decay of the weights (0: off; round 2b 0.999) -> onnx/seed<k>-ema.onnx')
+  p.add_argument('--init-from', default=None, help='StripNet2: StripNet state dict whose stem/body/profile initialise the backbone')
+  p.add_argument('--backbone-lr', type=float, default=1., help='StripNet2 with --init-from: backbone LR factor (round 2b 0.3)')
   p.add_argument('--blue-strength', type=float, default=1., help='StripNet2: BLUE_SHIFT factor of the blue-hue augmentation (round 2: 1.5)')
   p.add_argument('--unknown-share', type=float, default=None,
                  help="StripNet2: set the 'unknown' type weight for this effective training share (class x sample weight), e.g. 0.10")
