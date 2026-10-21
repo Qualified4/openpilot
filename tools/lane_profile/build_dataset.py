@@ -114,14 +114,15 @@ def extract_segment(task):
   from openpilot.selfdrive.carrot.lane_type.roi import lane_maps, nv12_strip
   from tools.lane_profile.scanner import sample, strip_geometry  # noqa: TID251
   from tools.lane_type.retrain_data import metadata  # noqa: TID251
-  source, quality, wanted, path = task
+  source, quality, wanted, path = task[:4]
+  half_m, cols = task[4:6] if len(task) > 4 else (.75, 96)  # strip width (lane-retrain-w100: 1.0 m / 128 columns)
   cv2.setNumThreads(1)
   identity, models, calibrations, _, cameras, encodes = metadata(source)
   ct = [c[0] for c in calibrations]
   need = defaultdict(list)
   for i, (index, side) in enumerate(wanted):
     need[index].append((i, side))
-  strips = np.zeros((len(wanted), STRIP_ROWS, 96, 3), np.uint8)
+  strips = np.zeros((len(wanted), STRIP_ROWS, cols, 3), np.uint8)
   legacy = np.zeros((len(wanted), 192, 64, 3), np.uint8)
   ok = np.zeros((len(wanted), 2), bool)
   last = max(need)
@@ -146,11 +147,11 @@ def extract_segment(task):
       rpy = calibrations[ci][1]
       for i, side in need[index]:
         line = model['lines'][1 if side == 'left' else 2]
-        geo = strip_geometry(line, rpy, k, w, h)
+        geo = strip_geometry(line, rpy, k, w, h, half_m=half_m, cols=cols)
         if geo is not None:
           lum, cb, cr = sample(planar[:h], uv, geo)
           ycc = np.clip(np.stack((lum, cb, cr), -1), 0, 255).astype(np.uint8)
-          strips[i] = cv2.resize(ycc, (96, STRIP_ROWS), interpolation=cv2.INTER_AREA if len(ycc) > STRIP_ROWS else cv2.INTER_LINEAR)
+          strips[i] = cv2.resize(ycc, (cols, STRIP_ROWS), interpolation=cv2.INTER_AREA if len(ycc) > STRIP_ROWS else cv2.INTER_LINEAR)
           ok[i, 0] = True
         maps = lane_maps(N(**line), model['probs'][1 if side == 'left' else 2], rpy, k, w, h)
         if maps is not None:

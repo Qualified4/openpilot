@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 from tools.lane_profile.compare_models import SCAN_C, SCAN_T  # noqa: TID251
-from tools.lane_profile.dataset_io import COLORS, TYPES, load_set  # noqa: TID251
+from tools.lane_profile.dataset_io import COLORS_V1 as COLORS, TYPES_V1 as TYPES, load_set  # noqa: TID251  (2-class heads)
 
 FPS, STEP = 20, 4
 REPEAT_S, HOLD_S, BREAK_S = .4, .5, 1.

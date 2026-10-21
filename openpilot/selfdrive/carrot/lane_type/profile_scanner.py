@@ -45,8 +45,12 @@ def projection(rpy, k):
   return np.asarray(k, float) @ view_frame_from_device_frame @ rot_from_euler(np.asarray(rpy, float))
 
 
-def strip_geometry(line, rpy, k, width, height, hood=HOOD_FRACTION):
-  """Row-aligned sampling maps. Rows are integer source rows (map_y exact); columns are metric."""
+def strip_geometry(line, rpy, k, width, height, hood=HOOD_FRACTION, half_m=HALF_M, cols=COLUMNS):
+  """Row-aligned sampling maps. Rows are integer source rows (map_y exact); columns are metric.
+
+  ``half_m`` / ``cols``: lateral half width (m) and column count of the strip. The defaults (+-0.75 m, 96 columns) are the
+  scanner's and StripNet v1-v3's; a StripNet manifest may ask for another width (strip_model.strip_of). The scanner's row
+  evidence (row_evidence) always uses the defaults."""
   x, y, z = (np.asarray(line[c], float) for c in 'xyz')
   if len(x) < 3 or not np.isfinite(x).all() or np.any(np.diff(x) <= 0) or x[0] > NEAR_M or x[-1] < FAR_M + 1:
     return None
@@ -66,23 +70,23 @@ def strip_geometry(line, rpy, k, width, height, hood=HOOD_FRACTION):
   d = np.interp(ys, v[::-1], ds[::-1])
   lat, zz = np.interp(d, x, y), np.interp(d, x, z)
   edges = []
-  for off in (-HALF_M, HALF_M):
+  for off in (-half_m, half_m):
     q = np.column_stack((d, lat + off, zz)) @ m.T
     edges.append(q[:, 0]/q[:, 2])
   # Depth is constant across a row's lateral span, so u is linear in the metric offset.
-  t = (np.arange(COLUMNS*SUB) + .5)/(COLUMNS*SUB)
+  t = (np.arange(cols*SUB) + .5)/(cols*SUB)
   mx = (edges[0][:, None] + t[None]*(edges[1] - edges[0])[:, None]).astype(np.float32)
-  my = np.repeat(ys[:, None].astype(np.float32), COLUMNS*SUB, 1)
-  return {'ys': ys, 'd': d, 'mx': mx, 'my': my, 'u0': edges[0], 'u1': edges[1], 'matrix': m}
+  my = np.repeat(ys[:, None].astype(np.float32), cols*SUB, 1)
+  return {'ys': ys, 'd': d, 'mx': mx, 'my': my, 'u0': edges[0], 'u1': edges[1], 'matrix': m, 'half_m': half_m, 'cols': cols}
 
 
 def sample(y_plane, uv_plane, geo):
-  """Luma and chroma strips (R x COLUMNS). Horizontal box prefilter of SUB samples per column."""
-  r = len(geo['ys'])
+  """Luma and chroma strips (R x geo['cols'], default COLUMNS). Horizontal box prefilter of SUB samples per column."""
+  r, cols = len(geo['ys']), geo.get('cols', COLUMNS)
   lum = cv2.remap(y_plane, geo['mx'], geo['my'], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-  lum = lum.reshape(r, COLUMNS, SUB).mean(2, dtype=np.float32)
+  lum = lum.reshape(r, cols, SUB).mean(2, dtype=np.float32)
   uv = cv2.remap(uv_plane, geo['mx']*.5, geo['my']*.5, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-  uv = uv.reshape(r, COLUMNS, SUB, 2).mean(2, dtype=np.float32)
+  uv = uv.reshape(r, cols, SUB, 2).mean(2, dtype=np.float32)
   return lum, uv[..., 0], uv[..., 1]
 
 

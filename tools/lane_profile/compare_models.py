@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from tools.lane_profile.dataset_io import COLORS, TYPES, load_set  # noqa: TID251
+from tools.lane_profile.dataset_io import COLORS_V1 as COLORS, TYPES_V1 as TYPES, load_set  # noqa: TID251  (2-class heads)
 from tools.lane_profile.train_strip import Export, Net, predict, tensors, train  # noqa: TID251
 
 ARCHS = ('stripnet', 'pplcnet025', 'mobilenetv3s')

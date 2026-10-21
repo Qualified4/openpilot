@@ -27,6 +27,8 @@ def main(a):
   out = Path(a.output)
   (out/'runs').mkdir(parents=True, exist_ok=True)
   rows, x = load_set(a.data)
+  srows, scols = x.shape[1:3]  # 128 x 96 (+-0.75 m) or 128 x 128 (+-1.0 m, lane-retrain-w100-20261021)
+  strip = {'half_m': round(scols*1.5/96/2, 6), 'cols': int(scols), 'rows': int(srows)}  # -> lane_strip.json 'strip'
   tr = [i for i, r in enumerate(rows) if r['split'] == 'train']
   va = [i for i, r in enumerate(rows) if r['split'] == 'validation']
   if a.limit:  # smoke test only: a seeded random subset
@@ -58,10 +60,10 @@ def main(a):
   wrapper = Export(net).eval()
   onnx = out/'onnx'/f'{tag}.onnx'
   onnx.parent.mkdir(exist_ok=True)
-  torch.onnx.export(wrapper, torch.full((2, 3, 128, 96), 100.), str(onnx), input_names=['strip_ycbcr'], output_names=['line_type', 'color'],
+  torch.onnx.export(wrapper, torch.full((2, 3, srows, scols), 100.), str(onnx), input_names=['strip_ycbcr'], output_names=['line_type', 'color'],
                     dynamic_axes={'strip_ycbcr': {0: 'n'}, 'line_type': {0: 'n'}, 'color': {0: 'n'}}, opset_version=14)
   import onnxruntime as ort
-  probe = torch.rand(8, 3, 128, 96)*255
+  probe = torch.rand(8, 3, srows, scols)*255
   ref = [o.detach().numpy() for o in wrapper(probe)]
   got = ort.InferenceSession(str(onnx), providers=['CPUExecutionProvider']).run(None, {'strip_ycbcr': probe.numpy()})
   cfg.update(onnx=onnx.name, onnx_bytes=onnx.stat().st_size, onnx_parity=float(max(np.abs(p - q).max() for p, q in zip(ref, got, strict=True))))
@@ -70,9 +72,18 @@ def main(a):
     for r in runs:
       sn = Net(ARCH, NORM)
       sn.load_state_dict(torch.load(out/'runs'/r['checkpoint'], map_location='cpu'))
-      cfg['seed_onnx'][r['seed']] = {'onnx': f"seed{r['seed']}.onnx", 'parity': export(sn, out/'onnx'/f"seed{r['seed']}.onnx")}
+      cfg['seed_onnx'][r['seed']] = {'onnx': f"seed{r['seed']}.onnx", 'parity': export(sn, out/'onnx'/f"seed{r['seed']}.onnx", scols, srows)}
+  cfg['strip'] = strip
   (out/'selection.json').write_text(json.dumps({'config': f'{ARCH}/{AUG}', 'norm': NORM, **cfg}, indent=1), encoding='utf-8')
   test_rows, xt = load_set(a.test)
+  if xt.shape[1:3] != x.shape[1:3]:  # e.g. the 96-column human test set with a 128-column model: no test score (re-cut it first)
+    note = f'skipped: test strips {xt.shape[1:3]} != training strips {x.shape[1:3]}'
+    for r in runs:
+      r['test_human'] = note
+    (out/'runs.json').write_text(json.dumps({'runs': runs, 'configs': {f'{ARCH}/{AUG}': cfg}}, indent=1), encoding='utf-8')
+    print(note)
+    print(json.dumps(cfg, indent=1))
+    return
   if a.limit:
     keep = sorted(np.random.default_rng(0).choice(len(test_rows), min(len(test_rows), max(1, a.limit//4)), replace=False).tolist())
     test_rows, xt = [test_rows[i] for i in keep], xt[keep]

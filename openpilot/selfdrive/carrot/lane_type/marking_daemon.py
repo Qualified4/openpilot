@@ -181,12 +181,13 @@ class Recogniser:
       return out
     from openpilot.selfdrive.carrot.lane_type.strip_model import strip_input
     strips, sides = [], []
+    strip = getattr(self.model, 'strip', {})  # the manifest's strip geometry (StripModel.strip); a replay wrapper without it: default
     for side in ('left', 'right'):
       skip = self._skip_reason(side, frame)
       if skip:
         out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason=skip)
         continue
-      s = strip_input(y_plane, uv_plane, frame['lines'][side], frame['rpy'], frame['k'])
+      s = strip_input(y_plane, uv_plane, frame['lines'][side], frame['rpy'], frame['k'], **strip)
       if s is None:
         out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason='invalid_lane_geometry')
         continue

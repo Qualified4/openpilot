@@ -1,13 +1,14 @@
 """Train a lightweight lane type/colour classifier on the 4.5-20 m row-aligned strip (PC/GPU only).
 
-Input: YCbCr uint8 strip 128 x 96 (rows far->near, metric columns) from build_dataset.py. Labels: interval
+Input: YCbCr uint8 strip 128 x 96 (rows far->near, metric columns, +-0.75 m) from build_dataset.py, or 128 x 128 (+-1.0 m,
+same 1.56 cm/col: lane-retrain-w100-20261021); the width is taken from the dataset and recorded in model-contract.json 'strip'. Labels: interval
 labels (human > scanner auto > scanner pool > AI review) with per-origin weights. Classes: type dashed/solid,
 colour white/yellow. Yellow dashed has no training data and is NOT a learned class (dashed+yellow is never
 claimed; downstream must treat it as unknown).
 
 Model selection and the abstention threshold use the validation routes only. The held-out human test set is
 evaluated once, after selection, by evaluate(); its result never feeds back into training.
-The exported ONNX takes the raw strip (N,3,128,96 float in 0..255) and contains normalisation and softmax.
+The exported ONNX takes the raw strip (N,3,128,W float in 0..255) and contains normalisation and softmax.
 """
 import argparse
 import hashlib
@@ -21,11 +22,12 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from tools.lane_profile.dataset_io import COLORS, TYPES, load_set  # noqa: TID251
+from tools.lane_profile.dataset_io import COLORS_V1 as COLORS, TYPES_V1 as TYPES, check_labels, load_set  # noqa: TID251  (2-class heads)
 
 
 NORMS = ('fixed', 'road', 'road-y')
-ROAD_ROWS, ROAD_COLS = 64, 16  # road reference: near half (rows 64-127 = ~4.5-10 m) x outer 16 columns each side (0.5-0.75 m)
+ROAD_ROWS, ROAD_COLS = 64, 16  # road reference: near half (rows 64-127 = ~4.5-10 m) x outer 16 columns each side (0.5-0.75 m; 0.75-1.0 m on a 128-column strip)
+COL_M = 1.5/96  # strip column pitch (m): 96 columns over +-0.75 m, 128 over +-1.0 m
 
 
 class Normalize(nn.Module):
@@ -75,7 +77,7 @@ class StripNet(nn.Module):
     self.type_head, self.color_head = nn.Linear(64, 2), nn.Linear(64, 2)
 
   def forward(self, x):
-    f = self.body(self.stem(x))                     # N, C, 8, 6
+    f = self.body(self.stem(x))                     # N, C, 8, 6 (8, 8 for a 128-column strip)
     prof = self.profile(f).mean(3).flatten(1)        # along-road profile, lateral pooled
     z = self.fc(torch.cat((prof, f.mean((2, 3))), 1))
     return self.type_head(z), self.color_head(z)
@@ -192,7 +194,8 @@ def augment_plus(x, gen):
     x = torch.where(blur.view(-1, 1, 1, 1), xb, x)
   shift = int(torch.randint(-4, 5, (1,), generator=gen, device=dev))
   if shift:
-    x = F.pad(x, (max(shift, 0), max(-shift, 0), 0, 0), mode='replicate')[..., max(-shift, 0):max(-shift, 0) + 96]
+    w = x.shape[3]
+    x = F.pad(x, (max(shift, 0), max(-shift, 0), 0, 0), mode='replicate')[..., max(-shift, 0):max(-shift, 0) + w]
   noise = torch.randn((n, 1) + x.shape[2:], device=dev, generator=gen)*3*r(n, 1, 1, 1)  # luma only
   return torch.cat((x[:, :1] + noise, x[:, 1:]), 1).clamp(0, 255)
 
@@ -400,30 +403,36 @@ def choose_threshold(pt, pc, rows, target=.99):
   return .99
 
 
-def export(net, path):
+def export(net, path, cols=96, rows=128):
   net = net.cpu().eval()
   wrapper = Export(net).eval()  # export restores the module's previous mode; keep it eval for the parity check
-  dummy = torch.full((2, 3, 128, 96), 100.)
+  dummy = torch.full((2, 3, rows, cols), 100.)
   torch.onnx.export(wrapper, dummy, str(path), input_names=['strip_ycbcr'], output_names=['line_type', 'color'],
                     dynamic_axes={'strip_ycbcr': {0: 'n'}, 'line_type': {0: 'n'}, 'color': {0: 'n'}}, opset_version=14)
   import onnxruntime as ort
   sess = ort.InferenceSession(str(path), providers=['CPUExecutionProvider'])
-  x = (torch.rand(8, 3, 128, 96)*255)
+  x = (torch.rand(8, 3, rows, cols)*255)
   ref = [o.detach().numpy() for o in wrapper(x)]
   got = sess.run(None, {'strip_ycbcr': x.numpy()})
   return float(max(np.abs(a - b).max() for a, b in zip(ref, got, strict=True)))
 
 
 def main(a):
-  device = 'cuda'
+  device = a.device
   out = Path(a.output)
   out.mkdir(parents=True, exist_ok=True)
   rows, x = load_set(a.data)
+  check_labels(rows, TYPES, COLORS)  # the extended vocabulary (dbl_near/dbl_far/unknown, blue) is not a 2-class head label
+  srows, scols = x.shape[1:3]
+  strip = {'half_m': round(scols*COL_M/2, 6), 'cols': int(scols), 'rows': int(srows)}
   tr = [i for i, r in enumerate(rows) if r['split'] == 'train']
   va = [i for i, r in enumerate(rows) if r['split'] == 'validation']
+  if a.limit:  # smoke test: evenly spaced subsets
+    tr = [tr[j] for j in np.linspace(0, len(tr) - 1, min(a.limit, len(tr))).astype(int)]
+    va = [va[j] for j in np.linspace(0, len(va) - 1, min(a.limit, len(va))).astype(int)]
   assert not {rows[i]['route'] for i in tr} & {rows[i]['route'] for i in va}
   train_rows, val_rows = [rows[i] for i in tr], [rows[i] for i in va]
-  report = {'data': str(a.data), 'train_frames': len(tr), 'validation_frames': len(va), 'runs': []}
+  report = {'data': str(a.data), 'train_frames': len(tr), 'validation_frames': len(va), 'strip': strip, 'limit': a.limit, 'runs': []}
   best = None
   for arch in a.arch:
     for seed in a.seeds:
@@ -444,12 +453,14 @@ def main(a):
                         'validation_human_only_at_threshold': metrics(pt[human_val], pc[human_val], [val_rows[i] for i in human_val], threshold)}
   torch.save(net.state_dict(), out/'model.pt')
   onnx_path = out/'lane_strip.onnx'
-  report['selected']['onnx_parity_max_abs'] = export(net, onnx_path)
+  report['selected']['onnx_parity_max_abs'] = export(net, onnx_path, scols, srows)
   report['selected']['onnx_bytes'] = onnx_path.stat().st_size
   report['selected']['onnx_sha256'] = hashlib.sha256(onnx_path.read_bytes()).hexdigest()
   report['selected']['params'] = sum(p.numel() for p in net.parameters())
   (out/'train-report.json').write_text(json.dumps(report, indent=1), encoding='utf-8')
-  (out/'model-contract.json').write_text(json.dumps({'input': 'strip_ycbcr float32 N x 3 x 128 x 96, raw 0..255 (Y, Cb, Cr), rows far(20m)->near(4.5m)',
+  (out/'model-contract.json').write_text(json.dumps({
+    'input': f'strip_ycbcr float32 N x 3 x {srows} x {scols}, raw 0..255 (Y, Cb, Cr), rows far(20m)->near(4.5m)',
+    'strip_geometry': strip,  # -> lane_strip.json 'strip' (absent = 0.75 / 96 / 128)
     'strip': 'tools/lane_profile/scanner.py strip_geometry+sample, rows INTER_AREA resized to 128', 'outputs': {'line_type': TYPES, 'color': COLORS},
     'threshold': threshold, 'yellow_dashed': 'not a learned class: dashed+yellow must be reported as unknown',
     'arch': arch, 'aug': a.aug, 'norm': a.norm, 'trained_on': 'train routes only; selected on validation routes; test never used'}, indent=1), encoding='utf-8')
@@ -467,4 +478,6 @@ if __name__ == '__main__':
   p.add_argument('--norm', choices=NORMS, default='fixed', help='input normalisation inside the model/ONNX (Normalize)')
   p.add_argument('--mbv3', default='.analysis/lane-model-comparison-20261018/pretrained/mobilenet_v3_small-047dcff4.pth')
   p.add_argument('--pretrained', default='.analysis/lane-model-comparison-20261018/pretrained/PPLCNet_x0_25_pretrained.pdparams')
+  p.add_argument('--device', default='cuda', help="torch device (default cuda; 'cpu' for a smoke test)")
+  p.add_argument('--limit', type=int, default=0, help='smoke test: at most N evenly spaced train and N validation frames')
   main(p.parse_args())
