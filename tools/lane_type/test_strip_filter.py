@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from openpilot.selfdrive.carrot.lane_type import strip_filter, strip_model
-from openpilot.selfdrive.carrot.lane_type.marking_daemon import Recogniser, filter_input
+from openpilot.selfdrive.carrot.lane_type.marking_daemon import LEAD_GATE_DREL, Recogniser, filter_input, lead_d_rel
 
 FRAME_NS = 50_000_000
 STRIP = np.zeros((3, 128, 96), np.float32)
@@ -29,15 +29,19 @@ def fake_model(monkeypatch):
   monkeypatch.setattr(f'{strip_model.__name__}.strip_input', lambda y, uv, line, rpy, k: None if line == 'bad' else STRIP)
 
 
-def frame(i, *, lane_change=False, probs=(1., 1.), lines=('L', 'R'), metres=1.):
-  return {'lines': {'left': lines[0], 'right': lines[1]}, 'probs': {'left': probs[0], 'right': probs[1]}, 'rpy': None,
-          'k': None, 'stamp': i*FRAME_NS, 'odometer': i*metres, 'leads': [], 'lane_change': lane_change}
+def frame(i, *, lane_change=False, probs=(1., 1.), lines=('L', 'R'), metres=1., lead=None):
+  f = {'lines': {'left': lines[0], 'right': lines[1]}, 'probs': {'left': probs[0], 'right': probs[1]}, 'rpy': None,
+       'k': None, 'stamp': i*FRAME_NS, 'odometer': i*metres, 'leads': [], 'lane_change': lane_change}
+  if lead is not None:
+    f['lead_d_rel'] = lead
+  return f
 
 
 def step(rec, i, p, color=.99, **kw):
   """Process frame i with P(dashed) p on every side that reaches the model."""
   f = frame(i, **kw)
-  rec.model.queue += [(p, color)]*sum(not f['lane_change'] and f['probs'][s] >= .5 and f['lines'][s] != 'bad'
+  lead_close = f.get('lead_d_rel') is not None and f['lead_d_rel'] < LEAD_GATE_DREL
+  rec.model.queue += [(p, color)]*sum(not f['lane_change'] and not lead_close and f['probs'][s] >= .5 and f['lines'][s] != 'bad'
                                        for s in ('left', 'right'))
   out = rec.process(None, None, f)
   assert not rec.model.queue
@@ -444,3 +448,59 @@ def test_blinker_alone_infers_a_confident_line_beside_the_car(blinker, lcs, prob
   assert rec._skip_reason('left', f) == reason
   f.pop('blinker'), f.pop('lcs_change'), f.pop('v_ego', None)  # a frame without the split flags: any lane change resets, as before
   assert rec._skip_reason('left', f) == ('lane_change' if blinker or lcs else reason)
+
+
+def test_lead_close_pauses_both_sides_and_keeps_windows_latch_and_display():
+  """L4 (REPORT_gate_KO.md): lead dRel < 4 m skips inference on both sides like a short lane prob dip, also for a stop
+  longer than the 1 s dip limit and the 3 s window cap; nothing is emptied, and the kept label shows again at once."""
+  from openpilot.selfdrive.carrot.lane_type.display import DisplayPolicy
+  rec, policy = Recogniser(2), DisplayPolicy()
+  for i in range(12):
+    out = step(rec, i, .02, color=.01)  # yellow solid, latched
+    confirmed = policy.confirm({'cameraMonoTimeNanos': i*FRAME_NS, **out}, i*FRAME_NS)
+  assert (out['left']['type'], out['left']['color']) == ('solid', 'yellow') and confirmed['left']['color']['value'] == 'yellow'
+  sides = rec.strip_filter.sides
+  latched = {k: dict(v.latched) for k, v in sides.items()}
+  for i in range(12, 112):  # 5 s behind a car at 2.5 m: the windows age out, the latch stays
+    out = step(rec, i, .98, color=.99, lead=2.5)  # the model would read the car body as white dashed: never asked
+    for side in ('left', 'right'):
+      assert out[side]['reason'] == 'lead_close'
+      assert out[side]['typePDashed'] is None and out[side]['colorPYellow'] is None
+    assert {k: dict(v.latched) for k, v in sides.items()} == latched and all(v.state == 'solid' for v in sides.values())
+    if i < 20:  # within DisplayPolicy's 0.5 s expiry the confirmed heads are kept (not reset)
+      confirmed = policy.confirm({'cameraMonoTimeNanos': i*FRAME_NS, **out}, i*FRAME_NS)
+      assert confirmed['left']['color']['value'] == 'yellow'
+  assert not rec.dip_since  # no dip timer started
+  out = step(rec, 112, .5, color=.5)  # lead gone, the first frame is uncertain: the latch still shows yellow solid
+  assert (out['left']['type'], out['left']['color']) == ('solid', 'yellow')
+  assert (out['right']['type'], out['right']['color']) == ('solid', 'yellow')
+
+
+@pytest.mark.parametrize('lead, prob, lane_change, reason', [
+  (3.99, 1., False, 'lead_close'),
+  (0., .6, False, 'lead_close'),
+  (4., 1., False, None),           # 4 m and beyond: inferred
+  (6., 1., False, None),
+  (None, 1., False, None),         # no valid lead (status off / stale): inferred
+  ('absent', 1., False, None),     # a frame without the key (older callers, Scanner replays)
+  (2., .45, False, 'lane_prob_dip'),  # the lane prob gates come first
+  (2., .2, False, 'not_detected'),
+  (2., 1., True, 'lane_change'),
+])
+def test_lead_gate_reason(lead, prob, lane_change, reason):
+  rec = Recogniser(2)
+  f = frame(0, probs=(prob, prob), lane_change=lane_change)
+  if lead != 'absent':
+    f['lead_d_rel'] = lead
+  assert rec._skip_reason('left', f) == reason
+
+
+def test_lead_d_rel_from_radar_state():
+  from types import SimpleNamespace
+  rs = lambda d, status: SimpleNamespace(leadOne=SimpleNamespace(dRel=d, status=status))  # noqa: E731
+  stamp = 10_000_000_000
+  assert lead_d_rel(rs(3., True), stamp - 50_000_000, stamp) == 3.
+  assert lead_d_rel(rs(3., True), stamp + 60_000_000, stamp) == 3.  # the radarState of this very model frame
+  assert lead_d_rel(rs(3., False), stamp, stamp) is None             # status off
+  assert lead_d_rel(rs(3., True), stamp - 250_000_000, stamp) is None  # stale
+  assert lead_d_rel(rs(3., True), 0, stamp) is None                  # never received

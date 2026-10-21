@@ -38,10 +38,25 @@ LANE_PROB_MIN, LANE_PROB_LOST, LANE_DIP_MAX_NS = .5, .3, 1_000_000_000
 # line for 10 s while the model saw the yellow solid one). Below the speed (turn lanes, intersections) the blinker
 # resets as before (10-20 segment 3 L 14.85 s: a turn-lane block marking taken for a white solid, DaBin 10-20).
 BLINKER_PROB, BLINKER_Y, BLINKER_INFER_SPEED = .7, 1., 8.3
+# StripNet, lead car close (radarState leadOne with status set, dRel < LEAD_GATE_DREL m, the radarState within
+# LEAD_MAX_AGE_NS of the frame's camera stamp): a side that would be inferred is 'lead_close' instead, which pauses like
+# 'lane_prob_dip' (no inference; strip_filter windows / latch and DisplayPolicy are kept, no dip timer). At this range the
+# lead car's body fills the strip and can be read as a white line (10-19 16-seg 3fd/5 36.9-42.2 s: 5.3 s with three 407-round seeds); the
+# A/B on the strip cache is .analysis/ccnc-field-20261021/REPORT_gate_KO.md (L4; 6 m cost rain white bookmarks 9 -> 4).
+LEAD_GATE_DREL, LEAD_MAX_AGE_NS = 4., 200_000_000
 
 
 def requested(started, params, CP=None):
   return started and mode_of(params) in MODES
+
+
+def lead_d_rel(radar_state, log_mono_ns, stamp_ns, max_age_ns=LEAD_MAX_AGE_NS):
+  """leadOne dRel (m) of a radarState received at ``log_mono_ns`` (0: never) for the frame at camera stamp ``stamp_ns``;
+  None when the lead's status is not set or the radarState is more than ``max_age_ns`` away from the frame."""
+  if not log_mono_ns or abs(stamp_ns - log_mono_ns) > max_age_ns:
+    return None
+  lead = radar_state.leadOne
+  return float(lead.dRel) if lead.status else None
 
 
 def line_dict(line, shift_m=0.):
@@ -132,7 +147,7 @@ class Recogniser:
     self.dip_since.clear()
 
   def _skip_reason(self, side, frame):
-    """StripNet: why this side is not inferred ('lane_change', 'not_detected', 'lane_prob_dip'), or None."""
+    """StripNet: why this side is not inferred ('lane_change', 'not_detected', 'lane_prob_dip', 'lead_close'), or None."""
     prob, stamp = frame['probs'][side], frame['stamp']
     if prob >= LANE_PROB_MIN:
       self.dip_since.pop(side, None)
@@ -148,12 +163,14 @@ class Recogniser:
     elif frame['lane_change']:  # a frame without the split flags (older callers): any lane change resets
       return 'lane_change'
     if prob >= LANE_PROB_MIN:
-      return None
+      lead = frame.get('lead_d_rel')
+      return 'lead_close' if lead is not None and lead < LEAD_GATE_DREL else None
     return 'lane_prob_dip' if prob >= LANE_PROB_LOST and stamp - since <= LANE_DIP_MAX_NS else 'not_detected'
 
   def process(self, y_plane, uv_plane, frame):
     """frame: lines/probs per side, rpy, k, stamp (camera EOF ns), odometer, leads, lane_change (blinker or
-    laneChangeState), optionally blinker, lcs_change (laneChangeState != off) and v_ego separately for StripNet."""
+    laneChangeState), optionally blinker, lcs_change (laneChangeState != off), v_ego and lead_d_rel (radarState leadOne dRel m,
+    None: no valid lead) separately for StripNet."""
     out = {}
     if self.mode == 1:
       for side in ('left', 'right'):
@@ -185,7 +202,7 @@ class Recogniser:
       from openpilot.selfdrive.carrot.lane_type.strip_filter import p_dashed, p_yellow
       for side in ('left', 'right'):
         # filter_input drops the model's probabilities, so P(dashed) / P(yellow) come from the model output;
-        # reset-reason sides (no inference) are passed too and empty the windows; a lane_prob_dip side is passed
+        # reset-reason sides (no inference) are passed too and empty the windows; a lane_prob_dip / lead_close side is passed
         # without probabilities, so it is skipped and keeps them. Unlearned yellow-dashed frames stay out of both.
         r = models.get(side)
         learned = r is not None and r['reason'] == 'strip_model'
@@ -249,7 +266,7 @@ def main():
       os.sched_setaffinity(0, background)
   if hasattr(os, 'nice'):
     os.nice(10)
-  sm = messaging.SubMaster(['modelV2', 'liveCalibration', 'carState', 'deviceState', 'roadCameraState'], poll='modelV2')
+  sm = messaging.SubMaster(['modelV2', 'liveCalibration', 'carState', 'deviceState', 'roadCameraState', 'radarState'], poll='modelV2')
   pm = messaging.PubMaster(['customReservedRawData2'])
   client = VisionIpcClient('camerad', VisionStreamType.VISION_STREAM_ROAD, False)  # every frame; FrameBuffer keeps 3
   frames = FrameBuffer()
@@ -311,7 +328,8 @@ def main():
                'leads': [{'prob': lead.prob, 'x': [x - shift for x in lead.x], 'y': list(lead.y)} for lead in model.leadsV3],
                'lane_change': bool(car.leftBlinker or car.rightBlinker or str(model.meta.laneChangeState) != 'off'),
                'blinker': bool(car.leftBlinker or car.rightBlinker),
-               'lcs_change': str(model.meta.laneChangeState) != 'off', 'v_ego': float(car.vEgo)}
+               'lcs_change': str(model.meta.laneChangeState) != 'off', 'v_ego': float(car.vEgo),
+               'lead_d_rel': lead_d_rel(sm['radarState'], sm.logMonoTime['radarState'] if sm.seen['radarState'] else 0, stamp)}
       raw = recogniser.process(y_plane, uv_plane, frame)
     except (ValueError, KeyError, AttributeError, cv2.error) as error:
       counters['errors'] += 1

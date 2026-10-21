@@ -137,8 +137,10 @@ def test_daemon_main_loop_with_fake_ipc(monkeypatch):
   class SM:
     def __init__(self, services, poll=None):
       self.updated, self.valid, self.alive = {}, dict.fromkeys(services, True), dict.fromkeys(services, True)
+      self.seen, self.logMonoTime = dict.fromkeys(services, True), dict.fromkeys(services, 0)
     def update(self, timeout):
       state['i'] += 1
+      self.logMonoTime['radarState'] = time.monotonic_ns()  # a lead far ahead (30 m): the lead gate stays open
       # camerad is one frame ahead of modeld, as in the recorded timing: frames i and i+1 are queued
       state['queue'] += [i for i in (state['i'], state['i'] + 1) if i not in state['sent']]
       state['sent'].update(state['queue'])
@@ -147,7 +149,8 @@ def test_daemon_main_loop_with_fake_ipc(monkeypatch):
       i = state['i']
       return {'modelV2': model_msg(i), 'liveCalibration': N(calStatus='calibrated', rpyCalib=list(rpy)),
               'carState': N(vEgo=10., leftBlinker=False, rightBlinker=False),
-              'deviceState': N(started=True, deviceType='mici'), 'roadCameraState': N(sensor='os04c10')}[key]
+              'deviceState': N(started=True, deviceType='mici'), 'roadCameraState': N(sensor='os04c10'),
+              'radarState': N(leadOne=N(dRel=30., status=True))}[key]
   sent = []
 
   class Client:

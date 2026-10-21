@@ -1,8 +1,8 @@
 {
- "version": 2,
+ "version": 3,
  "architecture": "StripNet",
  "params": 21532,
- "model_sha256": "b6ce87a969405b3cf8fa461454248f33a16cb0530397f1cdd77671d9fd1c69b6",
+ "model_sha256": "e6c5f34fb84d1b184d90bda5e245ab4fc32c01b4a3f55665a7b332debb87053f",
  "input": {
   "name": "strip_ycbcr",
   "shape": [
@@ -27,14 +27,14 @@
  "threshold": 0.9,
  "yellow_dashed": "not a learned class; reported as unknown",
  "training": {
-  "source": ".analysis/lane-retrain-rain-20261020 run g-more-nored seed 2 (StripNet, fixed normalisation, aug plus-rain-more-nored, 40 epochs)",
-  "train_frames": 12901,
-  "validation_frames": 1869,
-  "seed": 2,
-  "data": "2026-10-19 reviewed clear-day set 12,475 + 2026-10-20 rain/evening route 00000404 reviewed 2,295 (held-out rain segments 4/7/12/16/18/21 excluded)",
+  "source": ".analysis/lane-retrain-407-20261021 run i-407-occ2 seed 0 (StripNet, fixed normalisation, aug plus-rain-more-nored AUG_REPEAT 2, 40 epochs, best epoch 35)",
+  "train_frames": 15922,
+  "validation_frames": 2679,
+  "seed": 0,
+  "data": "dataset-merged-407 18,601 frames: v2 set 14,770 + 2026-10-21 field route 00000407 reviewed 3,831 (407 auto yellow-solid train frames thinned to every 5th; 407 segments 17/19 validation; held-out rain segments 4/7/12/16/18/21 and test routes excluded)",
   "labels": "human_confirmed > scanner auto > scanner pool > ai review; test routes excluded",
-  "previous": "version 1 sha256 0482597d210eb0d416b32ea0dce395476eb30b036004715a4615eac252015795 (frozen 2026-10-18)"
+  "previous": "version 2 sha256 b6ce87a969405b3cf8fa461454248f33a16cb0530397f1cdd77671d9fd1c69b6 (g-more-nored seed 2, 2026-10-20; .analysis/lane-retrain-407-20261021/train/v2-lane_strip.onnx.bak)"
  },
- "validation_display_eval": "replay (strip cache): rain held-out bookmarks yellow 22/22 (v1 0/22), 13-seg human labels wrong frames 5 (v1 14), 16-seg transitions 171 / white<->orange 8 (v1 185 / 15), test424 colour acc 0.977 decided 384/424 white-confidence 0.904 (v1 0.978 / 408 / 0.965); known: yellow latch lingers ~0.9 s on white block dashes after a yellow line, stopped-car tail-light scenes are seed-sensitive (REPORT_check_KO.md, check/REPORT_dclear_KO.md)",
+ "validation_display_eval": "replay (strip cache, with the marking_daemon lead gate L4): rain held-out bookmarks yellow 21/22 white ok 9 (v2 22/22, 9), 13-seg human labels wrong frames 9 (v2 5), 16-seg transitions 162 / white<->orange 8 (without L4 166 / 9; v2 171 / 8), 16-seg scene 3fd/4-5 left white 0 s, 407 raw dashed-confident share 38 % (v2 15 %, v1 46 %), 407 card bookmarks 3R/4R/19L fixed (v2 none); known: rain yellow bookmark 1/22 wrong, 407 dashed confidence below the 40 % target, 407 segments 3-16/18/20-21 are training data (lane-retrain-407-20261021/eval/comparison407.md, ccnc-field-20261021/REPORT_gate_KO.md, REPORT_impl_v3_KO.md)",
  "deviceValidated": false
 }

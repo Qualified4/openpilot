@@ -300,6 +300,7 @@ def augment_plus_rain_more_nored(x, gen):
 
 AUGMENTS = {'base': augment, 'plus': augment_plus, 'plus-rain': augment_plus_rain, 'plus-rain-lite': augment_plus_rain_lite,
             'plus-rain-more': augment_plus_rain_more, 'plus-rain-more-nored': augment_plus_rain_more_nored}
+AUGMENTS['plus-rain-more-nored-occ1'] = augment_plus_rain_more_nored  # 2026-10-21 (407 round): same draws incl. the road-colour occlusion, AUG_REPEAT 1
 AUG_REPEAT = {'plus-rain-more': 2, 'plus-rain-more-nored': 2}  # passes over the training set per epoch (each pass: new order, new augmentation draws)
 
 
