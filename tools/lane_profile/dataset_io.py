@@ -18,9 +18,13 @@ def check_labels(rows, types=TYPES, colors=COLORS):
       raise ValueError(f"row {i}: label {r['type']}/{r['color']} not in {types} x {colors}")
 
 
-def load_set(folder):
+def load_set(folder, mirror_right=False):
   """manifest.jsonl rows and their row-aligned YCbCr strips (N x 128 x W x 3 uint8; W = 96 for the +-0.75 m strip,
-  128 for +-1.0 m: taken from the shards, which must all agree). Labels are checked against TYPES / COLORS."""
+  128 for +-1.0 m: taken from the shards, which must all agree). Labels are checked against TYPES / COLORS.
+  mirror_right (StripNet2 / manifest v4 'mirror_right'): RIGHT-side strips are flipped left/right so the ego side (near) is
+  always the HIGH column index, as on the unflipped left strip (profile_scanner.strip_geometry: column 0 = line y - half_m,
+  i.e. image-left; the ego car is image-right of the left line and image-left of the right line).
+  A shard name may be a relative path ('../../other-set/shards/x.npz') so a merged set can reuse another set's shards."""
   folder = Path(folder)
   rows = [json.loads(line) for line in open(folder/'manifest.jsonl', encoding='utf-8')]
   check_labels(rows)
@@ -33,4 +37,6 @@ def load_set(folder):
       elif shards[r['shard']].shape[1:] != x.shape[1:]:
         raise ValueError(f"shard {r['shard']} strip shape {shards[r['shard']].shape[1:]} != {x.shape[1:]}")
     x[i] = shards[r['shard']][r['shard_row']]
+    if mirror_right and r['side'] == 'right':
+      x[i] = x[i][:, ::-1]
   return rows, (x if x is not None else np.zeros((0, 128, 96, 3), np.uint8))

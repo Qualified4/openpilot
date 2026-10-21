@@ -16,6 +16,7 @@ import json
 import math
 from pathlib import Path
 import time
+from collections import Counter
 
 import numpy as np
 import torch
@@ -23,6 +24,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from tools.lane_profile.dataset_io import COLORS_V1 as COLORS, TYPES_V1 as TYPES, check_labels, load_set  # noqa: TID251  (2-class heads)
+from tools.lane_profile import dataset_io  # noqa: TID251  (StripNet2: the extended vocabulary)
 
 
 NORMS = ('fixed', 'road', 'road-y')
@@ -83,6 +85,35 @@ class StripNet(nn.Module):
     return self.type_head(z), self.color_head(z)
 
 
+ARCH2 = ('stripnet2', 'stripnet2-nolat')  # 2026-10-21 wide strip round (manifest v4): colour 3 + type 5 heads
+
+
+class StripNet2(nn.Module):
+  """StripNet body for the +-1.0 m / 128-column strip with the last stride-2 block strided (2, 1) only: 8 along-road x 16
+  lateral cells (12.5 cm each). Head input = along-road profile (16 x 8, lateral mean) + lateral profile (16 x 16, along-road
+  mean: where across the strip the paint is, i.e. near / far for a double line) + global mean. Outputs (colour, type) logits:
+  colour [white, yellow, blue], type [dashed, solid, dbl_near, dbl_far, unknown] (dataset_io.COLORS / TYPES).
+  lateral=False ('stripnet2-nolat' ablation): no lateral profile."""
+  def __init__(self, width=1., lateral=True):
+    super().__init__()
+    c = [int(round(v*width)) for v in (16, 24, 32, 48, 64)]
+    self.lateral = lateral
+    self.stem = nn.Sequential(nn.Conv2d(3, c[0], 3, 2, 1, bias=False), nn.BatchNorm2d(c[0]), nn.ReLU(inplace=True))
+    self.body = nn.Sequential(dw(c[0], c[1], 2), dw(c[1], c[2], 2), dw(c[2], c[3], (2, 1)), dw(c[3], c[4], 1))
+    self.profile = nn.Conv2d(c[4], 16, 1)
+    self.fc = nn.Sequential(nn.Linear(16*8 + (16*16 if lateral else 0) + c[4], 64), nn.ReLU(inplace=True), nn.Dropout(.2))
+    self.color_head, self.type_head = nn.Linear(64, len(dataset_io.COLORS)), nn.Linear(64, len(dataset_io.TYPES))
+
+  def forward(self, x):
+    f = self.body(self.stem(x))                     # N, C, 8, 16 for a 128 x 128 strip
+    p = self.profile(f)
+    feats = [p.mean(3).flatten(1)]                   # along-road profile (lateral pooled)
+    if self.lateral:
+      feats.append(p.mean(2).flatten(1))             # lateral profile (along-road pooled)
+    z = self.fc(torch.cat(feats + [f.mean((2, 3))], 1))
+    return self.type_head(z), self.color_head(z)     # (type, colour) like Net / StripNet; Export2 reorders to (color, type)
+
+
 MBV3_SHA256 = '047dcff4addef86ea5bc2eff13c9614dc11f47ab1160d0a71a25e7db994f4e1f'
 
 
@@ -118,6 +149,8 @@ class Net(nn.Module):
     self.norm = Normalize(rgb_imagenet=arch in ('pplcnet025', 'pplcnet050', 'mobilenetv3s'), mode=norm)
     if arch == 'stripnet':
       self.model = StripNet()
+    elif arch in ARCH2:
+      self.model = StripNet2(lateral=arch != 'stripnet2-nolat')
     elif arch in ('pplcnet025', 'pplcnet050'):
       from tools.lane_type.model import LaneTypeModel  # noqa: TID251
       self.model = LaneTypeModel(.25 if arch == 'pplcnet025' else .5)
@@ -140,11 +173,15 @@ class Export(nn.Module):
     return t.softmax(1), c.softmax(1)
 
 
+LAST_FLIP = [None]
+
+
 def augment(x, gen):
   """x: float N,3,H,W raw YCbCr. Photometric + geometric jitter that keeps the label valid."""
   n = x.shape[0]
   flip = torch.rand(n, device=x.device, generator=gen) < .5
   x = torch.where(flip.view(-1, 1, 1, 1), x.flip(3), x)            # left/right boundary symmetry
+  LAST_FLIP[0] = flip  # StripNet2: dbl_near <-> dbl_far on the flipped samples (read by train2; draws unchanged)
   gain = 1 + (torch.rand(n, 1, 1, 1, device=x.device, generator=gen) - .5)*.6
   bias = (torch.rand(n, 1, 1, 1, device=x.device, generator=gen) - .5)*40
   y = x[:, :1]*gain + bias
@@ -467,6 +504,396 @@ def main(a):
   print(json.dumps(report['selected'], indent=1)[:3000])
 
 
+# ---------------------------------------------------------------------------------------------------------------------------
+# StripNet2 (manifest v4 draft, 2026-10-21 wide strip round). Labels: dataset_io.TYPES / COLORS (extended vocabulary);
+# 2-class sets map unchanged (dashed/solid, white/yellow). Right strips mirrored in the loader (load_set mirror_right) so the
+# ego side is the high column index; augment()'s random flip swaps dbl_near <-> dbl_far. type 'unknown': colour loss masked.
+T2, C2 = dataset_io.TYPES, dataset_io.COLORS
+DASHED, SOLID, DBL_NEAR, DBL_FAR, UNKNOWN = range(5)
+WHITE, YELLOW, BLUE = range(3)
+RARE_CAP = 3.  # rare-class (dbl_near / dbl_far / unknown, blue) loss weight <= 3 x the mean weight of the common classes
+SYNTH = {'shift': (17, 38), 'shift_yellow': (9, 24), 'period_m': (8., 18.), 'duty': (.35, .55), 'lum': .15,
+         'min_peak': 15., 'width': (3, 20), 'margin': 2, 'min_gap': 4}
+# (dCb, dCr) blue paint - white paint relative to the road, measured on dataset-dbl-w100
+# (blue +8.7..9.8 / -14.1..-14.3, white -2.6..0.9 / -2.7..0.7)
+BLUE_SHIFT = (10., -14.)
+NEAR_M, FAR_M = 4.5, 20.
+
+
+def row_distance(h, device):
+  """metres of each strip row (row 0 = 20 m, last = 4.5 m; rows are image rows, i.e. ~linear in 1/distance)."""
+  r = torch.arange(h, device=device, dtype=torch.float32)/(h - 1)
+  return 1/(1/FAR_M + r*(1/NEAR_M - 1/FAR_M))
+
+
+def synth_double(x, t, c, w, gen, p):
+  """Synthetic double line from a confidently labelled (weight >= 0.7) single-line strip (raw YCbCr, mirrored: high column =
+  near). The stripe columns come from the luma column profile (columns above half the peak, within 12 of the argmax); the
+  stripe band (+2 columns margin, per-pixel paint alpha = (Y - row median)/peak, so the road under it is not copied) is copied
+  17-38 columns (27-60 cm) toward near (+) or far (-). White solid -> the copy gets metric dash gaps (period 8-18 m, duty
+  0.35-0.55) -> dbl_near if the copy is on the near side else dbl_far; white dashed -> the copy is filled solid (column paint
+  colour along every row, luma following the road brightness) -> the dashed original is far (dbl_far) if the copy is near, else
+  dbl_near. Yellow solid -> a solid copy 9-24 columns away (yellow solid+solid; label stays solid). Copy luma x0.85-1.15,
+  width jitter (dilate / erode 1 column / none), 50 % lateral 3-tap alpha blur. Discarded (sample unchanged) when there is no
+  clear stripe, the copy would leave the strip or land on existing paint. Every draw is made for every sample (seeded stream).
+  -> (x, t) with the changed samples' type label."""
+  n, _, h, wd = x.shape
+  dev = x.device
+  r = lambda *s: torch.rand(*s, device=dev, generator=gen)  # noqa: E731
+  pick = r(n) < p
+  side = (r(n) < .5).long()*-2 + 1                              # -1 far / +1 near
+  lo, hi = SYNTH['shift']
+  d_white = lo + (r(n)*(hi - lo + 1)).long().clamp(max=hi - lo)
+  lo, hi = SYNTH['shift_yellow']
+  d_yel = lo + (r(n)*(hi - lo + 1)).long().clamp(max=hi - lo)
+  period = SYNTH['period_m'][0] + (SYNTH['period_m'][1] - SYNTH['period_m'][0])*r(n)
+  duty = SYNTH['duty'][0] + (SYNTH['duty'][1] - SYNTH['duty'][0])*r(n)
+  phase = r(n)*period
+  lum = 1 + (r(n) - .5)*2*SYNTH['lum']
+  wop = (r(n)*3).long().clamp(max=2)
+  blur = r(n) < .5
+  elig = pick & (w >= .7) & (((t == DASHED) | (t == SOLID)) & (c == WHITE) | ((t == SOLID) & (c == YELLOW)))
+  if not bool(elig.any()):
+    return x, t
+  idx = elig.nonzero().squeeze(1)
+  k = len(idx)
+  xs = x[idx]
+  Y = xs[:, 0]
+  base = Y.median(2, keepdim=True).values                      # k, h, 1 road luma per row
+  dy = Y - base
+  prof = dy.mean(1)                                            # k, wd
+  pmax, am = prof.max(1)
+  cols = torch.arange(wd, device=dev)
+  near_am = (cols[None] - am[:, None]).abs() <= 12
+  m = (prof > .5*pmax[:, None]) & near_am
+  c0 = torch.where(m, cols[None], wd).amin(1)
+  c1 = torch.where(m, cols[None], -1).amax(1)
+  peak = dy.gather(2, am.view(k, 1, 1).expand(k, h, 1)).squeeze(2).quantile(.9, dim=1)   # paint level (dashed: paint rows)
+  width = c1 - c0 + 1
+  yellow = c[idx] == YELLOW
+  d = torch.where(yellow, d_yel[idx], d_white[idx])
+  s = side[idx]
+  shift = s*d
+  mg = SYNTH['margin']
+  b0, b1 = c0 - mg + shift, c1 + mg + shift
+  ok = (peak >= SYNTH['min_peak']) & (width >= SYNTH['width'][0]) & (width <= SYNTH['width'][1]) & (b0 >= 0) & (b1 <= wd - 1) & \
+       (d - width >= SYNTH['min_gap'])
+  dst_band = (cols[None] >= b0[:, None]) & (cols[None] <= b1[:, None])
+  ok &= torch.where(dst_band, prof, torch.full_like(prof, -1e3)).amax(1) < .3*pmax           # lands on bare road
+  src = cols[None] - shift[:, None]                            # k, wd: source column of each destination column
+  inband = (src >= (c0 - mg)[:, None]) & (src <= (c1 + mg)[:, None])
+  srcc = src.clamp(0, wd - 1)
+  alpha = (dy/peak.clamp(min=1).view(k, 1, 1)).clamp(0, 1)
+  alpha = alpha.gather(2, srcc[:, None, :].expand(k, h, wd))*inband[:, None, :]
+  val = xs.gather(3, srcc[:, None, None, :].expand(k, 3, h, wd))
+  dist = row_distance(h, dev)
+  on = (((dist[None] + phase[idx, None]) % period[idx, None]) < duty[idx, None]*period[idx, None]).float()   # k, h
+  src_solid = t[idx] == SOLID
+  to_dashed = src_solid & ~yellow
+  to_solid = ~src_solid
+  # dashed -> solid: per-column paint colour / level from the paint rows, every row (luma follows the road brightness)
+  aw = alpha.sum(1, keepdim=True).clamp(min=1e-3)              # k, 1, wd
+  colval = (val*alpha[:, None]).sum(2, keepdim=True)/aw[:, None]      # k, 3, 1, wd
+  colalpha = (alpha**2).sum(1, keepdim=True)/aw                 # k, 1, wd
+  ratio = (base/base.mean(1, keepdim=True).clamp(min=1)).clamp(.5, 1.5)   # k, h, 1
+  solid_val = colval.expand(k, 3, h, wd).clone()
+  solid_val[:, 0] = solid_val[:, 0]*ratio
+  val = torch.where(to_solid.view(k, 1, 1, 1), solid_val, val)
+  alpha = torch.where(to_solid.view(k, 1, 1), colalpha.expand(k, h, wd), alpha)
+  alpha = torch.where(to_dashed.view(k, 1, 1), alpha*on[:, :, None], alpha)
+  dil, ero = torch.maximum(alpha, torch.maximum(alpha.roll(1, 2), alpha.roll(-1, 2))), torch.minimum(alpha, alpha.roll(1, 2))
+  alpha = torch.where((wop[idx] == 1).view(k, 1, 1), dil, torch.where((wop[idx] == 2).view(k, 1, 1), ero, alpha))
+  ab = F.pad(alpha[:, None], (1, 1, 0, 0), mode='replicate')
+  ab = (ab[..., :-2]*.25 + ab[..., 1:-1]*.5 + ab[..., 2:]*.25)[:, 0]
+  alpha = torch.where(blur[idx].view(k, 1, 1), ab, alpha)*dst_band[:, None, :]
+  val = torch.cat((val[:, :1]*lum[idx].view(k, 1, 1, 1), val[:, 1:]), 1)
+  out = (xs + alpha[:, None]*(val - xs)).clamp(0, 255)
+  # label: the dashed element on the near (high column) side -> dbl_near
+  near_copy = s > 0
+  full = lambda v: torch.full_like(t[idx], v)  # noqa: E731
+  nt = torch.where(to_dashed, torch.where(near_copy, full(DBL_NEAR), full(DBL_FAR)),
+                   torch.where(to_solid, torch.where(near_copy, full(DBL_FAR), full(DBL_NEAR)), t[idx]))
+  x, t = x.clone(), t.clone()
+  sel = idx[ok]
+  x[sel], t[sel] = out[ok], nt[ok]
+  return x, t
+
+
+def blue_hue(x, t, c, gen, p):
+  """Blue bus-lane paint from a white-line strip: paint alpha (Y - row median)/p90 peak, Cb/Cr += alpha * BLUE_SHIFT * 0.6-1.4,
+  paint luma contrast x0.8-1.0 (blue paint is darker than white); colour label -> blue. Eligible: white, type not unknown.
+  Every draw is made for every sample. -> (x, c)."""
+  n, _, h, wd = x.shape
+  dev = x.device
+  r = lambda *s: torch.rand(*s, device=dev, generator=gen)  # noqa: E731
+  pick = r(n) < p
+  scale, dark = .6 + .8*r(n), .8 + .2*r(n)
+  elig = pick & (c == WHITE) & (t != UNKNOWN)
+  if not bool(elig.any()):
+    return x, c
+  idx = elig.nonzero().squeeze(1)
+  k = len(idx)
+  xs = x[idx]
+  Y = xs[:, 0]
+  base = Y.median(2, keepdim=True).values
+  dy = Y - base
+  peak = dy.flatten(1).quantile(.98, dim=1).clamp(min=10).view(k, 1, 1)
+  alpha = (dy/peak).clamp(0, 1)
+  sc = scale[idx].view(k, 1, 1)
+  y = base + dy*torch.where(alpha > .3, dark[idx].view(k, 1, 1), torch.ones_like(alpha))
+  cb = xs[:, 1] + alpha*BLUE_SHIFT[0]*sc
+  cr = xs[:, 2] + alpha*BLUE_SHIFT[1]*sc
+  x, c = x.clone(), c.clone()
+  x[idx] = torch.stack((y, cb, cr), 1).clamp(0, 255)
+  c[idx] = BLUE
+  return x, c
+
+
+class Export2(nn.Module):
+  """StripNet2 ONNX graph (manifest v4 contract): raw strip -> LOGITS (color (N,3) [white, yellow, blue], type (N,5) [dashed, solid,
+  dbl_near, dbl_far, unknown]); the consumer applies the softmax (strip_model.StripModel.decide4). Normalisation is inside."""
+  def __init__(self, net):
+    super().__init__()
+    self.net = net
+
+  def forward(self, x):
+    t, c = self.net(x)
+    return c, t
+
+
+def export2(net, path, cols=128, rows=128):
+  net = net.cpu().eval()
+  wrapper = Export2(net).eval()
+  torch.onnx.export(wrapper, torch.full((2, 3, rows, cols), 100.), str(path), input_names=['strip_ycbcr'], output_names=['color', 'type'],
+                    dynamic_axes={'strip_ycbcr': {0: 'n'}, 'color': {0: 'n'}, 'type': {0: 'n'}}, opset_version=14)
+  import onnxruntime as ort
+  sess = ort.InferenceSession(str(path), providers=['CPUExecutionProvider'])
+  assert [o.name for o in sess.get_outputs()] == ['color', 'type']
+  x = torch.rand(8, 3, rows, cols)*255
+  ref = [o.detach().numpy() for o in wrapper(x)]
+  got = sess.run(None, {'strip_ycbcr': x.numpy()})
+  return float(max(np.abs(a - b).max() for a, b in zip(ref, got, strict=True)))
+
+
+def tensors2(rows, x, device):
+  xt = torch.from_numpy(x).permute(0, 3, 1, 2).float().to(device)
+  t = torch.tensor([T2.index(r['type']) for r in rows], device=device)
+  c = torch.tensor([C2.index(r['color']) for r in rows], device=device)
+  w = torch.tensor([r['weight'] for r in rows], dtype=torch.float32, device=device)
+  return xt, t, c, w
+
+
+def class_weights(y, k, common, ignore=None):
+  """balanced N/(K n) over the classes present; rare classes (not in common) capped at RARE_CAP x the common classes' mean."""
+  y = y[y != ignore] if ignore is not None else y
+  cnt = torch.stack([(y == i).sum() for i in range(k)]).float()
+  present = cnt > 0
+  w = torch.where(present, len(y)/(int(present.sum())*cnt.clamp(min=1)), torch.ones_like(cnt))
+  cap = RARE_CAP*w[list(common)].mean()
+  rare = torch.tensor([i not in common for i in range(k)], device=y.device)
+  return torch.where(rare, torch.minimum(w, cap), w)
+
+
+def f1s(truth, pred, k):
+  """per-class F1 (None without support) and macro F1 over the classes with support."""
+  out = []
+  for i in range(k):
+    tp, fp, fn = int(((pred == i) & (truth == i)).sum()), int(((pred == i) & (truth != i)).sum()), int(((pred != i) & (truth == i)).sum())
+    out.append(None if tp + fn == 0 else 2*tp/max(1, 2*tp + fp + fn))
+  vals = [v for v in out if v is not None]
+  return out, (float(np.mean(vals)) if vals else 0.)
+
+
+def metrics2(pt, pc, t, c):
+  """pt / pc: softmax (N,5) / (N,3) numpy; t / c: label ids (c = -100 on unknown type)."""
+  ptd, pcd = pt.argmax(1), pc.argmax(1)
+  cm = c >= 0
+  tf, tmac = f1s(t, ptd, len(T2))
+  cf, cmac = f1s(c[cm], pcd[cm], len(C2))
+  conf_t = np.zeros((len(T2), len(T2)), int)
+  np.add.at(conf_t, (t, ptd), 1)
+  conf_c = np.zeros((len(C2), len(C2)), int)
+  np.add.at(conf_c, (c[cm], pcd[cm]), 1)
+  return {'type_acc': float((ptd == t).mean()), 'color_acc': float((pcd[cm] == c[cm]).mean()) if cm.any() else None,
+          'type_macro_f1': tmac, 'color_macro_f1': cmac, 'type_f1': dict(zip(T2, tf, strict=True)), 'color_f1': dict(zip(C2, cf, strict=True)),
+          'type_confusion': conf_t.tolist(), 'color_confusion': conf_c.tolist(), 'score': (tmac + cmac)/2}
+
+
+@torch.no_grad()
+def predict2(net, xt, batch=1024):
+  net.eval()
+  pt, pc = [], []
+  for i in range(0, len(xt), batch):
+    t, c = net(xt[i:i + batch])
+    pt.append(t.softmax(1))
+    pc.append(c.softmax(1))
+  return torch.cat(pt).cpu().numpy(), torch.cat(pc).cpu().numpy()
+
+
+def plot_history(hist, path):
+  """history.png: loss (top) and macro-F1 (bottom) per epoch; matplotlib when available, else a plain numpy-drawn PNG."""
+  ep = [h['epoch'] for h in hist]
+  series = {'train_loss': 'tab:blue', 'val_loss': 'tab:orange'}, {'val_type_macro_f1': 'tab:green', 'val_color_macro_f1': 'tab:red',
+                                                                   'train_type_acc': 'tab:olive', 'val_type_acc': 'tab:cyan'}
+  try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(2, 1, figsize=(7, 6), sharex=True)
+    for a, ser in zip(ax, series, strict=True):
+      for k, col in ser.items():
+        a.plot(ep, [h[k] for h in hist], color=col, label=k)
+      a.legend(fontsize=7)
+      a.grid(alpha=.3)
+    ax[1].set_xlabel('epoch')
+    fig.tight_layout()
+    fig.savefig(path, dpi=90)
+    plt.close(fig)
+    return
+  except ImportError:
+    pass
+  import zlib, struct  # noqa: E401
+  W, H = 640, 480
+  img = np.full((H, W, 3), 255, np.uint8)
+  pal = {'tab:blue': (31, 119, 180), 'tab:orange': (255, 127, 14), 'tab:green': (44, 160, 44), 'tab:red': (214, 39, 40),
+         'tab:olive': (188, 189, 34), 'tab:cyan': (23, 190, 207)}
+  for panel, ser in enumerate(series):
+    y0, y1 = panel*H//2 + 10, (panel + 1)*H//2 - 10
+    vals = [v for k in ser for v in (h[k] for h in hist)]
+    lo, hi = min(vals), max(vals) + 1e-9
+    img[y1, 10:W - 10] = 0
+    for k, col in ser.items():
+      xs = np.linspace(10, W - 10, len(hist))
+      ys = [y1 - (h[k] - lo)/(hi - lo)*(y1 - y0) for h in hist]
+      for (xa, ya), (xb, yb) in zip(zip(xs, ys, strict=True), list(zip(xs, ys, strict=True))[1:], strict=False):
+        for f in np.linspace(0, 1, 50):
+          img[int(ya + (yb - ya)*f), int(xa + (xb - xa)*f)] = pal[col]
+  raw = b''.join(b'\x00' + img[i].tobytes() for i in range(H))
+  chunk = lambda tag, data: struct.pack('>I', len(data)) + tag + data + struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff)  # noqa: E731
+  Path(path).write_bytes(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', W, H, 8, 2, 0, 0, 0)) +
+                         chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))
+
+
+def train2(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, aug='plus-rain-more-nored', norm='fixed', lr_scale=1.,
+           synth_p=.12, blue_p=.05, out=None):
+  torch.manual_seed(seed)
+  gen = torch.Generator(device=device).manual_seed(seed)
+  net = Net(arch, norm).to(device)
+  augment_fn = AUGMENTS[aug]
+  X, T, C, W = tensors2(train_rows, xtr, device)
+  C = torch.where(T == UNKNOWN, torch.full_like(C, -100), C)      # unknown type: colour loss masked
+  Xv, Tv, Cv, Wv = tensors2(val_rows, xva, device)
+  Cv = torch.where(Tv == UNKNOWN, torch.full_like(Cv, -100), Cv)
+  wt = class_weights(T, len(T2), (DASHED, SOLID))
+  wc = class_weights(C, len(C2), (WHITE, YELLOW), ignore=-100)
+  lr = 2e-3*lr_scale
+  opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-3)
+  reps = AUG_REPEAT.get(aug, 1)
+  steps = epochs*reps*math.ceil(len(X)/256)
+  sched = torch.optim.lr_scheduler.OneCycleLR(opt, lr, total_steps=steps, pct_start=.15)
+  swap = torch.tensor([DASHED, SOLID, DBL_FAR, DBL_NEAR, UNKNOWN], device=device)
+  best, history, counts = None, [], torch.zeros(len(T2), device=device)
+  start = time.monotonic()
+  for epoch in range(epochs):
+    net.train()
+    order = torch.cat([torch.randperm(len(X), device=device, generator=gen) for _ in range(reps)])
+    tot = n_t = ok_t = n_c = ok_c = 0.
+    for i in range(0, len(order), 256):
+      idx = order[i:i + 256]
+      xb, tb, cb = X[idx], T[idx], C[idx]
+      if synth_p > 0:
+        xb, tb = synth_double(xb, tb, cb, W[idx], gen, synth_p)
+      if blue_p > 0:
+        xb, cb = blue_hue(xb, tb, cb, gen, blue_p)
+      xb = augment_fn(xb, gen)
+      tb = torch.where(LAST_FLIP[0], swap[tb], tb)
+      counts += torch.bincount(tb, minlength=len(T2)).float()
+      lt, lc = net(xb)
+      lw = W[idx]
+      loss = ((F.cross_entropy(lt, tb, weight=wt, reduction='none') +
+               F.cross_entropy(lc, cb, weight=wc, reduction='none', ignore_index=-100))*lw).sum()/lw.sum()
+      opt.zero_grad(set_to_none=True)
+      loss.backward()
+      opt.step()
+      sched.step()
+      tot += float(loss)*len(idx)
+      n_t += len(idx)
+      ok_t += float((lt.argmax(1) == tb).sum())
+      cm = cb >= 0
+      n_c += float(cm.sum())
+      ok_c += float(((lc.argmax(1) == cb) & cm).sum())
+    pt, pc = predict2(net, Xv)
+    with torch.no_grad():
+      ptt, pct = torch.from_numpy(pt).to(device), torch.from_numpy(pc).to(device)
+      vl = ((F.nll_loss(ptt.clamp(min=1e-8).log(), Tv, weight=wt, reduction='none') +
+             F.nll_loss(pct.clamp(min=1e-8).log(), Cv, weight=wc, reduction='none', ignore_index=-100))*Wv).sum()/Wv.sum()
+    m = metrics2(pt, pc, Tv.cpu().numpy(), Cv.cpu().numpy())
+    history.append({'epoch': epoch, 'train_loss': tot/n_t, 'train_type_acc': ok_t/n_t, 'train_color_acc': ok_c/max(1, n_c),
+                    'val_loss': float(vl), 'val_type_acc': m['type_acc'], 'val_color_acc': m['color_acc'],
+                    'val_type_macro_f1': m['type_macro_f1'], 'val_color_macro_f1': m['color_macro_f1'], 'val_score': m['score'],
+                    **{f'val_f1_{k}': v for k, v in m['type_f1'].items()}, **{f'val_f1_{k}': v for k, v in m['color_f1'].items()}})
+    if best is None or m['score'] > best[0]:
+      best = (m['score'], epoch, {k: v.detach().clone() for k, v in net.state_dict().items()})
+  net.load_state_dict(best[2])
+  if out is not None:
+    keys = list(history[0])
+    lines = [','.join(keys)] + [','.join('' if h[k] is None else f'{h[k]:.6g}' if isinstance(h[k], float) else str(h[k]) for k in keys) for h in history]
+    Path(out/f'history-{arch}-{seed}.csv').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    plot_history(history, out/f'history-{arch}-{seed}.png')
+  seen = counts/counts.sum()
+  return net, {'best_epoch': best[1], 'best_val_score': best[0], 'history': history, 'gpu_seconds': time.monotonic() - start,
+               'params': sum(p.numel() for p in net.parameters()), 'type_weights': wt.tolist(), 'color_weights': wc.tolist(),
+               'train_type_share_after_aug': dict(zip(T2, [round(float(v), 4) for v in seen], strict=True))}
+
+
+def main2(a):
+  """StripNet2 runs: every --arch x --seeds -> <output>/runs/<arch>-<seed>.pt, history-<arch>-<seed>.csv/.png,
+  onnx/<arch>-seed<k>.onnx (outputs color, type), runs.json."""
+  import hashlib as _h
+  out = Path(a.output)
+  (out/'runs').mkdir(parents=True, exist_ok=True)
+  (out/'onnx').mkdir(exist_ok=True)
+  rows, x = load_set(a.data, mirror_right=True)
+  srows, scols = x.shape[1:3]
+  strip = {'half_m': round(scols*COL_M/2, 6), 'cols': int(scols), 'rows': int(srows)}
+  tr = [i for i, r in enumerate(rows) if r['split'] == 'train']
+  va = [i for i, r in enumerate(rows) if r['split'] == 'validation']
+  if a.limit:  # smoke test: evenly spaced subsets
+    tr = [tr[j] for j in np.linspace(0, len(tr) - 1, min(a.limit, len(tr))).astype(int)]
+    va = [va[j] for j in np.linspace(0, len(va) - 1, min(a.limit, len(va))).astype(int)]
+  key = lambda r: (r['route'], r['segment'])  # noqa: E731  (route 407 / dbl: segment-level split)
+  assert not {key(rows[i]) for i in tr} & {key(rows[i]) for i in va if not rows[i].get('holdout')}  # held-out unknown slice may share a segment
+  train_rows, val_rows = [rows[i] for i in tr], [rows[i] for i in va]
+  count = lambda rs: {f"{t}/{c}": n for (t, c), n in sorted(Counter((r['type'], r['color']) for r in rs).items())}  # noqa: E731
+  report = {'data': str(a.data), 'strip': strip, 'mirror_right': True, 'aug': a.aug, 'synth_double': a.synth_double, 'blue_hue': a.blue_hue,
+            'train_frames': len(tr), 'validation_frames': len(va), 'train_counts': count(train_rows), 'validation_counts': count(val_rows),
+            'limit': a.limit, 'epochs': a.epochs, 'runs': []}
+  print(json.dumps({k: v for k, v in report.items() if k != 'runs'}), flush=True)
+  xv = tensors2(val_rows, x[va], a.device)[0]
+  for arch in a.arch:
+    for seed in a.seeds:
+      net, info = train2(arch, seed, train_rows, x[tr], val_rows, x[va], a.device, a.epochs, a.aug, a.norm, a.lr_scale,
+                         a.synth_double, a.blue_hue, out)
+      pt, pc = predict2(net, xv)
+      ck = out/'runs'/f'{arch}-{seed}.pt'
+      torch.save(net.state_dict(), ck)
+      np.savez(out/'runs'/f'{arch}-{seed}-val.npz', pt=pt, pc=pc)
+      onnx = out/'onnx'/(f'seed{seed}.onnx' if len(a.arch) == 1 else f'{arch}-seed{seed}.onnx')
+      parity = export2(net, onnx, scols, srows)
+      net.to(a.device)
+      run = {'arch': arch, 'seed': seed, **{k: v for k, v in info.items() if k != 'history'}, 'checkpoint': ck.name, 'onnx': onnx.name,
+             'onnx_parity': parity, 'onnx_sha256': _h.sha256(onnx.read_bytes()).hexdigest(), 'onnx_bytes': onnx.stat().st_size,
+             'val_macro_score': info['best_val_score'], 'history': info['history']}
+      report['runs'].append(run)
+      print(arch, seed, 'best epoch', info['best_epoch'], 'val score', round(info['best_val_score'], 4), 'params', info['params'],
+            'parity', parity, 'seconds', round(info['gpu_seconds'], 1), flush=True)
+      (out/'runs.json').write_text(json.dumps(report, indent=1), encoding='utf-8')
+  (out/'model-contract.json').write_text(json.dumps({
+    'input': f'strip_ycbcr float32 N x 3 x {srows} x {scols}, raw 0..255 (Y, Cb, Cr), rows far(20m)->near(4.5m); RIGHT strips flipped left/right',
+    'strip_geometry': strip, 'mirror_right': True, 'outputs': {'color': list(C2), 'type': list(T2)},
+    'arch': a.arch, 'aug': a.aug, 'synth_double': a.synth_double, 'blue_hue': a.blue_hue, 'norm': a.norm}, indent=1), encoding='utf-8')
+
+
 if __name__ == '__main__':
   p = argparse.ArgumentParser(description=__doc__)
   p.add_argument('--data', required=True)
@@ -480,4 +907,13 @@ if __name__ == '__main__':
   p.add_argument('--pretrained', default='.analysis/lane-model-comparison-20261018/pretrained/PPLCNet_x0_25_pretrained.pdparams')
   p.add_argument('--device', default='cuda', help="torch device (default cuda; 'cpu' for a smoke test)")
   p.add_argument('--limit', type=int, default=0, help='smoke test: at most N evenly spaced train and N validation frames')
-  main(p.parse_args())
+  p.add_argument('--synth-double', type=float, default=.12, help='StripNet2: per-sample probability of the synth-double augmentation (0: off)')
+  p.add_argument('--blue-hue', type=float, default=.05, help='StripNet2: per-sample probability of the blue-hue augmentation (0: off)')
+  p.add_argument('--lr-scale', type=float, default=1., help='StripNet2: OneCycle max lr factor')
+  a = p.parse_args()
+  if any(x in ARCH2 for x in a.arch):
+    if not all(x in ARCH2 for x in a.arch):
+      raise SystemExit(f'--arch: StripNet2 variants {ARCH2} cannot be mixed with 2-class archs')
+    main2(a)
+  else:
+    main(a)

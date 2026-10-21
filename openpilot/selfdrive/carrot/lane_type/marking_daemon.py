@@ -44,6 +44,11 @@ BLINKER_PROB, BLINKER_Y, BLINKER_INFER_SPEED = .7, 1., 8.3
 # lead car's body fills the strip and can be read as a white line (10-19 16-seg 3fd/5 36.9-42.2 s: 5.3 s with three 407-round seeds); the
 # A/B on the strip cache is .analysis/ccnc-field-20261021/REPORT_gate_KO.md (L4; 6 m cost rain white bookmarks 9 -> 4).
 LEAD_GATE_DREL, LEAD_MAX_AGE_NS = 4., 200_000_000
+# StripNet v4 (strip_model.OUTPUTS_V4): a side whose type argmax is 'unknown' comes back with reason 'unknown' and no
+# probabilities; it pauses like 'lane_prob_dip' / 'lead_close' (strip_filter windows / latch and DisplayPolicy kept).
+# Its extra fields (strip_model.decide4) are carried in the raw result and in the packet's raw entry (card reads only
+# the confirmed heads, marking.parse), and only when present, so a v1-v3 packet is unchanged.
+V4_EXTRAS = ('typeClass', 'colorClass', 'double', 'blue', 'pUnknown')
 
 
 def requested(started, params, CP=None):
@@ -182,6 +187,9 @@ class Recogniser:
     from openpilot.selfdrive.carrot.lane_type.strip_model import strip_input
     strips, sides = [], []
     strip = getattr(self.model, 'strip', {})  # the manifest's strip geometry (StripModel.strip); a replay wrapper without it: default
+    # v4 mirror_right: the right strip's columns are flipped so its ego side is on the high columns, as on the left strip
+    # (strip_model.MIRROR_AXIS); a replay wrapper without the attribute (or a v1-v3 model): no flip.
+    mirror = getattr(self.model, 'mirror_right', getattr(getattr(self.model, 'model', None), 'mirror_right', False))
     for side in ('left', 'right'):
       skip = self._skip_reason(side, frame)
       if skip:
@@ -191,6 +199,8 @@ class Recogniser:
       if s is None:
         out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason='invalid_lane_geometry')
         continue
+      if mirror is True and side == 'right':
+        s = s[..., ::-1]  # strip_model.MIRROR_AXIS (-1, the column axis); infer() stacks the strips into a contiguous copy
       strips.append(s)
       sides.append(side)
     models = {}
@@ -198,13 +208,15 @@ class Recogniser:
       # The strip model's own confident dashed decision is its pattern evidence.
       out[side] = filter_input(r['type'], r['color'], r['typeConfidence'], r['colorConfidence'], frame['stamp'],
                                dashed_observed=r['type'] == 'dashed', reason=r['reason'])
+      out[side].update({k: r[k] for k in V4_EXTRAS if k in r})
       models[side] = r
     if self.strip_filter is not None:
       from openpilot.selfdrive.carrot.lane_type.strip_filter import p_dashed, p_yellow
       for side in ('left', 'right'):
         # filter_input drops the model's probabilities, so P(dashed) / P(yellow) come from the model output;
         # reset-reason sides (no inference) are passed too and empty the windows; a lane_prob_dip / lead_close side is passed
-        # without probabilities, so it is skipped and keeps them. Unlearned yellow-dashed frames stay out of both.
+        # without probabilities, so it is skipped and keeps them. Unlearned yellow-dashed frames stay out of both, and so does a
+        # v4 'unknown' (type argmax unknown) side: it is passed like lane_prob_dip.
         r = models.get(side)
         learned = r is not None and r['reason'] == 'strip_model'
         p, py = (p_dashed(r), p_yellow(r)) if learned else (None, None)
@@ -227,6 +239,7 @@ def packet(mode, frame_id, camera_ns, raw, confirmed, now_ns, timing, counters):
   for side in ('left', 'right'):
     heads = confirmed.get(side, {})
     entry = {'raw': {k: raw.get(side, {}).get(k) for k in ('type', 'color', 'typeConfidence', 'colorConfidence', 'reason')}}
+    entry['raw'].update({k: raw[side][k] for k in V4_EXTRAS if k in raw.get(side, {})})  # v4 only (marking.parse ignores raw)
     for head in ('type', 'color'):
       h = heads.get(head)
       entry[head] = h['value'] if h else 'unknown'

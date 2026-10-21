@@ -504,3 +504,27 @@ def test_lead_d_rel_from_radar_state():
   assert lead_d_rel(rs(3., False), stamp, stamp) is None             # status off
   assert lead_d_rel(rs(3., True), stamp - 250_000_000, stamp) is None  # stale
   assert lead_d_rel(rs(3., True), 0, stamp) is None                  # never received
+
+
+def test_v4_unknown_result_is_passed_like_lane_prob_dip():
+  """A v4 model abstention (StripModel.decide4 with an 'unknown' type argmax, reason 'unknown') enters no window and keeps
+  the latch, as a lane_prob_dip / lead_close side does; the other side is unaffected."""
+  rec = Recogniser(2)
+  for i in range(12):
+    step(rec, i, .02, color=.01)  # yellow solid, latched
+  sides = rec.strip_filter.sides
+  latched, items = {k: dict(v.latched) for k, v in sides.items()}, list(sides['left'].items)
+  abstain = {'reason': 'unknown', 'type': 'unknown', 'typeConfidence': 0., 'typeCandidate': 'unknown', 'color': 'unknown',
+             'colorConfidence': 0., 'colorCandidate': 'unknown', 'typeClass': 'unknown', 'colorClass': 'yellow',
+             'double': False, 'blue': False, 'pUnknown': .97}
+  rec.model.infer = lambda strips: [dict(abstain) for _ in strips]
+  for i in range(12, 18):
+    out = rec.process(None, None, frame(i))
+    for side in ('left', 'right'):
+      assert out[side]['reason'] == 'unknown' and (out[side]['type'], out[side]['color']) == ('unknown', 'unknown')
+      assert out[side]['typePDashed'] is None and out[side]['colorPYellow'] is None and out[side]['pUnknown'] == .97
+    assert {k: dict(v.latched) for k, v in sides.items()} == latched and sides['left'].state == 'solid'
+    assert list(sides['left'].items) == [x for x in items if i - x[1] <= 8.]
+  del rec.model.infer
+  out = step(rec, 18, .5, color=.5)  # uncertain again: the latch shows yellow solid
+  assert (out['left']['type'], out['left']['color']) == ('solid', 'yellow')
