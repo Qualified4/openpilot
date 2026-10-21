@@ -150,20 +150,29 @@ def offsets(response, files):
   return received
 
 
+RETRIES = 7  # Attempts per request on transient errors: rides out short Wi-Fi/LTE drops.
+
+
+def backoff(attempt):
+  return min(30.0, 0.5 * 2 ** attempt)  # 0.5, 1, 2, 4, 8, 16, 30 s
+
+
 async def retry(job, operation):
-  for attempt in range(3):
+  for attempt in range(RETRIES):
     jobs.ensure_not_canceled(job)
     try:
       return await operation()
     except client.Error as exc:
-      if exc.code not in client.TRANSIENT or attempt == 2:
+      if exc.code not in client.TRANSIENT or attempt == RETRIES - 1:
         raise
       jobs.progress(job, message=exc.code)
-      await asyncio.sleep(0.5 * (attempt + 1))
+      await asyncio.sleep(backoff(attempt))
   raise AssertionError('unreachable')
 
 
-async def transfer(job, http, credentials, checkpoint):
+async def transfer(job, http, credentials, checkpoint, defer_finish=False):
+  """Send the segment's files. With defer_finish the registration is returned as a coroutine function, so the
+  caller can start the next segment while the server registers this one."""
   files = checkpoint['files']
   # Re-check every source before reattaching: stale files must never silently
   # replace a manifest whose earlier chunks already exist on the server.
@@ -174,7 +183,7 @@ async def transfer(job, http, credentials, checkpoint):
   config.last_error = ''
   if session.get('state') == 'completed':
     validate_result(session.get('result'))
-    return
+    return None
   if checkpoint.get('streaming') and session.get('checksum_mode') != client.STREAM_CHECKSUM:
     raise client.Error('invalid_response')
   checkpoint['session'] = session
@@ -238,11 +247,11 @@ async def transfer(job, http, credentials, checkpoint):
           send_size = next_chunk_size(chunk_size, len(payload), time.monotonic() - requested_at)
           failures = 0
         except client.Error as exc:
-          if exc.code not in client.TRANSIENT or failures >= 2:
+          if exc.code not in client.TRANSIENT or failures >= RETRIES - 1:
             raise
           failures += 1
           send_size = max(min(chunk_size, 256 * 1024), send_size // 2)
-          await asyncio.sleep(0.5 * failures)
+          await asyncio.sleep(backoff(failures - 1))
           status = await retry(job, lambda: client.session_request(http, credentials['url'], session))
           # Response may have been lost AFTER a successful write. Only this file: other
           # files have their own requests in flight and track their own acknowledged offsets.
@@ -281,11 +290,18 @@ async def transfer(job, http, credentials, checkpoint):
       task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
   jobs.ensure_not_canceled(job)
+  body = json.dumps({'sha256': checksums}).encode() if checkpoint.get('streaming') else None
+
+  async def finish():
+    result = await retry(job, lambda: client.session_request(http, credentials['url'], session, 'POST', '/finish', body))
+    validate_result(result)
+
+  if defer_finish:
+    return finish
   progress(job, phase='notifying', message=f"Road Viewer: registering {checkpoint['summaries'][0]['segment']}",
            current_bytes=sum(received), bytes_per_second=0)
-  body = json.dumps({'sha256': checksums}).encode() if checkpoint.get('streaming') else None
-  result = await retry(job, lambda: client.session_request(http, credentials['url'], session, 'POST', '/finish', body))
-  validate_result(result)
+  await finish()
+  return None
 
 
 def validate_result(result):
@@ -311,6 +327,33 @@ async def run_job(job):
   code, canceled, success = '', False, False
   credentials = None
   active = None
+  # Checksums one segment ahead: while segment N is sent, segment N+1 is hashed in the background, so its
+  # manifest already carries checksums and the transfer loop only reads and sends. Only the first segment
+  # (nothing to overlap with) is hashed while it is sent.
+  ahead = {}
+  # The previous segment's registration (index, batch, task) runs while the next segment is sent. A segment
+  # is marked complete only when its registration succeeded, and before the next one is registered.
+  finishing = None
+
+  async def settle():
+    nonlocal finishing
+    if finishing is None:
+      return
+    index, batch, task = finishing
+    finishing = None
+    await task
+    complete(index, batch)
+
+  def complete(index, batch):
+    batch['complete'] = True
+    job['partial_results'], _ = segment_results(checkpoint)
+    jobs.append(job, 'Road Viewer: completed ' + ', '.join(s['segment'] for s in batch['summaries']))
+
+  def look_ahead(index):
+    following = index + 1
+    if following < len(checkpoint['batches']) and checkpoint['batches'][following] is None and following not in ahead:
+      ahead[following] = asyncio.create_task(prepare(job, [job['segments'][following]], report=False))
+
   async with aiohttp.ClientSession() as http:
     try:
       credentials = await asyncio.to_thread(config.load)
@@ -333,12 +376,16 @@ async def run_job(job):
           continue
         active = index
         if batch is None:
-          progress(job, phase='preparing', message=job['segments'][index], bytes_per_second=0)
-          batch = await prepare(job, [job['segments'][index]], hash_files=not checkpoint['streaming'])
+          if index in ahead:
+            batch = await ahead.pop(index)
+          else:
+            progress(job, phase='preparing', message=job['segments'][index], bytes_per_second=0)
+            batch = await prepare(job, [job['segments'][index]], hash_files=not checkpoint['streaming'])
           checkpoint['batches'][index] = batch
           checkpoint['summaries'][index] = batch['summaries'][0]
+        look_ahead(index)
         try:
-          await transfer(job, http, credentials, batch)
+          finish = await transfer(job, http, credentials, batch, defer_finish=True)
         except client.Error as exc:
           if exc.code not in ('invalid_file', 'invalid_batch') or not batch.get('streaming') or batch.get('session'):
             raise
@@ -348,11 +395,16 @@ async def run_job(job):
           batch = await prepare(job, [job['segments'][index]])
           checkpoint['batches'][index] = batch
           checkpoint['summaries'][index] = batch['summaries'][0]
-          await transfer(job, http, credentials, batch)
-        batch['complete'] = True
-        job['partial_results'], _ = segment_results(checkpoint)
-        jobs.append(job, 'Road Viewer: completed ' + ', '.join(s['segment'] for s in batch['summaries']))
-        progress(job, phase='notifying', message='Road Viewer: segment complete', bytes_per_second=0)
+          finish = await transfer(job, http, credentials, batch, defer_finish=True)
+        await settle()  # Registrations stay in order: the previous segment first.
+        if finish is None:
+          complete(index, batch)  # The server already had it (receipt of a lost response).
+        else:
+          finishing = (index, batch, asyncio.create_task(finish()))
+      if finishing is not None:
+        progress(job, phase='notifying', message='Road Viewer: registering ' + job['segments'][finishing[0]], bytes_per_second=0)
+      await settle()
+      progress(job, phase='notifying', message='Road Viewer: segment complete', bytes_per_second=0)
       success = True
     except jobs.UploadCanceled:
       canceled = True
@@ -365,6 +417,16 @@ async def run_job(job):
     except Exception:
       code = 'upload_failed'  # Never publish raw exceptions, URLs with tokens, or response bodies.
     finally:
+      if finishing is not None and not canceled:
+        # A later failure must not throw away a fully sent segment: let its registration finish first.
+        try:
+          await settle()
+        except Exception:
+          pass
+      background = [*ahead.values(), *([finishing[2]] if finishing else [])]
+      for task in background:
+        task.cancel()
+      await asyncio.gather(*background, return_exceptions=True)
       if (canceled or code in ('file_changed', 'segment_incomplete', 'local_file_error')) and checkpoint and active is not None:
         batch = checkpoint['batches'][active]
         if credentials and batch and not batch.get('complete') and batch.get('session'):

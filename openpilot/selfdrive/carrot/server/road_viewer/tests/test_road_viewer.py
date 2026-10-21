@@ -607,7 +607,7 @@ def test_optional_videos_over_real_https_resume(server, monkeypatch):
   asyncio.run(run())
 
 
-def test_streaming_reads_once_and_completes_each_segment_before_next(server, monkeypatch):
+def test_first_segment_streams_and_next_is_hashed_during_the_previous_transfer(server, monkeypatch):
   if not hasattr(server[0], 'STREAM_CHUNK_SIZE'):
     pytest.skip('This check needs a server with streaming checksums')
   async def run():
@@ -631,27 +631,48 @@ def test_streaming_reads_once_and_completes_each_segment_before_next(server, mon
       def __exit__(self, *args): self.source.close()
       def __getattr__(self, name): return getattr(self.source, name)
 
+    finishes = []
+    original_request = client.session_request
+
+    async def session_request(http, url, session, method='GET', suffix='', data=None):
+      if suffix == '/finish':
+        # By the time a segment is registered, the next one has already been read for its checksums,
+        # and registrations stay in order: every earlier segment is registered first.
+        assert len(server[0].recording_paths()) == len(finishes)
+        finishes.append(dict(reads))
+      return await original_request(http, url, session, method, suffix, data)
+
     async def begin(http, credentials, manifest):
       count = len(begins)
       assert len(manifest['segments']) == 1
-      assert len(server[0].recording_paths()) == count  # Earlier segment already registered.
-      assert all(segment == segments[count] or segment in segments[:count] for segment, _ in opened)
-      assert not any(segment == segments[count] and size for (segment, _), size in reads.items())
-      assert all(f['sha256'] is None for f in manifest['segments'][0]['files'])
+      # The next segment starts while the previous one is still being registered.
+      assert len(server[0].recording_paths()) <= count
+      files = manifest['segments'][0]['files']
+      if count == 0:
+        # Nothing to overlap with: the first segment is hashed while it is sent, without waiting.
+        assert all(f['sha256'] is None for f in files)
+        assert not any(segment == segments[0] and size for (segment, _), size in reads.items())
+      else:
+        # Later segments arrive with checksums computed during the previous transfer.
+        assert all(isinstance(f['sha256'], str) and len(f['sha256']) == 64 for f in files)
       begins.append(manifest)
       return await original_begin(http, credentials, manifest)
 
     monkeypatch.setattr(uploader, 'open_source', Source)
     monkeypatch.setattr(client, 'begin', begin)
+    monkeypatch.setattr(client, 'session_request', session_request)
     monkeypatch.setattr(server[0], 'file_digest', lambda path: pytest.fail(f'unexpected full-file server scan: {path.name}'))
     job = jobs.create_job(segments)
     await jobs.start_job(job, runner=uploader.run_job)
     assert job['status'] == 'done', job['result']
     assert job['result']['uploaded'] == 2
     assert job['step_current'] == 2
-    for summary in uploader.discover(segments):
-      for item in summary['files']:
-        assert reads[(summary['segment'], item['name'])] == item['size']
+    first, second = uploader.discover(segments)
+    for item in first['files']:
+      assert reads[(first['segment'], item['name'])] == item['size']  # Streamed: read once.
+    for item in second['files']:
+      assert reads[(second['segment'], item['name'])] == 2 * item['size']  # Hashed ahead, then sent.
+      assert finishes[0].get((second['segment'], item['name']), 0) > 0  # Hashing started before the first finish.
     assert len(begins) == 2
   asyncio.run(run())
 
@@ -712,7 +733,7 @@ def test_legacy_server_fallback_hashes_one_segment_at_a_time(server, monkeypatch
       modes.append(streaming)
       if streaming:
         raise client.Error('invalid_file')
-      assert len(server[0].recording_paths()) == manifest['segments'][0]['segment']
+      assert len(server[0].recording_paths()) <= manifest['segments'][0]['segment']
       return await original_begin(http, credentials, manifest)
 
     monkeypatch.setattr(client, 'begin', old_server)
@@ -730,13 +751,16 @@ def test_lost_all_finish_responses_resume_receipt_without_resending_completed_fi
     segments = [recording(0), recording(1)]
     original = client.session_request
     puts, lost = [], 0
+    first_session = []
+    monkeypatch.setattr(uploader, 'backoff', lambda attempt: 0)
 
     async def lose_finish(http, url, session, method='GET', suffix='', data=None):
       nonlocal lost
       result = await original(http, url, session, method, suffix, data)
       if method == 'PUT':
         puts.append((session['id'], suffix))
-      if suffix == '/finish' and lost < 3:
+        first_session[:] = first_session or [session['id']]
+      if suffix == '/finish' and session['id'] == first_session[0]:
         lost += 1
         raise client.Error('unreachable')
       return result
@@ -765,3 +789,58 @@ def test_lost_all_finish_responses_resume_receipt_without_resending_completed_fi
 ])
 def test_adaptive_chunks_stay_within_server_limit(cap, size, seconds, expected):
   assert uploader.next_chunk_size(cap, size, seconds) == expected
+
+
+def test_next_segment_is_sent_while_the_previous_one_registers(server, monkeypatch):
+  # The link should not sit idle while the server registers a finished segment.
+  async def run():
+    await connect(server)
+    segments = [recording(0), recording(1)]
+    original = client.session_request
+    events, sessions = [], []
+
+    async def slow_finish(http, url, session, method='GET', suffix='', data=None):
+      if session['id'] not in sessions:
+        sessions.append(session['id'])
+      number = sessions.index(session['id'])
+      if suffix == '/finish' and number == 0:
+        events.append('finish 0 start')
+        for _ in range(200):  # Hold the first registration until the second segment has sent data.
+          if any(event.startswith('put 1') for event in events):
+            break
+          await asyncio.sleep(.01)
+      result = await original(http, url, session, method, suffix, data)
+      events.append(f'{method.lower() if method == "PUT" else suffix or method} {number}')
+      return result
+
+    monkeypatch.setattr(client, 'session_request', slow_finish)
+    job = jobs.create_job(segments)
+    await jobs.start_job(job, runner=uploader.run_job)
+    assert job['status'] == 'done', job['result']
+    first_put = next(i for i, e in enumerate(events) if e.startswith('put 1'))
+    assert events.index('finish 0 start') < first_put < events.index('/finish 0'), events
+    assert events.index('/finish 0') < events.index('/finish 1'), 'registrations stay in order'
+    assert len(server[0].recording_paths()) == 2
+  asyncio.run(run())
+
+
+@pytest.mark.parametrize('drops,ok', [(uploader.RETRIES - 1, True), (uploader.RETRIES, False)])
+def test_chunk_retries_ride_out_short_drops(server, monkeypatch, drops, ok):
+  async def run():
+    await connect(server)
+    original = client.session_request
+    failed = 0
+    monkeypatch.setattr(uploader, 'backoff', lambda attempt: 0)
+
+    async def drop(http, url, session, method='GET', suffix='', data=None):
+      nonlocal failed
+      if method == 'PUT' and suffix.startswith('/files/0?') and failed < drops:  # Consecutive drops of one file.
+        failed += 1
+        raise client.Error('unreachable')
+      return await original(http, url, session, method, suffix, data)
+
+    monkeypatch.setattr(client, 'session_request', drop)
+    job = jobs.create_job([recording(0)])
+    await jobs.start_job(job, runner=uploader.run_job)
+    assert (job['status'] == 'done') == ok, job['result']
+  asyncio.run(run())
