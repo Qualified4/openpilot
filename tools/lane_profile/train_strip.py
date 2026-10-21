@@ -774,8 +774,25 @@ def plot_history(hist, path):
                          chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))
 
 
+def unknown_weight(T, W, wt, share):
+  """type weight of 'unknown' that gives it ``share`` of the effective (class weight x sample weight) training mass:
+  w_u = share/(1 - share) * sum_{k != u} w_k S_k / S_u, S_k = summed sample weights of class k (before augmentation)."""
+  S = torch.stack([W[T == i].sum() for i in range(len(T2))])
+  if float(S[UNKNOWN]) <= 0:
+    return wt
+  rest = sum(float(wt[i]*S[i]) for i in range(len(T2)) if i != UNKNOWN)
+  wt = wt.clone()
+  wt[UNKNOWN] = share/(1 - share)*rest/float(S[UNKNOWN])
+  return wt
+
+
+def effective_share(T, W, wt):
+  S = torch.stack([W[T == i].sum() for i in range(len(T2))])*wt
+  return dict(zip(T2, [round(float(v), 4) for v in S/S.sum()], strict=True))
+
+
 def train2(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, aug='plus-rain-more-nored', norm='fixed', lr_scale=1.,
-           synth_p=.12, blue_p=.05, out=None):
+           synth_p=.12, blue_p=.05, out=None, unknown_share=None):
   torch.manual_seed(seed)
   gen = torch.Generator(device=device).manual_seed(seed)
   net = Net(arch, norm).to(device)
@@ -785,6 +802,9 @@ def train2(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, aug='plus
   Xv, Tv, Cv, Wv = tensors2(val_rows, xva, device)
   Cv = torch.where(Tv == UNKNOWN, torch.full_like(Cv, -100), Cv)
   wt = class_weights(T, len(T2), (DASHED, SOLID))
+  share0 = effective_share(T, W, wt)
+  if unknown_share:  # round 2: unknown class weight set for a target effective share (default None: round-1 balanced/capped weight)
+    wt = unknown_weight(T, W, wt, unknown_share)
   wc = class_weights(C, len(C2), (WHITE, YELLOW), ignore=-100)
   lr = 2e-3*lr_scale
   opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-3)
@@ -843,7 +863,9 @@ def train2(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, aug='plus
   seen = counts/counts.sum()
   return net, {'best_epoch': best[1], 'best_val_score': best[0], 'history': history, 'gpu_seconds': time.monotonic() - start,
                'params': sum(p.numel() for p in net.parameters()), 'type_weights': wt.tolist(), 'color_weights': wc.tolist(),
-               'train_type_share_after_aug': dict(zip(T2, [round(float(v), 4) for v in seen], strict=True))}
+               'train_type_share_after_aug': dict(zip(T2, [round(float(v), 4) for v in seen], strict=True)),
+               'effective_type_share_balanced': share0, 'effective_type_share': effective_share(T, W, wt), 'unknown_share_target': unknown_share,
+               'blue_shift': list(BLUE_SHIFT)}
 
 
 def main2(a):
@@ -865,7 +887,10 @@ def main2(a):
   assert not {key(rows[i]) for i in tr} & {key(rows[i]) for i in va if not rows[i].get('holdout')}  # held-out unknown slice may share a segment
   train_rows, val_rows = [rows[i] for i in tr], [rows[i] for i in va]
   count = lambda rs: {f"{t}/{c}": n for (t, c), n in sorted(Counter((r['type'], r['color']) for r in rs).items())}  # noqa: E731
+  global BLUE_SHIFT
+  BLUE_SHIFT = (BLUE_SHIFT[0]*a.blue_strength, BLUE_SHIFT[1]*a.blue_strength)  # round 2: x1.5 (r2/blue_measure.json)
   report = {'data': str(a.data), 'strip': strip, 'mirror_right': True, 'aug': a.aug, 'synth_double': a.synth_double, 'blue_hue': a.blue_hue,
+            'blue_strength': a.blue_strength, 'blue_shift': list(BLUE_SHIFT), 'unknown_share': a.unknown_share,
             'train_frames': len(tr), 'validation_frames': len(va), 'train_counts': count(train_rows), 'validation_counts': count(val_rows),
             'limit': a.limit, 'epochs': a.epochs, 'runs': []}
   print(json.dumps({k: v for k, v in report.items() if k != 'runs'}), flush=True)
@@ -873,7 +898,7 @@ def main2(a):
   for arch in a.arch:
     for seed in a.seeds:
       net, info = train2(arch, seed, train_rows, x[tr], val_rows, x[va], a.device, a.epochs, a.aug, a.norm, a.lr_scale,
-                         a.synth_double, a.blue_hue, out)
+                         a.synth_double, a.blue_hue, out, a.unknown_share)
       pt, pc = predict2(net, xv)
       ck = out/'runs'/f'{arch}-{seed}.pt'
       torch.save(net.state_dict(), ck)
@@ -910,6 +935,9 @@ if __name__ == '__main__':
   p.add_argument('--synth-double', type=float, default=.12, help='StripNet2: per-sample probability of the synth-double augmentation (0: off)')
   p.add_argument('--blue-hue', type=float, default=.05, help='StripNet2: per-sample probability of the blue-hue augmentation (0: off)')
   p.add_argument('--lr-scale', type=float, default=1., help='StripNet2: OneCycle max lr factor')
+  p.add_argument('--blue-strength', type=float, default=1., help='StripNet2: BLUE_SHIFT factor of the blue-hue augmentation (round 2: 1.5)')
+  p.add_argument('--unknown-share', type=float, default=None,
+                 help="StripNet2: set the 'unknown' type weight for this effective training share (class x sample weight), e.g. 0.10")
   a = p.parse_args()
   if any(x in ARCH2 for x in a.arch):
     if not all(x in ARCH2 for x in a.arch):
