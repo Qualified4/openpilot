@@ -2656,7 +2656,7 @@ def _ccnc_basic_curve(md, speed, changing):
   return 0.0
 
 
-HDP_ALERT_SENDS = 10  # 0.5 s of ALERTS_5=19 ("HDP activating") per model outage: 0x161 goes out every 5th frame (20 Hz)
+HDP_ALERT_SENDS = 100  # 5 s of ALERTS_5=19 ("HDP activating") per model outage: 0x161 goes out every 5th frame (20 Hz)
 
 
 def _model_lanes_absent(md):
@@ -2699,7 +2699,7 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
   if not model_lanes:
     return
 
-  # "HDP activating" alert (ALERTS_5=19), once for HDP_ALERT_SENDS sends (0.5 s): on the first call after start-up
+  # "HDP activating" alert (ALERTS_5=19), once for HDP_ALERT_SENDS sends (5 s): on the first call after start-up
   # (card only starts sending once the eGPU model is up, so the cluster never saw the alert during the wait) and
   # once more at every later model outage. The stock camera's own alert, if any, is not overridden.
   absent = _model_lanes_absent(md)
