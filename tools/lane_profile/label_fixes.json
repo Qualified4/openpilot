@@ -137,6 +137,78 @@
       "color": "white",
       "reason": "user review 2026-10-23 (dblmine page): double line, ego side dashed; window = mined candidate rows +-0.3 s",
       "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
+    },
+    {
+      "id": "M003-solid",
+      "route_segment": "0000035f--b513269850--1",
+      "side": "left",
+      "start_s": 153.45,
+      "end_s": 154.66,
+      "from_type": "solid",
+      "type": "dbl_far",
+      "color": "white",
+      "reason": "user review 2026-10-23 (dblmine page): double line, ego side solid; window = mined candidate rows +-0.3 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
+    },
+    {
+      "id": "M006-dashed",
+      "route_segment": "00000388--2a2160e7db--17",
+      "side": "right",
+      "start_s": 1197.21,
+      "end_s": 1198.4,
+      "from_type": "dashed",
+      "type": "dbl_far",
+      "color": "white",
+      "reason": "user review 2026-10-23 (dblmine page): double line, ego side solid; window = mined candidate rows +-0.3 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
+    },
+    {
+      "id": "M001-solid",
+      "route_segment": "00000356--148eb5e823--12",
+      "side": "left",
+      "start_s": 770.73,
+      "end_s": 771.33,
+      "from_type": "solid",
+      "type": "dbl_near",
+      "color": "white",
+      "reason": "user review 2026-10-23 (dblmine page): double line, ego side dashed; window = mined candidate rows +-0.3 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
+    },
+    {
+      "id": "M002-solid",
+      "route_segment": "00000356--148eb5e823--12",
+      "side": "left",
+      "start_s": 785.93,
+      "end_s": 786.53,
+      "from_type": "solid",
+      "type": "dbl_far",
+      "color": "white",
+      "reason": "user review 2026-10-23 (dblmine page): double line, ego side solid; window = mined candidate rows +-0.3 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
+    },
+    {
+      "id": "M007-dashed",
+      "route_segment": "00000388--2a2160e7db--17",
+      "side": "right",
+      "start_s": 1200.0,
+      "end_s": 1200.6,
+      "from_type": "dashed",
+      "type": "dbl_far",
+      "color": "white",
+      "reason": "user review 2026-10-23 (dblmine page): double line, ego side solid; window = mined candidate rows +-0.3 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
+    },
+    {
+      "id": "M009-solid",
+      "route_segment": "000003c1--8648262f70--8",
+      "side": "right",
+      "start_s": 712.13,
+      "end_s": 712.73,
+      "from_type": "solid",
+      "type": "dbl_far",
+      "color": "white",
+      "reason": "user review 2026-10-23 (dblmine page): double line, ego side solid; window = mined candidate rows +-0.3 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
     }
   ],
   "exclusions": [
