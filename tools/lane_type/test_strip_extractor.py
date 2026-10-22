@@ -40,10 +40,10 @@ def equal(want, got):
       assert b.dtype == np.float32 and np.array_equal(a.view(np.uint32), b.view(np.uint32))
 
 
-@pytest.mark.parametrize('switches', list(itertools.product((False, True), repeat=4)))
+@pytest.mark.parametrize('switches', list(itertools.product((False, True), repeat=3)))
 def test_all_switch_combinations_bit_exact(pixels, switches):
   y, uv, lines, rpy, k = pixels
-  ex = fast.Extractor(**dict(zip(('buffers', 'planar', 'geometry', 'repair'), switches, strict=True)))
+  ex = fast.Extractor(**dict(zip(('buffers', 'planar', 'geometry'), switches, strict=True)))
   want = scalar(*pixels)
   assert all(s is not None for s in want)
   equal(want, ex.extract(*pixels))
@@ -106,25 +106,6 @@ def test_invalid_one_side_and_bounded_maps(pixels):
     ex.maps(changed, ex.matrix, 1., 128)
   assert len(ex.y_maps) == fast.MAP_CACHE_SIZE
   assert len(ex.scratch) < 40
-
-
-def test_sparse_and_dense_correction(pixels, monkeypatch):
-  y, uv, lines, rpy, k = pixels
-  ex = fast.Extractor()
-  equal(scalar(*pixels), ex.extract(*pixels))
-  row = ex.rows(lines[0], ex.matrix, len(y))
-  n, w = ex.maps(row, ex.matrix, .75, 96), ex.maps(row, ex.matrix, 1., 128)
-  # Change both Y and UV interpolation table coordinates. Use the original sampler on those exact maps as reference.
-  n = dict(n, mx=n['mx'] + .1)
-  lum, cb, cr = ps.sample(y, uv, {'ys': row[0], 'cols': 96, **n})
-  import cv2
-  image = np.stack((lum, cb, cr), -1).astype(np.uint8)
-  want = cv2.resize(image, (96, 128), interpolation=cv2.INTER_LINEAR).transpose(2, 0, 1).astype(np.float32)
-  for limit in (10**9, 0):
-    monkeypatch.setattr(fast, 'DENSE_LIMIT', limit)
-    got, _ = ex.pair(y, uv, n, w, 128)
-    equal([want], [got])
-  assert ex.counts['dense_fallback'] == 2
 
 
 def test_mallopt_portable_and_failure_is_ignored(monkeypatch):

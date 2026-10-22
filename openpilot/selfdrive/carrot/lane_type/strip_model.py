@@ -8,15 +8,17 @@ Below the confidence threshold a head is UNKNOWN; dashed+yellow is not a learned
 
 Manifest v4 (``outputs`` == OUTPUTS_V4, ONNX outputs ``color`` (N, 3) and ``type`` (N, 5) logits) is mapped onto the
 same two-class result the strip filter reads (StripModel.decide4); v1-v3 manifests (``outputs`` {line_type, color},
-two softmax heads) keep StripModel.decide unchanged. ``mirror_right`` (v4): marking_daemon flips the right strip's
-columns before inference so the ego side is on the same column side as on the left strip (see MIRROR_AXIS).
+two softmax heads) keep StripModel.decide unchanged. ``mirror_right`` (v4): marking_daemon flips a standalone v4 model's
+right strip. HybridStripModel owns its v4-only right flip so the v3 colour crop stays unmirrored (see MIRROR_AXIS).
 
 Model slots (SLOTS, selected by the LaneStripModel param in marking_daemon, see load_slot): 0 = assets/lane_strip.{onnx,json}
 (the deployed model), 1 = assets/lane_strip_v4.{onnx,json} (the new model), HYBRID_SLOT 2 = both: HybridStripModel takes the
-TYPE from slot 1 (v4) and the COLOUR from slot 0 (v3). Slots 1 and 2 fall back to slot 0 when their files are missing or invalid.
+TYPE from slot 1 (v4) and the COLOUR from slot 0 (v3) on the unmirrored wide strip's central crop. Slots 1 and 2 fall back
+to slot 0 when their files or input contracts are invalid.
 """
 import hashlib
 import json
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -245,9 +247,9 @@ class StripModel:
 
 
 class HybridStripModel:
-  """LaneStripModel 2: TYPE from a v4 model (StripNet2, its own strip and mirror_right), COLOUR from a v1-v3 model (its own
-  strip, never mirrored). Both run on every inferred side (marking_daemon.Recogniser builds one strip per entry of
-  ``strip_inputs``; a side without a valid strip in either geometry is not inferred: invalid_lane_geometry).
+  """LaneStripModel 2: TYPE from v4, COLOUR from v3 on the central columns of one unmirrored wide strip.
+  Recogniser supplies the valid side names to infer(); this model alone mirrors the right v4 input. The v3 crop
+  always comes from the unmirrored strip, including when only the right side is inferred.
 
   Per side the v4 decision comes first (StripModel.decide4): a type argmax 'unknown' abstains on both heads (reason 'unknown',
   paused like lane_prob_dip). Otherwise P(dashed) = (dashed + dbl_near)/(1 - unknown) from v4 (dbl_near -> dashed, dbl_far ->
@@ -261,21 +263,35 @@ class HybridStripModel:
       raise ValueError('lane strip hybrid: needs a v4 (StripNet2) type model and a v1-v3 colour model')
     self.type_model, self.color_model = type_model, color_model
     self.threshold = type_model.threshold
-    # (strip geometry, mirror the right strip) per model, in the order of the strips infer() is given per side
-    self.strip_inputs = ((type_model.strip, type_model.mirror_right), (color_model.strip, False))
+    wide, color = type_model.strip, color_model.strip
+    pitch = 2*Fraction(str(wide['half_m']))/wide['cols']
+    color_pitch = 2*Fraction(str(color['half_m']))/color['cols']
+    start = (Fraction(str(wide['half_m'])) - Fraction(str(color['half_m'])))/pitch
+    end = start + color['cols']
+    if (pitch != color_pitch or wide['rows'] != color['rows'] or start.denominator != 1 or
+        end.denominator != 1 or start < 0 or end > wide['cols']):
+      raise ValueError('lane strip hybrid: colour crop needs equal column spacing/rows and integer central bounds inside the wide strip')
+    self.crop_columns = int(start), int(end)
+    self.strip_inputs = ((wide, False),)  # one unmirrored strip; infer owns the v4-only right flip
 
   def info(self):
     t, c = self.type_model.info(), self.color_model.info()
     return {'slot': self.slot, 'name': self.name, 'version': f"{t['version']}+{c['version']}", 'sha256': f"{t['sha256']}+{c['sha256']}",
             'v4': True, 'typeModel': {k: t[k] for k in ('name', 'version', 'sha256')},
-            'colorModel': {k: c[k] for k in ('name', 'version', 'sha256')}}
+            'colorModel': {k: c[k] for k in ('name', 'version', 'sha256')},
+            'colorInput': f'wide_crop_{self.crop_columns[0]}_{self.crop_columns[1]}'}
 
-  def infer(self, strips):
-    """strips: list of (v4 strip, v3 strip) per side -> list of result dicts (StripModel.decide4 keys)."""
+  def infer(self, strips, *, sides=()):
+    """One (unmirrored wide strip,) tuple per valid side; explicit sides prevent right-only batch ambiguity."""
+    if len(strips) != len(sides) or any(len(s) != 1 for s in strips) or any(side not in ('left', 'right') for side in sides):
+      raise ValueError('lane strip hybrid: one left/right side name is required per strip')
     if not strips:
       return []
-    types, colors4 = self.type_model.forward([s[0] for s in strips])
-    _, colors3 = self.color_model.forward([s[1] for s in strips])
+    wide = [s[0] for s in strips]
+    types, colors4 = self.type_model.forward([s[..., ::-1] if self.type_model.mirror_right and side == 'right' else s
+                                            for s, side in zip(wide, sides, strict=True)])
+    start, end = self.crop_columns
+    _, colors3 = self.color_model.forward([s[..., start:end] for s in wide])
     return [self.decide(t, c4, c3) for t, c4, c3 in zip(types, colors4, colors3, strict=True)]
 
   def decide(self, type_logits, color4_logits, color3_p):

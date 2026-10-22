@@ -22,7 +22,7 @@ from tools.lane_type.test_strip_model_v4 import FIX, FRAME_NS, C, T, frame, stri
 ROOT = Path(__file__).resolve().parents[2]
 V3 = 'e6c5f34fb84d1b184d90bda5e245ab4fc32c01b4a3f55665a7b332debb87053f'
 V4_SHIPPED = '0e22e71364b60bdb8761590d77a8b08880fa6571aef75184e76882405729e745'  # nolat-v3init-c seed 4 (round 3)
-HALF_V4 = 1.  # the probe's strip half width in the hybrid tests: tells its strip_input calls from the v3 ones (0.75 m)
+HALF_V4 = .75  # the 96-column probe shares v3 spacing; shipped 128-column crop is checked separately
 
 
 def assets(tmp_path, v4=FIX/'strip_v4_probe.onnx', strip=None):
@@ -206,7 +206,7 @@ def test_daemon_polls_the_param_and_hot_swaps(monkeypatch, tmp_path):
 
 @pytest.fixture
 def pair(monkeypatch):
-  """(side, half_m) -> the strip strip_input returns: the v4 probe asks with half_m HALF_V4, the v3 model with 0.75 m."""
+  """One unmirrored probe strip per side; v3 sees its central crop, not another sampler call."""
   cur = {}
   monkeypatch.setattr(strip_model, 'strip_input', lambda y, uv, line, rpy, k, **kw: cur.get((line['side'], kw['half_m'])))
   return cur
@@ -236,12 +236,13 @@ def test_slot2_loads_both_models(tmp_path):
   assert isinstance(m, strip_model.HybridStripModel) and not warned
   assert (m.slot, m.v4, m.threshold) == (2, True, .9)
   assert (m.type_model.name, m.type_model.v4, m.color_model.name, m.color_model.model_hash) == ('lane_strip_v4', True, 'lane_strip', V3)
-  assert m.strip_inputs == ((m.type_model.strip, True), (m.color_model.strip, False))
+  assert m.strip_inputs == ((m.type_model.strip, False),)
+  assert m.crop_columns == (0, 96)
   info = m.info()
   probe = m.type_model.model_hash[:12]
   assert info == {'slot': 2, 'name': 'hybrid', 'version': '4+3', 'sha256': f'{probe}+{V3[:12]}', 'v4': True,
                   'typeModel': {'name': 'lane_strip_v4', 'version': 4, 'sha256': probe},
-                  'colorModel': {'name': 'lane_strip', 'version': 3, 'sha256': V3[:12]}}
+                  'colorModel': {'name': 'lane_strip', 'version': 3, 'sha256': V3[:12]}, 'colorInput': 'wide_crop_0_96'}
 
 
 def test_slot2_type_from_v4_colour_from_v3(tmp_path, pair):
@@ -249,10 +250,19 @@ def test_slot2_type_from_v4_colour_from_v3(tmp_path, pair):
   rec = Recogniser(2, model=m, strip_filter=False)
   z = np.load(FIX/'v3_golden_407.npz')
   yellow_solid, white_dashed = z['strips'][0].astype(np.float32), z['strips'][6].astype(np.float32)
-  # left: v4 dashed + blue, v3 yellow -> dashed yellow (passed through as in v4); right (mirrored v4 strip): v4 dbl_far + yellow,
-  # v3 white -> solid white (dbl_far -> solid; the v4 colour head is ignored, blue never set)
-  pair[('left', HALF_V4)], pair[('left', .75)] = strip(T['dashed'], C['blue']), yellow_solid
-  pair[('right', HALF_V4)], pair[('right', .75)] = strip(T['dbl_far'], C['yellow'], at='mirrored'), white_dashed
+  # Probe logits are written into the same strip that the real v3 colour model receives.
+  def controlled(image, kind, color, right=False):
+    image = image.copy()
+    for ch, values in ((0, T[kind]), (1, C[color])):
+      if right:
+        image[ch, 0, :len(values)] = values[::-1]
+      else:
+        image[ch, 0, -len(values):] = values
+    return image
+  yellow_solid = controlled(yellow_solid, 'dashed', 'blue')
+  white_dashed = controlled(white_dashed, 'dbl_far', 'yellow', right=True)
+  pair[('left', HALF_V4)] = yellow_solid
+  pair[('right', HALF_V4)] = white_dashed
   out = rec.process(None, None, frame(0))
   left, right = out['left'], out['right']
   assert (left['type'], left['color'], left['reason'], left['typeClass'], left['colorClass'], left['blue']) == \
@@ -269,14 +279,10 @@ def test_slot2_type_from_v4_colour_from_v3(tmp_path, pair):
   assert (left['type'], left['color'], left['reason'], left['blue']) == ('unknown', 'unknown', 'unknown', False)
 
 
-@pytest.mark.parametrize('missing', [HALF_V4, .75])
-def test_slot2_side_without_both_strips_is_not_inferred(tmp_path, pair, missing):
+def test_slot2_side_without_wide_strip_is_not_inferred(tmp_path, pair):
   rec = Recogniser(2, model=hybrid(tmp_path), strip_filter=False)
-  z = np.load(FIX/'v3_golden_407.npz')
-  for half in (HALF_V4, .75):
-    pair[('left', half)] = strip(T['solid'], C['white']) if half == HALF_V4 else z['strips'][0].astype(np.float32)
-    pair[('right', half)] = strip(T['solid'], C['white'], at='mirrored') if half == HALF_V4 else z['strips'][6].astype(np.float32)
-  pair[('right', missing)] = None
+  pair[('left', HALF_V4)] = strip(T['solid'], C['white'])
+  pair[('right', HALF_V4)] = None
   out = rec.process(None, None, frame(0))
   assert out['right']['reason'] == 'invalid_lane_geometry' and out['right']['type'] == 'unknown'
   assert out['left']['reason'] == 'strip_model' and out['left']['type'] == 'solid'
@@ -329,8 +335,10 @@ def test_shipped_v4_pair_and_real_hybrid():
   z = np.load(FIX/'v3_golden_407.npz')
   s3 = list(z['strips'].astype(np.float32))
   s4 = [np.pad(s, ((0, 0), (0, 0), (16, 16)), mode='edge') for s in s3]  # 96 -> 128 columns, centred (+-1.0 m at 1.5625 cm/col)
-  got = m.infer(list(zip(s4, s3, strict=True)))
-  alone4, alone3 = v4.infer(s4), m.color_model.infer(s3)
+  sides = ['left' if i % 2 == 0 else 'right' for i in range(len(s4))]
+  got = m.infer([(s,) for s in s4], sides=sides)
+  alone4 = v4.infer([s[..., ::-1] if side == 'right' else s for s, side in zip(s4, sides, strict=True)])
+  alone3 = m.color_model.infer(s3)
   assert len(got) == len(s3)
   for r, r4, r3 in zip(got, alone4, alone3, strict=True):
     assert {k: r[k] for k in ('typeClass', 'double', 'pUnknown')} == {k: r4[k] for k in ('typeClass', 'double', 'pUnknown')}
@@ -349,6 +357,7 @@ def test_packet_carries_both_models(tmp_path):
   info = {**hybrid(tmp_path).info(), 'requested': 2}
   data = json.loads(json.dumps(packet(2, 1, 0, {}, {}, 0, {}, {}, info)))
   assert data['model']['slot'] == 2 and data['model']['requested'] == 2
+  assert data['model']['colorInput'] == 'wide_crop_0_96'
   assert (data['model']['typeModel']['version'], data['model']['colorModel']['version']) == (4, 3)
   assert data['model']['colorModel']['sha256'] == V3[:12] and len(data['model']['typeModel']['sha256']) == 12
   assert marking.parse(json.dumps(data), 0)['left'] == {'type': None, 'color': None}  # card ignores 'model'
@@ -365,7 +374,8 @@ def test_daemon_hot_swaps_0_2_1_0(monkeypatch, tmp_path):
   seen = [(p['model']['requested'], p['model']['slot'], p['model']['version']) for p in sent]
   assert [s for i, s in enumerate(seen) if i == 0 or s != seen[i - 1]] == [(0, 0, 3), (2, 2, '4+3'), (1, 1, 4), (0, 0, 3)]
   hyb = [p['model'] for p in sent if p['model']['slot'] == 2]
-  assert hyb and all(x['colorModel']['sha256'] == V3[:12] and x['typeModel']['name'] == 'lane_strip_v4' for x in hyb)
+  assert hyb and all(x['colorModel']['sha256'] == V3[:12] and x['typeModel']['name'] == 'lane_strip_v4' and
+                     x['colorInput'] == 'wide_crop_0_96' for x in hyb)
 
 
 def test_non_object_manifest_falls_back_to_slot0(tmp_path):

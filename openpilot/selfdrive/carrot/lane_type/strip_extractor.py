@@ -11,10 +11,8 @@ from openpilot.selfdrive.carrot.lane_type import profile_scanner as ps
 # Restart the daemon after changing a switch. Buffer reuse and allocator tuning can be disabled together.
 REUSE_BUFFERS = True
 TUNE_ALLOCATOR = True
-REUSE_WIDE = True
 PLANAR_UV = True
 SHARE_GEOMETRY = True
-DENSE_LIMIT = 16_384
 MAP_CACHE_SIZE = 8
 DISTANCES = np.arange(ps.NEAR_M, ps.FAR_M + .001, .02)
 COLUMN_GRID = {c: (np.arange(c*ps.SUB) + .5)/(c*ps.SUB) for c in (96, 128)}
@@ -38,14 +36,12 @@ def tune_allocator():
 
 
 class Extractor:
-  def __init__(self, *, buffers=None, planar=None, geometry=None, repair=None):
+  def __init__(self, *, buffers=None, planar=None, geometry=None):
     self.buffers = REUSE_BUFFERS if buffers is None else buffers
     self.planar = PLANAR_UV if planar is None else planar
     self.geometry = SHARE_GEOMETRY if geometry is None else geometry
-    self.repair = REUSE_WIDE if repair is None else repair
     self.scratch, self.y_maps = {}, OrderedDict()
     self.layout = self.key = self.matrix = None
-    self.counts = {'repair_y': 0, 'repair_uv': 0, 'dense_fallback': 0}
 
   def buf(self, tag, shape, dtype=np.uint8):
     if not self.buffers:
@@ -125,39 +121,6 @@ class Extractor:
     image = cv2.resize(image, (cols, rows), interpolation=cv2.INTER_AREA if len(image) > rows else cv2.INTER_LINEAR)
     return image.transpose(2, 0, 1).astype(np.float32)  # caller-owned, never a scratch view
 
-  def pair(self, y, uv, narrow, wide, rows):
-    wide_planes = self.raw(y, uv, wide, 'wide')
-    wide_output = self.finish(wide_planes, 128, rows)
-    narrow_planes = []
-    for i, plane in enumerate(wide_planes):
-      target = self.buf('narrow'+str(i), (len(plane), 384))
-      np.copyto(target, plane[:, 64:448])
-      narrow_planes.append(target)
-    center = wide['mx'][:, 64:448]
-    for scale, indices, name in ((1., (0,), 'y'), (.5, (1, 2), 'uv')):
-      a = self.buf('round_n', narrow['mx'].shape, np.float32)
-      b = self.buf('round_w', center.shape, np.float32)
-      np.multiply(narrow['mx'], 32*scale, out=a)
-      np.multiply(center, 32*scale, out=b)
-      np.rint(a, out=a)
-      np.rint(b, out=b)
-      mask = np.not_equal(a, b)
-      n = int(mask.sum())
-      self.counts['repair_'+name] += n
-      if not n:
-        continue
-      sources = [y] if scale == 1. else uv if isinstance(uv, tuple) else (uv[..., 0], uv[..., 1])
-      if n > DENSE_LIMIT:
-        self.counts['dense_fallback'] += 1
-        for i, src in zip(indices, sources, strict=True):
-          narrow_planes[i][:] = self.remap(src, narrow['mx']*scale, narrow['my']*scale, 'patch')
-      else:
-        mx = (narrow['mx'][mask]*scale).reshape(1, -1)
-        my = (narrow['my'][mask]*scale).reshape(1, -1)
-        for i, src in zip(indices, sources, strict=True):
-          narrow_planes[i][mask] = self.remap(src, mx, my, 'patch').ravel()
-    return self.finish(narrow_planes, 96, rows), wide_output
-
   def extract(self, y, uv, lines, rpy, k, widths=((.75, 96, 128), (1., 128, 128))):
     """Unmirrored strips, width-major then side-major. No line geometry/pixels survive into the next call."""
     layout = y.shape, y.strides, uv.shape, uv.strides, tuple(widths)
@@ -175,12 +138,5 @@ class Extractor:
       geos = [[None if row is None else self.maps(row, self.matrix, h, c) for row in common] for h, c, _ in widths]
     else:
       geos = [[ps.strip_geometry(line, rpy, k, y.shape[1], y.shape[0], half_m=h, cols=c) for line in lines] for h, c, _ in widths]
-    if self.repair and tuple(widths) == ((.75, 96, 128), (1., 128, 128)):
-      result = [[], []]
-      for n, w in zip(*geos, strict=True):
-        a, b = (None, None) if n is None or w is None else self.pair(y, uv, n, w, 128)
-        result[0].append(a)
-        result[1].append(b)
-      return result[0] + result[1]
     return [None if g is None else self.finish(self.raw(y, uv, g, 'remap'), cols, rows)
             for group, (_, cols, rows) in zip(geos, widths, strict=True) for g in group]

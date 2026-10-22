@@ -210,7 +210,7 @@ class Recogniser:
     from openpilot.selfdrive.carrot.lane_type.strip_model import batch_strip_inputs
     extract_start = time.monotonic_ns()
     strips, sides = [], []
-    # strip_model.HybridStripModel: one strip per (geometry, mirror) entry of strip_inputs, infer() gets a tuple per side.
+    # Hybrid gets one unmirrored wide strip per side and explicit side names; it owns the v4-only right flip.
     inputs = getattr(self.model, 'strip_inputs', None)
     if inputs is None:
       strip = getattr(self.model, 'strip', {})  # the manifest's strip geometry (StripModel.strip); a replay wrapper without it: default
@@ -244,7 +244,7 @@ class Recogniser:
           continue
         out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason='invalid_lane_geometry')
     infer_start = time.monotonic_ns()
-    predictions = self.model.infer(strips)
+    predictions = self.model.infer(strips, sides=sides) if inputs is not None else self.model.infer(strips)
     self.timing = {'extractMs': (infer_start - extract_start)/1e6, 'inferMs': (time.monotonic_ns() - infer_start)/1e6}
     models = {}
     for side, r in zip(sides, predictions, strict=True):
