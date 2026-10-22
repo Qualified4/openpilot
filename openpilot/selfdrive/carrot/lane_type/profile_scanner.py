@@ -83,10 +83,12 @@ def strip_geometry(line, rpy, k, width, height, hood=HOOD_FRACTION, half_m=HALF_
 def sample(y_plane, uv_plane, geo):
   """Luma and chroma strips (R x geo['cols'], default COLUMNS). Horizontal box prefilter of SUB samples per column."""
   r, cols = len(geo['ys']), geo.get('cols', COLUMNS)
+  # The box mean over each column's SUB samples is cv2.resize INTER_AREA on an exact integer factor: the same values
+  # as reshape(..).mean(dtype=float32) but ~4x faster (the numpy mean over the interleaved UV axis dominated the daemon).
   lum = cv2.remap(y_plane, geo['mx'], geo['my'], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-  lum = lum.reshape(r, cols, SUB).mean(2, dtype=np.float32)
+  lum = cv2.resize(lum.astype(np.float32), (cols, r), interpolation=cv2.INTER_AREA)
   uv = cv2.remap(uv_plane, geo['mx']*.5, geo['my']*.5, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-  uv = uv.reshape(r, cols, SUB, 2).mean(2, dtype=np.float32)
+  uv = cv2.resize(uv.astype(np.float32), (cols, r), interpolation=cv2.INTER_AREA)
   return lum, uv[..., 0], uv[..., 1]
 
 
