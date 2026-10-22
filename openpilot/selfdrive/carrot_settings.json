@@ -1933,30 +1933,33 @@
       "group": "시작",
       "name": "LaneStripModel",
       "title": "차선 종류 모델",
-      "descr": "CCNC 차선 종류·색상 표시(StripNet)에 쓸 모델을 고릅니다. 현재: 배포된 모델, 새 모델: 시험 중인 새 모델. 새 모델 파일이 없거나 읽을 수 없으면 현재 모델로 실행합니다. 주행 중에 바꾸면 재시작 없이 약 1초 안에 적용되고, 차선 판단은 처음부터 다시 쌓습니다. 표시 전용",
+      "descr": "CCNC 차선 종류·색상 표시(StripNet)에 쓸 모델을 고릅니다. 현재: 배포된 모델, 새 모델: 시험 중인 새 모델, 하이브리드: 실선·점선은 새 모델, 색은 현재 모델로 판단(두 모델을 함께 실행). 새 모델 파일이 없거나 읽을 수 없으면 현재 모델로 실행합니다. 주행 중에 바꾸면 재시작 없이 약 1초 안에 적용되고, 차선 판단은 처음부터 다시 쌓습니다. 표시 전용",
       "egroup": "START",
       "etitle": "Lane type model",
-      "edescr": "Chooses the model used by CCNC lane type & color display (StripNet). Current: the deployed model, New model: the new model under test. If the new model files are missing or cannot be read, the current model runs. A change while driving applies within about 1 s without a restart, and lane decisions start over. Display only",
+      "edescr": "Chooses the model used by CCNC lane type & color display (StripNet). Current: the deployed model, New model: the new model under test, Hybrid: solid/dashed from the new model and color from the current model (both run). If the new model files are missing or cannot be read, the current model runs. A change while driving applies within about 1 s without a restart, and lane decisions start over. Display only",
       "cgroup": "启动设置",
       "ctitle": "车道线类型模型",
-      "cdescr": "选择CCNC车道线类型·颜色显示(StripNet)使用的模型。当前：已部署的模型，新模型：测试中的新模型。新模型文件缺失或无法读取时使用当前模型。行驶中更改时无需重启，约1秒内生效，车道判断重新开始。仅用于显示",
+      "cdescr": "选择CCNC车道线类型·颜色显示(StripNet)使用的模型。当前：已部署的模型，新模型：测试中的新模型，混合：实线/虚线由新模型、颜色由当前模型判断(两个模型同时运行)。新模型文件缺失或无法读取时使用当前模型。行驶中更改时无需重启，约1秒内生效，车道判断重新开始。仅用于显示",
       "min": 0,
-      "max": 1,
+      "max": 2,
       "default": 0,
       "unit": 1,
       "control": "select",
       "options": {
         "ko": [
           "현재",
-          "새 모델"
+          "새 모델",
+          "하이브리드(타입 새 모델 + 색 현재)"
         ],
         "en": [
           "Current",
-          "New model"
+          "New model",
+          "Hybrid (type new + color current)"
         ],
         "zh": [
           "当前",
-          "新模型"
+          "新模型",
+          "混合(类型新模型 + 颜色当前)"
         ]
       }
     },

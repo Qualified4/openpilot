@@ -1,0 +1,134 @@
+{
+ "version": 4,
+ "architecture": "StripNet2 (stripnet2-nolat)",
+ "params": 21792,
+ "model_sha256": "0e22e71364b60bdb8761590d77a8b08880fa6571aef75184e76882405729e745",
+ "strip": {
+  "half_m": 1.0,
+  "cols": 128,
+  "rows": 128
+ },
+ "input": {
+  "name": "strip_ycbcr",
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "dtype": "float32",
+  "range": "raw 0..255 Y,Cb,Cr",
+  "strip": "profile_scanner.strip_geometry + sample (4.5-20 m, 128 metric columns over +-1.0 m), uint8, rows INTER_AREA (INTER_LINEAR if <128) resized to 128, far rows first; RIGHT strip flipped left/right (mirror_right)"
+ },
+ "mirror_right": true,
+ "outputs": {
+  "color": [
+   "white",
+   "yellow",
+   "blue"
+  ],
+  "type": [
+   "dashed",
+   "solid",
+   "dbl_near",
+   "dbl_far",
+   "unknown"
+  ]
+ },
+ "threshold": 0.9,
+ "mapping": "logits; type argmax unknown -> no inference this frame (paused like lane_prob_dip); P(dashed) = (dashed + dbl_near)/(1 - unknown) (dbl_near = ego-side line of a double marking -> dashed, dbl_far -> solid); P(yellow) = colour softmax yellow, blue shown white; yellow + dashed passed through (strip_model.StripModel.decide4). LaneStripModel 1 uses this model for both heads; LaneStripModel 2 (hybrid) uses it for the type only and takes the colour from lane_strip.onnx (v3).",
+ "training": {
+  "source": ".analysis/lane-retrain-w100-20261021/train/nolat-v3init-c seed 4 (round 3, TRAINW100c.ps1)",
+  "arch": "stripnet2-nolat (heads colour 3 / type 5), backbone initialised from v3 (lane-retrain-407-20261021 i-407-occ2 stripnet-plus-rain-more-nored-0.pt sha256 4bf50fca9f58, backbone lr x0.3)",
+  "aug": "plus-rain-more-nored + synth-double 0.15 + blue-hue 0.05; unknown share 0.1, dbl max share 0.2",
+  "data": "dataset-train-w100-v4b",
+  "train_frames": 19169,
+  "validation_frames": 2898,
+  "epochs": 40,
+  "seed": 4,
+  "best_epoch": 28,
+  "val_score": 0.8905,
+  "val_type_macro_f1": 0.8123,
+  "val_color_macro_f1": 0.9687,
+  "onnx_parity": 7.39e-06
+ },
+ "eval": {
+  "round3": {
+   "source": ".analysis/lane-retrain-w100-20261021/round3/run-34c37b99d452/comparison-w100b.md (A)",
+   "v3": {
+    "rain_yellow": "21/0/1",
+    "rain_white": "9/2/3",
+    "13seg_wrong": 9,
+    "16seg_trans_wo": "163 / 8",
+    "scene16_s": 0.0,
+    "407_bm": "3/3",
+    "40d_grey_contra_wo": "136.6 / 67.1 / 36",
+    "dbl55_f1": null,
+    "dbl_card_near_far_55": "0.11 / 0.76 / 0.00",
+    "yellow_to_white": "16/1100",
+    "pass": "fail: dbl55_f1_ge0.8"
+   },
+   "this_model": {
+    "val_f1_type_colour": "0.812 / 0.969",
+    "rain_yellow": "22/0/0",
+    "rain_white": "9/2/3",
+    "13seg_wrong": 9,
+    "16seg_trans_wo": "170 / 10",
+    "scene16_s": 0.0,
+    "407_dashed_conf": 0.267,
+    "407_bm": "3/3",
+    "40d_grey_contra_wo": "133.1 / 68.2 / 38",
+    "dbl_f1_near_far": "0.909 / 0.87",
+    "dbl55_f1": 0.908,
+    "dbl_card_near_far_55": "0.43 / 0.88 / 0.77",
+    "solid_to_dashed": "39/1362 / 6 / 3-6-0",
+    "yellow_to_white": "20/1100",
+    "blue_acc": 1.0,
+    "unknown_p_r": "0.874 / 0.762",
+    "pass": "PASS"
+   },
+   "hybrid_slot2": {
+    "val_f1_type_colour": "0.812 / 0.985",
+    "rain_yellow": "21/0/1",
+    "rain_white": "9/2/3",
+    "13seg_wrong": 9,
+    "16seg_trans_wo": "168 / 8",
+    "40d_grey_contra_wo": "135.7 / 68.7 / 36",
+    "dbl_card_near_far_55": "0.43 / 0.88 / 0.77",
+    "yellow_to_white": "16/1100",
+    "pass": "PASS",
+    "source": ".analysis/lane-hybrid-20261022/REPORT_KO.md (H-s4)"
+   }
+  },
+  "40f": {
+   "source": ".analysis/lane-hybrid-20261022/REPORT_KO.md, blips/REPORT_KO.md (0000040f 15 segments, v3+L4 card replay = reference)",
+   "contra_s": {
+    "v3": 39.8,
+    "this_model": 54.2,
+    "hybrid_slot2": 50.3,
+    "limit_v3x1.1": 43.8
+   },
+   "yellow_to_white_s_ep_ge1s": {
+    "v3": "20.1 / 82 / 3",
+    "this_model": "24.8 / 80 / 8",
+    "hybrid_slot2": "20.7 / 85 / 3"
+   },
+   "new_yellow_to_white_ge1s_vs_v3": {
+    "this_model": 5,
+    "hybrid_slot2": 0
+   },
+   "hybrid_slot2_contra_breakdown": "new 11.68 s = real double line, model right 5.50 + worn/ambiguous 1.75 + dashed entry/return delay 2.64 + type error 0.25 + colour 0.69 + unchecked 0.85; without the real-double / worn parts ~43.0 s (v3 39.8)",
+   "display_changes_total_lt1s": {
+    "v3": "192 / 43",
+    "hybrid_slot2": "199 / 42"
+   },
+   "pass": "fail (contra > v3 x 1.1) for both this model and the hybrid"
+  },
+  "runtime_vm_ms_per_frame": {
+   "v3": 2.32,
+   "hybrid_slot2": 5.36,
+   "source": ".analysis/lane-hybrid-20261022/eval/bench.json (1 OpenCV thread)"
+  }
+ },
+ "previous": "manifest v4 draft .analysis/lane-retrain-w100-20261021/manifest-v4.json (sn2 seed 1, not shipped)",
+ "deviceValidated": false
+}

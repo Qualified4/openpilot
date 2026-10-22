@@ -1,10 +1,12 @@
 """CCNC lane marking recogniser process (display only): StripNet, with the model slot chosen by LaneStripModel.
 
-The model (strip_model.load_slot: 0 the deployed assets/lane_strip.*, 1 the new assets/lane_strip_v4.*, falling back to the
-deployed one with a warning when those files are missing or invalid) is loaded at start and the param is polled every
+The model (strip_model.load_slot: 0 the deployed assets/lane_strip.*, 1 the new assets/lane_strip_v4.*, 2 the hybrid of both
+(type from lane_strip_v4, colour from lane_strip), falling back to the deployed one with a warning when those files are missing or
+invalid) is loaded at start and the param is polled every
 PARAM_CHECK_S; a change hot-swaps the model without a restart and starts the strip filter, dip timers and display filter from
-empty (Recogniser.swap_model). The active model (slot, manifest version, sha256 prefix) is logged and carried in every
-packet's 'model' entry. The profile Scanner (Recogniser mode 1) is kept for offline replays only and never runs here.
+empty (Recogniser.swap_model). The active model (slot, manifest version, sha256 prefix; hybrid: both, 'typeModel' /
+'colorModel') is logged and carried in every packet's 'model' entry. The profile Scanner (Recogniser mode 1) is kept for
+offline replays only and never runs here.
 
 Runs outside modeld/controlsd/card. Every new full-resolution road camera NV12 frame goes into a small buffer
 of the newest FRAME_BUFFER frames (older ones are dropped; buffers are camerad's shared memory, referenced not
@@ -204,23 +206,31 @@ class Recogniser:
       return out
     from openpilot.selfdrive.carrot.lane_type.strip_model import strip_input
     strips, sides = [], []
-    strip = getattr(self.model, 'strip', {})  # the manifest's strip geometry (StripModel.strip); a replay wrapper without it: default
-    # v4 mirror_right: the right strip's columns are flipped so its ego side is on the high columns, as on the left strip
-    # (strip_model.MIRROR_AXIS); a replay wrapper without the attribute (or a v1-v3 model): no flip.
-    mirror = getattr(self.model, 'mirror_right', getattr(getattr(self.model, 'model', None), 'mirror_right', False))
+    # strip_model.HybridStripModel: one strip per (geometry, mirror) entry of strip_inputs, infer() gets a tuple per side.
+    inputs = getattr(self.model, 'strip_inputs', None)
+    if inputs is None:
+      strip = getattr(self.model, 'strip', {})  # the manifest's strip geometry (StripModel.strip); a replay wrapper without it: default
+      # v4 mirror_right: the right strip's columns are flipped so its ego side is on the high columns, as on the left strip
+      # (strip_model.MIRROR_AXIS); a replay wrapper without the attribute (or a v1-v3 model): no flip.
+      mirror = getattr(self.model, 'mirror_right', getattr(getattr(self.model, 'model', None), 'mirror_right', False))
     for side in ('left', 'right'):
       skip = self._skip_reason(side, frame)
       if skip:
         out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason=skip)
         continue
-      s = strip_input(y_plane, uv_plane, frame['lines'][side], frame['rpy'], frame['k'], **strip)
-      if s is None:
-        out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason='invalid_lane_geometry')
+      got = []
+      for geometry, flip in (inputs or ((strip, mirror),)):
+        s = strip_input(y_plane, uv_plane, frame['lines'][side], frame['rpy'], frame['k'], **geometry)
+        if s is None:  # hybrid: no valid strip in either geometry -> the side is not inferred at all
+          break
+        if flip is True and side == 'right':
+          s = s[..., ::-1]  # strip_model.MIRROR_AXIS (-1, the column axis); infer() stacks the strips into a contiguous copy
+        got.append(s)
+      else:
+        strips.append(tuple(got) if inputs else got[0])
+        sides.append(side)
         continue
-      if mirror is True and side == 'right':
-        s = s[..., ::-1]  # strip_model.MIRROR_AXIS (-1, the column axis); infer() stacks the strips into a contiguous copy
-      strips.append(s)
-      sides.append(side)
+      out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason='invalid_lane_geometry')
     models = {}
     for side, r in zip(sides, self.model.infer(strips), strict=True):
       # The strip model's own confident dashed decision is its pattern evidence.
