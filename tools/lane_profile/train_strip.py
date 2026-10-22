@@ -241,20 +241,29 @@ RAIN_P = {'desaturate': .5, 'darken': .5, 'blue': .3, 'red_blob': .3}  # per-sam
 RAIN_P_LITE = {**RAIN_P, 'blue': .15, 'red_blob': .15}  # plus-rain-lite: blue cast / red ellipse halved
 
 
-def augment_plus_rain(x, gen, p=None):
+AUG_COLOR = [None]  # (lane-v31-color-20261022) colour labels (COLORS index) of the batch being augmented; set by train() before augment_fn
+YELLOW = COLORS.index('yellow')
+
+
+def augment_plus_rain(x, gen, p=None, ydesat=None):
   """augment_plus() (incl. augment()'s 50 % left/right flip) plus rain/night photometrics; labels unchanged.
 
   desaturate: Cb/Cr pulled toward 128 by 0.3-1.0x (wet night paint is nearly grey); darken: Y x0.4-1.0 + luma noise
   sigma 0-4; blue cast: Cb +2..+8 (wet road at night); red reflection: one soft ellipse (rows 4-20, cols 3-12 radius,
   anywhere in the strip) with Cr +20..+50 at its centre (tail/brake light and its reflection; colour label unchanged:
   the boundary under it keeps its own colour). Every draw is made for every sample so the stream is seed-deterministic.
-  p: probabilities (default RAIN_P; RAIN_P_LITE for plus-rain-lite). The draw order does not depend on p."""
+  p: probabilities (default RAIN_P; RAIN_P_LITE for plus-rain-lite). The draw order does not depend on p.
+  ydesat (lane-v31-color-20261022; None = unchanged): desaturation of YELLOW-labelled samples (AUG_COLOR) -- 'off': none (factor 1),
+  a float f: factor >= f (line chroma keeps >= f of its value). Same draws, so only those samples' Cb/Cr change."""
   p = RAIN_P if p is None else p
   x = augment_plus(x, gen)
   n, dev = x.shape[0], x.device
   r = lambda *s: torch.rand(*s, device=dev, generator=gen)  # noqa: E731
   y, cb, cr = x[:, :1], x[:, 1:2], x[:, 2:]
   m, k = (r(n) < p['desaturate']).view(-1, 1, 1, 1), .3 + .7*r(n, 1, 1, 1)
+  if ydesat is not None and AUG_COLOR[0] is not None:
+    yl = (AUG_COLOR[0] == YELLOW).view(-1, 1, 1, 1)
+    k = torch.where(yl, torch.ones_like(k) if ydesat == 'off' else k.clamp(min=float(ydesat)), k)
   cb, cr = torch.where(m, (cb - 128)*k + 128, cb), torch.where(m, (cr - 128)*k + 128, cr)
   m, g, sd = (r(n) < p['darken']).view(-1, 1, 1, 1), .4 + .6*r(n, 1, 1, 1), 4*r(n, 1, 1, 1)
   y = torch.where(m, y*g + torch.randn(y.shape, device=dev, generator=gen)*sd, y)
@@ -287,7 +296,7 @@ def _gauss(x, sigma):
   return F.conv2d(F.pad(x, (0, 0, k//2, k//2), mode='replicate'), g.view(1, 1, k, 1).repeat(c, 1, 1, 1), groups=c)
 
 
-def augment_plus_rain_more(x, gen, p=None):
+def augment_plus_rain_more(x, gen, p=None, ydesat=None):
   """augment_plus_rain() plus rain-drop / spray effects; labels unchanged. Applied twice per sample per epoch (AUG_REPEAT).
 
   low contrast (30 %): Y = mean + (Y - mean)*0.5-1.0 (spray haze); drop blur (30 %): 2-4 soft discs (radius 6-14 px) where the
@@ -295,7 +304,7 @@ def augment_plus_rain_more(x, gen, p=None):
   full width) or one disc (radius 6-16 px), 50/50, filled with the road colour = per-channel median of the bottom 16 rows
   (wiper / drop / spray covering part of the boundary; the rest of the strip still carries the label).
   Every draw is made for every sample so the stream is seed-deterministic."""
-  x = augment_plus_rain(x, gen, p)
+  x = augment_plus_rain(x, gen, p, ydesat)
   n, dev = x.shape[0], x.device
   h, w = x.shape[2], x.shape[3]
   r = lambda *s: torch.rand(*s, device=dev, generator=gen)  # noqa: E731
@@ -342,6 +351,51 @@ AUGMENTS = {'base': augment, 'plus': augment_plus, 'plus-rain': augment_plus_rai
             'plus-rain-more': augment_plus_rain_more, 'plus-rain-more-nored': augment_plus_rain_more_nored}
 AUGMENTS['plus-rain-more-nored-occ1'] = augment_plus_rain_more_nored  # 2026-10-21 (407 round): same draws incl. the road-colour occlusion, AUG_REPEAT 1
 AUG_REPEAT = {'plus-rain-more': 2, 'plus-rain-more-nored': 2}  # passes over the training set per epoch (each pass: new order, new augmentation draws)
+
+# 2026-10-22 v3.1 colour round (.analysis/lane-v31-color-20261022): = plus-rain-more-nored (same draws, AUG_REPEAT 2) except the rain
+# desaturation of YELLOW-labelled samples: -keepY: factor >= KEEPY (0.3-1.0 otherwise); -noYdesat: none (blue cast / darken / drops
+# unchanged). White samples and every other augmentation are identical.
+KEEPY = .7
+V31 = {'plus-rain-more-nored-keepY': KEEPY, 'plus-rain-more-nored-noYdesat': 'off'}
+
+
+def _v31(ydesat):
+  return lambda x, gen: augment_plus_rain_more(x, gen, p=RAIN_P_NORED, ydesat=ydesat)
+
+
+for _k, _v in V31.items():
+  AUGMENTS[_k] = _v31(_v)
+  AUG_REPEAT[_k] = 2
+# -relabelGreyY (2026-10-22 13:58): noYdesat augmentation + every yellow-labelled TRAINING frame whose paint shows no visible yellow
+# is taught as WHITE (type unchanged; validation / test labels untouched): line yellow chroma <= GREY_Y (= the 40f 3R 45-47 s grey
+# white line, median) or line Cb - 128 >= 0. Line = top 8 % Y pixels (ccnc-field-20261022/tools/chroma.py), chroma of the line mean,
+# yellow chroma = hypot(min(Cb-128, 0), max(Cr-128, 0)); measured once on the raw strip.
+GREY_Y = 2.61
+RELABEL_GREY_Y = ('plus-rain-more-nored-relabelGreyY',)
+AUGMENTS['plus-rain-more-nored-relabelGreyY'] = _v31('off')
+AUG_REPEAT['plus-rain-more-nored-relabelGreyY'] = 2
+
+
+def line_chroma(x):
+  """x: N,3,H,W raw YCbCr -> (yellow chroma, Cb-128) of the line mean (top 8 % Y pixels, np.percentile-style linear quantile)."""
+  y = x[:, 0].flatten(1)
+  m = (y > torch.quantile(y, .92, dim=1, keepdim=True)).float()
+  den = m.sum(1).clamp(min=1)
+  cb = (x[:, 1].flatten(1)*m).sum(1)/den - 128
+  cr = (x[:, 2].flatten(1)*m).sum(1)/den - 128
+  return torch.hypot(cb.clamp(max=0), cr.clamp(min=0)), cb
+
+
+def relabel_grey_yellow(rows, X, C):
+  """relabelGreyY: colour labels with the grey yellow frames set to white, and the counts per (route, lighting)."""
+  yc, cb = (torch.cat(v) for v in zip(*[line_chroma(X[i:i + 512]) for i in range(0, len(X), 512)]))
+  g = (C == YELLOW) & ((yc <= GREY_Y) | (cb >= 0))
+  counts = Counter()
+  for i in torch.nonzero(C == YELLOW).flatten().tolist():
+    key = f"{rows[i]['route'] if rows[i].get('lighting') == 'rain' else 'clear'}/{rows[i].get('lighting')}"
+    counts[key + ' yellow'] += 1
+    counts[key + ' relabelled'] += bool(g[i])
+  return torch.where(g, torch.full_like(C, COLORS.index('white')), C), dict(counts)
 
 
 def tensors(rows, x, device):
@@ -396,6 +450,9 @@ def train(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, pretrained
   augment_fn = AUGMENTS[aug]
   X, T, C, W = tensors(train_rows, xtr, device)
   Xv, _, _, _ = tensors(val_rows, xva, device)
+  if aug in RELABEL_GREY_Y:  # v3.1: training labels only (validation / test keep the human truth)
+    C, counts = relabel_grey_yellow(train_rows, X, C)
+    print(f'{aug}: relabelled yellow -> white (chroma <= {GREY_Y} or Cb >= 128):', json.dumps(counts, sort_keys=True), flush=True)
   # class-balanced weights from TRAIN only
   wt = torch.tensor([len(T)/(2*max(1, int((T == k).sum()))) for k in range(2)], device=device)
   wc = torch.tensor([len(C)/(2*max(1, int((C == k).sum()))) for k in range(2)], device=device)
@@ -412,6 +469,7 @@ def train(arch, seed, train_rows, xtr, val_rows, xva, device, epochs, pretrained
     total = 0.
     for i in range(0, len(order), 256):
       idx = order[i:i + 256]
+      AUG_COLOR[0] = C[idx]  # v3.1 keepY / noYdesat: colour labels of this batch (read by augment_plus_rain(ydesat=...) only)
       lt, lc = net(augment_fn(X[idx], gen))
       loss = ((F.cross_entropy(lt, T[idx], weight=wt, reduction='none') + F.cross_entropy(lc, C[idx], weight=wc, reduction='none'))*W[idx]).sum()/W[idx].sum()
       opt.zero_grad(set_to_none=True)
