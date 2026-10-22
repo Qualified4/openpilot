@@ -53,6 +53,90 @@
       "color": "white",
       "reason": "user review 2026-10-23 (hybrid-bluew solid->dashed page): the line is actually dashed; windows = the two error episodes +-0.5 s",
       "evidence": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/y2w_review/s2d_judgements.json"
+    },
+    {
+      "id": "M010-solid",
+      "route_segment": "000003d8--26e55cbb04--18",
+      "side": "right",
+      "start_s": 1213.71,
+      "end_s": 1218.51,
+      "from_type": "solid",
+      "type": "dbl_near",
+      "color": "white",
+      "reason": "user review 2026-10-23 (dblmine page): double line, ego side dashed; window = mined candidate rows +-0.3 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
+    },
+    {
+      "id": "M024-solid",
+      "route_segment": "00000404--ef50bfdf22--13",
+      "side": "right",
+      "start_s": 872.65,
+      "end_s": 880.44,
+      "from_type": "solid",
+      "type": "dbl_far",
+      "color": "white",
+      "reason": "user review 2026-10-23 (dblmine page): double line, ego side solid; window = mined candidate rows +-0.3 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
+    },
+    {
+      "id": "M030-solid",
+      "route_segment": "00000407--75dc8f8375--14",
+      "side": "left",
+      "start_s": 958.24,
+      "end_s": 967.24,
+      "from_type": "solid",
+      "type": "dbl_near",
+      "color": "white",
+      "reason": "user review 2026-10-23 (dblmine page): double line, ego side dashed; window = mined candidate rows +-0.3 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
+    },
+    {
+      "id": "M005-dashed",
+      "route_segment": "00000388--2a2160e7db--17",
+      "side": "right",
+      "start_s": 1188.41,
+      "end_s": 1190.81,
+      "from_type": "dashed",
+      "type": "dbl_near",
+      "color": "white",
+      "reason": "user review 2026-10-23 (dblmine page): double line, ego side dashed; window = mined candidate rows +-0.3 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
+    },
+    {
+      "id": "M004-solid",
+      "route_segment": "00000388--2a2160e7db--17",
+      "side": "right",
+      "start_s": 1185.43,
+      "end_s": 1186.62,
+      "from_type": "solid",
+      "type": "dbl_near",
+      "color": "white",
+      "reason": "user review 2026-10-23 (dblmine page): double line, ego side dashed; window = mined candidate rows +-0.3 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
+    },
+    {
+      "id": "M022-dashed",
+      "route_segment": "00000404--ef50bfdf22--11",
+      "side": "left",
+      "start_s": 798.71,
+      "end_s": 800.91,
+      "from_type": "dashed",
+      "type": "dbl_near",
+      "color": "white",
+      "reason": "user review 2026-10-23 (dblmine page): double line, ego side dashed; window = mined candidate rows +-0.3 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
+    },
+    {
+      "id": "M022-solid",
+      "route_segment": "00000404--ef50bfdf22--11",
+      "side": "left",
+      "start_s": 798.71,
+      "end_s": 800.91,
+      "from_type": "solid",
+      "type": "dbl_near",
+      "color": "white",
+      "reason": "user review 2026-10-23 (dblmine page): double line, ego side dashed; window = mined candidate rows +-0.3 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
     }
   ],
   "exclusions": [
@@ -97,5 +181,6 @@
       "evidence": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/y2w_review/judgements.json"
     }
   ],
-  "exclusion_rule": "Frames of route--segment/side with eof_s in [start_s, end_s] are dropped from type and colour scoring (manifest rows and card-replay truth alike)."
+  "exclusion_rule": "Frames of route--segment/side with eof_s in [start_s, end_s] are dropped from type and colour scoring (manifest rows and card-replay truth alike).",
+  "policy": "Double SOLID lines (both lines solid) are labelled 'solid' (single class), not dbl_near/dbl_far (user 2026-10-23). dbl_near = ego-side line dashed, dbl_far = ego-side line solid and the other dashed."
 }
