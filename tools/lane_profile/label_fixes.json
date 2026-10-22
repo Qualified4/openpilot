@@ -29,6 +29,30 @@
       "source_label_ref": "00000358--de86ef734b--6-qcamera-left-446559833981",
       "reason": "solid line with dashed line on the ego side from 462.4 s to 466.8 s (next sampled frame 471.4 s is a single line; 467.0-471.4 s unsampled)",
       "evidence": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/solid2dbl/montages_strips/S001.png, boundaries.png"
+    },
+    {
+      "id": "S16-3fe2-0",
+      "route_segment": "000003fe--d524dc1e0b--2",
+      "side": "left",
+      "start_s": 214.1,
+      "end_s": 215.1,
+      "from_type": "solid",
+      "type": "dashed",
+      "color": "white",
+      "reason": "user review 2026-10-23 (hybrid-bluew solid->dashed page): the line is actually dashed; windows = the two error episodes +-0.5 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/y2w_review/s2d_judgements.json"
+    },
+    {
+      "id": "S16-3fe2-1",
+      "route_segment": "000003fe--d524dc1e0b--2",
+      "side": "left",
+      "start_s": 229.6,
+      "end_s": 230.8,
+      "from_type": "solid",
+      "type": "dashed",
+      "color": "white",
+      "reason": "user review 2026-10-23 (hybrid-bluew solid->dashed page): the line is actually dashed; windows = the two error episodes +-0.5 s",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/y2w_review/s2d_judgements.json"
     }
   ],
   "exclusions": [
