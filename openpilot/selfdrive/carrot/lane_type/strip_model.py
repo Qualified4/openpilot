@@ -128,6 +128,29 @@ def strip_input(y_plane, uv_plane, line, rpy, k, half_m=HALF_M, cols=COLUMNS, ro
   return ycc.transpose(2, 0, 1).astype(np.float32)
 
 
+_DEFAULT_STRIP_INPUT = strip_input
+
+
+def batch_strip_inputs(y_plane, uv_plane, lines, rpy, k, geometries, extractor):
+  """Width-major strips. Preserve the scalar sampler hook used by cached replays and alternate samplers."""
+  if strip_input is not _DEFAULT_STRIP_INPUT:
+    groups = []
+    for line in lines:
+      group = []
+      for geometry in geometries:
+        value = strip_input(y_plane, uv_plane, line, rpy, k, **geometry)
+        if value is None:
+          group = [None]*len(geometries)
+          break
+        group.append(value)
+      groups.append(group)
+    return [group[j] for j in range(len(geometries)) for group in groups]
+  widths = sorted({(g.get('half_m', HALF_M), g.get('cols', COLUMNS), g.get('rows', ROWS)) for g in geometries})
+  strips = extractor.extract(y_plane, uv_plane, lines, rpy, k, widths)
+  return [strips[widths.index((g.get('half_m', HALF_M), g.get('cols', COLUMNS), g.get('rows', ROWS)))*len(lines) + i]
+          for g in geometries for i in range(len(lines))]
+
+
 class StripModel:
   def __init__(self, directory=ASSETS, threshold=None, name='lane_strip'):
     """``name``: the file stem of the manifest / ONNX pair in ``directory`` (SLOTS)."""

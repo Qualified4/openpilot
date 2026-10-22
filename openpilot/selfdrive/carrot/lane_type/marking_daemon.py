@@ -139,6 +139,8 @@ class Recogniser:
       from openpilot.selfdrive.carrot.lane_type.strip_filter import COLOR_M, LATCH, LONG_M, SHORT_M, StripFilter
       strip_filter = StripFilter('asym', long_m=LONG_M, short_m=SHORT_M, color_m=COLOR_M, latch=LATCH)
     self.strip_filter = strip_filter or None
+    self.strip_extractor = None
+    self.timing = {}
     self.dip_since = {}  # side -> camera stamp of the first frame below LANE_PROB_MIN (StripNet)
     if mode == 1:
       from openpilot.selfdrive.carrot.lane_type.profile_scanner import ProfileScanner
@@ -197,6 +199,7 @@ class Recogniser:
     laneChangeState), optionally blinker, lcs_change (laneChangeState != off), v_ego and lead_d_rel (radarState leadOne dRel m,
     None: no valid lead) separately for StripNet."""
     out = {}
+    self.timing = {}
     if self.mode == 1:
       for side in ('left', 'right'):
         r = self.scanners[side].update(y_plane, uv_plane, frame['lines'][side], frame['probs'][side], frame['rpy'], frame['k'],
@@ -204,7 +207,8 @@ class Recogniser:
         out[side] = filter_input(r['type'], r['color'], .99, .99, frame['stamp'], dashed_observed=r['type'] == 'dashed',
                                  reason='lane_change' if frame['lane_change'] else r['reason'], reset=r['reset'])
       return out
-    from openpilot.selfdrive.carrot.lane_type.strip_model import strip_input
+    from openpilot.selfdrive.carrot.lane_type.strip_model import batch_strip_inputs
+    extract_start = time.monotonic_ns()
     strips, sides = [], []
     # strip_model.HybridStripModel: one strip per (geometry, mirror) entry of strip_inputs, infer() gets a tuple per side.
     inputs = getattr(self.model, 'strip_inputs', None)
@@ -213,26 +217,37 @@ class Recogniser:
       # v4 mirror_right: the right strip's columns are flipped so its ego side is on the high columns, as on the left strip
       # (strip_model.MIRROR_AXIS); a replay wrapper without the attribute (or a v1-v3 model): no flip.
       mirror = getattr(self.model, 'mirror_right', getattr(getattr(self.model, 'model', None), 'mirror_right', False))
+    eligible = []
     for side in ('left', 'right'):
       skip = self._skip_reason(side, frame)
       if skip:
         out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason=skip)
-        continue
-      got = []
-      for geometry, flip in (inputs or ((strip, mirror),)):
-        s = strip_input(y_plane, uv_plane, frame['lines'][side], frame['rpy'], frame['k'], **geometry)
-        if s is None:  # hybrid: no valid strip in either geometry -> the side is not inferred at all
-          break
-        if flip is True and side == 'right':
-          s = s[..., ::-1]  # strip_model.MIRROR_AXIS (-1, the column axis); infer() stacks the strips into a contiguous copy
-        got.append(s)
       else:
-        strips.append(tuple(got) if inputs else got[0])
-        sides.append(side)
-        continue
-      out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason='invalid_lane_geometry')
+        eligible.append(side)
+    specs = inputs or ((strip, mirror),)
+    if eligible:
+      if self.strip_extractor is None:
+        from openpilot.selfdrive.carrot.lane_type.strip_extractor import Extractor
+        self.strip_extractor = Extractor()
+      extracted = batch_strip_inputs(y_plane, uv_plane, [frame['lines'][s] for s in eligible], frame['rpy'], frame['k'],
+                                     [g for g, _ in specs], self.strip_extractor)
+      for i, side in enumerate(eligible):
+        got = []
+        for j, (_, flip) in enumerate(specs):
+          s = extracted[j*len(eligible) + i]
+          if s is None:
+            break
+          got.append(s[..., ::-1] if flip is True and side == 'right' else s)
+        else:
+          strips.append(tuple(got) if inputs else got[0])
+          sides.append(side)
+          continue
+        out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason='invalid_lane_geometry')
+    infer_start = time.monotonic_ns()
+    predictions = self.model.infer(strips)
+    self.timing = {'extractMs': (infer_start - extract_start)/1e6, 'inferMs': (time.monotonic_ns() - infer_start)/1e6}
     models = {}
-    for side, r in zip(sides, self.model.infer(strips), strict=True):
+    for side, r in zip(sides, predictions, strict=True):
       # The strip model's own confident dashed decision is its pattern evidence.
       out[side] = filter_input(r['type'], r['color'], r['typeConfidence'], r['colorConfidence'], frame['stamp'],
                                dashed_observed=r['type'] == 'dashed', reason=r['reason'])
@@ -259,6 +274,15 @@ def filter_input(kind, color, type_conf, color_conf, stamp, *, dashed_observed=F
           'colorConfidence': float(color_conf if color in ('white', 'yellow') else 0.), 'typeMonoTimeNanos': stamp,
           'colorMonoTimeNanos': stamp, 'dashedPatternObserved': bool(dashed_observed), 'dashedPatternMonoTimeNanos': stamp,
           'reason': reason, 'trackingReset': bool(reset)}
+
+
+def minor_faults():
+  """Linux process minor faults, or None off Linux/when procfs is unavailable. comm may contain spaces and ')'."""
+  try:
+    with open('/proc/self/stat', encoding='ascii') as stat:
+      return int(stat.read().rsplit(')', 1)[1].split()[7])  # field 10; suffix starts at field 3 (state)
+  except (OSError, ValueError, IndexError, UnicodeError):
+    return None
 
 
 def packet(mode, frame_id, camera_ns, raw, confirmed, now_ns, timing, counters, model=None):
@@ -300,6 +324,8 @@ def main():
     return  # OFF: no OpenCV import, no model load, no IPC
   import cv2
   cv2.setNumThreads(1)
+  from openpilot.selfdrive.carrot.lane_type.strip_extractor import tune_allocator
+  tune_allocator()
   from msgq.visionipc import VisionIpcClient, VisionStreamType
   import openpilot.cereal.messaging as messaging
   from openpilot.common.swaglog import cloudlog
@@ -367,6 +393,7 @@ def main():
       counters[f'drop_{drop}_before'] += 1
       continue
     start_ns, cpu_start = time.monotonic_ns(), time.thread_time_ns()
+    faults_before = minor_faults()
     stamp = frame_eof  # the processed pixels' time
     offset_s = (frame_eof - int(model.timestampEof))/1e9
     if last_stamp is not None and 0 < stamp - last_stamp < 2_000_000_000:
@@ -398,11 +425,15 @@ def main():
       counters[f'drop_{drop}_after'] += 1
       recogniser.reset()
       continue
+    faults_after = minor_faults()
     now_ns = time.monotonic_ns()
     confirmed = policy.confirm({'cameraMonoTimeNanos': stamp, **raw}, now_ns)
     counters['processed'] += 1
     timing = {'processingMs': (now_ns - start_ns)/1e6, 'threadCpuMs': (time.thread_time_ns() - cpu_start)/1e6,
               'cameraToPublishMs': (now_ns - stamp)/1e6, 'frameOffsetMs': offset_s*1e3, 'frameMatch': kind}
+    timing.update(recogniser.timing)
+    if faults_before is not None and faults_after is not None:
+      timing['minfltDelta'] = max(0, faults_after - faults_before)
     payload = json.dumps(packet(mode, int(model.frameId), stamp, raw, confirmed, now_ns, timing, counters, model_info),
                          separators=(',', ':'), allow_nan=False).encode()
     msg = messaging.new_message('customReservedRawData2', size=len(payload), valid=True)
