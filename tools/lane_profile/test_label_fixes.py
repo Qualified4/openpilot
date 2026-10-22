@@ -30,3 +30,12 @@ def test_shipped_fixes_are_valid():
   for f in label_fixes.load():
     assert f['type'] in dataset_io.TYPES and f['color'] in dataset_io.COLORS and f['from_type'] in dataset_io.TYPES
     assert f['start_s'] < f['end_s'] and f['side'] in ('left', 'right')
+
+
+def test_excluded_window():
+  X = [dict(id='Z', set='s', route_segment='r--3', side='left', start_s=10.0, end_s=12.0)]
+  assert label_fixes.excluded('r--3', 'left', int(11e9), X) is True
+  assert label_fixes.excluded('r--3', 'right', int(11e9), X) is False
+  assert list(label_fixes.excluded('r--3', 'left', [int(9e9), int(10e9), int(12.5e9)], X)) == [False, True, False]
+  for x in label_fixes.load_exclusions():
+    assert x['start_s'] < x['end_s'] and x['side'] in ('left', 'right')

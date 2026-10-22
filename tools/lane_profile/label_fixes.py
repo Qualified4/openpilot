@@ -1,4 +1,5 @@
-"""User-approved corrections of manifest labels (label_fixes.json), applied when a manifest is read.
+"""User-approved corrections of manifest labels (label_fixes.json), applied when a manifest is read, and exclusion windows
+(stretches that are not a lane line: dropped from scoring, see excluded()).
 
 Source interval files and frozen manifests are never rewritten: a fix names a route--segment, side and eof range in seconds,
 and every row inside it whose type is still `from_type` gets the new type/color. Rows already corrected are left alone, so
@@ -12,6 +13,22 @@ FIXES = Path(__file__).resolve().parent/'label_fixes.json'
 
 def load(path=FIXES):
   return json.loads(Path(path).read_text(encoding='utf-8'))['fixes']
+
+
+def load_exclusions(path=FIXES):
+  return json.loads(Path(path).read_text(encoding='utf-8')).get('exclusions', [])
+
+
+def excluded(route_segment, side, eof_ns, exclusions=None):
+  """Boolean mask (array eof_ns) or bool (scalar): frames inside an exclusion window -- not a lane line, drop from scoring."""
+  import numpy as np
+  exclusions = load_exclusions() if exclusions is None else exclusions
+  t = np.asarray(eof_ns)/1e9
+  mask = np.zeros(t.shape, bool)
+  for x in exclusions:
+    if x['route_segment'] == route_segment and x['side'] == side:
+      mask |= (t >= x['start_s']) & (t <= x['end_s'])
+  return mask if mask.ndim else bool(mask)
 
 
 def apply(rows, fixes=None, types=None):

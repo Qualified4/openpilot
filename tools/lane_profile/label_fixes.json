@@ -30,5 +30,48 @@
       "reason": "solid line with dashed line on the ego side from 462.4 s to 466.8 s (next sampled frame 471.4 s is a single line; 467.0-471.4 s unsampled)",
       "evidence": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/solid2dbl/montages_strips/S001.png, boundaries.png"
     }
-  ]
+  ],
+  "exclusions": [
+    {
+      "id": "X404-6",
+      "set": "404",
+      "route_segment": "00000404--ef50bfdf22--6",
+      "side": "left",
+      "start_s": 460.979,
+      "end_s": 468.427,
+      "reason": "not a lane line (stop zone / crosswalk / headlight glare on a rainy road); no model can be scored here (user review 2026-10-23, y2w_review)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/y2w_review/judgements.json"
+    },
+    {
+      "id": "X404-7",
+      "set": "404",
+      "route_segment": "00000404--ef50bfdf22--7",
+      "side": "left",
+      "start_s": 545.794,
+      "end_s": 548.59,
+      "reason": "not a lane line (stop zone / crosswalk / headlight glare on a rainy road); no model can be scored here (user review 2026-10-23, y2w_review)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/y2w_review/judgements.json"
+    },
+    {
+      "id": "X404-8",
+      "set": "404",
+      "route_segment": "00000404--ef50bfdf22--8",
+      "side": "left",
+      "start_s": 607.271,
+      "end_s": 609.722,
+      "reason": "not a lane line (stop zone / crosswalk / headlight glare on a rainy road); no model can be scored here (user review 2026-10-23, y2w_review)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/y2w_review/judgements.json"
+    },
+    {
+      "id": "X40f-3",
+      "set": "40f",
+      "route_segment": "0000040f--a493881af6--3",
+      "side": "left",
+      "start_s": 349.868,
+      "end_s": 351.978,
+      "reason": "not a lane line (stop zone / crosswalk / headlight glare on a rainy road); no model can be scored here (user review 2026-10-23, y2w_review)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/y2w_review/judgements.json"
+    }
+  ],
+  "exclusion_rule": "Frames of route--segment/side with eof_s in [start_s, end_s] are dropped from type and colour scoring (manifest rows and card-replay truth alike)."
 }
