@@ -35,7 +35,7 @@ class CcncCatalogTest(unittest.TestCase):
     self.assertEqual(params['CcncLaneTypeDetection']['control'], 'select')
     self.assertEqual(params['CcncLaneTypeDetection']['options']['en'], ['Off', 'StripNet'])  # the Scanner is no longer offered
     self.assertEqual(params['LaneStripModel']['control'], 'select')
-    self.assertEqual(params['LaneStripModel']['options']['ko'], ['현재', '새 모델', '하이브리드(타입 새 모델 + 색 현재)'])
+    self.assertEqual(params['LaneStripModel']['options']['ko'], ['현재', '새 모델(실험용)', '하이브리드(타입 새 모델 + 색 현재)'])
 
   def test_current_catalog_ci_report(self):
     with tempfile.TemporaryDirectory() as temp:

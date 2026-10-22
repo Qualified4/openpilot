@@ -52,7 +52,7 @@ def test_params_and_defaults():
   text = (ROOT/'openpilot/selfdrive/carrot_settings.json').read_text(encoding='utf-8')
   item = next(p for p in json.loads(text)['params'] if p['name'] == marking.MODEL_PARAM)
   assert (item['min'], item['max'], item['default'], item['control']) == (0, 2, 0, 'select')
-  assert item['options']['ko'] == ['현재', '새 모델', '하이브리드(타입 새 모델 + 색 현재)']
+  assert item['options']['ko'] == ['현재', '새 모델(실험용)', '하이브리드(타입 새 모델 + 색 현재)']
   assert all(len(v) == 3 for v in item['options'].values())
   assert set(marking.MODEL_SLOTS) == {0, 1, 2} and strip_model.HYBRID_SLOT == 2 and set(strip_model.SLOTS) == {0, 1}
   assert re.search(r'"CcncLaneTypeDetection",\s+"LaneStripModel",', text)  # listed right after it in CANFD·HDA
