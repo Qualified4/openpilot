@@ -21,7 +21,7 @@ from tools.lane_type.test_strip_model_v4 import FIX, FRAME_NS, C, T, frame, stri
 
 ROOT = Path(__file__).resolve().parents[2]
 V3 = 'e6c5f34fb84d1b184d90bda5e245ab4fc32c01b4a3f55665a7b332debb87053f'
-V4_SHIPPED = '0e22e71364b60bdb8761590d77a8b08880fa6571aef75184e76882405729e745'  # nolat-v3init-c seed 4 (round 3)
+V4_SHIPPED = 'c621e1e41cabf01ebdc1c17bcdc1b1b9e05475bbfd4b85394372ef7ff062190d'  # 10-23 label-fix retrain bluew_center_kd0_negsyn0.25_s1
 HALF_V4 = .75  # the 96-column probe shares v3 spacing; shipped 128-column crop is checked separately
 
 
@@ -322,7 +322,7 @@ def test_slot2_falls_back_to_v3_with_a_warning(tmp_path, broken):
 
 
 def test_shipped_v4_pair_and_real_hybrid():
-  """The shipped assets: slot 1 = nolat-v3init-c seed 4 (manifest v4, w100 strip, mirror_right); slot 2 runs it with the v3
+  """The shipped assets: slot 1 = 10-23 label-fix retrain (manifest v4, w100 strip, mirror_right); slot 2 runs it with the v3
   colour, and its result per side equals v4's type decision with v3's P(yellow)."""
   data = (strip_model.ASSETS/'lane_strip_v4.onnx').read_bytes()
   assert hashlib.sha256(data).hexdigest() == V4_SHIPPED and len(data) < 200_000
