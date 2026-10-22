@@ -134,6 +134,8 @@ class StripModel:
     import cv2
     directory = Path(directory)
     manifest = json.loads((directory/f'{name}.json').read_text(encoding='utf-8'))
+    if not isinstance(manifest, dict):  # valid JSON but not an object ([], null, 3): a contract error, so load_slot falls back
+      raise ValueError(f'lane strip manifest {name}.json: top level is {type(manifest).__name__}, expected an object')
     data = (directory/f'{name}.onnx').read_bytes()
     self.name, self.version, self.slot = name, manifest.get('version'), next((s for s, n in SLOTS.items() if n == name), None)
     outputs = manifest.get('outputs')

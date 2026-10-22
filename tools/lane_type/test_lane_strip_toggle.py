@@ -366,3 +366,30 @@ def test_daemon_hot_swaps_0_2_1_0(monkeypatch, tmp_path):
   assert [s for i, s in enumerate(seen) if i == 0 or s != seen[i - 1]] == [(0, 0, 3), (2, 2, '4+3'), (1, 1, 4), (0, 0, 3)]
   hyb = [p['model'] for p in sent if p['model']['slot'] == 2]
   assert hyb and all(x['colorModel']['sha256'] == V3[:12] and x['typeModel']['name'] == 'lane_strip_v4' for x in hyb)
+
+
+def test_non_object_manifest_falls_back_to_slot0(tmp_path):
+  """Codex review F1 (10-22): valid JSON that is not an object ([], null, 3) must fall back to slot 0, not crash."""
+  import shutil
+  from openpilot.selfdrive.carrot.lane_type import strip_model as sm
+  for f in ('lane_strip.onnx', 'lane_strip.json', 'lane_strip_v4.onnx'):
+    shutil.copy(sm.ASSETS/f, tmp_path/f)
+  for bad in ('[]', 'null', '3'):
+    (tmp_path/'lane_strip_v4.json').write_text(bad, encoding='utf-8')
+    for slot in (1, sm.HYBRID_SLOT):
+      warned = []
+      m = sm.load_slot(slot, directory=tmp_path, warn=warned.append)
+      assert m.slot == 0 and len(warned) == 1 and 'ValueError' in warned[0], (bad, slot, warned)
+
+
+def test_sample_rejects_wrong_map_width():
+  """Codex review F3 (10-22): maps not shaped (rows, cols*SUB) raise instead of being silently resampled."""
+  import numpy as np
+  import pytest
+  from openpilot.selfdrive.carrot.lane_type import profile_scanner as ps
+  y, uv = np.zeros((8, 8), np.uint8), np.zeros((4, 4, 2), np.uint8)
+  geo = {'ys': np.arange(1), 'cols': 2, 'mx': np.zeros((1, 9), np.float32), 'my': np.zeros((1, 9), np.float32)}
+  with pytest.raises(ValueError):
+    ps.sample(y, uv, geo)
+  geo['mx'], geo['my'] = np.zeros((1, 2*ps.SUB), np.float32), np.zeros((1, 2*ps.SUB), np.float32)
+  ps.sample(y, uv, geo)
