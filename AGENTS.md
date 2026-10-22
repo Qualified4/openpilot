@@ -1,5 +1,7 @@
 # Repository memory
 
+- On 2026-10-23, merged origin/carrot-wip 7e371b92 (11 commits: Jetlink USB completion priority, watchdog wakeup coalescing, bounded startup waiting across ignition, docs) into ccnc-hda1 on 8ad3cc50. Only AGENTS.md conflicted; retained both full blocks, CCNC first. Validation limited to conflict resolution and merge diff checks; no upstream feature retest, device validation, push or deployment.
+
 - On 2026-10-21, merged origin/carrot-wip 10cd6868 (10 commits: S3 display retirement, Jetson startup/camera-gap diagnostics and independent vision BSD) into ccnc-hda1 on d0b1e796. Preserved all 173 non-overlapping branch-specific files, including the accepted rear handover changes, and all six Ccnc definitions. Resolved AGENTS.md by retaining both complete blocks; settings docs use the actual 203 parameters and Wiki tests use the incoming 197-setting baseline. Wiki/catalog checks17 pass. Validation limited to merge/preservation and conflict-related catalog checks; no upstream feature retest, vehicle validation, timing, push or deployment. Evidence .analysis/archive/2026-10-21/carrot-merge.
 
 - On 2026-10-19, merged origin/carrot-wip ba186915 (9 commits: signal departure memory, idle signal worker removal, Jetlink USB power guard, S3/HUD transfer recovery and H.264 bounds, pearl DM eyes and Mapbox float serialization) into ccnc-hda1 on c2822f73. Only AGENTS.md conflicted; retained both full blocks, CCNC first. All 104 protected CCNC/lane-type/tool files, six Ccnc option definitions and the unfinished tools/lane_profile/run_logs.py bytes are preserved. Per user instruction, validation is limited to conflict resolution, preservation and merge diff checks; no upstream feature retest, runtime edits, device validation, timing, push or deployment. Evidence .analysis/archive/2026-10-19/carrot-merge-ba186915.
@@ -1054,6 +1056,111 @@
   NAS shared-source bundle/fingerprint checked locally, but current wip-only
   publishing and lead replay do not deploy/recalculate this CCNC display map.
   See docs/ccnc_front_radar_detection.md and private 2026-10-11 point-map archive.
+
+- On 2026-10-22, user reports red Jetson startup and requests latest-drive review.
+  Rearm bounded HELLO grace only after confirmed offroad host absence; retain
+  onroad/unknown-state failures and stop detach from extending grace forever.
+  Connecting-only status lease8s covers3/5s HELLO+2s retry; other/model/health
+  freshness3s unchanged.71 desktop checks pass on each branch; both Linux CIs
+  pass (NAV1008/56skips, Wip801/2skips broad, plus update/nav/storage/network).
+  Ten hash-verified rlogs: latest12:09-12:13 N16 active only final66.223s,
+  1326 valid consecutive outputs, mean42.369/p9946.531/max78.483ms,5>50,
+  no fallback or pose input failure. Prior132.230s2645 outputs,6>50 and one
+  camera-sync frame skip0.95s after join matches odometry invalid/pose inputs
+  bad/locationdTemporaryError; camera captures continuous. Latest60.713ms
+  call has roundtrip55.08 vs server25.50ms, other warp/server tails remain.
+  No complete latency/locationd cure or cable-root-cause claim. Raw private,
+  vehicle read-only; normal Git Pull/reboot, no Jetson bundle. See
+  docs/jetson_startup_drive_review_20261022.md. Both branches single-parent.
+
+- On 2026-10-21, paired USB trace localizes50.092ms call to comma reply
+  rearm:8.496ms userspace gap after first read, worker queue0.051ms,
+  completion-return0.094ms; normal-priority watchdog wakes sleeping reader.
+  GIL inversion inferred, lock not directly traced. Separate watchdog runnable
+  wait25.533ms. FIFO1 trial stops at61.65s on observer camera/model gap
+  (observer88.65ms gap), no causal camera-regression claim; priority restored.
+  Coalesce watchdog wakes against earliest pending timer; preserve earlier-arm,
+  close, expiry/cancel and outside-lock abort semantics. Old1000-write test
+  fails2002notifications; new passes.73NAV/62Wip desktop checks and both CIs pass.
+  GPU signed default activation9cfe verified via normal boot updater, no overlay.
+  Normal Git Pull/reboot installs cd986d7e9d; two120s windows4800 calls,
+  mean42.443/max48.327ms/zero>50. First observer omission recovered valid in
+  original rlog; buffered repeat2400 consecutive valid model/DM/both cameras,
+  pose healthy. NAV/HUD/preview240/240 ready/fresh. Watchdog~0.77 switches/s
+  vs prior short trace106.9/s; original OTHER policy. No hard deadline/road or
+  all-locationd cure claim. Wip source2ea4415ac2; no host update for this fix.
+  See docs/jetlink_watchdog_latency_20261021.md; raw private.
+
+
+- On 2026-10-21, user requests enabling GPU recurrence if beneficial, then
+  tracing/fixing remaining >50ms calls. NAV defaults stateful TRT recurrence ON;
+  explicit env0 retains diagnostic host path, Wip backend/model untouched.
+  Same N16/live NAV/USB HUD/FIFO2 OFF/ON/ON/OFF120s: means44.294/42.414/42.439/
+  44.314ms, no frame-ID gaps or invalid model/DM/pose; ON2 counts2399 not strict
+  >=20Hz. Mean gain1.877ms/4.24%; both modes2>50ms in240s, tail NOT fixed.
+  ON worst60.985ms has same-frame server27.89/roundtrip55.32ms; investigate
+  outside-server path rather than call it GPU inference. HUD480/480 fresh,
+  NAV preview479/480; NAV ready471/480 with position/route-position exceptions.
+  67 focused desktop regressions pass. Signed runtime deployment/trace follow-up
+  recorded in docs/jetson_gpu_state_activation_20261021.md. Raw private.
+
+
+- On 2026-10-21, user requests review/integration of tjdgus200 7cbedfe/8f0cd37.
+  NAV gains default-OFF GPU recurrent state with all-state finite scan, reply
+  event and same-stream trailing feedback/reset; no async USB/model/deadline
+  changes. Wip lacks N16 stateful infrastructure: common C3/C3X eligibility and
+  record only, preserving model choices. Exact tici/tizi/mici + aarch644.9.103,
+  dynamic owned DWC3 workers, FIFO2 lease/restoration unchanged; C3 unmeasured.
+  Actual guarded offroad Orin N16 OFF/ON/ON/OFF,250frames each incl3 resets:
+  all outputs exactly equal; means26.828/24.633/24.631/26.743ms (~2.153ms gain).
+  Actual CUDA checks all65536 fp16 patterns plus signed fp32 finite/Inf/NaNs.
+  Initial diagnostic child missing video/render groups failed before inference;
+  corrected account groups pass; existing runtime691566 restored automatically.
+  Original offroad parameter restored; final60s model/DM/cameras/odometry each
+  1200 valid consecutive at20Hz, livePose1200 healthy; FIFO2/N16 ready.
+  Native timings exclude USB/DM/live NAV,
+  not a full-system/road/locationd fix.112 focused desktop tests pass; Linux
+  socket/fcntl checks use CI. Signed runtime pin and live GPU opt-in unchanged.
+  NAV a51dcb02d5/wip e925a3cce4 Linux integration and Windows installer CI pass.
+  See docs/jetson_gpu_usb_review.md; private diagnostic scripts/logs excluded.
+
+
+- On 2026-10-21, owner requests restoring comma-to-Jetson USB display traffic.
+  Nav-only new receiver capability selects bounded snapshot plus at most two
+  32KiB media fragments during GPU execution; old receivers retain Wi-Fi until
+  updated. Preserve N16 and FIFO2 helper, no ESP32 return. Parked120s Wi-Fi/USB
+  each2400 consecutive valid model frames, healthy pose; mean44.256/44.226ms,
+  max63.704/63.361ms,3/2 above50. USB adds~0.644MB/s,7% of9.18MB/s model input;
+  main-threadCPU+1.63ms/frame, wholeCPU78.38->77.13% is not causal attribution.
+  Phone960x540 video and mode7 preview fresh120/120 USB samples. NAV validity
+  route_position throughout USB: no valid-route driving or full deadline claim.
+  Wi-Fi return60s1200 consecutive valid each,mean44.381/max52.838,two>50.
+  Signed host691566f0fa published/HTTPS verified, N16 unchanged. Ordinary
+  Git Pull/comma reboot682ceeb484 and normal Jetson boot update verified; no
+  manual cache/SD patch. Final120s NAV ready120/120,2400 consecutive valid
+  model/DM/both cameras,pose healthy;mean44.174/max57.566ms,two>50. HUD/preview
+  fresh120/120,phone video no decode drops. Display~0.707MB/s(7.70%). USB stays
+  applied; temporary offroad/overrides cleared. Wip alreadyUSB: models unchanged,
+  Cinquev2 Jetson and MDv3 eGPU. See docs/jetson_usb_hud_restore_20261021.md.
+
+- On 2026-10-21, owner rejects ending Jetson latency trials with diagnostics
+  restored only. Retain FIFO2 USB completion scheduling through a session root
+  helper on tested mici/aarch64 Linux4.9.103. Discover actual dwc3_bh_work
+  workers in isolated filtered trace, not hard-coded u17; validate kernel task
+  and starttime, bound leases, restore at owner EOF/signals, journal for next
+  startup after SIGKILL. Shared workers remain a limitation. Preserve serial
+  reads, user CPU placement, N16/other branch models,150ms IPC and validity.
+  Manual normal-NAV120s/2400 calls max49.81ms with no>50; full logs consecutive.
+  Automatic helper60s mean44.51/max50.94ms,one>50/1201 observed consecutive;
+  ten-second reactivation/EOF cleanup pass, NAV route_position invalid. No hard
+  deadline, complete locationd cure or road stability claim. Common Git Pull/
+  comma reboot delivery; no Jetson image/bootstrap update. Raw evidence private.
+  See docs/jetlink_usb_completion_priority_20261021.md.
+  Published nav040f000e1b/wipc5a5876b68; both Linux/installer CI pass. Actual
+  guarded comma Git Pull/reboot installs040f000e1b, N16 sameSHA active; automatic
+  new-worker FIFO2 retained. Final60s model/DM1201 valid consecutive each,
+  ~20.011Hz; model mean44.07/max48.57ms,no>50,pose healthy. NAV position invalid,
+  so no full-NAV/road claim. No Jetson update or manual priority script needed.
 
 - On 2026-10-20, PR559 review accepts independent default-off OnnxBsdEnabled:
   unload BSD network while lane recognition/snapshots continue; vehicle BSD stays.
