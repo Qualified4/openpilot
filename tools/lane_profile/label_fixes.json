@@ -1,0 +1,34 @@
+{
+  "schema": "label-fixes-1",
+  "created": "2026-10-22",
+  "approved_by": "user (2026-10-22, after viewing strip montages)",
+  "rule": "A manifest row (route, segment, side, eof ns, type) inside a fix range whose type equals from_type gets type/color below. Source interval files (10-18 schema, no double classes) and existing manifests stay unchanged; training/evaluation that reads a manifest with the extended vocabulary applies tools/lane_profile/label_fixes.apply(rows).",
+  "fixes": [
+    {
+      "id": "S002",
+      "route_segment": "000003dd--26eb77e00d--15",
+      "side": "left",
+      "start_s": 1131.85,
+      "end_s": 1141.0,
+      "from_type": "solid",
+      "type": "dbl_near",
+      "color": "white",
+      "source_label_ref": "000003dd--26eb77e00d--15-qcamera-left-1128766712032",
+      "reason": "solid line with dashed line on the ego side from 1131.9 s to 1140.9 s; from 1141.1 s the inner line is solid (double solid, stays solid)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/solid2dbl/montages_strips/S002.png, boundaries.png"
+    },
+    {
+      "id": "S001",
+      "route_segment": "00000358--de86ef734b--6",
+      "side": "left",
+      "start_s": 462.2,
+      "end_s": 467.0,
+      "from_type": "solid",
+      "type": "dbl_near",
+      "color": "white",
+      "source_label_ref": "00000358--de86ef734b--6-qcamera-left-446559833981",
+      "reason": "solid line with dashed line on the ego side from 462.4 s to 466.8 s (next sampled frame 471.4 s is a single line; 467.0-471.4 s unsampled)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/solid2dbl/montages_strips/S001.png, boundaries.png"
+    }
+  ]
+}
