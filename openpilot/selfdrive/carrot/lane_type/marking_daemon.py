@@ -323,7 +323,9 @@ def main():
   if mode not in MODES:
     return  # OFF: no OpenCV import, no model load, no IPC
   import cv2
-  cv2.setNumThreads(1)
+  # 2 OpenCV threads (10-23 on-device benchmark, little cores, offroad): StripNet remap (KleidiCV) runs in parallel;
+  # new v4 28.6 -> 22.0 ms/frame p50, p95 31.2 -> 24.8, outputs bit-identical. 3 threads had a worse p95.
+  cv2.setNumThreads(2)
   from openpilot.selfdrive.carrot.lane_type.strip_extractor import tune_allocator
   tune_allocator()
   from msgq.visionipc import VisionIpcClient, VisionStreamType
