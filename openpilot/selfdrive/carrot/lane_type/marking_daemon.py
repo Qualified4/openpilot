@@ -1,11 +1,9 @@
 """CCNC lane marking recogniser process (display only): StripNet, with the model slot chosen by LaneStripModel.
 
-The model (strip_model.load_slot: 0 the deployed assets/lane_strip.*, 1 the new assets/lane_strip_v4.*, 2 the hybrid of both
-(type from lane_strip_v4, colour from lane_strip), falling back to the deployed one with a warning when those files are missing or
+The model (strip_model.load_slot: 0 the deployed assets/lane_strip.*, 1 the new assets/lane_strip_v4.*, falling back to the deployed one with a warning when those files are missing or
 invalid) is loaded at start and the param is polled every
 PARAM_CHECK_S; a change hot-swaps the model without a restart and starts the strip filter, dip timers and display filter from
-empty (Recogniser.swap_model). The active model (slot, manifest version, sha256 prefix; hybrid: both, 'typeModel' /
-'colorModel') is logged and carried in every packet's 'model' entry. The profile Scanner (Recogniser mode 1) is kept for
+empty (Recogniser.swap_model). The active model (slot, manifest version, sha256 prefix) is logged and carried in every packet's 'model' entry. The profile Scanner (Recogniser mode 1) is kept for
 offline replays only and never runs here.
 
 Runs outside modeld/controlsd/card. Every new full-resolution road camera NV12 frame goes into a small buffer
@@ -210,13 +208,10 @@ class Recogniser:
     from openpilot.selfdrive.carrot.lane_type.strip_model import batch_strip_inputs
     extract_start = time.monotonic_ns()
     strips, sides = [], []
-    # Hybrid gets one unmirrored wide strip per side and explicit side names; it owns the v4-only right flip.
-    inputs = getattr(self.model, 'strip_inputs', None)
-    if inputs is None:
-      strip = getattr(self.model, 'strip', {})  # the manifest's strip geometry (StripModel.strip); a replay wrapper without it: default
-      # v4 mirror_right: the right strip's columns are flipped so its ego side is on the high columns, as on the left strip
-      # (strip_model.MIRROR_AXIS); a replay wrapper without the attribute (or a v1-v3 model): no flip.
-      mirror = getattr(self.model, 'mirror_right', getattr(getattr(self.model, 'model', None), 'mirror_right', False))
+    strip = getattr(self.model, 'strip', {})  # the manifest's strip geometry (StripModel.strip); a replay wrapper without it: default
+    # v4 mirror_right: the right strip's columns are flipped so its ego side is on the high columns, as on the left strip
+    # (strip_model.MIRROR_AXIS); a replay wrapper without the attribute (or a v1-v3 model): no flip.
+    mirror = getattr(self.model, 'mirror_right', getattr(getattr(self.model, 'model', None), 'mirror_right', False))
     eligible = []
     for side in ('left', 'right'):
       skip = self._skip_reason(side, frame)
@@ -224,27 +219,20 @@ class Recogniser:
         out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason=skip)
       else:
         eligible.append(side)
-    specs = inputs or ((strip, mirror),)
     if eligible:
       if self.strip_extractor is None:
         from openpilot.selfdrive.carrot.lane_type.strip_extractor import Extractor
         self.strip_extractor = Extractor()
       extracted = batch_strip_inputs(y_plane, uv_plane, [frame['lines'][s] for s in eligible], frame['rpy'], frame['k'],
-                                     [g for g, _ in specs], self.strip_extractor)
-      for i, side in enumerate(eligible):
-        got = []
-        for j, (_, flip) in enumerate(specs):
-          s = extracted[j*len(eligible) + i]
-          if s is None:
-            break
-          got.append(s[..., ::-1] if flip is True and side == 'right' else s)
-        else:
-          strips.append(tuple(got) if inputs else got[0])
-          sides.append(side)
+                                     [strip], self.strip_extractor)
+      for side, s in zip(eligible, extracted, strict=True):
+        if s is None:
+          out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason='invalid_lane_geometry')
           continue
-        out[side] = filter_input('unknown', 'unknown', 0., 0., frame['stamp'], reason='invalid_lane_geometry')
+        strips.append(s[..., ::-1] if mirror is True and side == 'right' else s)
+        sides.append(side)
     infer_start = time.monotonic_ns()
-    predictions = self.model.infer(strips, sides=sides) if inputs is not None else self.model.infer(strips)
+    predictions = self.model.infer(strips)
     self.timing = {'extractMs': (infer_start - extract_start)/1e6, 'inferMs': (time.monotonic_ns() - infer_start)/1e6}
     models = {}
     for side, r in zip(sides, predictions, strict=True):

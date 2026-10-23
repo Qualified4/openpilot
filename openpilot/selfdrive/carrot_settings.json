@@ -1933,33 +1933,30 @@
       "group": "시작",
       "name": "LaneStripModel",
       "title": "차선 종류 모델",
-      "descr": "CCNC 차선 종류·색상 표시(StripNet)에 쓸 모델을 고릅니다. 현재: 배포된 모델, 새 모델(실험용): 복선 라벨을 보정하고 파란선을 흰색으로 처리한 시험 모델. 여전히 실선을 점선으로, 노란선을 흰색으로 또는 흰선을 노란색으로 표시할 수 있어 시험 목적으로만 사용하세요. 하이브리드: 실선·점선은 새 모델, 색은 현재 모델로 판단하며 실선·점선 오판은 남아 있습니다(넓은 영상 띠 하나를 공유하고 색은 가운데 영역 사용). 새 모델 파일이 없거나 읽을 수 없으면 현재 모델로 실행합니다. 주행 중에 바꾸면 재시작 없이 약 1초 안에 적용되고, 차선 판단은 처음부터 다시 쌓습니다. 표시 전용",
+      "descr": "CCNC 차선 종류·색상 표시(StripNet)에 쓸 모델을 고릅니다. 현재: 배포된 모델, 새 모델(실험용): 복선 라벨을 보정하고 파란선을 흰색으로 처리한 시험 모델. 여전히 실선을 점선으로, 노란선을 흰색으로 또는 흰선을 노란색으로 표시할 수 있어 시험 목적으로만 사용하세요. 새 모델 파일이 없거나 읽을 수 없으면 현재 모델로 실행합니다. 예전에 저장된 하이브리드 값(2)은 새 모델로 실행합니다. 주행 중에 바꾸면 재시작 없이 약 1초 안에 적용되고, 차선 판단은 처음부터 다시 쌓습니다. 표시 전용",
       "egroup": "START",
       "etitle": "Lane type model",
-      "edescr": "Chooses the model used by CCNC lane type & color display (StripNet). Current: the deployed model. New model (experimental): a trial model with corrected double-line labels and blue lines treated as white. It can still show solid lines as dashed, yellow as white, or white as yellow; use it for testing only. Hybrid: solid/dashed from the new model and color from the current model; solid/dashed errors remain (both share one wide image strip; color uses its center). If the new model files are missing or cannot be read, the current model runs. A change while driving applies within about 1 s without a restart, and lane decisions start over. Display only",
+      "edescr": "Chooses the model used by CCNC lane type & color display (StripNet). Current: the deployed model. New model (experimental): a trial model with corrected double-line labels and blue lines treated as white. It can still show solid lines as dashed, yellow as white, or white as yellow; use it for testing only. If the new model files are missing or cannot be read, the current model runs. A previously stored Hybrid value (2) runs the new model. A change while driving applies within about 1 s without a restart, and lane decisions start over. Display only",
       "cgroup": "启动设置",
       "ctitle": "车道线类型模型",
-      "cdescr": "选择CCNC车道线类型·颜色显示(StripNet)使用的模型。当前：已部署的模型。新模型(实验用)：修正双线标签并将蓝线按白线处理的测试模型。仍可能把实线显示为虚线、黄线显示为白线或白线显示为黄线，仅供测试。混合：实线/虚线由新模型、颜色由当前模型判断，仍有实线/虚线误判(共享一条宽图像带，颜色使用中间区域)。新模型文件缺失或无法读取时使用当前模型。行驶中更改时无需重启，约1秒内生效，车道判断重新开始。仅用于显示",
+      "cdescr": "选择CCNC车道线类型·颜色显示(StripNet)使用的模型。当前：已部署的模型。新模型(实验用)：修正双线标签并将蓝线按白线处理的测试模型。仍可能把实线显示为虚线、黄线显示为白线或白线显示为黄线，仅供测试。新模型文件缺失或无法读取时使用当前模型。以前保存的混合值(2)按新模型运行。行驶中更改时无需重启，约1秒内生效，车道判断重新开始。仅用于显示",
       "min": 0,
-      "max": 2,
+      "max": 1,
       "default": 0,
       "unit": 1,
       "control": "select",
       "options": {
         "ko": [
           "현재",
-          "새 모델(실험용)",
-          "하이브리드(타입 새 모델 + 색 현재)"
+          "새 모델(실험용)"
         ],
         "en": [
           "Current",
-          "New model (experimental)",
-          "Hybrid (type new + color current)"
+          "New model (experimental)"
         ],
         "zh": [
           "当前",
-          "新模型(实验用)",
-          "混合(类型新模型 + 颜色当前)"
+          "新模型(实验用)"
         ]
       }
     },

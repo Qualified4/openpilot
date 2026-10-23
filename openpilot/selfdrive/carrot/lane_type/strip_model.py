@@ -8,17 +8,15 @@ Below the confidence threshold a head is UNKNOWN; dashed+yellow is not a learned
 
 Manifest v4 (``outputs`` == OUTPUTS_V4, ONNX outputs ``color`` (N, 3) and ``type`` (N, 5) logits) is mapped onto the
 same two-class result the strip filter reads (StripModel.decide4); v1-v3 manifests (``outputs`` {line_type, color},
-two softmax heads) keep StripModel.decide unchanged. ``mirror_right`` (v4): marking_daemon flips a standalone v4 model's
-right strip. HybridStripModel owns its v4-only right flip so the v3 colour crop stays unmirrored (see MIRROR_AXIS).
+two softmax heads) keep StripModel.decide unchanged. ``mirror_right`` (v4): marking_daemon flips the v4 model's right
+strip (see MIRROR_AXIS).
 
 Model slots (SLOTS, selected by the LaneStripModel param in marking_daemon, see load_slot): 0 = assets/lane_strip.{onnx,json}
-(the deployed model), 1 = assets/lane_strip_v4.{onnx,json} (the new model), HYBRID_SLOT 2 = both: HybridStripModel takes the
-TYPE from slot 1 (v4) and the COLOUR from slot 0 (v3) on the unmirrored wide strip's central crop. Slots 1 and 2 fall back
-to slot 0 when their files or input contracts are invalid.
+(the deployed model), 1 = assets/lane_strip_v4.{onnx,json} (the new model). Slot 1 falls back to slot 0 when its files or
+input contracts are invalid.
 """
 import hashlib
 import json
-from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -38,7 +36,6 @@ OUTPUTS_V4 = {'color': list(COLORS_V4), 'type': list(TYPES_V4)}
 # strip is flipped on its column axis (the last one of 3 x rows x cols), putting its ego side on the high columns too.
 MIRROR_AXIS = -1
 SLOTS = {0: 'lane_strip', 1: 'lane_strip_v4'}  # file stem in ASSETS per LaneStripModel value
-HYBRID_SLOT = 2  # LaneStripModel 2: type from SLOTS[1] (v4), colour from SLOTS[0] (v3) (HybridStripModel)
 
 
 def strip_of(manifest):
@@ -223,9 +220,8 @@ class StripModel:
       out.update(type='unknown', color='unknown', reason='yellow_dashed_not_learned')
     return out
 
-  def decide4(self, type_logits, color_logits, yellow=None):
+  def decide4(self, type_logits, color_logits):
     """v4 logits -> the two-class result decide() makes, plus the v4 extras (typeClass, colorClass, double, blue, pUnknown).
-    ``yellow`` (HybridStripModel): P(yellow) from another model, used instead of this model's colour head.
 
     Type: an 'unknown' argmax abstains (reason 'unknown': no probabilities, both heads unknown; marking_daemon passes it like
     'lane_prob_dip'); otherwise P(dashed) = (P(dashed) + P(dbl_near)) / (1 - P(unknown)) (near = ego side -> dashed display,
@@ -240,82 +236,20 @@ class StripModel:
       return {'reason': 'unknown', 'type': 'unknown', 'typeConfidence': 0., 'typeCandidate': 'unknown',
               'color': 'unknown', 'colorConfidence': 0., 'colorCandidate': 'unknown', **extras}
     dashed = min(1., float(pt[0] + pt[2])/(1. - u))
-    yellow = float(pc[1]) if yellow is None else float(yellow)
+    yellow = float(pc[1])
     out = self.decide(np.array([dashed, 1. - dashed]), np.array([1. - yellow, yellow]), yellow_dashed_learned=True)
     out.update(extras)
     return out
 
 
-class HybridStripModel:
-  """LaneStripModel 2: TYPE from v4, COLOUR from v3 on the central columns of one unmirrored wide strip.
-  Recogniser supplies the valid side names to infer(); this model alone mirrors the right v4 input. The v3 crop
-  always comes from the unmirrored strip, including when only the right side is inferred.
-
-  Per side the v4 decision comes first (StripModel.decide4): a type argmax 'unknown' abstains on both heads (reason 'unknown',
-  paused like lane_prob_dip). Otherwise P(dashed) = (dashed + dbl_near)/(1 - unknown) from v4 (dbl_near -> dashed, dbl_far ->
-  solid), P(yellow) = the v3 colour softmax, both through decide4's two-class rule at the v4 threshold (yellow + dashed passed
-  through). The v4 colour head is ignored: colorClass = the v3 argmax (white / yellow), blue always False; typeClass, double,
-  pUnknown from v4. Same mapping as the replay reference .analysis/lane-hybrid-20261022/tools/hybrid.py."""
-  slot, name, v4 = HYBRID_SLOT, 'hybrid', True
-
-  def __init__(self, type_model, color_model):
-    if not type_model.v4 or color_model.v4:
-      raise ValueError('lane strip hybrid: needs a v4 (StripNet2) type model and a v1-v3 colour model')
-    self.type_model, self.color_model = type_model, color_model
-    self.threshold = type_model.threshold
-    wide, color = type_model.strip, color_model.strip
-    pitch = 2*Fraction(str(wide['half_m']))/wide['cols']
-    color_pitch = 2*Fraction(str(color['half_m']))/color['cols']
-    start = (Fraction(str(wide['half_m'])) - Fraction(str(color['half_m'])))/pitch
-    end = start + color['cols']
-    if (pitch != color_pitch or wide['rows'] != color['rows'] or start.denominator != 1 or
-        end.denominator != 1 or start < 0 or end > wide['cols']):
-      raise ValueError('lane strip hybrid: colour crop needs equal column spacing/rows and integer central bounds inside the wide strip')
-    self.crop_columns = int(start), int(end)
-    self.strip_inputs = ((wide, False),)  # one unmirrored strip; infer owns the v4-only right flip
-
-  def info(self):
-    t, c = self.type_model.info(), self.color_model.info()
-    return {'slot': self.slot, 'name': self.name, 'version': f"{t['version']}+{c['version']}", 'sha256': f"{t['sha256']}+{c['sha256']}",
-            'v4': True, 'typeModel': {k: t[k] for k in ('name', 'version', 'sha256')},
-            'colorModel': {k: c[k] for k in ('name', 'version', 'sha256')},
-            'colorInput': f'wide_crop_{self.crop_columns[0]}_{self.crop_columns[1]}'}
-
-  def infer(self, strips, *, sides=()):
-    """One (unmirrored wide strip,) tuple per valid side; explicit sides prevent right-only batch ambiguity."""
-    if len(strips) != len(sides) or any(len(s) != 1 for s in strips) or any(side not in ('left', 'right') for side in sides):
-      raise ValueError('lane strip hybrid: one left/right side name is required per strip')
-    if not strips:
-      return []
-    wide = [s[0] for s in strips]
-    types, colors4 = self.type_model.forward([s[..., ::-1] if self.type_model.mirror_right and side == 'right' else s
-                                            for s, side in zip(wide, sides, strict=True)])
-    start, end = self.crop_columns
-    _, colors3 = self.color_model.forward([s[..., start:end] for s in wide])
-    return [self.decide(t, c4, c3) for t, c4, c3 in zip(types, colors4, colors3, strict=True)]
-
-  def decide(self, type_logits, color4_logits, color3_p):
-    yellow = float(color3_p[COLORS.index('yellow')])
-    out = self.type_model.decide4(type_logits, color4_logits, yellow=yellow)
-    out.update(colorClass='yellow' if yellow > .5 else 'white', blue=False)
-    return out
-
-
 def load_slot(slot, directory=None, warn=None):
-  """StripModel of LaneStripModel slot ``slot`` (SLOTS; HYBRID_SLOT: a HybridStripModel of slots 1 and 0). A slot other than 0
+  """StripModel of LaneStripModel slot ``slot`` (SLOTS). A slot other than 0
   whose files are missing, unreadable or fail the manifest / ONNX contract falls back to slot 0 (the deployed model), calling
   ``warn(message)`` first; an unknown slot is 0. The returned model's ``slot`` is the slot actually loaded. ``directory`` None:
   ASSETS (looked up at call time)."""
   import cv2
   directory = ASSETS if directory is None else directory
-  if slot == HYBRID_SLOT:
-    try:
-      return HybridStripModel(StripModel(directory, name=SLOTS[1]), StripModel(directory, name=SLOTS[0]))
-    except (OSError, ValueError, KeyError, TypeError, cv2.error) as error:
-      if warn is not None:
-        what = f'slot {slot} (hybrid: {SLOTS[1]} type + {SLOTS[0]} colour)'
-        warn(f'lane strip model {what} not loaded, using {SLOTS[0]}: {type(error).__name__}: {error}')
-  elif slot in SLOTS and slot != 0:
+  if slot in SLOTS and slot != 0:
     try:
       return StripModel(directory, name=SLOTS[slot])
     except (OSError, ValueError, KeyError, TypeError, cv2.error) as error:

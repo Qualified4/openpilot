@@ -5,8 +5,8 @@ CcncLaneTypeDetection turns the display-only recogniser on: 0 off (existing CCNC
 StripNet, so a stored 1 or 2 both run StripNet: the profile Scanner is no longer run on the car (2026-10-21); MODES keeps its
 name for offline replays (tools/lane_profile/replay_marking.py builds marking_daemon.Recogniser(1) itself).
 LaneStripModel picks the StripNet model: 0 the deployed one (assets/lane_strip.*, v3), 1 the new-model slot
-(assets/lane_strip_v4.*), 2 the hybrid (type from lane_strip_v4, colour from lane_strip: strip_model.HybridStripModel); 1 and 2
-run the deployed one when their files are missing or invalid (strip_model.load_slot).
+(assets/lane_strip_v4.*); 1 runs the deployed one when its files are missing or invalid (strip_model.load_slot). A stored 2
+(the removed hybrid option, type from lane_strip_v4 + colour from lane_strip) runs slot 1, the new model (model_of).
 The recogniser publishes the display-filtered (two identical results within 0.4 s, 0.5 s expiry) left/right type and
 colour on customReservedRawData2; card keeps only the latest packet and the CCNC sender applies it without waiting.
 """
@@ -16,7 +16,8 @@ PARAM = 'CcncLaneTypeDetection'
 MODES = {1: 'scanner', 2: 'stripnet'}  # Recogniser engines; the daemon only runs STRIPNET
 STRIPNET = 2
 MODEL_PARAM = 'LaneStripModel'
-MODEL_SLOTS = {0: 'current', 1: 'new', 2: 'hybrid'}  # strip_model.SLOTS 0 lane_strip.* (v3), 1 lane_strip_v4.*; 2 HYBRID_SLOT
+MODEL_SLOTS = {0: 'current', 1: 'new'}  # strip_model.SLOTS 0 lane_strip.* (v3), 1 lane_strip_v4.*
+LEGACY_HYBRID_SLOT = 2  # the removed hybrid option (2026-10-23): a stored 2 runs slot 1 (the new model)
 PACKET_TYPE, PACKET_VERSION = 'ccncLaneMarking', 1
 MAX_AGE_NS = 500_000_000  # the display policy's expiry (result.MAX_AGE_NS)
 TYPES, COLORS = ('dashed', 'solid'), ('white', 'yellow')
@@ -32,11 +33,13 @@ def mode_of(params):
 
 
 def model_of(params):
-  """LaneStripModel slot (0 current, 1 new, 2 hybrid); anything else or unreadable: 0."""
+  """LaneStripModel slot (0 current, 1 new; a stored 2, the removed hybrid, is 1); anything else or unreadable: 0."""
   try:
     slot = params.get_int(MODEL_PARAM)
   except (TypeError, ValueError):
     return 0
+  if slot == LEGACY_HYBRID_SLOT:
+    return 1
   return slot if slot in MODEL_SLOTS else 0
 
 

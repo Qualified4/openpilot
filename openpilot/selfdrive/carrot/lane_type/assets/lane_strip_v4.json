@@ -35,7 +35,7 @@
   ]
  },
  "threshold": 0.9,
- "mapping": "logits; type argmax unknown -> no inference this frame (paused like lane_prob_dip); P(dashed) = (dashed + dbl_near)/(1 - unknown) (dbl_near = ego-side line of a double marking -> dashed, dbl_far -> solid); P(yellow) = colour softmax yellow, blue shown white; yellow + dashed passed through (strip_model.StripModel.decide4). LaneStripModel 1 uses this model for both heads; LaneStripModel 2 (hybrid) uses it for the type only and takes the colour from lane_strip.onnx (v3).",
+ "mapping": "logits; type argmax unknown -> no inference this frame (paused like lane_prob_dip); P(dashed) = (dashed + dbl_near)/(1 - unknown) (dbl_near = ego-side line of a double marking -> dashed, dbl_far -> solid); P(yellow) = colour softmax yellow, blue shown white; yellow + dashed passed through (strip_model.StripModel.decide4). LaneStripModel 1 uses this model for both heads.",
  "training": {
   "source": ".analysis/ccnc-field-412-20261022/codex/trainfast/training-labelfix1023/bluew_center_kd0_negsyn0.25_s1 (trainfast, TRAIN 10-23)",
   "init": "type/backbone from the previous lane_strip_v4 (sha256 0e22e71364b6); colour branch from v3",
