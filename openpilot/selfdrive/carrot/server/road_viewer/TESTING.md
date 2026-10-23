@@ -114,3 +114,14 @@ finished originals were deleted, lost finish responses and legacy fallback.
 Receiver tests additionally cover malformed/missing finish checksums, corruption,
 restart, repeated chunks, negotiated size limits and concurrent finish guards.
 No deployed Home Assistant storage or physical vehicle is involved.
+
+Multi-segment checks also assert that acknowledged bytes never drop while the
+previous segment registers or during final notification. The next prepared
+segment is admitted before registration takes the server's admission lock;
+tight storage falls back to ordinary admission after registration, and cancel
+releases an admitted but unused session. This can temporarily reserve space for
+two segments without changing the receiver's quota or eviction rules.
+
+The receiver's `tests/test_upload_recovery.py` holds a library storage scan open
+while another upload and progress query complete, and checks deletion during
+the list snapshot. Library file scans run outside the shared upload lock.

@@ -92,14 +92,16 @@ def next_chunk_size(maximum, size, seconds):
   return min(maximum, max(256 * 1024, int(size * 4 / max(.01, seconds) / 65536) * 65536))
 
 
-def progress(job, *, phase, message, current_bytes=0, **kwargs):
+def progress(job, *, phase, message, **kwargs):
   checkpoint = job.get('_road_viewer', {})
   batches = checkpoint.get('batches', [])
   completed = [batch for batch in batches if batch and batch.get('complete')]
   done_count = sum(len(batch['summaries']) for batch in completed)
-  done_bytes = sum(sum(item['size'] for item in batch['files']) for batch in completed)
+  # Registration overlaps the next transfer. Count acknowledged bytes even
+  # before a batch is marked complete, including during preparation/notifying.
+  current_bytes = sum(sum(item['size'] for item in batch['files']) if batch.get('complete')
+                      else sum(batch.get('received', [])) for batch in batches if batch)
   total_bytes = sum(summary['totalSize'] for summary in checkpoint.get('summaries', []))
-  current_bytes += done_bytes
   jobs.progress(job, phase=phase, message=message, current=done_count,
                 bytes_current=current_bytes, bytes_total=total_bytes,
                 percent=97 * current_bytes / max(1, total_bytes) + 2 * done_count / len(job['segments']), **kwargs)
@@ -179,7 +181,9 @@ async def transfer(job, http, credentials, checkpoint, defer_finish=False):
   for item in files:
     with await asyncio.to_thread(open_source, item):
       pass
-  session = await retry(job, lambda: client.begin(http, credentials, checkpoint['manifest']))
+  session = checkpoint.pop('_ready_session', None)
+  if session is None:
+    session = await retry(job, lambda: client.begin(http, credentials, checkpoint['manifest']))
   config.last_error = ''
   if session.get('state') == 'completed':
     validate_result(session.get('result'))
@@ -198,7 +202,7 @@ async def transfer(job, http, credentials, checkpoint, defer_finish=False):
 
   def report(item):
     current = sum(received)
-    progress(job, phase='uploading', message=f"{item['segment']} / {item['name']}", current_bytes=current,
+    progress(job, phase='uploading', message=f"{item['segment']} / {item['name']}",
              phase_current=len(finished), phase_total=len(files),
              bytes_per_second=int((current - original) / max(0.01, time.monotonic() - started)))
 
@@ -299,7 +303,7 @@ async def transfer(job, http, credentials, checkpoint, defer_finish=False):
   if defer_finish:
     return finish
   progress(job, phase='notifying', message=f"Road Viewer: registering {checkpoint['summaries'][0]['segment']}",
-           current_bytes=sum(received), bytes_per_second=0)
+           bytes_per_second=0)
   await finish()
   return None
 
@@ -400,7 +404,25 @@ async def run_job(job):
         if finish is None:
           complete(index, batch)  # The server already had it (receipt of a lost response).
         else:
-          finishing = (index, batch, asyncio.create_task(finish()))
+          try:
+            following = index + 1
+            if following in ahead:
+              following_batch = await ahead.pop(following)
+              checkpoint['batches'][following] = following_batch
+              checkpoint['summaries'][following] = following_batch['summaries'][0]
+              try:
+                # Admission shares the server's registration lock. Open the next
+                # session before finish takes it, so the next transfer can overlap.
+                following_batch['_ready_session'] = await client.begin(http, credentials, following_batch['manifest'])
+              except client.Error as exc:
+                if exc.code not in client.TRANSIENT | {'storage_limit_exceeded', 'insufficient_disk_space',
+                                                      'no_deletable_logs', 'session_limit_reached'}:
+                  raise
+                # Tight storage or a dropped preflight: register this segment,
+                # then use ordinary admission/retry for the next one.
+          finally:
+            # A preparation/admission failure must still register the sent segment.
+            finishing = (index, batch, asyncio.create_task(finish()))
       if finishing is not None:
         progress(job, phase='notifying', message='Road Viewer: registering ' + job['segments'][finishing[0]], bytes_per_second=0)
       await settle()
@@ -427,6 +449,14 @@ async def run_job(job):
       for task in background:
         task.cancel()
       await asyncio.gather(*background, return_exceptions=True)
+      # Cancellation/failure can leave an admitted, never-started next segment.
+      for batch in checkpoint.get('batches', []) if checkpoint else []:
+        session = batch.pop('_ready_session', None) if batch else None
+        if session and session.get('id') and credentials:
+          try:
+            await client.session_request(http, credentials['url'], session, 'DELETE')
+          except client.Error:
+            pass  # Offline sessions retain the existing idle expiry.
       if (canceled or code in ('file_changed', 'segment_incomplete', 'local_file_error')) and checkpoint and active is not None:
         batch = checkpoint['batches'][active]
         if credentials and batch and not batch.get('complete') and batch.get('session'):

@@ -797,7 +797,19 @@ def test_next_segment_is_sent_while_the_previous_one_registers(server, monkeypat
     await connect(server)
     segments = [recording(0), recording(1)]
     original = client.session_request
-    events, sessions = [], []
+    original_begin = client.begin
+    events, sessions, samples = [], [], []
+    original_progress = jobs.progress
+
+    def observe_progress(job, **values):
+      if 'bytes_current' in values:
+        samples.append((values['phase'], values['bytes_current'], values['bytes_total']))
+      original_progress(job, **values)
+
+    async def observe_begin(http, credentials, manifest):
+      result = await original_begin(http, credentials, manifest)
+      events.append(f'begin {manifest["segments"][0]["segment"]}')
+      return result
 
     async def slow_finish(http, url, session, method='GET', suffix='', data=None):
       if session['id'] not in sessions:
@@ -814,13 +826,61 @@ def test_next_segment_is_sent_while_the_previous_one_registers(server, monkeypat
       return result
 
     monkeypatch.setattr(client, 'session_request', slow_finish)
+    monkeypatch.setattr(client, 'begin', observe_begin)
+    monkeypatch.setattr(jobs, 'progress', observe_progress)
     job = jobs.create_job(segments)
     await jobs.start_job(job, runner=uploader.run_job)
     assert job['status'] == 'done', job['result']
     first_put = next(i for i, e in enumerate(events) if e.startswith('put 1'))
     assert events.index('finish 0 start') < first_put < events.index('/finish 0'), events
     assert events.index('/finish 0') < events.index('/finish 1'), 'registrations stay in order'
+    assert events.index('begin 1') < events.index('finish 0 start'), 'next admission must precede the registration lock'
     assert len(server[0].recording_paths()) == 2
+    counts = [current for _, current, _ in samples]
+    assert counts == sorted(counts), 'acknowledged bytes must include the previous, still-registering segment'
+    assert all(current == total for phase, current, total in samples if phase == 'notifying')
+  asyncio.run(run())
+
+
+def test_next_admission_can_wait_for_storage_released_by_registration(server, monkeypatch):
+  async def run():
+    await connect(server)
+    original = client.begin
+    attempts = 0
+
+    async def tight_storage(http, credentials, manifest):
+      nonlocal attempts
+      if manifest['segments'][0]['segment'] == 1:
+        attempts += 1
+        if attempts == 1:
+          raise client.Error('insufficient_disk_space')
+      return await original(http, credentials, manifest)
+
+    monkeypatch.setattr(client, 'begin', tight_storage)
+    job = jobs.create_job([recording(0), recording(1)])
+    await jobs.start_job(job, runner=uploader.run_job)
+    assert job['status'] == 'done', job['result']
+    assert attempts == 2
+    assert len(server[0].recording_paths()) == 2
+  asyncio.run(run())
+
+
+def test_cancel_releases_admitted_next_segment(server, monkeypatch):
+  async def run():
+    await connect(server)
+    original = client.begin
+    job = jobs.create_job([recording(0), recording(1)])
+
+    async def cancel_after_admission(http, credentials, manifest):
+      session = await original(http, credentials, manifest)
+      if manifest['segments'][0]['segment'] == 1:
+        jobs.cancel_job(job['id'])
+      return session
+
+    monkeypatch.setattr(client, 'begin', cancel_after_admission)
+    await jobs.start_job(job, runner=uploader.run_job)
+    assert job['status'] == 'canceled'
+    assert not list(server[0].UPLOADS.iterdir()), 'both the sent and admitted sessions must be released'
   asyncio.run(run())
 
 
