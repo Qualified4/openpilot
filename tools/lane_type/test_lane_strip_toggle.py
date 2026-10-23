@@ -21,7 +21,7 @@ from tools.lane_type.test_strip_model_v4 import FIX, FRAME_NS, C, T, frame, stri
 
 ROOT = Path(__file__).resolve().parents[2]
 V3 = 'e6c5f34fb84d1b184d90bda5e245ab4fc32c01b4a3f55665a7b332debb87053f'
-V4_SHIPPED = 'c621e1e41cabf01ebdc1c17bcdc1b1b9e05475bbfd4b85394372ef7ff062190d'  # 10-23 label-fix retrain bluew_center_kd0_negsyn0.25_s1
+V4_SHIPPED = 'e470e03852c0a5ae4cf9a4138924772762d2c92cfbfc1ae8868f2550f223c166'  # 10-23 evening retrain today1023b negsyn0.25 s1 (+ 10-23 drives, bookmarks)
 
 
 def assets(tmp_path, v4=FIX/'strip_v4_probe.onnx', strip=None):
@@ -214,7 +214,7 @@ def test_daemon_legacy_slot2_runs_slot1(monkeypatch, tmp_path):
 
 
 def test_shipped_v4_pair():
-  """The shipped assets: slot 1 = 10-23 label-fix retrain (manifest v4, w100 strip, mirror_right)."""
+  """The shipped assets: slot 1 = 10-23 evening retrain today1023b (manifest v4, w100 strip, mirror_right)."""
   data = (strip_model.ASSETS/'lane_strip_v4.onnx').read_bytes()
   assert hashlib.sha256(data).hexdigest() == V4_SHIPPED and len(data) < 200_000
   v4 = strip_model.load_slot(1, warn=pytest.fail)
