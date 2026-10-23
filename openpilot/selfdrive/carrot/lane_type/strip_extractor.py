@@ -7,12 +7,17 @@ import cv2
 import numpy as np
 
 from openpilot.selfdrive.carrot.lane_type import profile_scanner as ps
+try:
+  from openpilot.selfdrive.carrot.lane_type import _strip_native as native
+except ImportError:
+  native = None  # optional Cython build (SCons); the numpy/OpenCV path below is the bit-exact reference
 
 # Restart the daemon after changing a switch. Buffer reuse and allocator tuning can be disabled together.
 REUSE_BUFFERS = True
 TUNE_ALLOCATOR = True
 PLANAR_UV = True
 SHARE_GEOMETRY = True
+NATIVE = True
 MAP_CACHE_SIZE = 8
 DISTANCES = np.arange(ps.NEAR_M, ps.FAR_M + .001, .02)
 COLUMN_GRID = {c: (np.arange(c*ps.SUB) + .5)/(c*ps.SUB) for c in (96, 128)}
@@ -36,10 +41,11 @@ def tune_allocator():
 
 
 class Extractor:
-  def __init__(self, *, buffers=None, planar=None, geometry=None):
+  def __init__(self, *, buffers=None, planar=None, geometry=None, use_native=None):
     self.buffers = REUSE_BUFFERS if buffers is None else buffers
     self.planar = PLANAR_UV if planar is None else planar
     self.geometry = SHARE_GEOMETRY if geometry is None else geometry
+    self.native = native if (NATIVE if use_native is None else use_native) else None
     self.scratch, self.y_maps = {}, OrderedDict()
     self.layout = self.key = self.matrix = None
 
@@ -82,7 +88,12 @@ class Extractor:
     t = COLUMN_GRID.get(cols)
     if t is None:
       t = (np.arange(cols*ps.SUB) + .5)/(cols*ps.SUB)
-    mx = (edges[0][:, None] + t[None]*(edges[1] - edges[0])[:, None]).astype(np.float32)
+    if self.native is not None:
+      mx, mx_uv = np.empty((len(ys), len(t)), np.float32), np.empty((len(ys), len(t)), np.float32)
+      self.native.column_map(edges[0], edges[1], t, mx, mx_uv)
+    else:
+      mx = (edges[0][:, None] + t[None]*(edges[1] - edges[0])[:, None]).astype(np.float32)
+      mx_uv = mx*.5
     key = int(ys[0]), int(ys[-1]), cols
     pair = self.y_maps.get(key)
     if pair is None:
@@ -93,7 +104,7 @@ class Extractor:
         self.y_maps.popitem(last=False)
     else:
       self.y_maps.move_to_end(key)
-    return {'mx': mx, 'my': pair[0], 'my_uv': pair[1]}
+    return {'mx': mx, 'mx_uv': mx_uv, 'my': pair[0], 'my_uv': pair[1]}
 
   def remap(self, source, mx, my, tag):
     return cv2.remap(source, mx, my, cv2.INTER_LINEAR,
@@ -102,7 +113,7 @@ class Extractor:
   def raw(self, y, uv, geo, tag):
     mx, my = geo['mx'], geo['my']
     lum = self.remap(y, mx, my, tag+'y')
-    mx_uv = mx*.5
+    mx_uv = geo['mx_uv'] if 'mx_uv' in geo else mx*.5
     my_uv = geo['my_uv'] if 'my_uv' in geo else my*.5
     if isinstance(uv, tuple):
       return [lum] + [self.remap(p, mx_uv, my_uv, tag+str(i)) for i, p in enumerate(uv)]
@@ -111,6 +122,11 @@ class Extractor:
 
   def finish(self, planes, cols, rows):
     image = self.buf('image', (len(planes[0]), cols, 3))
+    if self.native is not None and ps.SUB == 4 and len(planes) == 3 and all(
+        p.dtype == np.uint8 and p.ndim == 2 and p.flags.c_contiguous and p.shape == (len(image), 4*cols) for p in planes):
+      # Exact 4:1 box sum >> 2 == float32 INTER_AREA mean truncated to uint8 (sums of 4 bytes are exact in float32).
+      self.native.area4_interleave(*planes, image)
+      planes = ()
     for i, plane in enumerate(planes):
       cast = self.buf('float', plane.shape, np.float32)
       np.copyto(cast, plane, casting='unsafe')

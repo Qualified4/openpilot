@@ -3,15 +3,20 @@ import ctypes
 import io
 import itertools
 import json
+from pathlib import Path
 import platform
+import time
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 import pytest
 
 from openpilot.selfdrive.carrot.lane_type import marking, marking_daemon as md, profile_scanner as ps, strip_extractor as fast, strip_model as sm
 
 WIDTHS = ((.75, 96, 128), (1., 128, 128))
+REAL = Path(__file__).resolve().parents[2]/'.analysis/strip-cache/decoded/412/00000412--4440b61281--9/chunk-0003.npz'
+needs_native = pytest.mark.skipif(fast.native is None, reason='_strip_native not built (SCons / tools/build_native_cpu.py)')
 
 
 @pytest.fixture
@@ -161,3 +166,121 @@ def test_daemon_timing_fields_and_optional_faults(monkeypatch, tmp_path, faults)
     assert ('minfltDelta' in timing) == (faults is not None)
     if faults is not None:
       assert timing['minfltDelta'] == 0
+
+
+def real_frames(path=REAL):
+  """Same reader as .analysis/ccnc-field-412-20261022/codex/device1023/bench_device.py frames() (that script runs on import)."""
+  if not path.exists():
+    pytest.skip(f'{path} not present')
+  with np.load(path) as z:
+    meta = json.loads(str(z['meta']))
+    yy, uu, yo, uo = (z[k] for k in ('y', 'uv', 'yoff', 'uvoff'))
+  for i, f in enumerate(meta):
+    h, w = f['shape']
+    y, uv = np.zeros((h, w), np.uint8), np.zeros((h//2, w//2, 2), np.uint8)
+    yb, ub = f['yb'], f['ub']
+    y[yb[0]:yb[1], yb[2]:yb[3]] = yy[yo[i]:yo[i + 1]].reshape(yb[1] - yb[0], yb[3] - yb[2])
+    uv[ub[0]:ub[1], ub[2]:ub[3]] = uu[uo[i]:uo[i + 1]].reshape(ub[1] - ub[0], ub[3] - ub[2], 2)
+    yield y, uv, [f['lines']['left'], f['lines']['right']], f['rpy'], np.array(f['k'])
+
+
+def area_reference(planes, cols):
+  """The pre-native finish() loop: uint8 -> float32, exact 4:1 INTER_AREA, truncating assignment."""
+  image = np.empty((len(planes[0]), cols, 3), np.uint8)
+  for i, plane in enumerate(planes):
+    image[..., i] = cv2.resize(plane.astype(np.float32), (cols, len(plane)), interpolation=cv2.INTER_AREA)
+  return image
+
+
+@needs_native
+def test_native_matches_python_on_real_frames(monkeypatch):
+  calls = {'column_map': 0, 'area4_interleave': 0}
+  class Spy:
+    def __getattr__(self, name):
+      def call(*args):
+        calls[name] += 1
+        return getattr(fast.native, name)(*args)
+      return call
+  on, off = fast.Extractor(), fast.Extractor(use_native=False)
+  assert on.native is fast.native and off.native is None
+  on.native = Spy()
+  compared = {(c, side): 0 for _, c, _ in WIDTHS for side in ('left', 'right')}
+  for frame in real_frames():
+    want, got = off.extract(*frame), on.extract(*frame)
+    equal(want, got)
+    for (_, c, _), side, strip in zip([w for w in WIDTHS for _ in range(2)], ('left', 'right')*2, got, strict=True):
+      compared[(c, side)] += strip is not None
+  assert all(n >= 20 for n in compared.values()), compared
+  assert calls['column_map'] == calls['area4_interleave'] == sum(compared.values())
+  print('bit-identical strips', compared)
+
+
+@needs_native
+@pytest.mark.parametrize('rows,cols', ((1, 1), (1, 128), (7, 96), (300, 96), (213, 128)))
+def test_area4_kernel_matches_cv2(rows, cols):
+  rng = np.random.default_rng(rows*1000 + cols)
+  cases = [rng.integers(0, 256, (3, rows, 4*cols), dtype=np.uint8), np.full((3, rows, 4*cols), 255, np.uint8),
+           np.zeros((3, rows, 4*cols), np.uint8), rng.choice(np.array([0, 1, 254, 255], np.uint8), (3, rows, 4*cols))]
+  for case in cases:
+    planes = [np.ascontiguousarray(p) for p in case]
+    out = np.full((rows, cols, 3), 77, np.uint8)
+    fast.native.area4_interleave(*planes, out)
+    assert np.array_equal(out, area_reference(planes, cols))
+  with pytest.raises(ValueError):
+    fast.native.area4_interleave(*planes[:2], planes[2][:, :-4], out)
+
+
+@needs_native
+def test_column_map_matches_numpy():
+  rng = np.random.default_rng(23)
+  for rows, cols in ((1, 96), (311, 128), (57, 96)):
+    t = fast.COLUMN_GRID[cols]
+    e0 = rng.uniform(-2000., 3000., rows)
+    e1 = e0 + rng.normal(0., 300., rows)
+    e1[:3] = e0[:3]  # zero span
+    want = (e0[:, None] + t[None]*(e1 - e0)[:, None]).astype(np.float32)
+    mx, half = np.empty_like(want), np.empty_like(want)
+    fast.native.column_map(e0, e1, t, mx, half)
+    assert np.array_equal(mx.view(np.uint32), want.view(np.uint32))
+    assert np.array_equal(half.view(np.uint32), (want*.5).view(np.uint32))
+
+
+def test_python_fallback_without_native(pixels, monkeypatch):
+  monkeypatch.setattr(fast, 'native', None)
+  ex = fast.Extractor(use_native=True)
+  assert ex.native is None
+  equal(scalar(*pixels), ex.extract(*pixels))
+  monkeypatch.setattr(fast, 'NATIVE', False)
+  monkeypatch.setattr(fast, 'native', SimpleNamespace())  # any attribute access would fail
+  assert fast.Extractor().native is None
+  equal(scalar(*pixels), fast.Extractor().extract(*pixels))
+
+
+@needs_native
+def test_native_skips_unsupported_planes(pixels):
+  # Interleaved UV gives strided chroma views: finish() must use the OpenCV loop, maps() still the native column map.
+  ex = fast.Extractor(planar=False)
+  ex.native = SimpleNamespace(column_map=fast.native.column_map)
+  equal(scalar(*pixels), ex.extract(*pixels))
+
+
+def timing(repeats=3):
+  """PC median extract() ms per frame, native vs Python, 1 OpenCV thread (python -m tools.lane_type.test_strip_extractor)."""
+  cv2.setNumThreads(1)
+  frames = [f for f in real_frames() if all(s is not None for s in fast.Extractor(use_native=False).extract(*f))]
+  result = {}
+  for name, ex in (('python', fast.Extractor(use_native=False)), ('native', fast.Extractor(use_native=True))):
+    for f in frames[:5]:
+      ex.extract(*f)
+    ms = []
+    for _ in range(repeats):
+      for f in frames:
+        t0 = time.perf_counter_ns()
+        ex.extract(*f)
+        ms.append((time.perf_counter_ns() - t0)/1e6)
+    result[name] = float(np.median(ms))
+  return dict(frames=len(frames), repeats=repeats, native_built=fast.native is not None, **result)
+
+
+if __name__ == '__main__':
+  print(json.dumps(timing(10)))
