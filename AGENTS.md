@@ -1,5 +1,103 @@
 # Repository memory
 
+- On 2026-10-23, merged origin/carrot-wip dfab65d0 (9 commits: Jetlink PR560-562 USB recovery/DHCP/ADB handoff,
+  NAV shared input/native image/N16 projection records, Hyundai CAN-FD no-lead stop object state 2 trial) into
+  ccnc-hda1 on 895c130b. Only AGENTS.md conflicted; both branches' log entries are kept.
+- On 2026-10-23, owner requests review/application of PR560/561/562.
+  560 staging/os fix already in e4779e059a; retain newer N16 defaults. Add
+  missing full2066-output precedence; actual parser regression fails old/passes
+  corrected.561 adds exact-state absent-/proc DHCP cleanup to existing5s wait;
+  default-OFF g1 ADB handoff also requires privileged-owner/nonwritable marker.
+  No marker enabled; PC ADB impact/sysfs race and physical Konik limits retained.
+  562 unconditional attached-boot cutoff/nonzero override/link-block rejected;
+  adapt callback reassertion only under original empty-port/conflict gates.
+  Common helpers both branches, parser NAV only.126desktop pass/31POSIX skips;
+  Linux CI passes NAV1244/56skips,Wip861/2skips plus nav/storage/update/NAT
+  suites as applicable; both Windows installers pass. Code NAV5d2437da6c and
+  Wip190f96241c published single-parent. No live install, host bundle or model
+  change; Git Pull/comma reboot. PRs not merged unchanged. See
+  docs/jetlink_pr560_562_review_20261023.md.
+- On 2026-10-23, owner requests contributor6914f6ce/fbe9a887 and live validation.
+  NAV negotiates connection-owned size-sealed memfd,60B framed input token,
+  synchronous USB and legacy fallback; nonce/generation/age/reply gates remain.
+  Fix invalid warp destination to drain submitted GPU before fallback; add
+  IPC bytes/shared-use scalars to existing timing aggregates. Common DHCP stop
+  waits<=5s for exact owned process; no forced kill/rebind/ownership bypass.
+  Wip DHCP only; existing signed host54e706fa05/N16 stays. Normal comma Git Pull
+  and reboot, no host bundle required. Read-only P baseline120s/2401valid,
+  mean38.852/p9942.717/max45.374ms,zero>50; NAV absent. Native validation and
+  deployment details: docs/jetson_shared_input_integration_20261023.md.
+  Published NAV819ce67c7d/Wipa7658f4b6a; Linux CI passes(NAV1202/56skip,
+  Wip820/2skip broad, other update/nav/storage/NAT checks). Actual offroad QCOM
+  copyout/numpy+receiver64hashes match,4sessions isolated. First root observer
+  prematurely created two msgq files: agent-caused permission/restart window,
+  exact ownership restored, observers drop user; normal second reboot restores
+  HUD too. Final120s2400validconsecutive,mean37.845/p9941.556/max43.692ms,0>50;
+  pose healthy,HUD119/120. Repeat60s1200consecutive,mean37.834/max44.101,0>50,
+  HUD/signal60/60 on both devices. IPC2402calls exactly60B/shared1. No ABBA,
+  road/deadline claim. Naver sender connected but route/TBT absent expired;
+  supplied1.28APK still advertisesnm127,JSONworker2s age gate remains, fallback
+  off_route=true is not proof of physical route deviation. Valid NAV pending;
+  no expiry bypass or APK modification. Raw private; no Jetson update.
+  Follow-up sender guidance resumes without code change:17route points,TBT
+  left1064m,fresh external position.30/30 maps ready+matching nonzero shared
+  nav_map/navigation hashes; actual screen960x540 advancing,decode drops11
+  unchanged. Mode0 excludesmode7preview,not model input. ActiveNAV60s1200valid
+  consecutive model/DM/cameras/odom/pose,mean37.897/p9942.085/max43.448ms,0>50,
+  HUD/signal60/60. Restoration trigger unknown; no road/engine-hash claim.
+- On 2026-10-23, owner requests existing signal observations on Jetson USB HUD.
+  NAV forwards bounded allowlisted4KiB/20-track metadata in existing10Hz HUD,
+  drops optional signal field first at96KiB budget; no extra image/message.
+  Original camera dimensions/EOF accompany JPEG; renderer-only adapters reuse
+  status ring and road boxes, clock/duplicate/frame-reuse/expiry/session gates.
+  No vehicle writes, model/control/deadline/priority change.98desktop checks
+  pass/2native skips including actual renderer/draw doubles. Linux1142/56skip,
+  94update/119nav/11storage/11network and Windows installer pass;26pin checks/1skip.
+  Signed host54e706fa05/64707580B/42c2951e full HTTPS/hash verified,1099files.
+  Synthetic1-track232B/sample; no actual vehicle latency/screen/road claim.
+  Signed runtime for Git Pull/BOTH reboot; wip records only. See
+  docs/jetson_usb_signal_display_20261023.md for final release validation.
+- On 2026-10-23, owner requests contributor fc02df9/e812f68 integration.
+  Include prerequisite936ea57 native image conversion and os initialization fix.
+  Exact N16 model/spec defaults direct compact-map scatter and exact C uint8/FP16
+  lookup ON; explicit env0 retains original paths, other models unchanged.
+  Native compile/load/self-test failure falls back to NumPy; no per-frame build.
+  Preserve scalar/state validation, expiry/raw maps, projection and USB deadlines.
+  Windows94pass/34native-POSIX skips; combined real-C/session/state checks use
+  Linux CI1117/56skip+94update/119nav/11storage/11network and Windows pass.
+  Source e4779e059a signed64702473B/f17dd14a runtime HTTPS/hash verified;
+  1097 committed payload files,26 pin/bundle checks pass/1skip.
+  No local Orin/USB/road benchmark or additive timing/tail cure claim.
+  Vehicle off, publish signed runtime for Git Pull/BOTH reboot; wip record only.
+  See docs/jetson_n16_staging_integration_20261023.md for validation and release.
+- On 2026-10-23, owner requests contributor136119c/2e971ad review, then explicitly
+  requests publication without vehicle tests (Jetson off). NAV accepts exact
+  N16/spec-negotiated2066/18580-float replies, saving66056B/frame, preserving
+  full host/device-state validation, raw/old/v3 fallback and reset semantics.
+  Overlap same-frame CPU fill with existing draining warp hook; no asynchronous
+  USB, model/priority/deadline/control change.119 desktop checks/1POSIXskip;
+  added GPU-state reset/omitted-NaN,10 malformed IPC and actual stream tests.
+  Contributor38.898ms is prototype bench evidence, not our hardware result.
+  Source e7ff007ddc LinuxCI1062/56skip+94update/119nav/11storage/11network and
+  Windows installer pass. Signed64695651B bundle e72bab4b HTTPS/hash verified,
+  all1091 files committed;26 pin/bundle tests pass/1skip. Publish bundle+pin
+  for normal Git Pull/BOTH reboot; wip record
+  only (different model/state runtime). Vehicle read-only, raw private. See
+  docs/jetson_n16_projection_integration_20261023.md for final release/CI.
+- On 2026-10-23, owner requests forcing SCC object state during no-lead stops.
+  Camera-SCC CANFD builder trials HUD_LEAD_INFO/OEM SCC_ObjSta 0->2 only after
+  final ACCMode1/StopReq1 and the existing stop controller/interlocks. Real
+  lead states/distances/speeds remain intact; no RX or radar/planner mutation,
+  no latch after departure. Non-camera builder stays unchanged because its
+  object payload differs. No new setting, aReq/jerk/band/retry change, or live
+  vehicle install. Owner reports rollback concentrated on a backward slope;
+  recent no-lead approaches support further study, not a proven object gate.
+  Prior selected stock26 all contain object state2; prior9 failures do too.
+  Desktop231 focused checks pass with Params I/O blocked; three new cases
+  fail original/pass revised. Recorded-input1074-packet open-loop comparison:
+  840 change only state bit109 plus CRC,234 identical. This does not establish
+  ESC acceptance, physical stopping or a road-safe cure. Evidence stays private
+  under .analysis/archive/2026-10-23/stop-1116; normal Git Pull/reboot delivery.
 - On 2026-10-23, merged origin/carrot-wip 7e371b92 (11 commits: Jetlink USB completion priority, watchdog wakeup coalescing, bounded startup waiting across ignition, docs) into ccnc-hda1 on 8ad3cc50. Only AGENTS.md conflicted; retained both full blocks, CCNC first. Validation limited to conflict resolution and merge diff checks; no upstream feature retest, device validation, push or deployment.
 
 - On 2026-10-21, merged origin/carrot-wip 10cd6868 (10 commits: S3 display retirement, Jetson startup/camera-gap diagnostics and independent vision BSD) into ccnc-hda1 on d0b1e796. Preserved all 173 non-overlapping branch-specific files, including the accepted rear handover changes, and all six Ccnc definitions. Resolved AGENTS.md by retaining both complete blocks; settings docs use the actual 203 parameters and Wiki tests use the incoming 197-setting baseline. Wiki/catalog checks17 pass. Validation limited to merge/preservation and conflict-related catalog checks; no upstream feature retest, vehicle validation, timing, push or deployment. Evidence .analysis/archive/2026-10-21/carrot-merge.
