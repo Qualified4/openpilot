@@ -209,6 +209,18 @@
       "color": "white",
       "reason": "user review 2026-10-23 (dblmine page): double line, ego side solid; window = mined candidate rows +-0.3 s",
       "evidence": ".analysis/ccnc-field-412-20261022/codex/dblmine/judgements.json"
+    },
+    {
+      "id": "C019-solid",
+      "route_segment": "000003ea--6a2371afe5--6",
+      "side": "left",
+      "start_s": 477.9,
+      "end_s": 478.4,
+      "from_type": "solid",
+      "type": "dashed",
+      "color": "white",
+      "reason": "user review 2026-10-23 (417 priority page C019): U-turn opening -> white dashed (narrow window, one row)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/label_candidates.json"
     }
   ],
   "exclusions": [
@@ -251,6 +263,196 @@
       "end_s": 351.978,
       "reason": "not a lane line (stop zone / crosswalk / headlight glare on a rainy road); no model can be scored here (user review 2026-10-23, y2w_review)",
       "evidence": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/y2w_review/judgements.json"
+    },
+    {
+      "id": "X417-D001",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--3",
+      "side": "left",
+      "start_s": 271.652,
+      "end_s": 276.06,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page); note: 271.852는 실선",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D002",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--3",
+      "side": "left",
+      "start_s": 276.111,
+      "end_s": 277.162,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D004",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--3",
+      "side": "left",
+      "start_s": 311.745,
+      "end_s": 313.982,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D006",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--3",
+      "side": "right",
+      "start_s": 272.253,
+      "end_s": 275.76,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D007",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--3",
+      "side": "right",
+      "start_s": 276.762,
+      "end_s": 279.216,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D008",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--3",
+      "side": "right",
+      "start_s": 278.865,
+      "end_s": 279.515,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D010",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--3",
+      "side": "right",
+      "start_s": 294.083,
+      "end_s": 296.379,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D011",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--3",
+      "side": "right",
+      "start_s": 314.328,
+      "end_s": 314.877,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D018",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--5",
+      "side": "left",
+      "start_s": 412.576,
+      "end_s": 413.034,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page); note: 교차로 직전 흰 실선",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D019",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--5",
+      "side": "right",
+      "start_s": 390.774,
+      "end_s": 392.027,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D021",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--5",
+      "side": "right",
+      "start_s": 412.427,
+      "end_s": 413.076,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page); note: 교차로 직전 흰 실선",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D022",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--6",
+      "side": "right",
+      "start_s": 457.859,
+      "end_s": 463.155,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D025",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--7",
+      "side": "left",
+      "start_s": 520.128,
+      "end_s": 522.781,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page); note: 교차로 흰 실선",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D027",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--7",
+      "side": "right",
+      "start_s": 507.283,
+      "end_s": 509.536,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D028",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--8",
+      "side": "left",
+      "start_s": 583.255,
+      "end_s": 583.655,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page); note: 흰점선 시작만 살짝 찍힌거",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D047",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--16",
+      "side": "left",
+      "start_s": 1094.645,
+      "end_s": 1096.791,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D049",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--17",
+      "side": "left",
+      "start_s": 1110.971,
+      "end_s": 1111.371,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-D051",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--17",
+      "side": "right",
+      "start_s": 1117.065,
+      "end_s": 1124.961,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 difference page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/difference_judgements.json"
+    },
+    {
+      "id": "X417-C068",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--3",
+      "side": "left",
+      "start_s": 310.55,
+      "end_s": 312.2,
+      "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 priority page C068)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/label_candidates.json"
     }
   ],
   "exclusion_rule": "Frames of route--segment/side with eof_s in [start_s, end_s] are dropped from type and colour scoring (manifest rows and card-replay truth alike).",
