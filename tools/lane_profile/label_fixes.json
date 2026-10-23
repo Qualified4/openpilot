@@ -221,6 +221,78 @@
       "color": "white",
       "reason": "user review 2026-10-23 (417 priority page C019): U-turn opening -> white dashed (narrow window, one row)",
       "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/label_candidates.json"
+    },
+    {
+      "id": "C001-solid",
+      "route_segment": "000003c1--8648262f70--14",
+      "side": "left",
+      "start_s": 1038.036,
+      "end_s": 1038.737,
+      "from_type": "solid",
+      "type": "solid",
+      "color": "yellow",
+      "reason": "user review 2026-10-23 (chevron/U-turn candidate page C001): yellow solid (was white)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "C007-dashed",
+      "route_segment": "00000388--2a2160e7db--17",
+      "side": "right",
+      "start_s": 1199.652,
+      "end_s": 1200.348,
+      "from_type": "dashed",
+      "type": "dbl_far",
+      "color": "white",
+      "reason": "user review 2026-10-23 (chevron/U-turn candidate page C007): double line, ego side solid",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "C008-solid",
+      "route_segment": "00000356--148eb5e823--12",
+      "side": "left",
+      "start_s": 770.377,
+      "end_s": 771.276,
+      "from_type": "solid",
+      "type": "dbl_near",
+      "color": "white",
+      "reason": "user review 2026-10-23 (chevron/U-turn candidate page C008): double line, ego side dashed",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "C015-dashed",
+      "route_segment": "00000404--ef50bfdf22--6",
+      "side": "right",
+      "start_s": 483.57,
+      "end_s": 483.67,
+      "from_type": "dashed",
+      "type": "solid",
+      "color": "white",
+      "reason": "user review 2026-10-23 (chevron/U-turn candidate page C015): 3rd frame solid (first two dashed, last two intersection/crosswalk)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "C023-solid",
+      "route_segment": "000003e7--f66ec2daee--12",
+      "side": "left",
+      "start_s": 784.586,
+      "end_s": 784.686,
+      "from_type": "solid",
+      "type": "dbl_near",
+      "color": "white",
+      "reason": "user review 2026-10-23 (chevron/U-turn candidate page C023): from the 3rd frame the ego-side dashed line starts (first two solid)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "C026-dashed",
+      "route_segment": "00000404--ef50bfdf22--6",
+      "side": "left",
+      "start_s": 481.774,
+      "end_s": 482.071,
+      "from_type": "dashed",
+      "type": "solid",
+      "color": "yellow",
+      "reason": "user review 2026-10-23 (chevron/U-turn candidate page C026): orange (yellow) chevron boundary -> orange solid",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
     }
   ],
   "exclusions": [
@@ -453,6 +525,206 @@
       "end_s": 312.2,
       "reason": "intersection interior / crosswalk (user review 2026-10-23, 417 priority page C068)",
       "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/label_candidates.json"
+    },
+    {
+      "id": "XC015",
+      "set": "train",
+      "route_segment": "00000404--ef50bfdf22--6",
+      "side": "right",
+      "start_s": 483.9,
+      "end_s": 484.4,
+      "reason": "intersection / crosswalk (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C030",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--17",
+      "side": "left",
+      "start_s": 1121.32,
+      "end_s": 1122.42,
+      "reason": "turning right (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C031",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--17",
+      "side": "right",
+      "start_s": 1121.32,
+      "end_s": 1122.42,
+      "reason": "turning right (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C035",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 790.665,
+      "end_s": 791.767,
+      "reason": "intersection / crosswalk (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C036",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--16",
+      "side": "left",
+      "start_s": 1055.87,
+      "end_s": 1056.966,
+      "reason": "occluded by lead car (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C037",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--5",
+      "side": "left",
+      "start_s": 439.415,
+      "end_s": 440.509,
+      "reason": "occluded by lead car (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C038",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--5",
+      "side": "left",
+      "start_s": 435.947,
+      "end_s": 437.037,
+      "reason": "occluded by lead car (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C039",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--14",
+      "side": "right",
+      "start_s": 980.043,
+      "end_s": 981.147,
+      "reason": "intersection / crosswalk (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C040",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--6",
+      "side": "left",
+      "start_s": 454.117,
+      "end_s": 455.218,
+      "reason": "occluded by lead car (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C041",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--5",
+      "side": "left",
+      "start_s": 429.975,
+      "end_s": 431.074,
+      "reason": "occluded by lead car (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C042",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--6",
+      "side": "left",
+      "start_s": 448.127,
+      "end_s": 449.227,
+      "reason": "occluded by lead car (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C045",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--6",
+      "side": "left",
+      "start_s": 442.495,
+      "end_s": 443.244,
+      "reason": "occluded by lead car (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C046",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--16",
+      "side": "left",
+      "start_s": 1088.862,
+      "end_s": 1089.96,
+      "reason": "occluded by lead car (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C047",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--16",
+      "side": "left",
+      "start_s": 1050.867,
+      "end_s": 1051.966,
+      "reason": "occluded by lead car (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C050",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--17",
+      "side": "right",
+      "start_s": 1150.806,
+      "end_s": 1151.902,
+      "reason": "parking lot (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C052",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--5",
+      "side": "left",
+      "start_s": 426.47,
+      "end_s": 427.573,
+      "reason": "occluded by lead car (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C055",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--15",
+      "side": "left",
+      "start_s": 986.137,
+      "end_s": 987.933,
+      "reason": "intersection / crosswalk (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C065",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--16",
+      "side": "left",
+      "start_s": 1091.005,
+      "end_s": 1092.801,
+      "reason": "intersection / crosswalk (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C071",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--7",
+      "side": "left",
+      "start_s": 520.981,
+      "end_s": 522.328,
+      "reason": "intersection stop line (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "X417-C073",
+      "set": "417",
+      "route_segment": "00000417--ed88c12f78--16",
+      "side": "left",
+      "start_s": 1056.166,
+      "end_s": 1057.969,
+      "reason": "occluded by lead car (user review 2026-10-23, chevron/U-turn candidate page)",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
     }
   ],
   "exclusion_rule": "Frames of route--segment/side with eof_s in [start_s, end_s] are dropped from type and colour scoring (manifest rows and card-replay truth alike).",
