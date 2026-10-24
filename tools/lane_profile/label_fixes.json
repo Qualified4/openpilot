@@ -5,6 +5,726 @@
   "rule": "A manifest row (route, segment, side, eof ns, type) inside a fix range whose type equals from_type gets type/color below. Source interval files (10-18 schema, no double classes) and existing manifests stay unchanged; training/evaluation that reads a manifest with the extended vocabulary applies tools/lane_profile/label_fixes.apply(rows).",
   "fixes": [
     {
+      "id": "LC3-R04-0-solid",
+      "route_segment": "0000040f--a493881af6--4",
+      "side": "left",
+      "start_s": 386.725240526,
+      "end_s": 386.778438598,
+      "reason": "user completed suspect review 2026-10-24; R04; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R04",
+      "from_type": "solid",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R04-0-dashed",
+      "route_segment": "0000040f--a493881af6--4",
+      "side": "left",
+      "start_s": 386.725240526,
+      "end_s": 386.778438598,
+      "reason": "user completed suspect review 2026-10-24; R04; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R04",
+      "from_type": "dashed",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R04-0-dbl_near",
+      "route_segment": "0000040f--a493881af6--4",
+      "side": "left",
+      "start_s": 386.725240526,
+      "end_s": 386.778438598,
+      "reason": "user completed suspect review 2026-10-24; R04; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R04",
+      "from_type": "dbl_near",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R04-0-dbl_far",
+      "route_segment": "0000040f--a493881af6--4",
+      "side": "left",
+      "start_s": 386.725240526,
+      "end_s": 386.778438598,
+      "reason": "user completed suspect review 2026-10-24; R04; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R04",
+      "from_type": "dbl_far",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R05-0-solid",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "left",
+      "start_s": 672.908570934,
+      "end_s": 672.95844985,
+      "reason": "user completed suspect review 2026-10-24; R05; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R05",
+      "from_type": "solid",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R05-0-dashed",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "left",
+      "start_s": 672.908570934,
+      "end_s": 672.95844985,
+      "reason": "user completed suspect review 2026-10-24; R05; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R05",
+      "from_type": "dashed",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R05-0-dbl_near",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "left",
+      "start_s": 672.908570934,
+      "end_s": 672.95844985,
+      "reason": "user completed suspect review 2026-10-24; R05; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R05",
+      "from_type": "dbl_near",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R05-0-dbl_far",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "left",
+      "start_s": 672.908570934,
+      "end_s": 672.95844985,
+      "reason": "user completed suspect review 2026-10-24; R05; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R05",
+      "from_type": "dbl_far",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R06-0-solid",
+      "route_segment": "0000040f--a493881af6--13",
+      "side": "left",
+      "start_s": 941.4873207,
+      "end_s": 941.742377781,
+      "reason": "user completed suspect review 2026-10-24; R06; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R06",
+      "from_type": "solid",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R06-0-dashed",
+      "route_segment": "0000040f--a493881af6--13",
+      "side": "left",
+      "start_s": 941.4873207,
+      "end_s": 941.742377781,
+      "reason": "user completed suspect review 2026-10-24; R06; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R06",
+      "from_type": "dashed",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R06-0-dbl_near",
+      "route_segment": "0000040f--a493881af6--13",
+      "side": "left",
+      "start_s": 941.4873207,
+      "end_s": 941.742377781,
+      "reason": "user completed suspect review 2026-10-24; R06; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R06",
+      "from_type": "dbl_near",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R06-0-dbl_far",
+      "route_segment": "0000040f--a493881af6--13",
+      "side": "left",
+      "start_s": 941.4873207,
+      "end_s": 941.742377781,
+      "reason": "user completed suspect review 2026-10-24; R06; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R06",
+      "from_type": "dbl_far",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R07-0-solid",
+      "route_segment": "0000040f--a493881af6--13",
+      "side": "left",
+      "start_s": 943.687422836,
+      "end_s": 943.987431557,
+      "reason": "user completed suspect review 2026-10-24; R07; 이미지 1: 2 흰 점선\n이미지 2: 2 흰 점선\n이미지 3: 8 횡단보도\n이미지 4: 8 횡단보도\n이미지 5: 8 횡단보도; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R07",
+      "from_type": "solid",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R07-0-dashed",
+      "route_segment": "0000040f--a493881af6--13",
+      "side": "left",
+      "start_s": 943.687422836,
+      "end_s": 943.987431557,
+      "reason": "user completed suspect review 2026-10-24; R07; 이미지 1: 2 흰 점선\n이미지 2: 2 흰 점선\n이미지 3: 8 횡단보도\n이미지 4: 8 횡단보도\n이미지 5: 8 횡단보도; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R07",
+      "from_type": "dashed",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R07-0-dbl_near",
+      "route_segment": "0000040f--a493881af6--13",
+      "side": "left",
+      "start_s": 943.687422836,
+      "end_s": 943.987431557,
+      "reason": "user completed suspect review 2026-10-24; R07; 이미지 1: 2 흰 점선\n이미지 2: 2 흰 점선\n이미지 3: 8 횡단보도\n이미지 4: 8 횡단보도\n이미지 5: 8 횡단보도; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R07",
+      "from_type": "dbl_near",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R07-0-dbl_far",
+      "route_segment": "0000040f--a493881af6--13",
+      "side": "left",
+      "start_s": 943.687422836,
+      "end_s": 943.987431557,
+      "reason": "user completed suspect review 2026-10-24; R07; 이미지 1: 2 흰 점선\n이미지 2: 2 흰 점선\n이미지 3: 8 횡단보도\n이미지 4: 8 횡단보도\n이미지 5: 8 횡단보도; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R07",
+      "from_type": "dbl_far",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R15-0-solid",
+      "route_segment": "00000417--ed88c12f78--7",
+      "side": "right",
+      "start_s": 526.075984719,
+      "end_s": 527.12833358,
+      "reason": "user completed suspect review 2026-10-24; R15; 이미지 5: 노란 실선; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R15",
+      "from_type": "solid",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R15-0-dashed",
+      "route_segment": "00000417--ed88c12f78--7",
+      "side": "right",
+      "start_s": 526.075984719,
+      "end_s": 527.12833358,
+      "reason": "user completed suspect review 2026-10-24; R15; 이미지 5: 노란 실선; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R15",
+      "from_type": "dashed",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R15-0-dbl_near",
+      "route_segment": "00000417--ed88c12f78--7",
+      "side": "right",
+      "start_s": 526.075984719,
+      "end_s": 527.12833358,
+      "reason": "user completed suspect review 2026-10-24; R15; 이미지 5: 노란 실선; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R15",
+      "from_type": "dbl_near",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R15-0-dbl_far",
+      "route_segment": "00000417--ed88c12f78--7",
+      "side": "right",
+      "start_s": 526.075984719,
+      "end_s": 527.12833358,
+      "reason": "user completed suspect review 2026-10-24; R15; 이미지 5: 노란 실선; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R15",
+      "from_type": "dbl_far",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R15-1-solid",
+      "route_segment": "00000417--ed88c12f78--7",
+      "side": "right",
+      "start_s": 527.175540112,
+      "end_s": 527.276992982,
+      "reason": "user completed suspect review 2026-10-24; R15; 이미지 5: 노란 실선; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R15",
+      "from_type": "solid",
+      "type": "solid",
+      "color": "yellow"
+    },
+    {
+      "id": "LC3-R15-1-dashed",
+      "route_segment": "00000417--ed88c12f78--7",
+      "side": "right",
+      "start_s": 527.175540112,
+      "end_s": 527.276992982,
+      "reason": "user completed suspect review 2026-10-24; R15; 이미지 5: 노란 실선; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R15",
+      "from_type": "dashed",
+      "type": "solid",
+      "color": "yellow"
+    },
+    {
+      "id": "LC3-R15-1-dbl_near",
+      "route_segment": "00000417--ed88c12f78--7",
+      "side": "right",
+      "start_s": 527.175540112,
+      "end_s": 527.276992982,
+      "reason": "user completed suspect review 2026-10-24; R15; 이미지 5: 노란 실선; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R15",
+      "from_type": "dbl_near",
+      "type": "solid",
+      "color": "yellow"
+    },
+    {
+      "id": "LC3-R15-1-dbl_far",
+      "route_segment": "00000417--ed88c12f78--7",
+      "side": "right",
+      "start_s": 527.175540112,
+      "end_s": 527.276992982,
+      "reason": "user completed suspect review 2026-10-24; R15; 이미지 5: 노란 실선; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R15",
+      "from_type": "dbl_far",
+      "type": "solid",
+      "color": "yellow"
+    },
+    {
+      "id": "LC3-R16-0-solid",
+      "route_segment": "00000417--ed88c12f78--8",
+      "side": "right",
+      "start_s": 594.265024466,
+      "end_s": 594.315053505,
+      "reason": "user completed suspect review 2026-10-24; R16; choice 3; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R16",
+      "from_type": "solid",
+      "type": "solid",
+      "color": "yellow"
+    },
+    {
+      "id": "LC3-R16-0-dashed",
+      "route_segment": "00000417--ed88c12f78--8",
+      "side": "right",
+      "start_s": 594.265024466,
+      "end_s": 594.315053505,
+      "reason": "user completed suspect review 2026-10-24; R16; choice 3; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R16",
+      "from_type": "dashed",
+      "type": "solid",
+      "color": "yellow"
+    },
+    {
+      "id": "LC3-R16-0-dbl_near",
+      "route_segment": "00000417--ed88c12f78--8",
+      "side": "right",
+      "start_s": 594.265024466,
+      "end_s": 594.315053505,
+      "reason": "user completed suspect review 2026-10-24; R16; choice 3; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R16",
+      "from_type": "dbl_near",
+      "type": "solid",
+      "color": "yellow"
+    },
+    {
+      "id": "LC3-R16-0-dbl_far",
+      "route_segment": "00000417--ed88c12f78--8",
+      "side": "right",
+      "start_s": 594.265024466,
+      "end_s": 594.315053505,
+      "reason": "user completed suspect review 2026-10-24; R16; choice 3; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R16",
+      "from_type": "dbl_far",
+      "type": "solid",
+      "color": "yellow"
+    },
+    {
+      "id": "LC3-R18-0-solid",
+      "route_segment": "00000419--e5511e21f7--8",
+      "side": "right",
+      "start_s": 552.887929301,
+      "end_s": 553.137325673,
+      "reason": "user completed suspect review 2026-10-24; R18; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R18",
+      "from_type": "solid",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R18-0-dashed",
+      "route_segment": "00000419--e5511e21f7--8",
+      "side": "right",
+      "start_s": 552.887929301,
+      "end_s": 553.137325673,
+      "reason": "user completed suspect review 2026-10-24; R18; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R18",
+      "from_type": "dashed",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R18-0-dbl_near",
+      "route_segment": "00000419--e5511e21f7--8",
+      "side": "right",
+      "start_s": 552.887929301,
+      "end_s": 553.137325673,
+      "reason": "user completed suspect review 2026-10-24; R18; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R18",
+      "from_type": "dbl_near",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC3-R18-0-dbl_far",
+      "route_segment": "00000419--e5511e21f7--8",
+      "side": "right",
+      "start_s": 552.887929301,
+      "end_s": 553.137325673,
+      "reason": "user completed suspect review 2026-10-24; R18; choice 2; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R18",
+      "from_type": "dbl_far",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC002-0-solid",
+      "route_segment": "00000419--e5511e21f7--18",
+      "side": "right",
+      "start_s": 1157.464544599,
+      "end_s": 1157.714541358,
+      "reason": "user completed crop review 2026-10-24; LC002; confirmed choice 4; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC002",
+      "from_type": "solid",
+      "type": "dbl_near",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC002-0-dashed",
+      "route_segment": "00000419--e5511e21f7--18",
+      "side": "right",
+      "start_s": 1157.464544599,
+      "end_s": 1157.714541358,
+      "reason": "user completed crop review 2026-10-24; LC002; confirmed choice 4; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC002",
+      "from_type": "dashed",
+      "type": "dbl_near",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC002-0-dbl_near",
+      "route_segment": "00000419--e5511e21f7--18",
+      "side": "right",
+      "start_s": 1157.464544599,
+      "end_s": 1157.714541358,
+      "reason": "user completed crop review 2026-10-24; LC002; confirmed choice 4; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC002",
+      "from_type": "dbl_near",
+      "type": "dbl_near",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC002-0-dbl_far",
+      "route_segment": "00000419--e5511e21f7--18",
+      "side": "right",
+      "start_s": 1157.464544599,
+      "end_s": 1157.714541358,
+      "reason": "user completed crop review 2026-10-24; LC002; confirmed choice 4; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC002",
+      "from_type": "dbl_far",
+      "type": "dbl_near",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC003-0-solid",
+      "route_segment": "000003fe--d524dc1e0b--0",
+      "side": "left",
+      "start_s": 111.428506929,
+      "end_s": 111.481327552,
+      "reason": "user completed crop review 2026-10-24; LC003; 앞에 2장은 횡단보도; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC003",
+      "from_type": "solid",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC003-0-dashed",
+      "route_segment": "000003fe--d524dc1e0b--0",
+      "side": "left",
+      "start_s": 111.428506929,
+      "end_s": 111.481327552,
+      "reason": "user completed crop review 2026-10-24; LC003; 앞에 2장은 횡단보도; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC003",
+      "from_type": "dashed",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC003-0-dbl_near",
+      "route_segment": "000003fe--d524dc1e0b--0",
+      "side": "left",
+      "start_s": 111.428506929,
+      "end_s": 111.481327552,
+      "reason": "user completed crop review 2026-10-24; LC003; 앞에 2장은 횡단보도; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC003",
+      "from_type": "dbl_near",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC003-0-dbl_far",
+      "route_segment": "000003fe--d524dc1e0b--0",
+      "side": "left",
+      "start_s": 111.428506929,
+      "end_s": 111.481327552,
+      "reason": "user completed crop review 2026-10-24; LC003; 앞에 2장은 횡단보도; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC003",
+      "from_type": "dbl_far",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC004-0-solid",
+      "route_segment": "000003fe--d524dc1e0b--0",
+      "side": "right",
+      "start_s": 115.181007611,
+      "end_s": 116.200173318,
+      "reason": "user completed crop review 2026-10-24; LC004; 첫장은 흰 점선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC004",
+      "from_type": "solid",
+      "type": "solid",
+      "color": "yellow"
+    },
+    {
+      "id": "LC24-LC004-0-dashed",
+      "route_segment": "000003fe--d524dc1e0b--0",
+      "side": "right",
+      "start_s": 115.181007611,
+      "end_s": 116.200173318,
+      "reason": "user completed crop review 2026-10-24; LC004; 첫장은 흰 점선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC004",
+      "from_type": "dashed",
+      "type": "solid",
+      "color": "yellow"
+    },
+    {
+      "id": "LC24-LC004-0-dbl_near",
+      "route_segment": "000003fe--d524dc1e0b--0",
+      "side": "right",
+      "start_s": 115.181007611,
+      "end_s": 116.200173318,
+      "reason": "user completed crop review 2026-10-24; LC004; 첫장은 흰 점선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC004",
+      "from_type": "dbl_near",
+      "type": "solid",
+      "color": "yellow"
+    },
+    {
+      "id": "LC24-LC004-0-dbl_far",
+      "route_segment": "000003fe--d524dc1e0b--0",
+      "side": "right",
+      "start_s": 115.181007611,
+      "end_s": 116.200173318,
+      "reason": "user completed crop review 2026-10-24; LC004; 첫장은 흰 점선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC004",
+      "from_type": "dbl_far",
+      "type": "solid",
+      "color": "yellow"
+    },
+    {
+      "id": "LC24-LC012-0-solid",
+      "route_segment": "00000404--ef50bfdf22--13",
+      "side": "left",
+      "start_s": 866.752281603,
+      "end_s": 868.101378457,
+      "reason": "user completed crop review 2026-10-24; LC012; confirmed choice 4; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC012",
+      "from_type": "solid",
+      "type": "dbl_near",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC012-0-dashed",
+      "route_segment": "00000404--ef50bfdf22--13",
+      "side": "left",
+      "start_s": 866.752281603,
+      "end_s": 868.101378457,
+      "reason": "user completed crop review 2026-10-24; LC012; confirmed choice 4; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC012",
+      "from_type": "dashed",
+      "type": "dbl_near",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC012-0-dbl_near",
+      "route_segment": "00000404--ef50bfdf22--13",
+      "side": "left",
+      "start_s": 866.752281603,
+      "end_s": 868.101378457,
+      "reason": "user completed crop review 2026-10-24; LC012; confirmed choice 4; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC012",
+      "from_type": "dbl_near",
+      "type": "dbl_near",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC012-0-dbl_far",
+      "route_segment": "00000404--ef50bfdf22--13",
+      "side": "left",
+      "start_s": 866.752281603,
+      "end_s": 868.101378457,
+      "reason": "user completed crop review 2026-10-24; LC012; confirmed choice 4; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC012",
+      "from_type": "dbl_far",
+      "type": "dbl_near",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC016-0-solid",
+      "route_segment": "00000404--ef50bfdf22--13",
+      "side": "right",
+      "start_s": 868.551035418,
+      "end_s": 869.804974328,
+      "reason": "user completed crop review 2026-10-24; LC016; 첫 장은 학습 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC016",
+      "from_type": "solid",
+      "type": "dbl_far",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC016-0-dashed",
+      "route_segment": "00000404--ef50bfdf22--13",
+      "side": "right",
+      "start_s": 868.551035418,
+      "end_s": 869.804974328,
+      "reason": "user completed crop review 2026-10-24; LC016; 첫 장은 학습 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC016",
+      "from_type": "dashed",
+      "type": "dbl_far",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC016-0-dbl_near",
+      "route_segment": "00000404--ef50bfdf22--13",
+      "side": "right",
+      "start_s": 868.551035418,
+      "end_s": 869.804974328,
+      "reason": "user completed crop review 2026-10-24; LC016; 첫 장은 학습 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC016",
+      "from_type": "dbl_near",
+      "type": "dbl_far",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC016-0-dbl_far",
+      "route_segment": "00000404--ef50bfdf22--13",
+      "side": "right",
+      "start_s": 868.551035418,
+      "end_s": 869.804974328,
+      "reason": "user completed crop review 2026-10-24; LC016; 첫 장은 학습 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC016",
+      "from_type": "dbl_far",
+      "type": "dbl_far",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC017-0-solid",
+      "route_segment": "00000407--75dc8f8375--13",
+      "side": "left",
+      "start_s": 907.807000652,
+      "end_s": 907.957080737,
+      "reason": "user completed crop review 2026-10-24; LC017; 첫 장은 교차로, 2번째는 노란 실선, 3,4,5는 유턴 점선임; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC017",
+      "from_type": "solid",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC017-0-dashed",
+      "route_segment": "00000407--75dc8f8375--13",
+      "side": "left",
+      "start_s": 907.807000652,
+      "end_s": 907.957080737,
+      "reason": "user completed crop review 2026-10-24; LC017; 첫 장은 교차로, 2번째는 노란 실선, 3,4,5는 유턴 점선임; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC017",
+      "from_type": "dashed",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC017-0-dbl_near",
+      "route_segment": "00000407--75dc8f8375--13",
+      "side": "left",
+      "start_s": 907.807000652,
+      "end_s": 907.957080737,
+      "reason": "user completed crop review 2026-10-24; LC017; 첫 장은 교차로, 2번째는 노란 실선, 3,4,5는 유턴 점선임; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC017",
+      "from_type": "dbl_near",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC017-0-dbl_far",
+      "route_segment": "00000407--75dc8f8375--13",
+      "side": "left",
+      "start_s": 907.807000652,
+      "end_s": 907.957080737,
+      "reason": "user completed crop review 2026-10-24; LC017; 첫 장은 교차로, 2번째는 노란 실선, 3,4,5는 유턴 점선임; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC017",
+      "from_type": "dbl_far",
+      "type": "dashed",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC085-0-solid",
+      "route_segment": "00000412--4440b61281--10",
+      "side": "right",
+      "start_s": 728.799389454,
+      "end_s": 728.799389455,
+      "reason": "user completed crop review 2026-10-24; LC085; 첫장 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC085",
+      "from_type": "solid",
+      "type": "dbl_far",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC085-0-dashed",
+      "route_segment": "00000412--4440b61281--10",
+      "side": "right",
+      "start_s": 728.799389454,
+      "end_s": 728.799389455,
+      "reason": "user completed crop review 2026-10-24; LC085; 첫장 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC085",
+      "from_type": "dashed",
+      "type": "dbl_far",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC085-0-dbl_near",
+      "route_segment": "00000412--4440b61281--10",
+      "side": "right",
+      "start_s": 728.799389454,
+      "end_s": 728.799389455,
+      "reason": "user completed crop review 2026-10-24; LC085; 첫장 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC085",
+      "from_type": "dbl_near",
+      "type": "dbl_far",
+      "color": "white"
+    },
+    {
+      "id": "LC24-LC085-0-dbl_far",
+      "route_segment": "00000412--4440b61281--10",
+      "side": "right",
+      "start_s": 728.799389454,
+      "end_s": 728.799389455,
+      "reason": "user completed crop review 2026-10-24; LC085; 첫장 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC085",
+      "from_type": "dbl_far",
+      "type": "dbl_far",
+      "color": "white"
+    },
+    {
       "id": "S002",
       "route_segment": "000003dd--26eb77e00d--15",
       "side": "left",
@@ -725,6 +1445,1176 @@
       "end_s": 1057.969,
       "reason": "occluded by lead car (user review 2026-10-23, chevron/U-turn candidate page)",
       "evidence": ".analysis/ccnc-field-412-20261022/codex/r417/candidate_judgements.json"
+    },
+    {
+      "id": "LC24-X-LC089-0",
+      "route_segment": "00000417--ed88c12f78--10",
+      "side": "left",
+      "start_s": 721.644333625,
+      "end_s": 723.492560091,
+      "reason": "user completed crop review 2026-10-24; LC089; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC089"
+    },
+    {
+      "id": "LC24-X-LC090-0",
+      "route_segment": "00000417--ed88c12f78--10",
+      "side": "left",
+      "start_s": 724.845380815,
+      "end_s": 724.895462193,
+      "reason": "user completed crop review 2026-10-24; LC090; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC090"
+    },
+    {
+      "id": "LC24-X-LC094-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 742.694628855,
+      "end_s": 746.345857979,
+      "reason": "user completed crop review 2026-10-24; LC094; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC094"
+    },
+    {
+      "id": "LC24-X-LC095-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 746.395301892,
+      "end_s": 750.296193687,
+      "reason": "user completed crop review 2026-10-24; LC095; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC095"
+    },
+    {
+      "id": "LC24-X-LC096-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 750.346208439,
+      "end_s": 754.297355462,
+      "reason": "user completed crop review 2026-10-24; LC096; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC096"
+    },
+    {
+      "id": "LC24-X-LC097-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 754.347305763,
+      "end_s": 758.302293618,
+      "reason": "user completed crop review 2026-10-24; LC097; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC097"
+    },
+    {
+      "id": "LC24-X-LC098-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 758.348554728,
+      "end_s": 762.302997775,
+      "reason": "user completed crop review 2026-10-24; LC098; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC098"
+    },
+    {
+      "id": "LC24-X-LC099-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 762.353520288,
+      "end_s": 766.354828006,
+      "reason": "user completed crop review 2026-10-24; LC099; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC099"
+    },
+    {
+      "id": "LC24-X-LC100-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 766.403066059,
+      "end_s": 770.302797848,
+      "reason": "user completed crop review 2026-10-24; LC100; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC100"
+    },
+    {
+      "id": "LC24-X-LC101-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 770.352896732,
+      "end_s": 774.304348068,
+      "reason": "user completed crop review 2026-10-24; LC101; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC101"
+    },
+    {
+      "id": "LC24-X-LC102-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 774.35437377,
+      "end_s": 778.35595229,
+      "reason": "user completed crop review 2026-10-24; LC102; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC102"
+    },
+    {
+      "id": "LC24-X-LC103-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 778.405968982,
+      "end_s": 782.357570851,
+      "reason": "user completed crop review 2026-10-24; LC103; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC103"
+    },
+    {
+      "id": "LC24-X-LC104-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 782.40759662,
+      "end_s": 786.364697161,
+      "reason": "user completed crop review 2026-10-24; LC104; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC104"
+    },
+    {
+      "id": "LC24-X-LC105-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 786.409208825,
+      "end_s": 790.3122823,
+      "reason": "user completed crop review 2026-10-24; LC105; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC105"
+    },
+    {
+      "id": "LC24-X-LC106-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 790.360868618,
+      "end_s": 794.314776733,
+      "reason": "user completed crop review 2026-10-24; LC106; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC106"
+    },
+    {
+      "id": "LC24-X-LC107-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 794.365664429,
+      "end_s": 798.314167531,
+      "reason": "user completed crop review 2026-10-24; LC107; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC107"
+    },
+    {
+      "id": "LC24-X-LC108-0",
+      "route_segment": "00000417--ed88c12f78--11",
+      "side": "left",
+      "start_s": 798.364205367,
+      "end_s": 802.315912032,
+      "reason": "user completed crop review 2026-10-24; LC108; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC108"
+    },
+    {
+      "id": "LC24-X-LC109-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 802.465917067,
+      "end_s": 806.370961201,
+      "reason": "user completed crop review 2026-10-24; LC109; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC109"
+    },
+    {
+      "id": "LC24-X-LC110-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 806.417593492,
+      "end_s": 810.369300451,
+      "reason": "user completed crop review 2026-10-24; LC110; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC110"
+    },
+    {
+      "id": "LC24-X-LC111-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 810.422381454,
+      "end_s": 814.372924493,
+      "reason": "user completed crop review 2026-10-24; LC111; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC111"
+    },
+    {
+      "id": "LC24-X-LC112-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 814.421663719,
+      "end_s": 818.375796794,
+      "reason": "user completed crop review 2026-10-24; LC112; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC112"
+    },
+    {
+      "id": "LC24-X-LC113-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 818.422693321,
+      "end_s": 822.377222815,
+      "reason": "user completed crop review 2026-10-24; LC113; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC113"
+    },
+    {
+      "id": "LC24-X-LC114-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 822.42465401,
+      "end_s": 826.326073282,
+      "reason": "user completed crop review 2026-10-24; LC114; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC114"
+    },
+    {
+      "id": "LC24-X-LC115-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 826.37609545,
+      "end_s": 830.331046223,
+      "reason": "user completed crop review 2026-10-24; LC115; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC115"
+    },
+    {
+      "id": "LC24-X-LC116-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 830.381103692,
+      "end_s": 834.337363262,
+      "reason": "user completed crop review 2026-10-24; LC116; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC116"
+    },
+    {
+      "id": "LC24-X-LC117-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 834.387443317,
+      "end_s": 835.338860355,
+      "reason": "user completed crop review 2026-10-24; LC117; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC117"
+    },
+    {
+      "id": "LC24-X-LC117-1",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 835.489092017,
+      "end_s": 838.343194559,
+      "reason": "user completed crop review 2026-10-24; LC117; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC117"
+    },
+    {
+      "id": "LC24-X-LC118-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 838.3952229,
+      "end_s": 842.348534191,
+      "reason": "user completed crop review 2026-10-24; LC118; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC118"
+    },
+    {
+      "id": "LC24-X-LC119-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 842.398646553,
+      "end_s": 846.357727842,
+      "reason": "user completed crop review 2026-10-24; LC119; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC119"
+    },
+    {
+      "id": "LC24-X-LC120-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 846.405320819,
+      "end_s": 850.362469174,
+      "reason": "user completed crop review 2026-10-24; LC120; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC120"
+    },
+    {
+      "id": "LC24-X-LC121-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 850.408240851,
+      "end_s": 854.366018582,
+      "reason": "user completed crop review 2026-10-24; LC121; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC121"
+    },
+    {
+      "id": "LC24-X-LC122-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 854.417193894,
+      "end_s": 858.316609753,
+      "reason": "user completed crop review 2026-10-24; LC122; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC122"
+    },
+    {
+      "id": "LC24-X-LC123-0",
+      "route_segment": "00000417--ed88c12f78--12",
+      "side": "left",
+      "start_s": 858.369665211,
+      "end_s": 862.320392607,
+      "reason": "user completed crop review 2026-10-24; LC123; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC123"
+    },
+    {
+      "id": "LC24-X-LC124-0",
+      "route_segment": "00000417--ed88c12f78--13",
+      "side": "left",
+      "start_s": 862.521619742,
+      "end_s": 864.372203341,
+      "reason": "user completed crop review 2026-10-24; LC124; 마지막 이미지만 노란 실선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC124"
+    },
+    {
+      "id": "LC24-X-LC125-0",
+      "route_segment": "00000417--ed88c12f78--14",
+      "side": "left",
+      "start_s": 978.446926601,
+      "end_s": 981.241524951,
+      "reason": "user completed crop review 2026-10-24; LC125; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC125"
+    },
+    {
+      "id": "LC24-X-LC135-0",
+      "route_segment": "00000417--ed88c12f78--14",
+      "side": "right",
+      "start_s": 980.195028263,
+      "end_s": 981.241524951,
+      "reason": "user completed crop review 2026-10-24; LC135; 마지막 2장은 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC135"
+    },
+    {
+      "id": "LC24-X-LC139-0",
+      "route_segment": "00000417--ed88c12f78--17",
+      "side": "right",
+      "start_s": 1119.970545447,
+      "end_s": 1121.466520038,
+      "reason": "user completed crop review 2026-10-24; LC139; 1,2 흰 점선 3 노란 실선, 4,5 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC139"
+    },
+    {
+      "id": "LC24-X-LC140-0",
+      "route_segment": "00000417--ed88c12f78--17",
+      "side": "right",
+      "start_s": 1121.520101005,
+      "end_s": 1122.619804738,
+      "reason": "user completed crop review 2026-10-24; LC140; 1,2 제외 3,4,5 흰 실선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC140"
+    },
+    {
+      "id": "LC24-X-LC142-0",
+      "route_segment": "00000419--e5511e21f7--11",
+      "side": "left",
+      "start_s": 722.228133721,
+      "end_s": 722.42813993,
+      "reason": "user completed crop review 2026-10-24; LC142; 1,4 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC142"
+    },
+    {
+      "id": "LC24-X-LC142-1",
+      "route_segment": "00000419--e5511e21f7--11",
+      "side": "left",
+      "start_s": 724.478963676,
+      "end_s": 725.478067058,
+      "reason": "user completed crop review 2026-10-24; LC142; 1,4 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC142"
+    },
+    {
+      "id": "LC24-X-LC146-0",
+      "route_segment": "00000419--e5511e21f7--25",
+      "side": "left",
+      "start_s": 1600.736418095,
+      "end_s": 1601.087223124,
+      "reason": "user completed crop review 2026-10-24; LC146; 첫 두장 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC146"
+    },
+    {
+      "id": "LC24-X-LC148-0",
+      "route_segment": "00000419--e5511e21f7--30",
+      "side": "left",
+      "start_s": 1873.739833325,
+      "end_s": 1875.833547607,
+      "reason": "user completed crop review 2026-10-24; LC148; 1,2 흰 실선, 3,4  제외, 5 흰 점선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC148"
+    },
+    {
+      "id": "LC24-X-LC151-0",
+      "route_segment": "00000419--e5511e21f7--34",
+      "side": "left",
+      "start_s": 2140.331792601,
+      "end_s": 2143.031728145,
+      "reason": "user completed crop review 2026-10-24; LC151; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC151"
+    },
+    {
+      "id": "LC24-X-LC152-0",
+      "route_segment": "00000419--e5511e21f7--37",
+      "side": "left",
+      "start_s": 2312.026715065,
+      "end_s": 2314.376682726,
+      "reason": "user completed crop review 2026-10-24; LC152; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC152"
+    },
+    {
+      "id": "LC24-X-LC153-0",
+      "route_segment": "00000419--e5511e21f7--0",
+      "side": "right",
+      "start_s": 112.516053913,
+      "end_s": 115.015205458,
+      "reason": "user completed crop review 2026-10-24; LC153; 4번째만 노란 실선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC153"
+    },
+    {
+      "id": "LC24-X-LC153-1",
+      "route_segment": "00000419--e5511e21f7--0",
+      "side": "right",
+      "start_s": 116.214595634,
+      "end_s": 116.51443699,
+      "reason": "user completed crop review 2026-10-24; LC153; 4번째만 노란 실선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC153"
+    },
+    {
+      "id": "LC24-X-LC154-0",
+      "route_segment": "00000419--e5511e21f7--0",
+      "side": "right",
+      "start_s": 116.564406931,
+      "end_s": 119.013416269,
+      "reason": "user completed crop review 2026-10-24; LC154; 1,2,3 제외 4,5만 노란 실선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC154"
+    },
+    {
+      "id": "LC24-X-LC158-0",
+      "route_segment": "00000419--e5511e21f7--7",
+      "side": "right",
+      "start_s": 533.284044251,
+      "end_s": 535.583977602,
+      "reason": "user completed crop review 2026-10-24; LC158; 5번만 노란 실선, 1,2,3,4 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC158"
+    },
+    {
+      "id": "LC24-X-LC159-0",
+      "route_segment": "00000419--e5511e21f7--8",
+      "side": "right",
+      "start_s": 555.433993669,
+      "end_s": 556.483319723,
+      "reason": "user completed crop review 2026-10-24; LC159; 1번 노란 실선, 4번 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC159"
+    },
+    {
+      "id": "LC24-X-LC160-0",
+      "route_segment": "00000419--e5511e21f7--8",
+      "side": "right",
+      "start_s": 564.13310814,
+      "end_s": 564.133108141,
+      "reason": "user completed crop review 2026-10-24; LC160; 1,2 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC160"
+    },
+    {
+      "id": "LC24-X-LC163-0",
+      "route_segment": "00000419--e5511e21f7--11",
+      "side": "right",
+      "start_s": 724.228072795,
+      "end_s": 725.281748531,
+      "reason": "user completed crop review 2026-10-24; LC163; 1,3,4 흰 실선, 2 제외, 5 흰 점선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC163"
+    },
+    {
+      "id": "LC24-X-LC167-0",
+      "route_segment": "00000419--e5511e21f7--23",
+      "side": "right",
+      "start_s": 1491.978313504,
+      "end_s": 1495.978535754,
+      "reason": "user completed crop review 2026-10-24; LC167; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC167"
+    },
+    {
+      "id": "LC24-X-LC168-0",
+      "route_segment": "00000419--e5511e21f7--23",
+      "side": "right",
+      "start_s": 1496.030484363,
+      "end_s": 1499.029155859,
+      "reason": "user completed crop review 2026-10-24; LC168; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC168"
+    },
+    {
+      "id": "LC24-X-LC172-0",
+      "route_segment": "00000419--e5511e21f7--30",
+      "side": "right",
+      "start_s": 1862.588591237,
+      "end_s": 1863.383824581,
+      "reason": "user completed crop review 2026-10-24; LC172; 2번 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC172"
+    },
+    {
+      "id": "LC24-X-LC173-0",
+      "route_segment": "00000419--e5511e21f7--30",
+      "side": "right",
+      "start_s": 1879.983434943,
+      "end_s": 1880.183560413,
+      "reason": "user completed crop review 2026-10-24; LC173; 1번 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC173"
+    },
+    {
+      "id": "LC24-X-LC175-0",
+      "route_segment": "00000419--e5511e21f7--32",
+      "side": "right",
+      "start_s": 1993.58096382,
+      "end_s": 1993.631707328,
+      "reason": "user completed crop review 2026-10-24; LC175; 1 제외 2,3 노란 실선, 4,5 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC175"
+    },
+    {
+      "id": "LC24-X-LC175-1",
+      "route_segment": "00000419--e5511e21f7--32",
+      "side": "right",
+      "start_s": 1995.380936956,
+      "end_s": 1996.38095571,
+      "reason": "user completed crop review 2026-10-24; LC175; 1 제외 2,3 노란 실선, 4,5 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC175"
+    },
+    {
+      "id": "LC24-X-LC176-0",
+      "route_segment": "00000419--e5511e21f7--32",
+      "side": "right",
+      "start_s": 2003.980824376,
+      "end_s": 2004.23504446,
+      "reason": "user completed crop review 2026-10-24; LC176; 1번 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC176"
+    },
+    {
+      "id": "LC24-X-LC178-0",
+      "route_segment": "00000419--e5511e21f7--34",
+      "side": "right",
+      "start_s": 2140.578673371,
+      "end_s": 2143.083324754,
+      "reason": "user completed crop review 2026-10-24; LC178; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC178"
+    },
+    {
+      "id": "LC24-X-LC180-0",
+      "route_segment": "00000419--e5511e21f7--37",
+      "side": "right",
+      "start_s": 2310.326780726,
+      "end_s": 2312.830369415,
+      "reason": "user completed crop review 2026-10-24; LC180; 1,2,3 제외 4,5 흰 점선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC180"
+    },
+    {
+      "id": "LC24-X-LC181-0",
+      "route_segment": "00000419--e5511e21f7--37",
+      "side": "right",
+      "start_s": 2314.629287894,
+      "end_s": 2315.676669519,
+      "reason": "user completed crop review 2026-10-24; LC181; 1,3 흰 점선, 2,4,5 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC181"
+    },
+    {
+      "id": "LC24-X-LC181-1",
+      "route_segment": "00000419--e5511e21f7--37",
+      "side": "right",
+      "start_s": 2316.876667849,
+      "end_s": 2318.279327003,
+      "reason": "user completed crop review 2026-10-24; LC181; 1,3 흰 점선, 2,4,5 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC181"
+    },
+    {
+      "id": "LC24-X-LC182-0",
+      "route_segment": "00000419--e5511e21f7--37",
+      "side": "right",
+      "start_s": 2318.326691086,
+      "end_s": 2319.676682164,
+      "reason": "user completed crop review 2026-10-24; LC182; 3,4 노란 실선 나머지 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC182"
+    },
+    {
+      "id": "LC24-X-LC182-1",
+      "route_segment": "00000419--e5511e21f7--37",
+      "side": "right",
+      "start_s": 2321.979697628,
+      "end_s": 2322.276615588,
+      "reason": "user completed crop review 2026-10-24; LC182; 3,4 노란 실선 나머지 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC182"
+    },
+    {
+      "id": "LC24-X-LC183-0",
+      "route_segment": "00000419--e5511e21f7--37",
+      "side": "right",
+      "start_s": 2322.327468482,
+      "end_s": 2326.276559408,
+      "reason": "user completed crop review 2026-10-24; LC183; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC183"
+    },
+    {
+      "id": "LC24-X-LC184-0",
+      "route_segment": "00000419--e5511e21f7--37",
+      "side": "right",
+      "start_s": 2326.326612536,
+      "end_s": 2327.87659497,
+      "reason": "user completed crop review 2026-10-24; LC184; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC184"
+    },
+    {
+      "id": "LC24-X-LC010-0",
+      "route_segment": "00000404--ef50bfdf22--12",
+      "side": "left",
+      "start_s": 862.358791763,
+      "end_s": 862.655268562,
+      "reason": "user completed crop review 2026-10-24; LC010; 첫번째 이미지는 학습 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC010"
+    },
+    {
+      "id": "LC24-X-LC017-0",
+      "route_segment": "00000407--75dc8f8375--13",
+      "side": "left",
+      "start_s": 907.206738164,
+      "end_s": 907.2067381649999,
+      "reason": "user completed crop review 2026-10-24; LC017; 첫 장은 교차로, 2번째는 노란 실선, 3,4,5는 유턴 점선임; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC017"
+    },
+    {
+      "id": "LC24-X-LC021-0",
+      "route_segment": "00000407--75dc8f8375--15",
+      "side": "left",
+      "start_s": 1037.185687629,
+      "end_s": 1037.733416037,
+      "reason": "user completed crop review 2026-10-24; LC021; 앞 2장은 흰 점선, 3번째는 학습 제외, 4,5가 노란 실선임; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC021"
+    },
+    {
+      "id": "LC24-X-LC023-0",
+      "route_segment": "00000407--75dc8f8375--6",
+      "side": "right",
+      "start_s": 491.88702592,
+      "end_s": 492.035412582,
+      "reason": "user completed crop review 2026-10-24; LC023; 첫 두장은 횡단보도; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC023"
+    },
+    {
+      "id": "LC24-X-LC024-0",
+      "route_segment": "00000407--75dc8f8375--13",
+      "side": "right",
+      "start_s": 915.312299374,
+      "end_s": 915.312299375,
+      "reason": "user completed crop review 2026-10-24; LC024; 첫 장은 학습 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC024"
+    },
+    {
+      "id": "LC24-X-LC026-0",
+      "route_segment": "00000407--75dc8f8375--16",
+      "side": "right",
+      "start_s": 1044.136974583,
+      "end_s": 1046.584877006,
+      "reason": "user completed crop review 2026-10-24; LC026; 앞 3장은 학습 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC026"
+    },
+    {
+      "id": "LC24-X-LC030-0",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "left",
+      "start_s": 658.628529368,
+      "end_s": 658.73112082,
+      "reason": "user completed crop review 2026-10-24; LC030; 첫 2장은 흰 점선, 3번째는 제외, 4,5가 노란 실선임; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC030"
+    },
+    {
+      "id": "LC24-X-LC033-0",
+      "route_segment": "0000040f--a493881af6--11",
+      "side": "left",
+      "start_s": 815.124667506,
+      "end_s": 815.229313831,
+      "reason": "user completed crop review 2026-10-24; LC033; 첫 장은 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC033"
+    },
+    {
+      "id": "LC24-X-LC034-0",
+      "route_segment": "0000040f--a493881af6--13",
+      "side": "left",
+      "start_s": 938.239011991,
+      "end_s": 938.239011992,
+      "reason": "user completed crop review 2026-10-24; LC034; 첫 장은 제외, 2,3은 흰 점선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC034"
+    },
+    {
+      "id": "LC24-X-LC035-0",
+      "route_segment": "0000040f--a493881af6--13",
+      "side": "left",
+      "start_s": 944.687455335,
+      "end_s": 944.945229627,
+      "reason": "user completed crop review 2026-10-24; LC035; 첫 장은 노란 실선, 4번째는 흰 실선 5번째는 횡단보도; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC035"
+    },
+    {
+      "id": "LC24-X-LC036-0",
+      "route_segment": "0000040f--a493881af6--15",
+      "side": "left",
+      "start_s": 1066.155629745,
+      "end_s": 1066.606971442,
+      "reason": "user completed crop review 2026-10-24; LC036; 전부 학습 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC036"
+    },
+    {
+      "id": "LC24-X-LC042-0",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "right",
+      "start_s": 697.40654812,
+      "end_s": 700.773879305,
+      "reason": "user completed crop review 2026-10-24; LC042; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC042"
+    },
+    {
+      "id": "LC24-X-LC042-1",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "right",
+      "start_s": 700.928419956,
+      "end_s": 701.125875408,
+      "reason": "user completed crop review 2026-10-24; LC042; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC042"
+    },
+    {
+      "id": "LC24-X-LC042-2",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "right",
+      "start_s": 701.37724963,
+      "end_s": 701.377249631,
+      "reason": "user completed crop review 2026-10-24; LC042; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC042"
+    },
+    {
+      "id": "LC24-X-LC043-0",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "right",
+      "start_s": 701.37724963,
+      "end_s": 701.377249631,
+      "reason": "user completed crop review 2026-10-24; LC043; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC043"
+    },
+    {
+      "id": "LC24-X-LC043-1",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "right",
+      "start_s": 701.52806966,
+      "end_s": 705.39908988,
+      "reason": "user completed crop review 2026-10-24; LC043; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC043"
+    },
+    {
+      "id": "LC24-X-LC044-0",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "right",
+      "start_s": 705.44979893,
+      "end_s": 709.365880432,
+      "reason": "user completed crop review 2026-10-24; LC044; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC044"
+    },
+    {
+      "id": "LC24-X-LC045-0",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "right",
+      "start_s": 709.412673252,
+      "end_s": 713.328234416,
+      "reason": "user completed crop review 2026-10-24; LC045; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC045"
+    },
+    {
+      "id": "LC24-X-LC046-0",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "right",
+      "start_s": 713.375190197,
+      "end_s": 717.337403873,
+      "reason": "user completed crop review 2026-10-24; LC046; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC046"
+    },
+    {
+      "id": "LC24-X-LC047-0",
+      "route_segment": "0000040f--a493881af6--9",
+      "side": "right",
+      "start_s": 717.385957391,
+      "end_s": 717.785853596,
+      "reason": "user completed crop review 2026-10-24; LC047; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC047"
+    },
+    {
+      "id": "LC24-X-LC048-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 717.936179806,
+      "end_s": 721.794249923,
+      "reason": "user completed crop review 2026-10-24; LC048; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC048"
+    },
+    {
+      "id": "LC24-X-LC049-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 721.843886016,
+      "end_s": 725.85030875,
+      "reason": "user completed crop review 2026-10-24; LC049; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC049"
+    },
+    {
+      "id": "LC24-X-LC050-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 725.900391961,
+      "end_s": 729.807468049,
+      "reason": "user completed crop review 2026-10-24; LC050; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC050"
+    },
+    {
+      "id": "LC24-X-LC051-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 729.855737509,
+      "end_s": 733.760131481,
+      "reason": "user completed crop review 2026-10-24; LC051; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC051"
+    },
+    {
+      "id": "LC24-X-LC052-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 733.861476833,
+      "end_s": 737.768773295,
+      "reason": "user completed crop review 2026-10-24; LC052; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC052"
+    },
+    {
+      "id": "LC24-X-LC053-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 737.867402038,
+      "end_s": 741.767329164,
+      "reason": "user completed crop review 2026-10-24; LC053; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC053"
+    },
+    {
+      "id": "LC24-X-LC054-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 741.867446,
+      "end_s": 745.770358697,
+      "reason": "user completed crop review 2026-10-24; LC054; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC054"
+    },
+    {
+      "id": "LC24-X-LC055-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 745.820351171,
+      "end_s": 749.774457523,
+      "reason": "user completed crop review 2026-10-24; LC055; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC055"
+    },
+    {
+      "id": "LC24-X-LC056-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 749.826744251,
+      "end_s": 753.775461542,
+      "reason": "user completed crop review 2026-10-24; LC056; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC056"
+    },
+    {
+      "id": "LC24-X-LC057-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 753.8336348,
+      "end_s": 757.777666447,
+      "reason": "user completed crop review 2026-10-24; LC057; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC057"
+    },
+    {
+      "id": "LC24-X-LC058-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 757.827712079,
+      "end_s": 761.778761667,
+      "reason": "user completed crop review 2026-10-24; LC058; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC058"
+    },
+    {
+      "id": "LC24-X-LC059-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 761.828740352,
+      "end_s": 765.776917388,
+      "reason": "user completed crop review 2026-10-24; LC059; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC059"
+    },
+    {
+      "id": "LC24-X-LC060-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 765.826890925,
+      "end_s": 769.775513029,
+      "reason": "user completed crop review 2026-10-24; LC060; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC060"
+    },
+    {
+      "id": "LC24-X-LC061-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 769.827041001,
+      "end_s": 773.77636388,
+      "reason": "user completed crop review 2026-10-24; LC061; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC061"
+    },
+    {
+      "id": "LC24-X-LC062-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 773.82442622,
+      "end_s": 777.774968503,
+      "reason": "user completed crop review 2026-10-24; LC062; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC062"
+    },
+    {
+      "id": "LC24-X-LC063-0",
+      "route_segment": "0000040f--a493881af6--10",
+      "side": "right",
+      "start_s": 777.823545191,
+      "end_s": 777.823545192,
+      "reason": "user completed crop review 2026-10-24; LC063; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC063"
+    },
+    {
+      "id": "LC24-X-LC064-0",
+      "route_segment": "0000040f--a493881af6--11",
+      "side": "right",
+      "start_s": 778.227757393,
+      "end_s": 781.872919039,
+      "reason": "user completed crop review 2026-10-24; LC064; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC064"
+    },
+    {
+      "id": "LC24-X-LC065-0",
+      "route_segment": "0000040f--a493881af6--11",
+      "side": "right",
+      "start_s": 781.927161673,
+      "end_s": 785.822593074,
+      "reason": "user completed crop review 2026-10-24; LC065; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC065"
+    },
+    {
+      "id": "LC24-X-LC066-0",
+      "route_segment": "0000040f--a493881af6--11",
+      "side": "right",
+      "start_s": 785.875288355,
+      "end_s": 789.874497019,
+      "reason": "user completed crop review 2026-10-24; LC066; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC066"
+    },
+    {
+      "id": "LC24-X-LC067-0",
+      "route_segment": "0000040f--a493881af6--11",
+      "side": "right",
+      "start_s": 789.922338434,
+      "end_s": 793.822327008,
+      "reason": "user completed crop review 2026-10-24; LC067; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC067"
+    },
+    {
+      "id": "LC24-X-LC068-0",
+      "route_segment": "0000040f--a493881af6--11",
+      "side": "right",
+      "start_s": 793.874606878,
+      "end_s": 797.826434011,
+      "reason": "user completed crop review 2026-10-24; LC068; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC068"
+    },
+    {
+      "id": "LC24-X-LC069-0",
+      "route_segment": "0000040f--a493881af6--11",
+      "side": "right",
+      "start_s": 797.875513045,
+      "end_s": 801.827002235,
+      "reason": "user completed crop review 2026-10-24; LC069; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC069"
+    },
+    {
+      "id": "LC24-X-LC070-0",
+      "route_segment": "0000040f--a493881af6--11",
+      "side": "right",
+      "start_s": 801.875378874,
+      "end_s": 805.873145949,
+      "reason": "user completed crop review 2026-10-24; LC070; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC070"
+    },
+    {
+      "id": "LC24-X-LC071-0",
+      "route_segment": "0000040f--a493881af6--11",
+      "side": "right",
+      "start_s": 805.926992149,
+      "end_s": 808.42487586,
+      "reason": "user completed crop review 2026-10-24; LC071; 첫 3장은 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC071"
+    },
+    {
+      "id": "LC24-X-LC072-0",
+      "route_segment": "0000040f--a493881af6--11",
+      "side": "right",
+      "start_s": 810.274412465,
+      "end_s": 813.825120493,
+      "reason": "user completed crop review 2026-10-24; LC072; 첫 장만 흰 실선임 나머지는 횡단보도와 교차로; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC072"
+    },
+    {
+      "id": "LC24-X-LC073-0",
+      "route_segment": "0000040f--a493881af6--11",
+      "side": "right",
+      "start_s": 813.874641137,
+      "end_s": 816.62646309,
+      "reason": "user completed crop review 2026-10-24; LC073; 마지막 1장만 노란 실선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC073"
+    },
+    {
+      "id": "LC24-X-LC078-0",
+      "route_segment": "00000412--4440b61281--10",
+      "side": "left",
+      "start_s": 716.963069825,
+      "end_s": 718.106609534,
+      "reason": "user completed crop review 2026-10-24; LC078; 마지막 2장은 노란 실선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC078"
+    },
+    {
+      "id": "LC24-X-LC080-0",
+      "route_segment": "00000412--4440b61281--10",
+      "side": "left",
+      "start_s": 727.148115152,
+      "end_s": 727.453163302,
+      "reason": "user completed crop review 2026-10-24; LC080; 첫 장은 갈매기 실선, 2,3,4가 복선 내측, 5는 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC080"
+    },
+    {
+      "id": "LC24-X-LC081-0",
+      "route_segment": "00000412--4440b61281--10",
+      "side": "left",
+      "start_s": 727.54917588,
+      "end_s": 727.651116609,
+      "reason": "user completed crop review 2026-10-24; LC081; 1,2 복선 내측, 3 제외 4, 5 흰 점선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC081"
+    },
+    {
+      "id": "LC24-X-LC082-0",
+      "route_segment": "00000412--4440b61281--7",
+      "side": "right",
+      "start_s": 524.992409588,
+      "end_s": 525.492212179,
+      "reason": "user completed crop review 2026-10-24; LC082; 1 흰 점선 2 제외 3,4,5 노란 실선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC082"
+    },
+    {
+      "id": "LC24-X-LC187-0",
+      "route_segment": "0000041a--445e10a500--5",
+      "side": "right",
+      "start_s": 412.177175732,
+      "end_s": 412.426785435,
+      "reason": "user completed crop review 2026-10-24; LC187; 2만 노란 실선, 나머지 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC187"
+    },
+    {
+      "id": "LC24-X-LC187-1",
+      "route_segment": "0000041a--445e10a500--5",
+      "side": "right",
+      "start_s": 413.677477424,
+      "end_s": 416.222642299,
+      "reason": "user completed crop review 2026-10-24; LC187; 2만 노란 실선, 나머지 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC187"
+    },
+    {
+      "id": "LC24-X-LC188-0",
+      "route_segment": "0000041a--445e10a500--5",
+      "side": "right",
+      "start_s": 416.271073997,
+      "end_s": 417.821071755,
+      "reason": "user completed crop review 2026-10-24; LC188; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC188"
+    },
+    {
+      "id": "LC24-X-LC189-0",
+      "route_segment": "0000041a--445e10a500--6",
+      "side": "right",
+      "start_s": 418.018561204,
+      "end_s": 419.266798581,
+      "reason": "user completed crop review 2026-10-24; LC189; 1번 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC189"
+    },
+    {
+      "id": "LC24-X-LC191-0",
+      "route_segment": "0000041a--445e10a500--6",
+      "side": "right",
+      "start_s": 429.604193467,
+      "end_s": 429.854372574,
+      "reason": "user completed crop review 2026-10-24; LC191; 1번 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC191"
+    },
+    {
+      "id": "LC24-X-LC192-0",
+      "route_segment": "0000041a--445e10a500--6",
+      "side": "right",
+      "start_s": 436.197256803,
+      "end_s": 437.595936369,
+      "reason": "user completed crop review 2026-10-24; LC192; 1번 노란 실선, 2,3 흰 점선, 4,5 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC192"
+    },
+    {
+      "id": "LC24-X-LC193-0",
+      "route_segment": "0000041a--445e10a500--6",
+      "side": "right",
+      "start_s": 437.646605168,
+      "end_s": 440.644984298,
+      "reason": "user completed crop review 2026-10-24; LC193; confirmed choice 8; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC193"
+    },
+    {
+      "id": "LC24-X-LC194-0",
+      "route_segment": "0000041b--c6f39793a8--2",
+      "side": "left",
+      "start_s": 205.06196946,
+      "end_s": 207.507442894,
+      "reason": "user completed crop review 2026-10-24; LC194; 1,2,3 제외, 4,5 유턴 흰 점선; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC194"
+    },
+    {
+      "id": "LC24-X-LC198-0",
+      "route_segment": "0000041b--c6f39793a8--13",
+      "side": "left",
+      "start_s": 850.085828115,
+      "end_s": 850.4868506,
+      "reason": "user completed crop review 2026-10-24; LC198; 1,2 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC198"
+    },
+    {
+      "id": "LC24-X-LC199-0",
+      "route_segment": "0000041b--c6f39793a8--2",
+      "side": "right",
+      "start_s": 205.211668822,
+      "end_s": 207.657213974,
+      "reason": "user completed crop review 2026-10-24; LC199; 4,5 흰 점선, 나머지 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC199"
+    },
+    {
+      "id": "LC24-X-LC201-0",
+      "route_segment": "0000041b--c6f39793a8--13",
+      "side": "right",
+      "start_s": 847.62067625,
+      "end_s": 849.831627319,
+      "reason": "user completed crop review 2026-10-24; LC201; 4,5만 흰 점선, 나머지 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC201"
+    },
+    {
+      "id": "LC24-X-LC202-0",
+      "route_segment": "00000400--0897e0e304--3",
+      "side": "left",
+      "start_s": 310.515109671,
+      "end_s": 310.965581702,
+      "reason": "user completed crop review 2026-10-24; LC202; 2번 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC202"
+    },
+    {
+      "id": "LC24-X-LC203-0",
+      "route_segment": "00000400--0897e0e304--8",
+      "side": "left",
+      "start_s": 623.14616885,
+      "end_s": 623.192374753,
+      "reason": "user completed crop review 2026-10-24; LC203; 1번 제외; nearest sampled strip time within original scene only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/final_judgements.json#LC203"
+    },
+    {
+      "id": "LC3-X-R07-1",
+      "route_segment": "0000040f--a493881af6--13",
+      "side": "left",
+      "start_s": 944.042042223,
+      "end_s": 944.637401032,
+      "reason": "user completed suspect review 2026-10-24; R07; 이미지 1: 2 흰 점선\n이미지 2: 2 흰 점선\n이미지 3: 8 횡단보도\n이미지 4: 8 횡단보도\n이미지 5: 8 횡단보도; nearest sample within original target interval only",
+      "evidence": ".analysis/ccnc-field-412-20261022/codex/lanechange1024/judgements_suspects.json#R07"
     }
   ],
   "exclusion_rule": "Frames of route--segment/side with eof_s in [start_s, end_s] are dropped from type and colour scoring (manifest rows and card-replay truth alike).",
