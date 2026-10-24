@@ -875,9 +875,8 @@ def test_new_array_point_cannot_create_stop_or_approach_memory(display, monkeypa
 
 
 @pytest.mark.parametrize("use_map", [False, True])
-def test_short_bsd_gap_slides_the_same_rear_car_toward_16_and_back(display, use_map):
-  """10-20 segment 8: a 0.2 s gap in the OEM BSD flag turned RR white car 4 -> grey car 3 -> 4. The car now keeps its
-  code and only slides: toward 16 while off, back toward 8 when BSD returns; a lasting off slides out to 16."""
+def test_short_bsd_gap_holds_then_slides_the_same_rear_car_toward_16_and_back(display, use_map):
+  """Keep the 10-20 short-gap colour fix; the 10-24 policy holds position for 3 s before a lasting OFF retires."""
   params, cs, send = display
   params[KEYS[2]] = True
   params[MAP_KEY] = use_map
@@ -887,7 +886,7 @@ def test_short_bsd_gap_slides_the_same_rear_car_toward_16_and_back(display, use_
                  laneLines=[N(x=[0., 10., 30., 100.], y=[y] * 4) for y in (-5.4, -1.8, 1.8, 5.4)])
   cs.live_tracks = N(points=[])
   shown = []
-  for i, bsd in enumerate([True] * 40 + [False] * 4 + [True] * 20 + [False] * 120):
+  for i, bsd in enumerate([True] * 40 + [False] * 4 + [True] * 20 + [False] * 200):
     cs.out.rightBlindspot = bsd
     values = dict(send(i * 5))["CCNC_0x162"]
     shown.append((bsd, values["RR_DETECT"], values["RR_DETECT_DISTANCE"]))
@@ -895,10 +894,11 @@ def test_short_bsd_gap_slides_the_same_rear_car_toward_16_and_back(display, use_
   assert on[1] == 4 and on[2] < 12  # sliding in toward 8
   gap = shown[40:44]
   assert all(code == on[1] for _, code, _ in gap)  # no grey 3 / hidden 0 in the gap
-  assert all(b[2] > a[2] for a, b in zip([on, *gap], gap, strict=False))  # moving toward 16
+  assert all(d == on[2] for _, _, d in gap)  # short OFF is held at the actual last drawing
   back = shown[44:64]
   assert all(code == 4 for _, code, _ in back) and back[-1][2] < gap[-1][2]  # and back toward 8
   out = shown[64:]
+  assert all(d == back[-1][2] for _, _, d in out[:60])  # full 3 seconds at 20 Hz
   drawn = [d for _, code, d in out if code]
   assert all(code == 4 for _, code, _ in out if code) and drawn == sorted(drawn) and drawn[-1] >= 14.5
-  assert not out[-1][1]  # converged past 15: dropped by the existing rule
+  assert not out[-1][1]  # reaches 16 before retiring

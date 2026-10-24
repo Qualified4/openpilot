@@ -14,6 +14,58 @@ from opendbc.car.hyundai import hyundaicanfd_ccnc_radar_map as radar_map
 from opendbc.car.hyundai.tests.test_ccnc_extension import display  # noqa: F401
 from opendbc.car.hyundai.values import HyundaiFlags
 from tools.ccnc.test_radar_map_integration import geometry  # noqa: TID251
+from tools.ccnc.test_rear_handover import Drive  # noqa: TID251
+from opendbc.car.hyundai.hyundaicanfd_ccnc_rear import SmoothHandover
+
+
+@pytest.mark.parametrize('side', [0, 1])
+@pytest.mark.parametrize('new_distance', [2.04, 24.])
+@pytest.mark.parametrize('occupied_rear', [False, True])
+def test_smooth_origin_lateral_and_replacement_order_after_native_packing(side, new_distance, occupied_rear):
+  drive = Drive(side)
+  drive.policy = SmoothHandover()
+  front, rear = ('LF', 'LR') if side == 0 else ('RF', 'RR')
+  packer = CANPacker('hyundai_canfd_generated')
+  sigs = packer.dbc.name_to_msg['CCNC_0x162'].sigs
+  previous_front = None
+  previous_front_x = None
+  received = False
+  for i in range(250):
+    if i == 15 and occupied_rear:
+      drive.policy.flows[side].rear = {'key': None, 'x': -8., 'y': 2.8, 'detect': 2, 'phase': 'bsd', 'hold_until': 100.}
+    values, _ = drive.step(i, x=2.6-.1*i if i < 15 else 30., key=1 if i < 15 else 2,
+                          drawn=(1, 4.) if i < 15 else (2, new_distance))
+    _, data, _ = packer.make_can_msg('CCNC_0x162', 0, values)
+    def raw(slot, suffix, data=data):
+      return get_raw_value(data, sigs[slot+'_DETECT'+suffix])
+    if any(e['side'] == side and e['event'] == 'front_to_rear' for e in drive.policy.events):
+      assert previous_front is not None and 0 <= previous_front[0] <= 4 and previous_front[1] == 30
+      assert 0. < previous_front_x <= .4+1e-9  # Sub-decimetre motion may pack as 0, but never waits there.
+      assert raw(rear, '_DISTANCE') == 0 and raw(rear, '_LATERAL') == 30
+      assert bool(raw(front, '')) == (new_distance >= 6.)
+      received = True
+    if received and raw(front, ''):
+      assert abs(raw(front, '_DISTANCE')-new_distance*10) <= 1
+      assert raw(front, '_DISTANCE')+raw(rear, '_DISTANCE') >= 60
+      break
+    previous_front = (raw(front, '_DISTANCE'), raw(front, '_LATERAL')) if raw(front, '') else None
+    previous_front_x = drive.policy.flows[side].front['x'] if raw(front, '') else None
+  else:
+    pytest.fail('no packed replacement admission')
+
+
+@pytest.mark.parametrize('side', [0, 1])
+@pytest.mark.parametrize('front_distance', [0., 2.04, 2.05, 2.06, 5.99])
+def test_handed_over_rear_keeps_six_metre_gap_after_actual_can_packing(side, front_distance):
+  drive = Drive(side)
+  i, _, rear = drive.handoff()
+  values, _ = drive.step(i+1, x=10., key=2, drawn=(2, front_distance))
+  front = ('LF', 'RF')[side]
+  packer = CANPacker('hyundai_canfd_generated')
+  _, data, _ = packer.make_can_msg('CCNC_0x162', 0, values)
+  sigs = packer.dbc.name_to_msg['CCNC_0x162'].sigs
+  assert get_raw_value(data, sigs[front+'_DETECT']) and get_raw_value(data, sigs[rear+'_DETECT'])
+  assert get_raw_value(data, sigs[front+'_DETECT_DISTANCE'])+get_raw_value(data, sigs[rear+'_DETECT_DISTANCE']) >= 60
 
 
 @pytest.mark.parametrize('use_map', [False, True])

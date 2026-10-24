@@ -1,5 +1,24 @@
 # Repository memory
 
+- On 2026-10-25, Davin accepted continuous CCNC LF/RF <-> LR/RR display handovers
+  and authorized commit/push. SmoothHandover/SideFlow retain selector/map,
+  anti-jitter, ego-lane-change tracking and the original vRel/ego-speed rear
+  model. Origin is a pass boundary with matching LATERAL; a new passing F
+  immediately replaces any occupied R at 0, without waiting for its 16m exit.
+  Near new F actively sends R toward absolute rear 8m and waits for packed
+  front+rear clearance >=6m; far F can appear in the R0 handover packet.
+  BSD ON at/after handover overrides relative retreat with R0->8m, held while
+  ON; existing BSD OFF holds 3s before exit. Fix first-ON 6m/s spike to the
+  3m/s passing policy. Recorded --11's 3.697-6.000s origin wait is removed;
+  --12 receives R0 at15.656s then .1/.2/.4m, BSD ON15.806s moves toward8m.
+  Checks1080 pass;182 cached segments/213845 sends preserve selection/object
+  state, FF and non-side fields;564 F->R/220 R->F seams and340 occupied-R
+  replacements checked. PC WSL mean overhead selector+4.77%,map+3.20%, all
+  measured metrics<10%; no comma timing or vehicle validation/install claim.
+  No model/control/safety/option-default changes. Details and private cache
+  evidence: docs/ccnc_rear_handover_20261018.md and
+  .analysis/ccnc-side-flow-replace-20261025.
+
 - On 2026-10-23, merged origin/carrot-wip dfab65d0 (9 commits: Jetlink PR560-562 USB recovery/DHCP/ADB handoff,
   NAV shared input/native image/N16 projection records, Hyundai CAN-FD no-lead stop object state 2 trial) into
   ccnc-hda1 on 895c130b. Only AGENTS.md conflicted; both branches' log entries are kept.

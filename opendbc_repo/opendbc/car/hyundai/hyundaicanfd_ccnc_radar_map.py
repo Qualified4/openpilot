@@ -1791,7 +1791,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
                              and tracker._radar_vehicle(obj) and not tracker._crossing(obj)))
       try:
         state.rear_handover.update(values, CS, md, frame, selected, (state.lr_distance, state.rr_distance),
-                                   ('map', tracker.generation), proven=proven)
+                                   ('map', tracker.generation), proven=proven, rear_laterals=(2.8-offset, 2.8+offset))
       except Exception:
         # Rear handover is display memory only: skip it, never the whole vehicle display.
         if not getattr(state.rear_handover, 'failed', False):

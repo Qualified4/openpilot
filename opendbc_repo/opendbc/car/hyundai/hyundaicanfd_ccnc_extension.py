@@ -12,7 +12,7 @@ import numpy as np
 from opendbc.car import structs
 from opendbc.car.carlog import carlog
 from opendbc.car.common.conversions import Conversions as CV
-from opendbc.car.hyundai.hyundaicanfd_ccnc_rear import RearHandover
+from opendbc.car.hyundai.hyundaicanfd_ccnc_rear import SmoothHandover as RearHandover
 from openpilot.common.params import Params
 
 
@@ -3180,7 +3180,8 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
         selected.append((int(getattr(entry[3], 'ccnc_source_id', key)), entry[0]) if entry else None)
       try:
         state.rear_handover.update(values, CS, md, frame, selected, (state.lr_distance, state.rr_distance),
-                                   ('selector', display_tracker))
+                                   ('selector', display_tracker), rear_laterals=(BSD_LATERAL_FIXED-center_lane_offset,
+                                                                              BSD_LATERAL_FIXED+center_lane_offset))
       except Exception:
         # Rear handover is display memory only: skip it, never the whole vehicle display.
         if not getattr(state.rear_handover, 'failed', False):

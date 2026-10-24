@@ -259,6 +259,48 @@ def test_new_front_replaces_old_rear_the_moment_it_leaves_the_front_slot(side):
   assert (1, 0) in d.policy.consumed[side] and (2, 0) in d.policy.consumed[side]
 
 
+@pytest.mark.parametrize('side', [0, 1])
+@pytest.mark.parametrize('front_distance', [0., 2., 2.04, 2.05, 2.06, 5.9, 6., 20.])
+def test_new_front_keeps_six_display_metres_from_handed_over_rear(side, front_distance):
+  d = Drive(side)
+  i, _, rear = d.handoff()
+  front = ('LF', 'RF')[side]
+  v, _ = d.step(i+1, x=10., key=2, drawn=(2, front_distance))
+  assert v[front+'_DETECT'] and v[front+'_DETECT_DISTANCE'] == front_distance
+  assert v[rear+'_DETECT'] and front_distance+v[rear+'_DETECT_DISTANCE'] >= 6.
+  assert d.filters[side].value == v[rear+'_DETECT_DISTANCE']
+  assert d.policy.rears[side]['source'] == 1 and d.policy.fronts[side]['source'] == 2
+  if front_distance >= 6.:
+    assert v[rear+'_DETECT_DISTANCE'] < .2  # ordinary retreat, no minimum rear distance on its own
+  # Both signals are packed in 0.1 m units. Rounding either front direction must preserve the gap too.
+  assert round(front_distance/.1)+round(v[rear+'_DETECT_DISTANCE']/.1) >= 60
+
+
+@pytest.mark.parametrize('side', [0, 1])
+def test_front_spacing_applies_on_initial_coast_and_never_pulls_rear_forward(side):
+  d = Drive(side)
+  d.seed()
+  front = ('LF', 'RF')[side]
+  v, rear = d.step(15, x=10., key=2, drawn=(2, 2.))
+  assert d.policy.rears[side]['phase'] == 'coast'
+  assert v[front+'_DETECT_DISTANCE'] == 2. and v[rear+'_DETECT_DISTANCE'] == 4.
+  v, _ = d.step(16, x=10.1, key=2, drawn=(2, .5))
+  assert v[rear+'_DETECT_DISTANCE'] == 5.5
+  v, _ = d.step(17, x=10.2, key=2, drawn=(2, 20.))
+  assert v[rear+'_DETECT_DISTANCE'] == 5.5  # front moves away: rear does not jump back to the origin
+  v, _ = d.step(18)  # front disappears while the handed-over car still waits for its origin pass
+  assert not v[front+'_DETECT'] and v[rear+'_DETECT_DISTANCE'] == 5.5
+
+
+@pytest.mark.parametrize('side', [0, 1])
+def test_spacing_does_not_adjust_the_bsd_rear_display(side):
+  d = Drive(side)
+  i, _, rear = d.handoff()
+  v, _ = d.step(i+1, x=10., key=2, drawn=(2, 0.), bsd=True)
+  assert d.policy.rears[side] is None
+  assert v[rear+'_DETECT_DISTANCE'] < 1.  # original BSD filter toward 8, not the virtual-car spacing floor
+
+
 def test_unqualified_new_front_cannot_replace_rear_and_bsd_discards_both_memories():
   d = Drive()
   i, _, _ = d.handoff()
@@ -803,7 +845,11 @@ def test_a_different_car_near_the_coasting_one_is_not_taken_for_its_new_radar_id
   else:
     v, _ = d.step(11, drawn=(9, math.nan))
   assert v['LF_DETECT'] == 2 and (9, 0) not in d.policy.consumed[0] and not coast['aliases']
-  assert d.policy.rears[0] is coast and v['LR_DETECT'] and v['LR_DETECT_DISTANCE'] == 0
+  assert d.policy.rears[0] is coast and v['LR_DETECT']
+  if other == 'nan_distance':
+    assert v['LR_DETECT_DISTANCE'] == 0
+  else:
+    assert v['LF_DETECT_DISTANCE']+v['LR_DETECT_DISTANCE'] >= 6.
 
 
 def test_alias_key_moving_to_the_front_lane_slot_ends_the_rear_drawing():
