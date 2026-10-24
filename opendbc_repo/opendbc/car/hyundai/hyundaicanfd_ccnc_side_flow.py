@@ -52,6 +52,8 @@ class SideFlow:
     elif bsd:
       self.bsd_off = None
     self.bsd = bsd
+    if self.front is None and self.rear is None and candidate is None and not bsd:
+      return None, None
     eligible_bsd = bsd or (self.bsd_off is not None and now-self.bsd_off < self.HOLD)
 
     # The upstream lane-change tracker owns cross-slot identity movement. Never leave an old copy on this side.
@@ -63,18 +65,17 @@ class SideFlow:
     f, r = self.front, self.rear
     previous_rear, rear_start = r, r['x'] if r is not None else None
 
-    def owns(obj):
-      return (obj is not None and motion is not None
-              and obj['key'] in (motion['key'], *motion.get('aliases', ())))
+    f_owned = (f is not None and motion is not None
+               and (f['key'] == motion['key'] or f['key'] in motion.get('aliases', ())))
 
     if f is not None:
       same = candidate is not None and candidate['key'] == f['key']
       if f['phase'] == 'to_rear' and same:
         f['phase'] = 'join_front'  # a short observation gap may be cancelled without resetting its position
-      elif f['phase'] == 'to_rear' and not owns(f) and not eligible_bsd:
+      elif f['phase'] == 'to_rear' and not f_owned and not eligible_bsd:
         self.front = f = None  # Original coast cancellation/timeout wins; animation is not tracking evidence.
       elif f['phase'] != 'to_rear' and not same:
-        if f['x'] <= 5. and (owns(f) or eligible_bsd):
+        if f['x'] <= 5. and (f_owned or eligible_bsd):
           f['phase'] = 'to_rear'
         elif f['x'] <= 5. or candidate is None or candidate['x'] < self.GAP or r is not None and candidate['key'] == r['key']:
           self.front = f = None
@@ -152,8 +153,8 @@ class SideFlow:
     f = self.front
     if f is not None and f['phase'] == 'to_rear':
       # Keep the last F lateral all the way through zero. R begins relaxing only after receiving it.
-      target = max(0., motion['signed']) if owns(f) and motion['phase'] == 'coast' else 0.
-      speed = (8. if motion['phase'] == 'coast' else motion['speed']) if owns(f) else self.PASS_SPEED
+      target = max(0., motion['signed']) if f_owned and motion['phase'] == 'coast' else 0.
+      speed = (8. if motion['phase'] == 'coast' else motion['speed']) if f_owned else self.PASS_SPEED
       f['x'] = max(min(f['x'], target), f['x']-min(8., speed)*dt)
       if target == 0. and f['x'] < 1e-9:
         f['x'] = 0.  # Floating-point residue must not add an extra zero-distance CAN frame.
@@ -162,7 +163,7 @@ class SideFlow:
         if r is not None:
           self.events.append('rear_display_replaced')
         self.rear = r = f
-        physical = motion if owns(f) else None
+        physical = motion if f_owned else None
         r.update(phase='virtual', hold_until=now, motion=physical,
                  model_distance=physical['distance'] if physical is not None else 0.)
         self.front = f = None

@@ -24,6 +24,8 @@ from collections import deque
 import math
 import statistics
 
+from opendbc.car.hyundai.hyundaicanfd_ccnc_side_flow import SideFlow
+
 
 class RearHandover:
   SCALE = .8
@@ -433,14 +435,14 @@ class RearHandover:
 class SmoothHandover(RearHandover):
   """Keep the existing evidence/identity machinery and animate only the final side-slot drawings."""
   MIN_FRONT_REAR_GAP = 0.  # The renderer eases R back for spacing; never jump the physical model back.
+  FIELDS = (('LF_DETECT', 'LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LR_DETECT', 'LR_DETECT_DISTANCE', 'LR_DETECT_LATERAL'),
+            ('RF_DETECT', 'RF_DETECT_DISTANCE', 'RF_DETECT_LATERAL', 'RR_DETECT', 'RR_DETECT_DISTANCE', 'RR_DETECT_LATERAL'))
 
   def __init__(self):
     super().__init__()
-    from opendbc.car.hyundai.hyundaicanfd_ccnc_side_flow import SideFlow
     self.flows = [SideFlow(), SideFlow()]
 
   def update(self, values, CS, md, frame, selected, filters, context, *, proven=(True, True), rear_laterals=None):
-    from opendbc.car.hyundai.hyundaicanfd_ccnc_side_flow import SideFlow
     now = frame*.01
     dt = now-self.last if self.last is not None else 0.
     reset = self.context != context or not 0 < dt <= .2 or not getattr(CS.out, 'canValid', True)
@@ -458,22 +460,25 @@ class SmoothHandover(RearHandover):
       return
     dt = 0. if reset else dt
     rear_laterals = rear_laterals or (2.8, 2.8)
-    for side, (front, rear) in enumerate((('LF', 'LR'), ('RF', 'RR'))):
-      x, y = values[front+'_DETECT_DISTANCE'], values[front+'_DETECT_LATERAL']
+    for side, (fd, fx, fy, rd, rx, ry) in enumerate(self.FIELDS):
+      x, y = values[fx], values[fy]
       key = selected[side+1]
       candidate = None
-      if values[front+'_DETECT'] and math.isfinite(x) and math.isfinite(y) and 0. <= x <= SideFlow.FRONT_LIMIT:
-        candidate = {'key': key if key is not None else ('display', side), 'x': x, 'y': y, 'detect': values[front+'_DETECT']}
+      if values[fd] and math.isfinite(x) and math.isfinite(y) and 0. <= x <= SideFlow.FRONT_LIMIT:
+        candidate = {'key': key if key is not None else ('display', side), 'x': x, 'y': y, 'detect': values[fd]}
       motion = self.rears[side]
       if motion is not None:
         motion.update(force_at=motion['shown']+self.MAX_TIME, deadline=motion['shown']+self.MAX_TIME+self.EXIT_GRACE,
                       max_speed=self.EXIT_MAX_SPEED)
       f, r = self.flows[side].update(now, dt, candidate, bool(CS.out.leftBlindspot if side == 0 else CS.out.rightBlindspot),
-                                   rear_laterals[side], elsewhere=tuple(k for k in (selected[0], selected[2-side]) if k is not None),
+                                   rear_laterals[side], elsewhere=(selected[0], selected[2-side]),
                                    motion=motion)
-      for slot, obj, sign in ((front, f, 1.), (rear, r, -1.)):
-        values[slot+'_DETECT'] = obj['detect'] if obj is not None else 0
-        if obj is not None:
-          values[slot+'_DETECT_DISTANCE'], values[slot+'_DETECT_LATERAL'] = sign*obj['x'], obj['y']
+      values[fd] = f['detect'] if f is not None else 0
+      values[rd] = r['detect'] if r is not None else 0
+      if f is not None:
+        values[fx], values[fy] = f['x'], f['y']
+      if r is not None:
+        values[rx], values[ry] = -r['x'], r['y']
       filters[side].reset(-r['x'] if r is not None else 16.)
-      self.events.extend({'side': side, 'event': event} for event in self.flows[side].events)
+      if self.flows[side].events:
+        self.events.extend({'side': side, 'event': event} for event in self.flows[side].events)

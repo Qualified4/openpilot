@@ -265,6 +265,14 @@ def test_close_initial_front_does_not_wait_for_a_nonexistent_previous_handoff():
   assert f['x'] == 1. and r is None
 
 
+def test_empty_side_still_records_bsd_off_and_clears_events():
+  flow = SideFlow()
+  flow.bsd, flow.after_pass = True, True
+  flow.events = ['rear_to_front']
+  assert flow.update(5., .05, None, False, 2.8) == (None, None)
+  assert flow.bsd is False and flow.bsd_off == 5. and flow.after_pass is True and flow.events == []
+
+
 def test_reappearing_front_cancels_handoff_without_position_reset():
   s = Scene()
   s.step(car())
