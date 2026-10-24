@@ -65,7 +65,9 @@ def test_modes_and_selected_engine_only(monkeypatch):
     assert marking.mode_of(N(get_int=lambda key, m=mode: m)) == marking.STRIPNET == 2
   assert marking.mode_of(N(get_int=lambda key: 7)) == 0
   # the Scanner engine stays available to offline replays (replay_marking.py), not to the daemon
-  sys.modules.pop('openpilot.selfdrive.carrot.lane_type.strip_model', None)
+  from openpilot.selfdrive.carrot import lane_type
+  monkeypatch.delitem(sys.modules, 'openpilot.selfdrive.carrot.lane_type.strip_model', raising=False)
+  monkeypatch.delattr(lane_type, 'strip_model', raising=False)
   scanner = Recogniser(1)
   assert scanner.model is None and 'openpilot.selfdrive.carrot.lane_type.strip_model' not in sys.modules
   strip = Recogniser(2)
@@ -174,7 +176,10 @@ def test_daemon_main_loop_with_fake_ipc(monkeypatch):
   messaging = types.SimpleNamespace(SubMaster=SM, PubMaster=lambda s: N(send=lambda name, msg: sent.append(json.loads(getattr(msg, name)))),
                                     new_message=lambda name, size, valid: N())
   # Fake the cereal package itself: the real one needs capnp schemas (and msgq) that are unavailable here.
-  monkeypatch.setitem(sys.modules, 'openpilot.cereal', types.SimpleNamespace(messaging=messaging, __path__=[]))
+  import openpilot
+  cereal = types.SimpleNamespace(messaging=messaging, __path__=[])
+  monkeypatch.setattr(openpilot, 'cereal', cereal)
+  monkeypatch.setitem(sys.modules, 'openpilot.cereal', cereal)
   monkeypatch.setitem(sys.modules, 'openpilot.cereal.messaging', messaging)
   monkeypatch.setitem(sys.modules, 'openpilot.common.swaglog', N(cloudlog=N(warning=lambda *a: None, info=lambda *a: None)))
   monkeypatch.setitem(sys.modules, 'msgq.visionipc', N(VisionIpcClient=Client, VisionStreamType=N(VISION_STREAM_ROAD=0)))

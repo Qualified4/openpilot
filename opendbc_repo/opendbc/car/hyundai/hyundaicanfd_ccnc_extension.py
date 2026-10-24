@@ -295,6 +295,15 @@ class _CcncTemporalTracks:
 
 class _CcncRadarDisplayTracker:
   """Observation continuity and lane-free fallback for the CCNC display only."""
+
+  @staticmethod
+  def nearest_boundary(x, y, curves):
+    return min([(abs(y + float(np.interp(x, xs, ys))), index)
+                for index, xs, ys in curves if xs[0] <= x <= xs[-1]], default=(math.inf, None))
+
+  @staticmethod
+  def interpolate(x, xs, ys):
+    return float(np.interp(x, xs, ys))
   MAX_HOLD_DISTANCE = 15.0  # Radar longitudinal metres, before CAN display scaling.
 
   def __init__(self):
@@ -972,9 +981,7 @@ class _CcncRadarDisplayTracker:
           or not .2 <= q.dRel <= 50.0 or not .2 <= abs(q.yRel) <= 6.0
           or abs(q.vLead) > 2.5 or abs(getattr(q, 'yvRel', 0.)) > .6):
         continue
-      nearest = [(abs(q.yRel + float(np.interp(q.dRel, xs, ys))), side)
-                 for side, xs, ys in curves if xs[0] <= q.dRel <= xs[-1]]
-      gap, side = min(nearest, default=(math.inf, None))
+      gap, side = self.nearest_boundary(q.dRel, q.yRel, curves)
       if gap > 1.5:
         continue
       strict = abs(q.vLead) <= .6 and gap <= .75
@@ -1030,8 +1037,8 @@ class _CcncRadarDisplayTracker:
     for side, xs, ys in curves:
       points = sorted((p for p in self.stationary_map if p['side'] == side
                        and ((p['static_count'] >= 4 and p['static_last'] - p['static_first'] >= 30
-                             and abs(p['y'] + float(np.interp(p['x'], xs, ys))) <= .75)
-                            or (p['jitter'] and abs(p['y'] + float(np.interp(p['x'], xs, ys))) <= 1.5))), key=lambda p: p['x'])
+                             and abs(p['y'] + self.interpolate(p['x'], xs, ys)) <= .75)
+                            or (p['jitter'] and abs(p['y'] + self.interpolate(p['x'], xs, ys)) <= 1.5))), key=lambda p: p['x'])
       # Different IDs can leave two hypotheses for one noisy return. Prefer the
       # better-supported anchor; such close points cannot establish row spacing.
       distinct = []
@@ -1105,9 +1112,7 @@ class _CcncRadarDisplayTracker:
           or not math.isfinite(p.dRel) or not math.isfinite(p.yRel)
           or not 0.2 <= p.dRel <= 50.0 or not 0.2 <= abs(p.yRel) <= 6.0):
         continue
-      nearest = [(abs(p.yRel + float(np.interp(p.dRel, xs, ys))), index)
-                 for index, xs, ys in curves if xs[0] <= p.dRel <= xs[-1]]
-      gap, index = min(nearest, default=(math.inf, None))
+      gap, index = self.nearest_boundary(p.dRel, p.yRel, curves)
       if gap <= 1.5:
         groups[index - 1].append((self.stop_distance + p.dRel, p.yRel))
 
@@ -3264,6 +3269,16 @@ def reset():
   _options = None
   state.__dict__.clear()
   configure(False, False, False)
+
+
+from opendbc.car.hyundai.ccnc_map_native import options as _native_options
+
+if _native_options is not None:
+  _ccnc_valid_boundary = _native_options.valid_boundary
+  _ccnc_side_lane_center = _native_options.side_lane_center
+  _CcncRadarDisplayTracker.nearest_boundary = staticmethod(_native_options.nearest_boundary)
+  _CcncRadarDisplayTracker.interpolate = staticmethod(_native_options.interp_np)
+  _CcncVehiclePositionCorrection.update_ego_follow = _native_options.update_ego_follow
 
 
 reset()

@@ -3,6 +3,8 @@
 """Bit-identical loops for Extractor.maps/finish; the numpy/OpenCV path in strip_extractor.py is the reference."""
 from libc.stdint cimport uint8_t
 
+STRIDED_AREA4 = True
+
 
 def column_map(const double[::1] edge0, const double[::1] edge1, const double[::1] t,
                float[:, ::1] out_mx, float[:, ::1] out_mx_half):
@@ -26,7 +28,7 @@ def column_map(const double[::1] edge0, const double[::1] edge1, const double[::
         out_mx_half[r, j] = x*<float>0.5
 
 
-def area4_interleave(const uint8_t[:, ::1] p0, const uint8_t[:, ::1] p1, const uint8_t[:, ::1] p2,
+def area4_interleave(const uint8_t[:, :] p0, const uint8_t[:, :] p1, const uint8_t[:, :] p2,
                      uint8_t[:, :, ::1] out):
   """out[r, c, i] = floor(mean of plane i's 4 samples 4c..4c+3), the exact 4:1 INTER_AREA float mean truncated to uint8."""
   cdef Py_ssize_t rows = out.shape[0], cols = out.shape[1], r, c, k

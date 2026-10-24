@@ -15,7 +15,7 @@ except ImportError:
 # Restart the daemon after changing a switch. Buffer reuse and allocator tuning can be disabled together.
 REUSE_BUFFERS = True
 TUNE_ALLOCATOR = True
-PLANAR_UV = True
+PLANAR_UV = False
 SHARE_GEOMETRY = True
 NATIVE = True
 MAP_CACHE_SIZE = 8
@@ -46,6 +46,8 @@ class Extractor:
     self.planar = PLANAR_UV if planar is None else planar
     self.geometry = SHARE_GEOMETRY if geometry is None else geometry
     self.native = native if (NATIVE if use_native is None else use_native) else None
+    if planar is None and not getattr(self.native, 'STRIDED_AREA4', False):
+      self.planar = True  # Preserve the existing fast path with a missing/older optional binary.
     self.scratch, self.y_maps = {}, OrderedDict()
     self.layout = self.key = self.matrix = None
 
@@ -123,7 +125,8 @@ class Extractor:
   def finish(self, planes, cols, rows):
     image = self.buf('image', (len(planes[0]), cols, 3))
     if self.native is not None and ps.SUB == 4 and len(planes) == 3 and all(
-        p.dtype == np.uint8 and p.ndim == 2 and p.flags.c_contiguous and p.shape == (len(image), 4*cols) for p in planes):
+        p.dtype == np.uint8 and p.ndim == 2 and p.shape == (len(image), 4*cols)
+        and (p.flags.c_contiguous or getattr(self.native, 'STRIDED_AREA4', False)) for p in planes):
       # Exact 4:1 box sum >> 2 == float32 INTER_AREA mean truncated to uint8 (sums of 4 bytes are exact in float32).
       self.native.area4_interleave(*planes, image)
       planes = ()

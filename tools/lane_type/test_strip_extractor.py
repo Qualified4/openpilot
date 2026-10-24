@@ -58,7 +58,7 @@ def test_all_switch_combinations_bit_exact(pixels, switches):
 
 def test_owned_outputs_and_layout_changes(pixels):
   y, uv, lines, rpy, k = pixels
-  ex = fast.Extractor()
+  ex = fast.Extractor(planar=True)
   first = ex.extract(*pixels)
   saved = [s.copy() for s in first]
   assert all(s.flags.owndata for s in first)
@@ -262,6 +262,25 @@ def test_native_skips_unsupported_planes(pixels):
   ex = fast.Extractor(planar=False)
   ex.native = SimpleNamespace(column_map=fast.native.column_map)
   equal(scalar(*pixels), ex.extract(*pixels))
+
+
+@needs_native
+@pytest.mark.parametrize('rows,cols', ((1, 1), (7, 96), (171, 128)))
+def test_area4_strided_chroma_and_reversed_views_match_cv2(rows, cols):
+  if not getattr(fast.native, 'STRIDED_AREA4', False):
+    pytest.skip('older optional binary')
+  rng = np.random.default_rng(1024)
+  lum = rng.integers(0, 256, (rows * 2, cols * 8), dtype=np.uint8)[::2, ::2]
+  chroma = rng.integers(0, 256, (rows * 2, cols * 4, 2), dtype=np.uint8)[::2]
+  for reverse in (False, True):
+    planes = [lum, chroma[..., 0], chroma[..., 1]]
+    if reverse:
+      planes = [p[:, ::-1] for p in planes]
+    for p in planes:
+      p.flags.writeable = False
+    out = np.empty((rows, cols, 3), np.uint8)
+    fast.native.area4_interleave(*planes, out)
+    assert out.tobytes() == area_reference(planes, cols).tobytes()
 
 
 def timing(repeats=3):

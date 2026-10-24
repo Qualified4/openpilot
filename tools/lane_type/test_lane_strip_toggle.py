@@ -175,7 +175,10 @@ def run_daemon(monkeypatch, d, slots, remove_at=None):
   sent = []
   messaging = types.SimpleNamespace(SubMaster=SM, PubMaster=lambda s: N(send=lambda name, msg: sent.append(json.loads(getattr(msg, name)))),
                                     new_message=lambda name, size, valid: N())
-  monkeypatch.setitem(sys.modules, 'openpilot.cereal', types.SimpleNamespace(messaging=messaging, __path__=[]))
+  import openpilot
+  cereal = types.SimpleNamespace(messaging=messaging, __path__=[])
+  monkeypatch.setattr(openpilot, 'cereal', cereal)
+  monkeypatch.setitem(sys.modules, 'openpilot.cereal', cereal)
   monkeypatch.setitem(sys.modules, 'openpilot.cereal.messaging', messaging)
   monkeypatch.setitem(sys.modules, 'openpilot.common.swaglog',
                       N(cloudlog=N(warning=lambda *a: logs['warning'].append(a[1] if len(a) > 1 else a[0]),
