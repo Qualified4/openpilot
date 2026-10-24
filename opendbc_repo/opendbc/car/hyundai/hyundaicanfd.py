@@ -1165,7 +1165,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           lane_green, lane_low, lane_kind, lane_paint, lane_lapsed, lane_unseen = create_ccnc_messages._lane_display['left'].update(
             frame * DT_CTRL, CS.out.vEgo, md is not None and md.meta.laneChangeAvailableLeft,
             lane_probs[1] if lane_probs else None, lane_changing, *ccnc_lane_marking.heads(lane_marking, 'left', lane_marking_now),
-            lane_marking_mode in (1, 2))
+            lane_marking_mode in (1, 2), (lane_marking.get('left') or {}).get('displayResetNs') if lane_marking else None)
           lane_color = 6 if lane_green else 2
           if model_lanes and not lat_active:
             lane_color = 2  # lat off: white base; green only while lat is active
@@ -1187,7 +1187,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           lane_green, lane_low, lane_kind, lane_paint, lane_lapsed, lane_unseen = create_ccnc_messages._lane_display['right'].update(
             frame * DT_CTRL, CS.out.vEgo, md is not None and md.meta.laneChangeAvailableRight,
             lane_probs[2] if lane_probs else None, lane_changing, *ccnc_lane_marking.heads(lane_marking, 'right', lane_marking_now),
-            lane_marking_mode in (1, 2))
+            lane_marking_mode in (1, 2), (lane_marking.get('right') or {}).get('displayResetNs') if lane_marking else None)
           lane_color = 6 if lane_green else 2
           if model_lanes and not lat_active:
             lane_color = 2

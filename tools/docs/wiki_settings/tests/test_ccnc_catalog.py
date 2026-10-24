@@ -8,7 +8,7 @@ from test_generate import GENERATOR, VALIDATOR, COMMIT, STAMP
 from test_ci_check import CI_CHECK
 
 
-KEYS = ("CcncLaneColor", "CcncModelLanes", "CcncLaneTypeDetection", "LaneStripModel", "CcncRadarVehicles", "CcncVehiclePositionCorrection",
+KEYS = ("CcncLaneColor", "CcncModelLanes", "CcncLaneTypeDetection", "LaneStripModel", "CcncLaneChangeInfer", "CcncRadarVehicles", "CcncVehiclePositionCorrection",
         "CcncRadarMap")
 CATALOG = Path(__file__).resolve().parents[4] / "openpilot/selfdrive/carrot_settings.json"
 
@@ -36,6 +36,8 @@ class CcncCatalogTest(unittest.TestCase):
     self.assertEqual(params['CcncLaneTypeDetection']['options']['en'], ['Off', 'StripNet'])  # the Scanner is no longer offered
     self.assertEqual(params['LaneStripModel']['control'], 'select')
     self.assertEqual(params['LaneStripModel']['options']['ko'], ['현재', '새 모델(실험용)'])
+    self.assertEqual(params['CcncLaneChangeInfer']['detail_parent'], 'CcncLaneTypeDetection')
+    self.assertEqual(params['CcncLaneChangeInfer']['options']['en'], ['Off', 'On'])
 
   def test_current_catalog_ci_report(self):
     with tempfile.TemporaryDirectory() as temp:

@@ -70,10 +70,17 @@ class SideDisplay:
     self.lapsed = {'type': False, 'color': False}  # head -> hold ran out, no fresh value since
     self.last = {'type': None, 'color': None}  # head -> last confirmed value, kept for the card's lifetime
     self.green, self.green_s, self.low, self.low_s, self.last_t = None, 0., False, 0., None
+    self.display_reset_ns = 0
 
-  def update(self, t, v_ego, lane_change_available, prob, changing, kind, color, enabled=True):
+  def update(self, t, v_ego, lane_change_available, prob, changing, kind, color, enabled=True, display_reset_ns=None):
     """Returns (green, low, kind, colour, lapsed, unseen) for this frame; lapsed True -> show grey 0, unseen True ->
     hidden 14."""
+    if (enabled and isinstance(display_reset_ns, int) and not isinstance(display_reset_ns, bool)
+        and display_reset_ns > self.display_reset_ns):
+      # Optional recogniser lifecycle reset: once per generation, only the recognised paint memory.
+      self.display_reset_ns = display_reset_ns
+      for head in ('type', 'color'):
+        self.hold[head], self.last[head], self.lapsed[head] = None, None, False
     dt = 0. if self.last_t is None else min(max(t - self.last_t, 0.), MAX_DT)
     self.last_t = t
     stopped = v_ego < STOP_SPEED

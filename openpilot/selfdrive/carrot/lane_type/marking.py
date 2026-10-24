@@ -61,6 +61,11 @@ def parse(payload, received_ns):
         heads[head] = (value, received_ns - age + MAX_AGE_NS)
       else:
         heads[head] = None
+    reset_ns = entry.get('displayResetNs')
+    camera_ns = data.get('cameraMonoTimeNanos')
+    if (isinstance(reset_ns, int) and not isinstance(reset_ns, bool) and isinstance(camera_ns, int)
+        and not isinstance(camera_ns, bool) and 0 < reset_ns <= camera_ns):
+      heads['displayResetNs'] = reset_ns
     out[side] = heads
   return out
 

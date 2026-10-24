@@ -126,7 +126,7 @@ def test_daemon_main_loop_with_fake_ipc(monkeypatch):
   nv12 = np.concatenate((y, uv.reshape(h//2, w)))
   modes = iter([1]*6 + [2]*4 + [0]*10)
   monkeypatch.setitem(sys.modules, 'openpilot.common.params',
-                      N(Params=lambda: N(get_int=lambda key: next(modes) if key == marking.PARAM else 0)))
+                      N(Params=lambda: N(get_int=lambda key: next(modes) if key == marking.PARAM else 0, get=lambda key: None)))
   built = []
   monkeypatch.setattr(md, 'Recogniser', lambda *a, **kw: built.append(a) or Recogniser(*a, **kw))
   monkeypatch.setattr(md, 'PARAM_CHECK_S', 0.)

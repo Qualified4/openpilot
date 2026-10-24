@@ -17,6 +17,7 @@ customReservedRawData2 for card to read without waiting. No CAN, steering, longi
 decision is computed here.
 """
 import json
+import math
 import os
 import time
 
@@ -44,6 +45,9 @@ LANE_PROB_MIN, LANE_PROB_LOST, LANE_DIP_MAX_NS = .5, .3, 1_000_000_000
 # line for 10 s while the model saw the yellow solid one). Below the speed (turn lanes, intersections) the blinker
 # resets as before (10-20 segment 3 L 14.85 s: a turn-lane block marking taken for a white solid, DaBin 10-20).
 BLINKER_PROB, BLINKER_Y, BLINKER_INFER_SPEED = .7, 1., 8.3
+# CcncLaneChangeInfer selects A (0, default) or C2 (1); other variants are replay-only.
+LANECHANGE_VARIANTS = ('A', 'B', 'B-cross', 'B-cross-0.95', 'B-p0.2', 'B-cross-p0.2', 'C1', 'C2', 'C1-0.5')
+LANECHANGE_SPEED = 30. / 3.6
 # StripNet, lead car close (radarState leadOne with status set, dRel < LEAD_GATE_DREL m, the radarState within
 # LEAD_MAX_AGE_NS of the frame's camera stamp): a side that would be inferred is 'lead_close' instead, which pauses like
 # 'lane_prob_dip' (no inference; strip_filter windows / latch and DisplayPolicy are kept, no dip timer). At this range the
@@ -55,6 +59,17 @@ LEAD_GATE_DREL, LEAD_MAX_AGE_NS = 4., 200_000_000
 # Its extra fields (strip_model.decide4) are carried in the raw result and in the packet's raw entry (card reads only
 # the confirmed heads, marking.parse), and only when present, so a v1-v3 packet is unchanged.
 V4_EXTRAS = ('typeClass', 'colorClass', 'double', 'blue', 'pUnknown')
+
+
+def lanechange_of(params=None):
+  """A stored setting takes priority; the environment is only a test/replay fallback when absent."""
+  value = params.get('CcncLaneChangeInfer') if params is not None else None
+  if value is not None:
+    try:
+      return 'C2' if int(value) == 1 else 'A'
+    except (TypeError, ValueError):
+      return 'A'
+  return os.environ.get('CCNC_LANECHANGE_INFER', 'A')
 
 
 def requested(started, params, CP=None):
@@ -131,8 +146,17 @@ class Recogniser:
   to each side's filter_input result before it leaves process(). ``strip_filter`` is for tests and replays only:
   None builds that default, another StripFilter is used instead of it, and False turns the filter off (the raw
   filter_input results, both heads). The Scanner (mode 1) has no filter unless one is passed, and ignores it."""
-  def __init__(self, mode, strip_filter=None, model=None):
+  def __init__(self, mode, strip_filter=None, model=None, *, lanechange=None):
     self.mode = mode
+    self.lanechange = lanechange_of() if lanechange is None else lanechange
+    if self.lanechange not in LANECHANGE_VARIANTS:
+      raise ValueError(f'unknown lane-change inference variant: {self.lanechange}')
+    self.crossing_y = {}
+    self.crossing_min = {}
+    self.crossing_stamp = None
+    self.lc_seen = {side: set() for side in ('left', 'right')}
+    self.lc_frame = None
+    self.lc_fresh, self.display_resets = {}, {}
     if strip_filter is None and mode == 2:
       from openpilot.selfdrive.carrot.lane_type.strip_filter import COLOR_M, LATCH, LONG_M, SHORT_M, StripFilter
       strip_filter = StripFilter('asym', long_m=LONG_M, short_m=SHORT_M, color_m=COLOR_M, latch=LATCH)
@@ -162,6 +186,91 @@ class Recogniser:
     if self.strip_filter is not None:
       self.strip_filter.reset()
     self.dip_since.clear()
+    self.crossing_y.clear()
+    self.crossing_min.clear()
+    self.crossing_stamp = None
+    for heads in self.lc_seen.values():
+      heads.clear()
+    self.lc_frame = None
+    self.lc_fresh.clear()
+    self.display_resets.clear()
+
+  def set_lanechange(self, variant):
+    """Apply a polled setting without reloading the model; report whether display state must reset."""
+    if variant not in LANECHANGE_VARIANTS:
+      raise ValueError(f'unknown lane-change inference variant: {variant}')
+    if variant == self.lanechange:
+      return False
+    self.lanechange = variant
+    self.reset()
+    return True
+
+  def _lifecycle_resets(self, frame):
+    """C2 invalidates only a side that actually confirmed fresh evidence while blinking."""
+    if self.lanechange != 'C2':
+      return set()
+    stamp = frame['stamp']
+    if self.lc_frame is not None and stamp <= self.lc_frame['stamp']:
+      for heads in self.lc_seen.values():
+        heads.clear()
+    self.lc_frame = frame
+    resets = {side for side, heads in self.lc_seen.items() if heads and frame.get('v_ego', 0.) < LANECHANGE_SPEED}
+    for side in resets:
+      self.lc_seen[side].clear()
+      self.display_resets[side] = stamp
+    return resets
+
+  def observe_confirmation(self, confirmed, frame):
+    """Use the existing DisplayPolicy's confirmations; a latched old value is not new model evidence."""
+    if self.lanechange != 'C2':
+      return
+    for side in ('left', 'right'):
+      for head, h in confirmed.get(side, {}).items():
+        if h['stamp'] != frame['stamp'] or not self.lc_fresh.get((side, head)):
+          continue
+        if frame.get('blinker') and frame.get('v_ego', 0.) >= LANECHANGE_SPEED:
+          self.lc_seen[side].add(head)
+        elif not frame.get('blinker'):
+          self.lc_seen[side].discard(head)
+
+  def _lanechange_infer(self, frame):
+    return (self.lanechange != 'A' and frame.get('v_ego', 0.) >= LANECHANGE_SPEED
+            and (frame.get('blinker', False) or frame.get('lcs_change', False)
+                 or frame.get('lcs') in ('preLaneChange', 'laneChangeStarting', 'laneChangeFinishing')))
+
+  def _crossing(self, frame):
+    """Sign crossing or the same near-then-outward renumber used by desire_lib.LaneCrossing.
+
+    A renumber changes both inner-line identities; reset each side before admitting its new evidence.
+    The minimum is restarted after a crossing, so a held blinker can contain another change.
+    """
+    stamp = frame['stamp']
+    if (not self.lanechange.startswith(('B-cross', 'C')) or not self._lanechange_infer(frame)
+        or (self.crossing_stamp is not None and not 0 < stamp - self.crossing_stamp <= 300_000_000)):
+      self.crossing_y.clear()
+      self.crossing_min.clear()
+    self.crossing_stamp = stamp
+    if not self.lanechange.startswith(('B-cross', 'C')) or not self._lanechange_infer(frame):
+      return False
+    crossed = False
+    current = {}
+    for side in ('left', 'right'):
+      ys = frame['lines'][side]['y']
+      if not len(ys) or not math.isfinite(ys[0]):
+        self.crossing_y.pop(side, None)
+        self.crossing_min.pop(side, None)
+        continue
+      y = current[side] = float(ys[0])
+      old = self.crossing_y.get(side)
+      near = self.crossing_min.get(side, abs(y))
+      crossed |= (old is not None and old * y < 0) or (near < 1. and abs(y) - near > 1.5)
+      self.crossing_min[side] = min(near, abs(y))
+      if y != 0:
+        self.crossing_y[side] = y
+    if crossed:
+      self.crossing_min = {side: abs(y) for side, y in current.items()}
+      self.crossing_y = current
+    return crossed
 
   def swap_model(self, model):
     """Hot swap of the StripNet model (LaneStripModel changed): the old model's evidence is dropped (strip filter windows,
@@ -174,6 +283,18 @@ class Recogniser:
   def _skip_reason(self, side, frame):
     """StripNet: why this side is not inferred ('lane_change', 'not_detected', 'lane_prob_dip', 'lead_close'), or None."""
     prob, stamp = frame['probs'][side], frame['stamp']
+    if self._lanechange_infer(frame):
+      self.dip_since.pop(side, None)
+      if self.lanechange.endswith('-p0.2') and not prob >= .2:
+        return 'lane_prob_dip'  # Pause this side below the experimental lane-probability floor.
+      if self.lanechange.startswith('C') and not frame.get('lcs_change') and frame.get('lcs', 'off') == 'off':
+        if not prob >= (.5 if self.lanechange == 'C1-0.5' else .3):
+          return 'lane_prob_dip'
+      lead = frame.get('lead_d_rel')
+      return 'lead_close' if lead is not None and lead < LEAD_GATE_DREL else None
+    if self.lanechange != 'A' and (frame.get('blinker') or frame.get('lcs_change')
+                                 or frame.get('lcs') in ('preLaneChange', 'laneChangeStarting', 'laneChangeFinishing')):
+      return 'lane_change'  # Below 30 km/h still resets, including the legacy 8.3..30/3.6 m/s interval.
     if prob >= LANE_PROB_MIN:
       self.dip_since.pop(side, None)
     else:
@@ -206,6 +327,7 @@ class Recogniser:
                                  reason='lane_change' if frame['lane_change'] else r['reason'], reset=r['reset'])
       return out
     from openpilot.selfdrive.carrot.lane_type.strip_model import batch_strip_inputs
+    lifecycle_resets = self._lifecycle_resets(frame)
     extract_start = time.monotonic_ns()
     strips, sides = [], []
     strip = getattr(self.model, 'strip', {})  # the manifest's strip geometry (StripModel.strip); a replay wrapper without it: default
@@ -241,6 +363,20 @@ class Recogniser:
                                dashed_observed=r['type'] == 'dashed', reason=r['reason'])
       out[side].update({k: r[k] for k in V4_EXTRAS if k in r})
       models[side] = r
+    changing = self._lanechange_infer(frame)
+    crossed = self._crossing(frame)
+    if changing:
+      for side, r in models.items():
+        threshold = .95 if self.lanechange == 'B-cross-0.95' and frame['probs'][side] < .3 else .9
+        for head in ('type', 'color'):
+          if not math.isfinite(r[head + 'Confidence']) or r[head + 'Confidence'] < threshold:
+            out[side][head], out[side][head + 'Confidence'] = 'unknown', 0.
+        if out[side]['type'] == out[side]['color'] == 'unknown':
+          out[side]['reason'] = 'lane_prob_dip'  # pause without clearing the windows or display
+    if crossed or lifecycle_resets:
+      for side in ('left', 'right') if crossed else lifecycle_resets:
+        out[side]['trackingReset'] = True
+        self.dip_since.pop(side, None)
     if self.strip_filter is not None:
       from openpilot.selfdrive.carrot.lane_type.strip_filter import p_dashed, p_yellow
       for side in ('left', 'right'):
@@ -251,8 +387,19 @@ class Recogniser:
         r = models.get(side)
         learned = r is not None and r['reason'] == 'strip_model'
         p, py = (p_dashed(r), p_yellow(r)) if learned else (None, None)
+        if changing:
+          if out[side]['type'] == 'unknown':
+            p = None
+          if out[side]['color'] == 'unknown':
+            py = None
         out[side] = dict(self.strip_filter.update(side, out[side], p, frame['stamp'], frame['odometer'], py),
                          typePDashed=p, colorPYellow=py)
+    if self.lanechange == 'C2':
+      self.lc_fresh = {(side, head): r.get('reason') == 'strip_model' and r.get(head) == out[side][head]
+                       and r.get(head) != 'unknown' and r[head + 'Confidence'] >= .9
+                       for side, r in models.items() for head in ('type', 'color')}
+      for side, stamp in self.display_resets.items():
+        out[side]['displayResetNs'] = stamp
     return out
 
 
@@ -284,6 +431,8 @@ def packet(mode, frame_id, camera_ns, raw, confirmed, now_ns, timing, counters, 
     heads = confirmed.get(side, {})
     entry = {'raw': {k: raw.get(side, {}).get(k) for k in ('type', 'color', 'typeConfidence', 'colorConfidence', 'reason')}}
     entry['raw'].update({k: raw[side][k] for k in V4_EXTRAS if k in raw.get(side, {})})  # v4 only (marking.parse ignores raw)
+    if 'displayResetNs' in raw.get(side, {}):
+      entry['displayResetNs'] = raw[side]['displayResetNs']
     for head in ('type', 'color'):
       h = heads.get(head)
       entry[head] = h['value'] if h else 'unknown'
@@ -342,7 +491,7 @@ def main():
   frames = FrameBuffer()
   slot = model_of(params)
   strip_net, model_info = load_model(slot)
-  recogniser, policy = Recogniser(mode, model=strip_net), DisplayPolicy()
+  recogniser, policy = Recogniser(mode, model=strip_net, lanechange=lanechange_of(params)), DisplayPolicy()
   counters = {'processed': 0, 'exact': 0, 'nearest': 0, 'frame_mismatch': 0, 'stale_inputs': 0, 'errors': 0,
               'drop_hold_before': 0, 'drop_frame_id_before': 0, 'drop_hold_after': 0, 'drop_frame_id_after': 0}
   odometer, last_stamp, next_param = 0., None, time.monotonic() + PARAM_CHECK_S
@@ -351,6 +500,8 @@ def main():
       next_param = time.monotonic() + PARAM_CHECK_S
       if mode_of(params) not in MODES:
         break
+      if recogniser.set_lanechange(lanechange_of(params)):
+        policy.reset()
       new_slot = model_of(params)
       if new_slot != slot:  # hot swap: no restart, the recogniser's and the display filter's state start empty
         slot = new_slot
@@ -402,6 +553,7 @@ def main():
                'leads': [{'prob': lead.prob, 'x': [x - shift for x in lead.x], 'y': list(lead.y)} for lead in model.leadsV3],
                'lane_change': bool(car.leftBlinker or car.rightBlinker or str(model.meta.laneChangeState) != 'off'),
                'blinker': bool(car.leftBlinker or car.rightBlinker),
+               'lcs': str(model.meta.laneChangeState),
                'lcs_change': str(model.meta.laneChangeState) != 'off', 'v_ego': float(car.vEgo),
                'lead_d_rel': lead_d_rel(sm['radarState'], sm.logMonoTime['radarState'] if sm.seen['radarState'] else 0, stamp)}
       raw = recogniser.process(y_plane, uv_plane, frame)
@@ -418,6 +570,7 @@ def main():
     faults_after = minor_faults()
     now_ns = time.monotonic_ns()
     confirmed = policy.confirm({'cameraMonoTimeNanos': stamp, **raw}, now_ns)
+    recogniser.observe_confirmation(confirmed, frame)
     counters['processed'] += 1
     timing = {'processingMs': (now_ns - start_ns)/1e6, 'threadCpuMs': (time.thread_time_ns() - cpu_start)/1e6,
               'cameraToPublishMs': (now_ns - stamp)/1e6, 'frameOffsetMs': offset_s*1e3, 'frameMatch': kind}
