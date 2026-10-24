@@ -163,10 +163,10 @@ def test_optional_threshold_is_per_head_and_only_below_point3(recogniser, prob, 
   assert out['left']['colorPYellow'] is not None
 
 
-def test_default_a_and_off_context_keep_deployed_gate(recogniser, monkeypatch):
+def test_default_c2_and_replay_variants(recogniser, monkeypatch):
   monkeypatch.delenv('CCNC_LANECHANGE_INFER', raising=False)
-  rec = md.Recogniser(2, model=N())
-  assert rec.lanechange == 'A'
+  assert md.lanechange_of() == 'C2' and md.Recogniser(2, model=N()).lanechange == 'C2'
+  rec = recogniser('A')  # the earlier rule, kept for replays
   for state in ('preLaneChange', 'laneChangeStarting', 'laneChangeFinishing'):
     assert rec._skip_reason('left', frame(0, state, prob=0.99)) == 'lane_change'
   rec = recogniser('B')
@@ -175,52 +175,6 @@ def test_default_a_and_off_context_keep_deployed_gate(recogniser, monkeypatch):
   assert md.Recogniser(2, model=N()).lanechange == 'B-cross'
   with pytest.raises(ValueError):
     recogniser('bad')
-
-
-@pytest.mark.parametrize('value,expected', [(b'0', 'A'), (b'1', 'C2'), (b'2', 'A'), (b'bad', 'A'), (b'', 'A')])
-def test_saved_setting_overrides_replay_environment(monkeypatch, value, expected):
-  monkeypatch.setenv('CCNC_LANECHANGE_INFER', 'C1-0.5')
-  assert md.lanechange_of(N(get=lambda key: value)) == expected
-  assert md.lanechange_of(N(get=lambda key: None)) == 'C1-0.5'
-  monkeypatch.delenv('CCNC_LANECHANGE_INFER')
-  assert md.lanechange_of(N(get=lambda key: None)) == 'A'
-
-
-def test_setting_switch_resets_evidence_without_reloading(recogniser):
-  rec = recogniser('C2')
-  model = rec.model
-  rec.process(None, None, frame(0))
-  rec.lc_seen['left'].add('color')
-  rec.display_resets['left'] = 123
-  assert rec.strip_filter.sides['left'].items
-  assert not rec.set_lanechange('C2')
-  assert rec.strip_filter.sides['left'].items and rec.display_resets
-  assert rec.set_lanechange('A')
-  assert rec.model is model and not rec.strip_filter.sides
-  assert not rec.crossing_y and not rec.dip_since and not rec.display_resets
-  assert not any(rec.lc_seen.values()) and rec.lc_frame is None and not rec.lc_fresh
-  assert rec.set_lanechange('C2')
-  with pytest.raises(ValueError):
-    rec.set_lanechange('C3')
-  assert rec.lanechange == 'C2'
-
-
-def test_daemon_polls_lanechange_setting_and_resets_display(monkeypatch, tmp_path):
-  from tools.lane_type.test_lane_strip_toggle import assets, run_daemon  # noqa: TID251 - reuse the daemon IPC fixture
-  monkeypatch.setenv('CCNC_LANECHANGE_INFER', 'C1')
-  modes = []
-  process = md.Recogniser.process
-
-  def observe(self, *args):
-    modes.append(self.lanechange)
-    return process(self, *args)
-
-  monkeypatch.setattr(md.Recogniser, 'process', observe)
-  built, _, resets, sent = run_daemon(monkeypatch, assets(tmp_path), [0]*12, lanechanges=[0]*4 + [1]*4 + [0]*4)
-  assert built == [(2,)] and sent
-  assert [v for i, v in enumerate(modes) if i == 0 or v != modes[i-1]] == ['A', 'C2', 'A']
-  assert {5, 9} <= set(resets)
-  assert md.PARAM_CHECK_S == 0.  # the helper accelerates the production 1 s poll, not a separate setting path
 
 
 @pytest.mark.parametrize('variant', ['B-p0.2', 'B-cross-p0.2'])

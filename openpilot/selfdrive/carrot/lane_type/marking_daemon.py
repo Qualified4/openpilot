@@ -45,7 +45,12 @@ LANE_PROB_MIN, LANE_PROB_LOST, LANE_DIP_MAX_NS = .5, .3, 1_000_000_000
 # line for 10 s while the model saw the yellow solid one). Below the speed (turn lanes, intersections) the blinker
 # resets as before (10-20 segment 3 L 14.85 s: a turn-lane block marking taken for a white solid, DaBin 10-20).
 BLINKER_PROB, BLINKER_Y, BLINKER_INFER_SPEED = .7, 1., 8.3
-# CcncLaneChangeInfer selects A (0, default) or C2 (1); other variants are replay-only.
+# Lane-change inference (10-24, product C2): at >= LANECHANGE_SPEED with the blinker or laneChangeState pre/starting/
+# finishing, a side is inferred whatever its lane prob (blinker with laneChangeState off: prob >= .3) and only heads
+# with model confidence >= .9 enter the windows; crossing a line resets that side, and a side confirmed during the
+# blinker is cleared (with the card's paint memory, displayResetNs) below the speed. Replay on 11 sets with the 10-24
+# human labels: lane-change correct 82 -> 156 s, total errors 346 -> 254 s, 19 s new (codex/lanechange1024/REPORT3_KO.md).
+# 'A' is the earlier BLINKER_* rule above; it and the other variants are kept for replays (CCNC_LANECHANGE_INFER).
 LANECHANGE_VARIANTS = ('A', 'B', 'B-cross', 'B-cross-0.95', 'B-p0.2', 'B-cross-p0.2', 'C1', 'C2', 'C1-0.5')
 LANECHANGE_SPEED = 30. / 3.6
 # StripNet, lead car close (radarState leadOne with status set, dRel < LEAD_GATE_DREL m, the radarState within
@@ -61,15 +66,9 @@ LEAD_GATE_DREL, LEAD_MAX_AGE_NS = 4., 200_000_000
 V4_EXTRAS = ('typeClass', 'colorClass', 'double', 'blue', 'pUnknown')
 
 
-def lanechange_of(params=None):
-  """A stored setting takes priority; the environment is only a test/replay fallback when absent."""
-  value = params.get('CcncLaneChangeInfer') if params is not None else None
-  if value is not None:
-    try:
-      return 'C2' if int(value) == 1 else 'A'
-    except (TypeError, ValueError):
-      return 'A'
-  return os.environ.get('CCNC_LANECHANGE_INFER', 'A')
+def lanechange_of():
+  """The product variant is C2; the environment selects another one for tests and replays."""
+  return os.environ.get('CCNC_LANECHANGE_INFER', 'C2')
 
 
 def requested(started, params, CP=None):
@@ -194,16 +193,6 @@ class Recogniser:
     self.lc_frame = None
     self.lc_fresh.clear()
     self.display_resets.clear()
-
-  def set_lanechange(self, variant):
-    """Apply a polled setting without reloading the model; report whether display state must reset."""
-    if variant not in LANECHANGE_VARIANTS:
-      raise ValueError(f'unknown lane-change inference variant: {variant}')
-    if variant == self.lanechange:
-      return False
-    self.lanechange = variant
-    self.reset()
-    return True
 
   def _lifecycle_resets(self, frame):
     """C2 invalidates only a side that actually confirmed fresh evidence while blinking."""
@@ -491,7 +480,7 @@ def main():
   frames = FrameBuffer()
   slot = model_of(params)
   strip_net, model_info = load_model(slot)
-  recogniser, policy = Recogniser(mode, model=strip_net, lanechange=lanechange_of(params)), DisplayPolicy()
+  recogniser, policy = Recogniser(mode, model=strip_net, lanechange=lanechange_of()), DisplayPolicy()
   counters = {'processed': 0, 'exact': 0, 'nearest': 0, 'frame_mismatch': 0, 'stale_inputs': 0, 'errors': 0,
               'drop_hold_before': 0, 'drop_frame_id_before': 0, 'drop_hold_after': 0, 'drop_frame_id_after': 0}
   odometer, last_stamp, next_param = 0., None, time.monotonic() + PARAM_CHECK_S
@@ -500,8 +489,6 @@ def main():
       next_param = time.monotonic() + PARAM_CHECK_S
       if mode_of(params) not in MODES:
         break
-      if recogniser.set_lanechange(lanechange_of(params)):
-        policy.reset()
       new_slot = model_of(params)
       if new_slot != slot:  # hot swap: no restart, the recogniser's and the display filter's state start empty
         slot = new_slot

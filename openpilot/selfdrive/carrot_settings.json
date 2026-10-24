@@ -424,7 +424,6 @@
             "CcncModelLanes",
             "CcncLaneTypeDetection",
             "LaneStripModel",
-            "CcncLaneChangeInfer",
             "CcncRadarVehicles",
             "CcncVehiclePositionCorrection",
             "CcncRadarMap"
@@ -1959,29 +1958,6 @@
           "当前",
           "新模型(实验用)"
         ]
-      }
-    },
-    {
-      "group": "시작",
-      "name": "CcncLaneChangeInfer",
-      "detail_parent": "CcncLaneTypeDetection",
-      "title": "차선 변경 중 종류 판단(실험용)",
-      "descr": "깜빡이를 켜거나 차선을 바꾸는 중에도 차선 종류 판단을 이어 갑니다. 차선 확률이 낮아도 모델 확신이 0.9 이상이면 반영하고, 30 km/h 미만이 되면 판단을 지웁니다. 실험용. 기본 끔. 주행 중 변경은 약 1초 안에 적용되며 판단을 초기화합니다. 표시 전용",
-      "egroup": "START",
-      "etitle": "Lane type during lane changes (experimental)",
-      "edescr": "Continues lane type recognition while blinking or changing lanes. Accepts model confidence of at least 0.9 even with low lane probability, and clears decisions below 30 km/h. Experimental, off by default. Changes while driving apply within about 1 s and reset decisions. Display only",
-      "cgroup": "启动设置",
-      "ctitle": "变道时识别车道线类型(实验用)",
-      "cdescr": "打转向灯或变道时继续识别车道线类型。即使车道线概率较低，模型置信度达到0.9时也会采用；低于30 km/h时清除判断。实验功能，默认关闭。行驶中更改约1秒内生效并重置判断。仅用于显示",
-      "min": 0,
-      "max": 1,
-      "default": 0,
-      "unit": 1,
-      "control": "select",
-      "options": {
-        "ko": ["끔", "켬"],
-        "en": ["Off", "On"],
-        "zh": ["关闭", "开启"]
       }
     },
     {

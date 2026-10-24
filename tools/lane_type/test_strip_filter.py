@@ -440,7 +440,7 @@ def test_type_latch_still_changes_on_one_confident_frame():
   (False, False, .4, 1.8, 5., 'lane_prob_dip'),
 ])
 def test_blinker_alone_infers_a_confident_line_beside_the_car(blinker, lcs, prob, y, v, reason):
-  rec = Recogniser(2)
+  rec = Recogniser(2, lanechange='A')  # the earlier blinker rule, kept as replay variant 'A' (product: C2)
   f = dict(frame(0, lane_change=blinker or lcs, probs=(prob, 1.)), blinker=blinker, lcs_change=lcs,
            lines={'left': {'y': [y, y]}, 'right': {'y': [1.8, 1.8]}})
   if v is not None:

@@ -114,7 +114,7 @@ def test_hot_swap_resets_filter_and_dip_state(tmp_path, strips):  # noqa: F811
     Recogniser(1).swap_model(v4)
 
 
-def run_daemon(monkeypatch, d, slots, remove_at=None, lanechanges=None):
+def run_daemon(monkeypatch, d, slots, remove_at=None):
   """marking_daemon.main with fake IPC and the assets in ``d``: LaneStripModel follows ``slots`` (one entry per param poll,
   PARAM_CHECK_S 0: once per loop; CcncLaneTypeDetection on for len(slots) polls, then off); at poll ``remove_at`` the v4
   files disappear. -> (recognisers built, cloudlog lines, polls at which DisplayPolicy was reset, packets sent)."""
@@ -131,10 +131,7 @@ def run_daemon(monkeypatch, d, slots, remove_at=None, lanechanges=None):
       for ext in ('onnx', 'json'):
         (d/f'lane_strip_v4.{ext}').unlink(missing_ok=True)
     return slots[min(state['poll'], len(slots)) - 1] if state['poll'] else slots[0]
-  def get(key):
-    assert key == 'CcncLaneChangeInfer'
-    return None if lanechanges is None else str(lanechanges[max(0, state['poll']-1)]).encode()
-  monkeypatch.setitem(sys.modules, 'openpilot.common.params', N(Params=lambda: N(get_int=get_int, get=get)))
+  monkeypatch.setitem(sys.modules, 'openpilot.common.params', N(Params=lambda: N(get_int=get_int)))
   monkeypatch.setattr(md, 'PARAM_CHECK_S', 0.)
   monkeypatch.setattr(md.os, 'nice', lambda n: None, raising=False)
   built, resets, logs = [], [], {'warning': [], 'info': []}
