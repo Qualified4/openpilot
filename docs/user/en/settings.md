@@ -320,7 +320,7 @@ Both enabled modes display lane positions and lane-change direction with highlig
 
 Refined does not discard curvature solely because of low lane confidence during a lane change. When the driving path is stale or unusable, it briefly retains the last curvature and then gradually returns the curve display toward straight. A longer lane reassignment can still pause the position display in both modes.
 
-Device compute: added time per CCNC display call, measured by replaying recorded logs on the comma device's big core (the core card runs on, 1.69 GHz while not driving) on 2026-10-23 with the other options off. Standard +0.16 ms and Refined +0.32 ms over a 0.86 ms all-off baseline. On the same basis, radar vehicle display adds 3.1 ms, vehicle position correction 0.5 ms, radar map 1.9 ms and acceleration/mode lane color 0.04 ms. These times include CAN message generation and packing and are not whole-device CPU usage.
+Device compute: added time per CCNC display call, measured by replaying recorded logs on the comma device's big core (the core card runs on, 1.69 GHz while not driving) on 2026-10-23 with the other options off. Standard +0.16 ms and Refined +0.32 ms over a 0.86 ms all-off baseline. On the same basis, radar vehicle display adds 3.1 ms, vehicle position correction 0.5 ms, radar map 0.9 ms (after the 10-24 native speed-up) and acceleration/mode lane color 0.04 ms. These times include CAN message generation and packing and are not whole-device CPU usage.
 
 Turn off to use the default lane and icon display. Trailer-related lane-change restrictions take priority. Nearby vehicle display is controlled separately by the next option.
 
