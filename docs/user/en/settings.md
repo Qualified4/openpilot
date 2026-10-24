@@ -320,7 +320,7 @@ Both enabled modes display lane positions and lane-change direction with highlig
 
 Refined does not discard curvature solely because of low lane confidence during a lane change. When the driving path is stale or unusable, it briefly retains the last curvature and then gradually returns the curve display toward straight. A longer lane reassignment can still pause the position display in both modes.
 
-Device compute: added time per CCNC display call, measured by replaying recorded logs on the comma device's big core (the core card runs on, 1.69 GHz while not driving) on 2026-10-23 with the other options off. Standard +0.16 ms and Refined +0.32 ms over a 0.86 ms all-off baseline. On the same basis, radar vehicle display adds 3.1 ms, vehicle position correction 0.5 ms, radar map 0.9 ms (after the 10-24 native speed-up) and acceleration/mode lane color 0.04 ms. These times include CAN message generation and packing and are not whole-device CPU usage.
+Device compute: added time per CCNC display call, measured by replaying recorded logs on comma big core 5 (1.69 GHz while offroad) on 2026-10-24 after native optimization, with the other options off. Standard +0.16 ms and Refined +0.33 ms over a 0.88 ms all-off baseline. On the same basis, radar vehicles add 2.9 ms, position correction 0.54 ms (radar vehicles on, map off), radar map 1.2 ms and acceleration/mode lane color 0.05 ms. Shared work and tracked state depend on the combination, so these values cannot be added; the tested user combination took 6.27 ms. These times include CAN message generation and packing and are not whole-device CPU usage.
 
 Turn off to use the default lane and icon display. Trailer-related lane-change restrictions take priority. Nearby vehicle display is controlled separately by the next option.
 
@@ -332,7 +332,9 @@ Recognizes whether each lane line is solid or dashed and white or yellow, and sh
 
 Lane priority for each side separately: a recognized **yellow** line shows **orange solid**, even when a lane change is otherwise shown as available; otherwise, when the existing lane-change-available condition is met, the line is **green** (solid or dashed as recognized); otherwise it is **white** solid or dashed. A result must be seen twice within 0.4 s and expires 0.5 s after the last evidence; unknown or expired results keep the existing display. Existing lane-departure blinking, lane-line warnings, lane position, curvature and lane-change animation are unchanged. Blind-spot detection no longer turns the lane line orange; the blind-spot warning is shown by the rear-side icons.
 
-This option changes only the cluster display. It does not change whether a lane change is allowed, the lane-change logic, steering or the driving model. Device CPU load and recognition accuracy on the road are not yet measured.
+Measured lane recognition cost in its separate process (little cores 0–3, nice 10, two OpenCV threads, both sides): about 10.9 ms/frame for current v3 and 14.8 ms for new v4. Recognition gates and onroad load change the actual timing.
+
+This option changes only the cluster display. It does not change whether a lane change is allowed, the lane-change logic, steering or the driving model. Onroad device load and recognition accuracy on the road are not yet measured.
 
 #### CCNC HDA1 radar vehicles
 
