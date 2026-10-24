@@ -308,6 +308,7 @@ SConscript([
   'openpilot/selfdrive/carrot/radar_motion/SConscript',
   'openpilot/selfdrive/carrot/lane_type/SConscript',
   'opendbc_repo/opendbc/can/SConscript',
+  'opendbc_repo/opendbc/car/hyundai/SConscript',
 ])
 
 # Build tools

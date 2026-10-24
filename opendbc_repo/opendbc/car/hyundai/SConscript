@@ -1,0 +1,6 @@
+Import('envCython')
+
+native_env = envCython.Clone()
+native_env.Append(CYTHONFLAGS=['--cplus'])
+native_env.Append(CCFLAGS=['-fno-fast-math', '-ffp-contract=off'])
+native_env.Program('_ccnc_map_native.so', '_ccnc_map_native.pyx')

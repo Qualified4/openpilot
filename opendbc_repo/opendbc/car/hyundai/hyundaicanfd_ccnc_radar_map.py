@@ -11,7 +11,10 @@ from dataclasses import dataclass, field
 import math
 from types import SimpleNamespace
 
+import numpy as np
+
 from opendbc.car.carlog import carlog
+from opendbc.car.hyundai.ccnc_map_native import loops as _native
 
 
 @dataclass
@@ -316,12 +319,20 @@ class CcncRadarMap:
 
   def _geometry(self):
     self.geometry = {}
+    placed = {}
     for i, lane in self.lanes.items():
-      points = sorted(self.to_ego(x, y) for x, y in lane.points)
+      xy = np.asarray(lane.points, dtype=np.float64).reshape(-1, 2)
+      dx, dy = xy[:, 0] - self.pose[0], xy[:, 1] - self.pose[1]
+      # Separate float64 ufuncs retain to_ego's operation order without fused multiply/add.
+      placed[i] = list(zip((self.cos * dx + self.sin * dy).tolist(), (-self.sin * dx + self.cos * dy).tolist(), strict=False))
+      points = sorted(placed[i])
       points = [p for j, p in enumerate(points) if j == 0 or p[0] > points[j - 1][0] + .001]
       self.geometry[i] = points
+    return placed
 
-  def _update_lanes(self, model, stamp, lane_curves=None):
+  def _update_lanes(self, model, stamp, lane_curves=None, previous_placed=None):
+    if _native is not None:
+      return _native.update_lanes(self, model, stamp, lane_curves, previous_placed, LaneBoundary)
     pose = self.pose_at(stamp)
     if pose is None:
       return
@@ -360,9 +371,9 @@ class CcncRadarMap:
         # model keeps the stored line (and its standing) as it was.
         self.weak.discard(i)
       # Keep one bracketing point at each edge for interpolation, not the full 190m curve.
-      xs = [p[0] for p in coords]
-      first = max(0, bisect_left(xs, self.MIN_X) - 1)
-      last = min(len(coords), bisect_left(xs, self.FAR_X) + 1)
+      distances = [p[0] for p in coords]
+      first = max(0, bisect_left(distances, self.MIN_X) - 1)
+      last = min(len(coords), bisect_left(distances, self.FAR_X) + 1)
       world = [(px + pc * x + ps * y, py + ps * x - pc * y) for x, y in coords[first:last]]  # to_world(x, -y, pose)
       placed = [self.to_ego(x, y) for x, y in world]
       local = sorted(placed)
@@ -372,7 +383,10 @@ class CcncRadarMap:
       consistent = old.consistent + 1 if old is not None and errors and max(errors) <= .35 else 1
       # Retain actual previously seen geometry behind the current camera domain.
       limit = local[0][0] - .1
-      behind = [(point, ego) for point in old.points for ego in (self.to_ego(*point),) if -5. <= ego[0] < limit][-24:] if old else []
+      behind = []
+      if old is not None:
+        old_ego = previous_placed[i] if previous_placed is not None else (self.to_ego(*point) for point in old.points)
+        behind = [(point, ego) for point, ego in zip(old.points, old_ego, strict=False) if -5. <= ego[0] < limit][-24:]
       self.lanes[i] = LaneBoundary([point for point, _ in behind] + world[:40], float(probability), min(consistent, 20))
       # Same result as _geometry() for this line, reusing the transforms above.
       points = sorted([ego for _, ego in behind] + placed[:40])
@@ -1261,8 +1275,11 @@ class CcncRadarMap:
 
   def _ego_lines(self, x):
     """Ego's left and right lane lines at x (None where unusable)."""
-    bounds, usable, _ = self._lane_view(x)
-    return tuple(bounds.get(i) if i in usable else None for i in (1, 2))
+    lines = []
+    for i in (1 + self.lane_offset, 2 + self.lane_offset):
+      lane = self.lanes.get(i) if 0 <= i < 4 else None
+      lines.append(interpolate(self.geometry.get(i, []), x) if lane is not None and lane.probability >= .1 else None)
+    return tuple(lines)
 
   def _centre(self, x):
     """Middle of ego's lane lines at x, or None."""
@@ -1445,13 +1462,13 @@ class CcncRadarMap:
     self.evidence = evidence or {}
     self.yaw_rate = yaw_rate
     self._advance(now, v_ego, yaw_rate)
-    self._geometry()
+    previous_placed = self._geometry()
     radar_time = now if radar_time is None else radar_time
     model_time = now if model_time is None else model_time
     if (model is not None and 0. <= now - model_time <= .25
         and ((model_time != self.model_stamp) if self.model_stamp is not None else True)
         and model is not self.model):
-      self._update_lanes(model, model_time, lane_curves)
+      self._update_lanes(model, model_time, lane_curves, previous_placed)
       self.model, self.model_stamp = model, model_time
     self.usable = live is not None and 0. <= now - radar_time <= .15
     self._update_lane_reference()
@@ -1559,6 +1576,13 @@ class CcncRadarMap:
                               born=o.born, seen=o.seen, hits=o.hits) for o in self.objects.values()],
                 lanes=self.geometry, lane_probability={i: (v.probability, v.consistent) for i, v in self.lanes.items()},
                 walls=self.wall_geometry)
+
+
+if _native is not None:
+  interpolate = _native.interpolate
+  CcncRadarMap.to_ego = _native.to_ego
+  CcncRadarMap._geometry = _native.geometry
+  CcncRadarMap._lane_view = _native.lane_view
 
 
 _live = SimpleNamespace(tracker=None, raw=None, radar_time=0., model=None, model_time=0., failed=False, filters={}, ego_blend=(None, 0., 0.), aligned={}, handover={}, generation=None)

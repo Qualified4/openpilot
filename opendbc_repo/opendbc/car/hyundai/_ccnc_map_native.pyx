@@ -1,0 +1,122 @@
+# cython: language_level=3, infer_types=False
+"""Exact float64 loops for the optional display-only CCNC map backend.
+
+Build with -fno-fast-math -ffp-contract=off. Keep Python sorting, bisect,
+validation and state transitions; only elementary arithmetic is unboxed.
+"""
+from bisect import bisect_left
+import math
+
+
+cdef list _placed(points, double px, double py, double c, double s):
+  cdef double x, y, dx, dy
+  cdef list result = []
+  for x, y in points:
+    dx, dy = x - px, y - py
+    result.append((c * dx + s * dy, -s * dx + c * dy))
+  return result
+
+
+cdef list _world(points, double px, double py, double c, double s):
+  cdef double x, y
+  cdef list result = []
+  for x, y in points:
+    result.append((px + c * x + s * y, py + s * x - c * y))
+  return result
+
+
+def to_ego(self, double x, double y):
+  cdef double px = self.pose[0], py = self.pose[1]
+  cdef double c = self.cos, s = self.sin
+  return c * (x - px) + s * (y - py), -s * (x - px) + c * (y - py)
+
+
+def geometry(self):
+  self.geometry = {}
+  placed = {}
+  for i, lane in self.lanes.items():
+    placed[i] = _placed(lane.points, self.pose[0], self.pose[1], self.cos, self.sin)
+    points = sorted(placed[i])
+    self.geometry[i] = [p for j, p in enumerate(points) if j == 0 or p[0] > points[j - 1][0] + .001]
+  return placed
+
+
+def interpolate(points, x):
+  if len(points) < 2 or not points[0][0] <= x <= points[-1][0]:
+    return None
+  i = max(1, bisect_left(points, (x, -math.inf)))
+  a, b = points[i - 1], points[i]
+  if b[0] <= a[0]:
+    return None
+  cdef double ax = a[0], ay = a[1], bx = b[0], by = b[1], xx = x
+  return ay + (by - ay) * (xx - ax) / (bx - ax)
+
+
+def update_lanes(self, model, stamp, lane_curves, previous_placed, boundary_type):
+  pose = self.pose_at(stamp)
+  if pose is None:
+    return
+  px, py = pose[0], pose[1]
+  pc, ps = math.cos(pose[2]), math.sin(pose[2])
+  # Indices 4/5 are the left/right road edges, as in the existing selector.
+  lines = list(zip(model.laneLines, model.laneLineProbs))[:4]
+  lines += [None] * (4 - len(lines)) + [(edge, 1.) for edge in list(getattr(model, 'roadEdges', ()))[:2]]
+  for i, entry in enumerate(lines):
+    if entry is None:
+      continue
+    line, probability = entry
+    if lane_curves is None:
+      coords = list(zip(line.x, line.y))
+      valid = (len(coords) >= 2 and len(line.x) == len(line.y)
+               and all(math.isfinite(x) and math.isfinite(y) for x, y in coords)
+               and all(b[0] > a[0] for a, b in zip(coords, coords[1:])))
+    else:
+      # The existing selector validates/caches the same immutable model arrays.
+      xs, ys, valid = lane_curves(model, i)
+      coords = list(zip(xs.tolist(), ys.tolist())) if valid else []
+    if not valid or not math.isfinite(probability):
+      continue
+    old = self.lanes.get(i)
+    if probability < .1:
+      if not self.ego_change or i > 3:
+        if old is not None:
+          old.probability *= .9
+        continue
+      # While ego changes lanes the model's line confidence collapses, but its current positions stay
+      # continuous (the lane display ignores the confidence then too): use them, never as strong.
+      probability = .1
+      self.weak.add(i)
+    else:
+      # Only a confident observation of the line ends its position-only standing; an invalid or skipped
+      # model keeps the stored line (and its standing) as it was.
+      self.weak.discard(i)
+    # Keep one bracketing point at each edge for interpolation, not the full 190m curve.
+    distances = [p[0] for p in coords]
+    first = max(0, bisect_left(distances, self.MIN_X) - 1)
+    last = min(len(coords), bisect_left(distances, self.FAR_X) + 1)
+    world = _world(coords[first:last], px, py, pc, ps)  # to_world(x, -y, pose)
+    placed = _placed(world, self.pose[0], self.pose[1], self.cos, self.sin)
+    local = sorted(placed)
+    previous_geometry = self.geometry.get(i, [])
+    errors = [abs(y - previous) for x, y in local if 0. <= x <= 30.
+              for previous in (interpolate(previous_geometry, x),) if previous is not None]
+    consistent = old.consistent + 1 if old is not None and errors and max(errors) <= .35 else 1
+    # Retain actual previously seen geometry behind the current camera domain.
+    limit = local[0][0] - .1
+    behind = []
+    if old is not None:
+      old_ego = previous_placed[i] if previous_placed is not None else (self.to_ego(*point) for point in old.points)
+      behind = [(point, ego) for point, ego in zip(old.points, old_ego, strict=False) if -5. <= ego[0] < limit][-24:]
+    self.lanes[i] = boundary_type([point for point, _ in behind] + world[:40], float(probability), min(consistent, 20))
+    # Same result as _geometry() for this line, reusing the transforms above.
+    points = sorted([ego for _, ego in behind] + placed[:40])
+    self.geometry[i] = [p for j, p in enumerate(points) if j == 0 or p[0] > points[j - 1][0] + .001]
+
+def lane_view(self, x):
+  # Keep the stored physical lines; only their roles follow ego across a late renumber.
+  indices = {i: i + self.lane_offset for i in range(4) if 0 <= i + self.lane_offset < 4}
+  indices.update({4: 4, 5: 5})
+  bounds = {i: interpolate(self.geometry.get(j, []), x) for i, j in indices.items()}
+  usable = {i for i, j in indices.items() if j in self.lanes and self.lanes[j].probability >= .1 and bounds[i] is not None}
+  strong = {i for i in usable if self.lanes[indices[i]].probability >= .6 and self.lanes[indices[i]].consistent >= 3}
+  return bounds, usable, strong
