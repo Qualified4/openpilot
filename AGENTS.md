@@ -1,5 +1,17 @@
 # Repository memory
 
+- On 2026-10-25, merged origin/carrot-wip 05c16780 (21 commits: bounded
+  Jetlink request queuing/deferred completions/AIO trials, raw signal masks,
+  correlated diagnostics, optional HUD encoder thread budget and UI camera/EGL
+  cleanup) into ccnc-hda1 on 47e1805c. Only AGENTS.md conflicted; both complete
+  record blocks retained, CCNC first. All209 non-overlapping branch-specific
+  file blobs/modes, accepted side handovers, lane inference/model and all six
+  Ccnc setting definitions are preserved. All25 incoming-only files match the
+  upstream blobs/modes. Validation is limited to conflict resolution,
+  preservation and merge diff checks; no upstream feature retest, timing,
+  device validation, push or deployment. Evidence:
+  .analysis/archive/2026-10-25/carrot-merge.
+
 - On 2026-10-25, Davin accepted continuous CCNC LF/RF <-> LR/RR display handovers
   and authorized commit/push. SmoothHandover/SideFlow retain selector/map,
   anti-jitter, ego-lane-change tracking and the original vRel/ego-speed rear
@@ -22,6 +34,64 @@
 - On 2026-10-23, merged origin/carrot-wip dfab65d0 (9 commits: Jetlink PR560-562 USB recovery/DHCP/ADB handoff,
   NAV shared input/native image/N16 projection records, Hyundai CAN-FD no-lead stop object state 2 trial) into
   ccnc-hda1 on 895c130b. Only AGENTS.md conflicted; both branches' log entries are kept.
+- On 2026-10-24, owner requests further measured Jetson latency improvement.
+  NAV HUD libx264 encoder/conversion pools default one worker each; actual
+  FFmpeg16->2threads,462x1920/10FPS/all-I/bitrate/priorities unchanged.
+  Wip common optional flag/tests only, no HUD default/model/runtime change.
+  Parked A/B/A means39.724/39.524/39.611ms; repeated B/A39.577/39.627ms:
+  gain0.143ms versus surrounding means,repeat0.050ms/P99gain0.888ms.
+  All model/DM/cameras/odom valid consecutive,pose healthy; no hard50ms claim.
+  HUD pause improves~1ms but combines renderer/encoder/USB resources; USBsend
+  does not improve,not proof of wire contention. Inference cores0/1 trial
+  39.587vs39.591ms gives no meaningful gain; masks restored,not adopted.
+  Restored-affinity59.500ms tail retained; full latency/locationd cure unproven.
+  126desktop/7skip; native Orin codec geometry/color/count checks pass both
+  modes/sizes. NAV CI40098966251 passes1468/56skip+94update/119nav/11storage/
+  11NAT/62codec plus Windows; Wip40098976544 passes. Signed64749015B host
+  c3f2aeebf6 full HTTPS/hash verified; normal Git Pull/restart e5abf9928f and
+  Jetson boot updater physically installed it,N16SHA01effc67 unchanged.
+  PinCI40099276579/eGPU40099276515 pass. Final59.907s1198 valid consecutive
+  model/DM/cameras/odom/healthy pose,mean39.427/P9943.760/max49.844ms,0>50;
+  no alerts,all P/inactive guards,NAV/link/HUD119/119. Display10Hz,30/30 map
+  advancing and signal online,decode drops0; no physical visual/road claim.
+  Original snapshot absence/onroad restored,watchdog exited,trial overlays
+  absent; no new affinity policy. Raw private. Details:
+  docs/jetson_regression_isolation_20261024.md.
+
+- On 2026-10-24, owner reiterates map-after-inference/HUD-next-frame trial.
+  Prior DIRECT_MAP=0 did NOT test this. Exact-N16 negotiated map references
+  move uint8 packing/transmission after camera submission; current camera/nav
+  vector preserved, one source-aged cache, route/cancel/reset/gap/expiry gates,
+  150ms transit+50ms use reserve, no same-image TTL refresh. New map may apply
+  one nominal50ms model cycle later; no driving-equivalence/road claim.
+  Parked valid-NAV ON/OFF120s each2401 valid consecutive model, healthy DM/
+  cameras/odom/pose, no alerts, NAV/link/HUD120/120. Means39.778/40.317ms,
+  P9944.546/44.947,max48.033/48.284,0>50: mean gain0.538ms/1.33%.
+  ON reference use99.873%,critical393476B vs458996B,IPC84B vs60B; map staged
+  ~5Hz,server25.624/25.588ms unchanged. Earlier mixed-NAV baseline40.445
+  kept separate.239desktop/44skip; Linux1468/56skip+94update/119nav/11storage/
+  11NAT and Windows/eGPU pass. Signed64748504B host0fb6c73926 fullHTTPS/hash
+  verified and normal boot-updater installed; N16 SHA01effc67 unchanged.
+  fc2109c436 defaultON,explicit JETLINK_DEFER_NAV=0 and old-peer fallback;
+  final-default CI40080920733/eGPU40080920752 pass. Wip N16/runtime unchanged.
+  Earlier direct zoompilot main d24328d differs from pinnedb1d70418 only in
+  formatting/test text; SysfsGadget per-port LPM hint yields actual repeated
+  ON41.131/OFF40.142ms,NAV117/119of120,0>50. Scoped root pipe/journal lease
+  tested idle30.152s,EOF,SIGTERM,SIGKILL recovery; originalu1_u2 restored.
+  NAV907cfc5 enables measured LPM-off lease/deferred8KiB; production lease
+  now owns exact active port, not a permanent global quirk. Deferred32 alone
+  moved waits, no meaningful mean gain;8KiB alone higherCPU/no mean gain.
+  Wip5bbaf88234 has common opt-in transport only; both CIs pass. No pressure
+  soak, hard50ms bound or full disconnect/locationd/reboot-root-cause claim.
+  Final normal defaults60s:1200 valid consecutive model/cameras/odom,1201DM/
+  healthy pose,NAV/link/HUD60/60,mean39.612/max46.309,0>50,reference100%.
+  USB HUD/map60/60 fresh in OFF/ON,960x540 advancing,decode drops0; screen0
+  excludesmode7preview, not modelNAV. Finalfc2109c436 tracked-clean, no trial
+  modeld/jetlinkd flags, snapshot absent/onroad/P/inactive/pose verified;
+  private root0600 boot-env profile deleted. Normal production LPM lease stays.
+  Details: docs/jetson_regression_isolation_20261024.md.
+  Raw logs/private restart environment excluded from publication.
+
 - On 2026-10-23, owner requests review/application of PR560/561/562.
   560 staging/os fix already in e4779e059a; retain newer N16 defaults. Add
   missing full2066-output precedence; actual parser regression fails old/passes
