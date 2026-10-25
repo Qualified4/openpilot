@@ -72,12 +72,13 @@ class SideFlow:
       same = candidate is not None and candidate['key'] == f['key']
       if f['phase'] == 'to_rear' and same:
         f['phase'] = 'join_front'  # a short observation gap may be cancelled without resetting its position
-      elif f['phase'] == 'to_rear' and not f_owned and not eligible_bsd:
+      elif f['phase'] == 'to_rear' and not f_owned and not eligible_bsd and not f.get('display_pass', False):
         self.front = f = None  # Original coast cancellation/timeout wins; animation is not tracking evidence.
       elif f['phase'] != 'to_rear' and not same:
-        if f['x'] <= 5. and (f_owned or eligible_bsd):
+        if f['x'] <= 5.:
           f['phase'] = 'to_rear'
-        elif f['x'] <= 5. or candidate is None or candidate['x'] < self.GAP or r is not None and candidate['key'] == r['key']:
+          f['display_pass'] = not f_owned  # An already drawn near F needs no new radar/BSD qualification to pass.
+        elif candidate is None or candidate['x'] < self.GAP or r is not None and candidate['key'] == r['key']:
           self.front = f = None
         else:
           # A replacement at distance changes the target, not the currently drawn position.

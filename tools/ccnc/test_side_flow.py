@@ -397,16 +397,46 @@ def test_production_rear_uses_original_relative_motion_instead_of_fixed_exit(spe
   assert d.policy.flows[0].rear is None
 
 
-@pytest.mark.parametrize('failure', ['reflection', 'jump', 'too_far'])
-def test_renderer_cannot_bypass_original_handover_rejection(failure):
+@pytest.mark.parametrize('side', [0, 1])
+@pytest.mark.parametrize('replacement', [None, (2, 24.)])
+@pytest.mark.parametrize('evidence', ['none', 'unqualified'])
+def test_near_display_passes_without_radar_qualification_or_bsd(side, replacement, evidence):
+  d = Drive(side)
+  d.policy = SmoothHandover()
+  front, rear = ('LF', 'LR') if side == 0 else ('RF', 'RR')
+  for i in range(2):
+    d.step(i, x=4.8 if evidence == 'unqualified' else None, vehicle=False, drawn=(1, 3.8))
+  assert d.policy.fronts[side] is None or not d.policy.fronts[side]['qualified']
+  last_x = 3.8
+  received = False
+  for i in range(2, 260):
+    values, _ = d.step(i, drawn=replacement)
+    f, r = d.policy.flows[side].front, d.policy.flows[side].rear
+    if not received and 'front_to_rear' not in d.policy.flows[side].events:
+      assert f is not None and f['phase'] == 'to_rear' and f['y'] == 3.
+      assert last_x-f['x'] == pytest.approx(.15)
+      last_x = f['x']
+    elif not received:
+      assert r['x'] == 0. and r['y'] == 3. and r['motion'] is None
+      assert last_x <= .15+1e-9
+      assert bool(values[front+'_DETECT']) == (replacement is not None)
+      received = True
+    elif r is None:
+      assert not values[rear+'_DETECT']
+      break
+    else:
+      assert r['x'] < 0. and -r['x'] <= 16.
+  else:
+    pytest.fail('unqualified display did not finish its bounded rear exit')
+  assert received
+
+
+def test_distant_display_is_not_handed_over_without_a_near_pass():
   d = Drive()
   d.policy = SmoothHandover()
-  d.seed(vehicle=failure != 'reflection')
-  if failure == 'jump':
-    d.step(15, x=12.)
-  elif failure == 'too_far':
-    d.policy.sides[0]['x'] = 3.5
-  for i in range(16, 70):
+  for i in range(3):
+    d.step(i, x=8., drawn=(1, 6.))
+  for i in range(3, 70):
     values, _ = d.step(i)
     assert not values['LR_DETECT']
   assert not any(e['event'] == 'front_to_rear' for e in d.events)
