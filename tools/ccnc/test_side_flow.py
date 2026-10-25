@@ -29,6 +29,21 @@ class Scene:
     return f, r
 
 
+@pytest.mark.parametrize('old_distance,new_distance', [(5.01, 6.), (20., 80.), (80., 6.)])
+def test_different_far_front_replaces_position_immediately(old_distance, new_distance):
+  flow = SideFlow()
+  flow.update(0., .05, car(1, old_distance, 4.), False, 2.8)
+  candidate = dict(car(2, new_distance, 3.), detect=3)
+  f, r = flow.update(.05, .05, candidate, False, 2.8)
+  assert f == dict(candidate, phase='front')
+  assert r is None
+  # Ordinary tracking still uses its existing distance jump limit after the replacement.
+  candidate['x'] += 10.
+  f, r = flow.update(.1, .05, candidate, False, 2.8)
+  assert f['x'] == pytest.approx(new_distance+1.)
+  assert r is None
+
+
 @pytest.mark.parametrize('old_distance', [4., 5.])
 def test_new_far_front_waits_for_old_front_zero_and_rear_receives_same_lateral(old_distance):
   s = Scene()

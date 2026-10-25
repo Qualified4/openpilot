@@ -81,8 +81,8 @@ class SideFlow:
         elif candidate is None or candidate['x'] < self.GAP or r is not None and candidate['key'] == r['key']:
           self.front = f = None
         else:
-          # A replacement at distance changes the target, not the currently drawn position.
-          f['key'], f['detect'], f['phase'] = candidate['key'], candidate['detect'], 'join_front'
+          # A different front target owns its drawing immediately, without inheriting the old position.
+          self.front = f = dict(candidate, phase='front')
 
     spawned = r is None and bsd
     if spawned:
