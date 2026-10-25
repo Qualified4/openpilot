@@ -66,9 +66,9 @@ def test_active_states_ignore_lane_probability(recogniser, state, blinker, prob)
   assert rec.process(None, None, f)['left']['type'] == 'dashed'
 
 
-@pytest.mark.parametrize('variant', ['B', 'B-cross', 'B-cross-0.95', 'B-p0.2', 'B-cross-p0.2'])
-@pytest.mark.parametrize('speed', [0.0, 5.0, 8.3, 30.0 / 3.6 - 1e-6])
-def test_under_30kmh_resets(recogniser, variant, speed):
+@pytest.mark.parametrize('variant', ['B', 'B-cross', 'B-cross-0.95', 'B-p0.2', 'B-cross-p0.2', 'C1', 'C2', 'C1-0.5'])
+@pytest.mark.parametrize('speed', [0.0, 5.0, 6.0, 24.0 / 3.6 - 1e-6])
+def test_under_24kmh_resets(recogniser, variant, speed):
   rec = recogniser(variant)
   rec.process(None, None, frame(0))
   out = rec.process(None, None, frame(1, prob=0.9, speed=speed))
@@ -76,10 +76,12 @@ def test_under_30kmh_resets(recogniser, variant, speed):
   assert not rec.strip_filter.sides['left'].items
 
 
-def test_30kmh_and_confidence_boundary(recogniser):
-  rec = recogniser()
+@pytest.mark.parametrize('variant', ['B', 'C2'])
+@pytest.mark.parametrize('speed', [24.0 / 3.6, 8.0, 30.0 / 3.6])
+def test_24kmh_and_confidence_boundary(recogniser, variant, speed):
+  rec = recogniser(variant)
   rec.model.tc = rec.model.cc = 0.9
-  assert rec.process(None, None, frame(0, speed=30.0 / 3.6))['left']['typePDashed'] == 0.9
+  assert rec.process(None, None, frame(0, speed=speed))['left']['typePDashed'] == 0.9
 
 
 @pytest.mark.parametrize('low_head', ['type', 'color'])
@@ -228,7 +230,7 @@ def test_c_probability_floor_applies_only_to_blinker_off_state(recogniser, varia
     assert rec._skip_reason('left', frame(0, state, prob=0.01)) is None
   assert rec._skip_reason('left', frame(0, 'off', prob=floor)) is None
   assert rec._skip_reason('left', frame(1, 'off', prob=floor - 1e-9)) == 'lane_prob_dip'
-  assert rec._skip_reason('left', frame(2, 'off', prob=floor, speed=8.0)) == 'lane_change'
+  assert rec._skip_reason('left', frame(2, 'off', prob=floor, speed=6.0)) == 'lane_change'
   assert rec._skip_reason('left', frame(3, 'off', prob=0.2, blinker=False)) == 'not_detected'
 
 
@@ -249,22 +251,40 @@ def lifecycle_step(rec, policy, memories, i, **kw):
   return raw, parsed, displays
 
 
-@pytest.mark.parametrize('variant,hidden', [('C1', False), ('C2', True)])
-def test_c2_resets_actual_card_paint_memory_on_slowdown(recogniser, variant, hidden):
+@pytest.mark.parametrize('variant', ['C1', 'C2'])
+@pytest.mark.parametrize('speed', [0., 6., 24. / 3.6 - 1e-6, 24. / 3.6, 8.])
+def test_slowdown_clears_recognition_without_erasing_card_paint(recogniser, variant, speed):
   rec = recogniser(variant)
   policy = DisplayPolicy()
   memories = {side: SideDisplay() for side in ('left', 'right')}
   for i in range(4):
     lifecycle_step(rec, policy, memories, i)
-  raw, parsed, displays = lifecycle_step(rec, policy, memories, 4, speed=8.0)
-  assert displays['left'][-1] is hidden
-  assert ('displayResetNs' in parsed['left']) is hidden
-  if hidden:
+  raw, parsed, displays = lifecycle_step(rec, policy, memories, 4, speed=speed)
+  assert not displays['left'][-1] and displays['left'][2:4] == ('dashed', 'white')
+  assert 'displayResetNs' not in parsed['left']
+  if speed < 24. / 3.6:
+    assert raw['left']['reason'] == 'lane_change' and raw['left']['type'] == raw['left']['color'] == 'unknown'
+    assert not rec.strip_filter.sides['left'].items and not policy.sides['left']['heads']
+  if variant == 'C2' and speed < 24. / 3.6:
     assert raw['left']['trackingReset']
-    for i in range(5, 8):
-      _, repeated, displays = lifecycle_step(rec, policy, memories, i)
-    assert repeated['left']['displayResetNs'] == parsed['left']['displayResetNs']
-    assert not displays['left'][-1]  # a repeated marker does not erase freshly confirmed paint
+
+
+def test_long_slow_blinker_hold_accepts_new_paint_as_soon_as_it_is_confirmed(recogniser):
+  rec = recogniser('C2')
+  policy = DisplayPolicy()
+  memories = {side: SideDisplay() for side in ('left', 'right')}
+  for i in range(4):
+    lifecycle_step(rec, policy, memories, i)
+  for i in range(4, 2004):  # 100 s low-speed turn/queue: inference remains blocked, last paint stays visible.
+    raw, parsed, displays = lifecycle_step(rec, policy, memories, i, speed=0.)
+    assert raw['left']['reason'] == 'lane_change'
+    assert displays['left'][2:4] == ('dashed', 'white') and not displays['left'][-1]
+    assert 'displayResetNs' not in parsed['left']
+  rec.model.infer = lambda strips: [{'type': 'solid', 'color': 'yellow', 'typeConfidence': .99, 'colorConfidence': .99,
+    'typeCandidate': 'solid', 'colorCandidate': 'yellow', 'reason': 'strip_model'} for _ in strips]
+  for i in range(2004, 2006):
+    _, _, displays = lifecycle_step(rec, policy, memories, i, speed=6., blinker=False)
+  assert displays['left'][2:4] == ('solid', 'yellow') and not displays['left'][-1]
 
 
 def test_c2_has_no_extra_post_blinker_deadline(recogniser):
@@ -289,8 +309,10 @@ def test_c2_does_not_clear_the_other_side_without_blinker_evidence(recogniser):
   memories['right'].update(0., 10., False, 0.9, True, 'solid', 'white')
   for i in range(4):
     lifecycle_step(rec, policy, memories, i, right_prob=0.1)
-  _, parsed, displays = lifecycle_step(rec, policy, memories, 4, speed=8.0, right_prob=0.1)
-  assert displays['left'][-1] and 'displayResetNs' in parsed['left']
+  _, parsed, displays = lifecycle_step(rec, policy, memories, 4, speed=6.0, right_prob=0.1)
+  assert not displays['left'][-1] and 'displayResetNs' not in parsed['left']
+  assert displays['left'][2:4] == ('dashed', 'white')
+  assert not rec.strip_filter.sides['left'].items  # recognition still resets on the side with fresh blinker evidence
   assert not displays['right'][-1] and 'displayResetNs' not in parsed['right']
   with pytest.raises(ValueError):
     recogniser('C3')  # rejected experiment is retained only in analysis artifacts

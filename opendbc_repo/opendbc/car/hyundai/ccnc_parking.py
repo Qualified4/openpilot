@@ -4,9 +4,7 @@ Entry evidence is *distance driven slowly with no lane lines and uncertain road 
   both laneLineProbs[1,2] < PROB_ON, both roadEdgeStds[0,1] > EDGE_STD_ON, MIN_SPEED <= vEgo <= MAX_SPEED.
 Standing still neither adds nor resets evidence, so a red-light queue (lanes often invisible, edges uncertain
 while stopped) never enters; driving with lane lines visible resets it. Entry needs ENTRY_M of that travel.
-Thresholds were chosen from logs (docs/ccnc_parking_lane_hide_20261019.md): the parking-garage log reaches
-38 m and a surface lot 8.7 m, while 187 public-road segments (3.1 h incl. stops, intersections, lane changes)
-reach at most 2.0 m.
+Log evidence and threshold history: docs/ccnc_parking_lane_hide_20261019.md.
 Lane change guard: while one blinker is on (hazards excluded, as in the CCNC animation), the lane change state is not off or the model desire is a lane change,
 and for GRACE_S afterwards, evidence is cleared and cannot build. A confirmed hide is NOT released by a blinker.
 Release (hysteresis): lane lines visible (max prob >= PROB_OFF) for EXIT_M of travel, or vEgo >= EXIT_SPEED
@@ -15,9 +13,9 @@ No lane-change permission, DesireHelper, steering or modeld input is read for an
 """
 PROB_ON, EDGE_STD_ON = .2, 1.5
 MIN_SPEED, MAX_SPEED = .5, 4.5          # m/s
-ENTRY_M = 5.
+ENTRY_M = 10.
 PROB_OFF, EXIT_M = .5, 10.
-EXIT_SPEED, EXIT_SPEED_S = 8.3, 1.      # 30 km/h
+EXIT_SPEED, EXIT_SPEED_S = 24. / 3.6, 1.
 GRACE_S, NO_MODEL_S, MAX_DT = 3., 1., .2
 HIDE_CODE = 14  # hides the lane line on the CCNC cluster, confirmed on the car for both LEFT and RIGHT
 

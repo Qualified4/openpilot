@@ -38,7 +38,7 @@ MAX_HOLD_NS = 500_000_000
 # entered in the strip filter's windows) and neither those windows nor DisplayPolicy are emptied. Below LANE_PROB_LOST,
 # or a dip lasting longer, is 'not_detected', which empties both.
 LANE_PROB_MIN, LANE_PROB_LOST, LANE_DIP_MAX_NS = .5, .3, 1_000_000_000
-# StripNet, blinker alone (laneChangeState off): at lane-change speed (vEgo >= BLINKER_INFER_SPEED, 30 km/h) a side
+# Replay variant A, blinker alone (laneChangeState off): at vEgo >= BLINKER_INFER_SPEED (30 km/h) a side
 # whose line is confident (prob >= BLINKER_PROB) and beside the car (|y at the first model point| >= BLINKER_Y m, not
 # the line being crossed) is inferred as usual; otherwise the blinker resets it ('lane_change'), as does any
 # laneChangeState other than off (10-20 segment 9: a blinker held through two lane changes kept the old white dashed
@@ -48,11 +48,11 @@ BLINKER_PROB, BLINKER_Y, BLINKER_INFER_SPEED = .7, 1., 8.3
 # Lane-change inference (10-24, product C2): at >= LANECHANGE_SPEED with the blinker or laneChangeState pre/starting/
 # finishing, a side is inferred whatever its lane prob (blinker with laneChangeState off: prob >= .3) and only heads
 # with model confidence >= .9 enter the windows; crossing a line resets that side, and a side confirmed during the
-# blinker is cleared (with the card's paint memory, displayResetNs) below the speed. Replay on 11 sets with the 10-24
+# blinker clears its recognition evidence below the speed, retaining card's last confirmed paint. Replay on 11 sets with the 10-24
 # human labels: lane-change correct 82 -> 156 s, total errors 346 -> 254 s, 19 s new (codex/lanechange1024/REPORT3_KO.md).
 # 'A' is the earlier BLINKER_* rule above; it and the other variants are kept for replays (CCNC_LANECHANGE_INFER).
 LANECHANGE_VARIANTS = ('A', 'B', 'B-cross', 'B-cross-0.95', 'B-p0.2', 'B-cross-p0.2', 'C1', 'C2', 'C1-0.5')
-LANECHANGE_SPEED = 30. / 3.6
+LANECHANGE_SPEED = 24. / 3.6
 # StripNet, lead car close (radarState leadOne with status set, dRel < LEAD_GATE_DREL m, the radarState within
 # LEAD_MAX_AGE_NS of the frame's camera stamp): a side that would be inferred is 'lead_close' instead, which pauses like
 # 'lane_prob_dip' (no inference; strip_filter windows / latch and DisplayPolicy are kept, no dip timer). At this range the
@@ -155,7 +155,7 @@ class Recogniser:
     self.crossing_stamp = None
     self.lc_seen = {side: set() for side in ('left', 'right')}
     self.lc_frame = None
-    self.lc_fresh, self.display_resets = {}, {}
+    self.lc_fresh = {}
     if strip_filter is None and mode == 2:
       from openpilot.selfdrive.carrot.lane_type.strip_filter import COLOR_M, LATCH, LONG_M, SHORT_M, StripFilter
       strip_filter = StripFilter('asym', long_m=LONG_M, short_m=SHORT_M, color_m=COLOR_M, latch=LATCH)
@@ -192,10 +192,9 @@ class Recogniser:
       heads.clear()
     self.lc_frame = None
     self.lc_fresh.clear()
-    self.display_resets.clear()
 
   def _lifecycle_resets(self, frame):
-    """C2 invalidates only a side that actually confirmed fresh evidence while blinking."""
+    """C2 clears fresh blinker recognition evidence on slowdown, independently of card's paint memory."""
     if self.lanechange != 'C2':
       return set()
     stamp = frame['stamp']
@@ -206,7 +205,6 @@ class Recogniser:
     resets = {side for side, heads in self.lc_seen.items() if heads and frame.get('v_ego', 0.) < LANECHANGE_SPEED}
     for side in resets:
       self.lc_seen[side].clear()
-      self.display_resets[side] = stamp
     return resets
 
   def observe_confirmation(self, confirmed, frame):
@@ -283,7 +281,7 @@ class Recogniser:
       return 'lead_close' if lead is not None and lead < LEAD_GATE_DREL else None
     if self.lanechange != 'A' and (frame.get('blinker') or frame.get('lcs_change')
                                  or frame.get('lcs') in ('preLaneChange', 'laneChangeStarting', 'laneChangeFinishing')):
-      return 'lane_change'  # Below 30 km/h still resets, including the legacy 8.3..30/3.6 m/s interval.
+      return 'lane_change'  # Below 24 km/h still resets.
     if prob >= LANE_PROB_MIN:
       self.dip_since.pop(side, None)
     else:
@@ -387,8 +385,6 @@ class Recogniser:
       self.lc_fresh = {(side, head): r.get('reason') == 'strip_model' and r.get(head) == out[side][head]
                        and r.get(head) != 'unknown' and r[head + 'Confidence'] >= .9
                        for side, r in models.items() for head in ('type', 'color')}
-      for side, stamp in self.display_resets.items():
-        out[side]['displayResetNs'] = stamp
     return out
 
 
