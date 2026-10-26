@@ -17878,5 +17878,5 @@
     }
   ],
   "exclusion_rule": "Frames of route--segment/side with eof_s in [start_s, end_s] are dropped from type and colour scoring (manifest rows and card-replay truth alike).",
-  "policy": "Double SOLID lines (both lines solid) are labelled 'solid' (single class), not dbl_near/dbl_far (user 2026-10-23). dbl_near = ego-side line dashed, dbl_far = ego-side line solid and the other dashed."
+  "policy": "Double SOLID lines (both lines solid) are labelled 'solid' (single class), not dbl_near/dbl_far (user 2026-10-23). dbl_near = ego-side line dashed, dbl_far = ego-side line solid and the other dashed. Blue (bus lane) paint is colour only: type (dashed/solid/dbl_near/dbl_far) is judged exactly as for white, and the colour is labelled/shown white; a blue solid next to an ego-side white dashed line is dbl_near (white), the reverse dbl_far (user 2026-10-26)."
 }
