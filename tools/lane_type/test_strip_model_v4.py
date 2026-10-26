@@ -225,7 +225,7 @@ def test_shipped_product_manifest_is_4type_with_family_abstention():
   assert strip_model.HOLD_BY_FAMILY is True and strip_model.HOLD_COLOR is False
   assert (m.v4, m.mirror_right, m.threshold, m.heads) == (True, True, .9, ['type', 'color'])
   manifest = json.loads((strip_model.ASSETS/f'{strip_model.MODEL_NAME}.json').read_text(encoding='utf-8'))
-  assert manifest['outputs'] == strip_model.OUTPUTS_V4_4 and manifest['params'] == 107870 and manifest['deviceValidated'] is False
+  assert manifest['outputs'] == strip_model.OUTPUTS_V4_4 and manifest['params'] == 107870 and manifest['deviceValidated'] is True  # claude/device1026
   assert strip_model.onnx_output_shape((strip_model.ASSETS/f'{strip_model.MODEL_NAME}.onnx').read_bytes(), 'type') == [None, 4]
   types, colors = m.forward([np.full((3, 128, 128), 100., np.float32)])
   assert types.shape == (1, 4) and colors.shape == (1, 3)

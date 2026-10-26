@@ -18,11 +18,11 @@ see [the license](../../../../../tools/lane_type/LICENSE.PaddleClas.txt).
 model of the `CcncLaneTypeDetection` display mode (`strip_model.StripModel`, manifest v4: raw YCbCr `N x 3 x 128 x 128` row-aligned
 4.5-20 m strip over +-1.0 m, right strip mirrored, outputs `color` white/yellow/blue and `type` dashed/solid/dbl_near/dbl_far
 logits; no unknown class: a frame abstains when max(P(dashed)+P(dbl_near), P(solid)+P(dbl_far)) < 0.90, `strip_model.HOLD_BY_FAMILY`).
-Device cost: measured for a 5-type model of the same architecture (`codex/device_capacity1025`), extract + infer median 18.3 ms,
-p95 19.9 ms per frame.
+Device cost, measured for this model (`claude/device1026`, offroad, OpenCV 2 threads): extract + infer median 18.3 ms, p95
+19.9 ms per frame (previous model 14.7 ms).
 When its files are missing or fail the contract checks, a warning is logged and no lane type is published (the existing lane
 display stays); there is no fallback model (the earlier v3 strip model and the model choice setting were removed 10-26). The
 manifest version and sha256 prefix are logged and carried in each `customReservedRawData2` packet's `model` entry. The
-manifest records the autolabel1026 replay results (and the earlier ones under `previous_eval`); the model is not
-device-validated. Training and evaluation:
+manifest records the autolabel1026 replay results (and the earlier ones under `previous_eval`) and the device timing
+(`eval.device`). Training and evaluation:
 [tools/lane_profile](../../../../../tools/lane_profile/README.md).

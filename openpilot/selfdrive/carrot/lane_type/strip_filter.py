@@ -35,7 +35,8 @@ Variants (``StripFilter(kind, **params)``):
                   (after a reset, or the first one) the first confident colour is stored at once. The type head
                   (DaBin 10-26: F1d1, filterab1026 A/B) changes to the other type only once its consecutive confident
                   frames span TYPE_LATCH_M (1 m) of travel; a frame not confident of the other type restarts that run,
-                  and the first type after a reset is stored at once ('A8/4L-legacy': it changed on the first confident
+                  a frame without probabilities (model abstention, lane_prob_dip, lead_close) pauses it (the travel up to
+                  such a frame is not counted; codex review1026 M1), and the first type after a reset is stored at once ('A8/4L-legacy': it changed on the first confident
                   frame). Resets empty the latch and the counts too. Frames without
                   probabilities (no inference, lane_prob_dip) still pass through as they are. 'A8/4' (no latch) is
                   kept for comparison.
@@ -179,6 +180,8 @@ class StripFilter:
         (s.last_stamp is not None and not 0 < stamp - s.last_stamp <= MAX_GAP_NS)):
       s.clear()
     s.last_stamp = stamp
+    if p is None and s.tflips and s.odometer is not None:
+      s.tflip_odometer += odometer - s.odometer  # paused: travel to a frame without P(dashed) does not count toward type_latch_m
     s.odometer = odometer
     if result.get('reason') in RESET_REASONS:
       return result

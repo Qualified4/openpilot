@@ -66,7 +66,7 @@
    "single_to_double_412_of_215": "28 (72)",
    "wrong_41c_of_130": "11 (15)",
    "validation_human_type4_colour_hold": ".919 / .987 / .103 (.914 / .982 / .004)",
-   "cost": "same architecture as the 5-type large model measured on device (codex/device_capacity1025): extract + infer median 18.3 ms, p95 19.9 ms per frame (previous model 14.7 / 15.9)"
+   "cost": "device measured for this model (eval.device): extract + infer median 18.31 ms, p95 19.90 ms per frame (previous model 14.71)"
   },
   "previous_eval": {
    "rain1024b_D1": {
@@ -134,10 +134,23 @@
      }
     }
    }
+  },
+  "device": {
+   "source": ".analysis/ccnc-field-412-20261022/claude/device1026/results.json (comma, offroad, 10-26)",
+   "method": "little cores 0-3, nice 10, OpenCV 2 threads, native extractor, 120 frames of 412/9, ABBA blocks against the previous model",
+   "extract_plus_infer_ms": {
+    "median": 18.31,
+    "p95": 19.9,
+    "previous_median": 14.71
+   },
+   "infer_only_ms": {
+    "median": 8.6,
+    "previous_median": 4.93
+   }
   }
  },
  "previous": "lane_strip_v4 23ff1bc74942 (10-24 rain1024b D1 seed 2, 5 types, 33,775 parameters); before that c621e1e41cab (10-23 label-fix retrain), nolat-v3init-c seed 4 (0e22e71364b6)",
- "deviceValidated": false,
+ "deviceValidated": true,
  "previous_training": {
   "source": ".analysis/ccnc-field-412-20261022/codex/trainfast/training-rain1024b/D1/bluew_center_kd0_negsyn0.25_s2 (trainfast, 10-24)",
   "init": "type/backbone from the previous lane_strip_v4 (sha256 0e22e71364b6); colour branch from v3",

@@ -105,7 +105,7 @@ Ignoring `x0.01`, `x0.001`, `cm`, `km/h`, or `%` can make a value appear one hun
 
 ## Settings map
 
-The current `carrot_settings.json` contains **204 parameters**. The driver-monitoring exception and `NNFF` are search only; the remaining entries appear in these menus:
+The current `carrot_settings.json` contains **203 parameters** (distinct names in its `params` list). The driver-monitoring exception and `NNFF` are search only; the remaining entries appear in these menus:
 
 | Category | Count | Groups |
 |---|---:|---|
@@ -335,7 +335,7 @@ The solid/dashed decision averages the recent recognition results over the dista
 
 Recognition continues through lane changes. At 30 km/h or more, while the blinker is on or a lane change is in progress, only results with model confidence of at least 0.9 are used even when the openpilot lane probability is low (with the blinker alone and no lane-change state, the lane probability must be at least 0.3). Crossing a line restarts that side, and a decision made during the blinker is cleared, with its cluster display, below 30 km/h.
 
-Strip extraction plus inference in its separate process, measured on the device for a 5-type model of the same architecture (little cores 0–3, nice 10, two OpenCV threads, both sides): median about 18.3 ms/frame (p95 19.9 ms). Recognition gates and onroad load change the actual timing.
+Strip extraction plus inference in its separate process, measured on the device for the shipped model (little cores 0–3, nice 10, two OpenCV threads, both sides): median about 18.3 ms/frame (p95 19.9 ms). Recognition gates and onroad load change the actual timing.
 
 This option changes only the cluster display. It does not change whether a lane change is allowed, the lane-change logic, steering or the driving model. Onroad device load and recognition accuracy on the road are not yet measured.
 

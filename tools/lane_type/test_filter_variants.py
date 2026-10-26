@@ -126,3 +126,16 @@ def test_new_default_is_f1d1():
   """DaBin 10-26: the product filter (Recogniser default and 'A8/4L') equals the filterab1026 A/B variant F1d1."""
   assert sf.VARIANTS['A8/4L'] == sf.VARIANTS['A8/4L-F1+d1']
   assert vars(sf.make('A8/4L-F1+d1')) == vars(Recogniser(2).strip_filter)
+
+
+def test_f1d1_travel_without_probabilities_does_not_count():
+  """codex review1026 M1: frames without P(dashed) (model abstention, lane_prob_dip, lead_close) pause the 1 m type confirmation;
+  their travel is not counted, so 1.5 m of held frames plus one confident frame cannot flip the latch."""
+  f = sf.make('A8/4L')  # the product default (F1d1)
+  feed(f, .01, .01, 10, metres=.5)  # solid latched, odometers 0 .. 4.5
+  f.long_m = f.short_m = .2
+  assert feed(f, .99, .01, 1, start=10, metres=.5)['type'] == 'solid'  # odometer 5.0: the run starts
+  feed(f, None, .01, 3, start=11, metres=.5, reason='unknown')  # 5.5 .. 6.5 without P(dashed): paused
+  assert f.sides['left'].latched['type'][0] == 'solid'
+  assert feed(f, .99, .01, 1, start=14, metres=.5)['type'] == 'solid'  # 7.0: 0.5 m counted (2.0 m without the pause)
+  assert feed(f, .99, .01, 1, start=15, metres=.5)['type'] == 'dashed'  # 7.5: 1.0 m of confident travel
