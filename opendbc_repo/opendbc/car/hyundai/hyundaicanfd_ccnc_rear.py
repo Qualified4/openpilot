@@ -88,6 +88,7 @@ class RearHandover:
     self.unproven = [False, False]
     self.events = []
     self.v_ego = 0.
+    self.changing = False  # blinker/lane-change block of the last update; SideFlow retires its non-BSD R with it
     self.ego_hist = deque()  # (send time, vEgo, dt) of every send
 
   @property
@@ -205,6 +206,7 @@ class RearHandover:
     changing = (getattr(CS.out, 'leftBlinker', False) or getattr(CS.out, 'rightBlinker', False)
                 or str(getattr(meta, 'desire', '')) in ('laneChangeLeft', 'laneChangeRight')
                 or str(getattr(meta, 'laneChangeState', 'off')) != 'off')
+    self.changing = changing
     probs = list(getattr(md, 'laneLineProbs', ()))  # pycapnp list readers reject slicing
     blocked = ('clock_or_context' if self.context != context or not 0 < dt <= .2 else
                'reverse' if str(getattr(CS.out, 'gearShifter', '')) == 'reverse' else
@@ -472,7 +474,7 @@ class SmoothHandover(RearHandover):
                       max_speed=self.EXIT_MAX_SPEED)
       f, r = self.flows[side].update(now, dt, candidate, bool(CS.out.leftBlindspot if side == 0 else CS.out.rightBlindspot),
                                    rear_laterals[side], elsewhere=(selected[0], selected[2-side]),
-                                   motion=motion)
+                                   motion=motion, v_ego=self.v_ego, lane_change=self.changing)
       values[fd] = f['detect'] if f is not None else 0
       values[rd] = r['detect'] if r is not None else 0
       if f is not None:

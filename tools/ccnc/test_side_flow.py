@@ -4,7 +4,7 @@ import copy
 import pytest
 
 from opendbc.car.hyundai.hyundaicanfd_ccnc_side_flow import SideFlow
-from opendbc.car.hyundai.hyundaicanfd_ccnc_rear import SmoothHandover
+from opendbc.car.hyundai.hyundaicanfd_ccnc_rear import RearHandover, SmoothHandover
 from tools.ccnc.test_rear_handover import Drive  # noqa: TID251
 
 
@@ -94,7 +94,7 @@ def test_front_origin_immediately_replaces_any_occupied_rear_and_resets_its_stat
             'force_at': 10., 'deadline': 14., 'max_speed': 8.}
   f, r = flow.update(1., .05, car(2, new_distance), False, 2.8, motion=motion)
   assert r is not old and r['key'] == (1, 0) and r['x'] == 0. and r['y'] == 4.
-  assert r['motion'] is motion and r['model_distance'] == 0. and r['hold_until'] == 1.
+  assert r['motion'] is motion and r['model_distance'] == 0. and 'hold_until' not in r
   assert r.get('spacing', False) == (new_distance < 6.) and 'rear_display_replaced' in flow.events
   assert (f is not None) == (new_distance >= 6.)
   if f:
@@ -403,7 +403,7 @@ def test_production_rear_uses_original_relative_motion_instead_of_fixed_exit(spe
     if snapshot and r:
       assert 0. <= snapshot['x']-r['x'] <= 8.*.05+1e-9
     if (snapshot and r and r.get('motion') is snapshot.get('motion') and r.get('motion') is not None
-        and r['phase'] == 'virtual' and now >= r['hold_until'] and now < r['motion']['force_at']):
+        and r['phase'] == 'virtual' and now < r['motion']['force_at']):
       expected = r['motion']['distance']-snapshot['model_distance']
       assert values['LR_DETECT_DISTANCE']+snapshot['x'] == pytest.approx(expected, abs=1e-9)
       assert d.policy._retreat(r['motion']) == pytest.approx(-speed*ego/20.*.8)
@@ -484,7 +484,9 @@ def test_original_coast_cancellation_removes_animation_when_car_leaves_outer_lan
     pytest.fail('cancelled coast survived as a drawing')
 
 
-def test_lane_change_cancels_the_rear_even_after_forced_retirement_started():
+def test_lane_change_retires_the_rear_through_bounded_exit_even_after_forced_retirement_started():
+  """DaBin 10-26 (was: the blinker removed it mid-screen, 40f--9 19.47 s LR 12.2 m): the cancelled radar R finishes the
+  same bounded exit as distance_end/timeout, at most EXIT_MAX_SPEED, and never comes back toward the origin."""
   d = Drive()
   d.policy = SmoothHandover()
   d.policy.MAX_TIME = .5
@@ -494,9 +496,210 @@ def test_lane_change_cancels_the_rear_even_after_forced_retirement_started():
     d.step(i)
     r = d.policy.flows[0].rear
     if r and d.policy.rears[0] is r.get('motion') and i*.05 >= r['motion']['force_at']:
-      d.cs.out.leftBlinker = True
-      values, _ = d.step(i+1)
-      assert not values['LR_DETECT'] and d.policy.flows[0].rear is None
       break
   else:
     pytest.fail('forced-retirement setup did not have an active rear')
+  d.cs.out.leftBlinker = True
+  previous = -r['x']
+  for j in range(i+1, i+60):
+    values, _ = d.step(j)
+    r = d.policy.flows[0].rear
+    assert d.policy.rears[0] is None  # the original model still cancels its memory
+    if r is None:
+      assert not values['LR_DETECT'] and previous >= 15.6
+      break
+    assert values['LR_DETECT'] and r['phase'] == 'exit'
+    assert previous <= values['LR_DETECT_DISTANCE'] <= previous+8.*.05+1e-9
+    previous = values['LR_DETECT_DISTANCE']
+  else:
+    pytest.fail('lane-change exit did not finish')
+
+
+def _pass_flow(x=4., **kw):
+  flow = SideFlow()
+  flow.front = dict(car(1, x, 4.), phase='to_rear', display_pass=True)
+  for k, v in kw.items():
+    setattr(flow, k, v)
+  return flow
+
+
+def test_display_pass_ego_constants_are_the_original_model_constants():
+  assert SideFlow.PASS_EGO_SCALE == RearHandover.SCALE
+  assert SideFlow.PASS_MIN_EGO == RearHandover.ANCHOR_MIN_EGO
+
+
+@pytest.mark.parametrize('v_ego,speed', [(0., 0.), (.49, 0.), (.5, .4), (2., 1.6), (3.75, 3.), (20., 3.), (None, 3.)])
+def test_display_pass_front_and_rear_move_at_ego_scaled_speed(v_ego, speed):
+  flow = _pass_flow()
+  f, r = flow.update(1., .05, None, False, 2.8, v_ego=v_ego)
+  assert r is None and f['x'] == pytest.approx(4.-speed*.05)
+  flow = SideFlow()
+  flow.rear = dict(car(1, -2., 2.8), phase='virtual', motion=None, model_distance=0.)
+  _, r = flow.update(1., .05, None, False, 2.8, v_ego=v_ego)
+  assert r['x'] == pytest.approx(-2.-speed*.05)
+
+
+def test_stopped_display_pass_keeps_front_without_creating_rear():
+  flow = _pass_flow(.3)
+  for i in range(200):
+    f, r = flow.update(i*.05, .05, None, False, 2.8, v_ego=0.)
+    assert f['x'] == .3 and f['phase'] == 'to_rear' and r is None
+  for i in range(200, 220):
+    f, r = flow.update(i*.05, .05, None, False, 2.8, v_ego=2.)
+    if r is not None:
+      assert f is None and r['x'] == 0. and r['y'] == 4.
+      break
+  else:
+    pytest.fail('moving again did not finish the pass')
+
+
+@pytest.mark.parametrize('distance', [3., 5.99, 6., 24.])
+def test_stopped_pass_hands_over_at_once_when_a_new_front_needs_the_slot(distance):
+  """412--14 0-58 s: a held stopped pass hid the selected LF 6.6 m for 57 s. A new F of 6 m or more swaps the old F
+  to R 0 m (same lateral) in the same packet; R stays at 0 while stopped and retires with the ego speed afterwards."""
+  flow = _pass_flow(4.3)
+  f, r = flow.update(1., .05, car(2, distance, 3.), False, 2.8, v_ego=0.)
+  if distance < 6.:
+    assert f['key'] == (1, 0) and f['x'] == 4.3 and r is None
+    return
+  assert f['key'] == (2, 0) and f['x'] == distance and r['x'] == 0. and r['y'] == 4.
+  for i in range(2, 40):
+    f, r = flow.update(i*.05, .05, car(2, distance, 3.), False, 2.8, v_ego=0.)
+    assert r['x'] == 0. and f['x'] == distance
+  _, r = flow.update(2., .05, car(2, distance, 3.), False, 2.8, v_ego=2.)
+  assert r['x'] == pytest.approx(-1.6*.05)
+
+
+@pytest.mark.parametrize('bsd', [False, True])
+def test_bsd_backed_pass_keeps_its_fixed_speed_at_a_standstill(bsd):
+  flow = _pass_flow(bsd=False, bsd_off=.9)
+  f, _ = flow.update(1., .05, None, bsd, 2.8, v_ego=0.)
+  assert f['x'] == pytest.approx(4.-SideFlow.PASS_SPEED*.05)
+
+
+def _replay_412_8(v_ego_given):
+  """0x162 inputs of 00000412--4440b61281--8 RF 27.5-36.2 s (map path, replay 10-26), rounded to 0.1 and run-length
+  encoded: the ego car stands still while the selector re-keys a queue car beside it, then pulls away."""
+  flow = SideFlow()
+  flow.front = {'key': 1, 'x': 3.52, 'y': 3.2, 'detect': 2, 'phase': 'front'}
+  frame, out = 47900, []
+  for n, step, v, cand, bsd in REPLAY_412_8_RF:
+    for _ in range(n):
+      frame += step
+      c = None if cand is None else {'key': cand[0], 'x': cand[1], 'y': cand[2], 'detect': cand[3]}
+      f, r = flow.update(frame*.01, step*.01, c, bsd, 2.8, v_ego=v if v_ego_given else None)
+      out.append((v, f and dict(f), r and dict(r), list(flow.events)))
+  return out
+
+
+def test_replayed_standstill_rekeying_draws_no_backward_flow():
+  """Review 10-26 finding 3 (412--8 27.8-36 s): with a fixed 3 m/s the RF drawing flowed to RR 0-11 m while the ego car
+  stood still. Scaled by vEgo nothing flows backward while stopped: a held pass yields its slot to a new F of 6 m or more
+  as R 0 m in the same packet, R waits at 0 (only the existing 6 m spacing moves it) and retires once the car moves."""
+  def ghost(rows):
+    return [i for i, ((_, _, r0, _), (v1, _, r1, ev)) in enumerate(zip(rows, rows[1:], strict=False))
+            if v1 < .5 and r0 and r1 and r1['x'] < r0['x'] and 'rear_spacing' not in ev]
+  assert ghost(_replay_412_8(False))  # the fixture holds the old standstill flow
+  after = _replay_412_8(True)
+  assert not ghost(after)
+  assert after[5][1]['key'] == 2 and after[5][1]['x'] == 9. and after[5][2]['x'] == 0.  # the 9 m car is not hidden
+  assert after[5][2]['y'] == 3.2  # the slot swap keeps the old F lateral
+  assert any(v >= .5 and r and r['x'] < -3. for v, _, r, _ in after)  # R retires after pulling away
+  for (_, f0, _, _), (v1, f1, _, _) in zip(after, after[1:], strict=False):
+    if f0 and f1 and f0['phase'] == f1['phase'] == 'to_rear':  # each step moves at that update's vEgo
+      if v1 >= .5:
+        assert 0. <= f0['x']-f1['x'] <= min(3., .8*v1)*.05+1e-9
+      else:
+        assert f0['x'] == f1['x']
+
+
+def test_blinker_ends_bsd_grace_and_retires_the_rear_without_removing_it():
+  """DaBin 10-26: a held BSD-off R retires to 16 m when the blinker comes on (it is neither held nor dropped)."""
+  runs = []
+  for blinker in (False, True):
+    flow = SideFlow()
+    flow.rear = {'key': None, 'x': -8., 'y': 2.8, 'detect': 2, 'phase': 'bsd'}
+    flow.bsd = True
+    flow.update(0., .05, None, False, 2.8)  # BSD falls: the 3 s grace starts
+    xs = []
+    for i in range(1, 40):
+      _, r = flow.update(i*.05, .05, None, False, 2.8, lane_change=blinker and i >= 10)
+      xs.append(r['x'] if r else None)
+    runs.append(xs)
+  held, retired = runs
+  assert set(held) == {-8.}
+  assert retired[:9] == [-8.]*9 and None not in retired
+  assert all(b < a for a, b in zip(retired[9:], retired[10:], strict=False))
+  assert all(a-b <= SideFlow.EXIT_SPEED*.05+1e-9 for a, b in zip(retired[8:], retired[9:], strict=False))
+
+
+@pytest.mark.parametrize('phase', ['bsd', 'virtual', 'exit'])
+def test_blinker_keeps_a_bsd_on_rear_at_eight_metres(phase):
+  flow = SideFlow()
+  flow.rear = {'key': (9, 0) if phase != 'bsd' else None, 'x': -8., 'y': 2.8, 'detect': 2, 'phase': phase,
+               'motion': None, 'model_distance': 0.}
+  for i in range(100):
+    _, r = flow.update(i*.05, .05, None, True, 2.8, v_ego=20., lane_change=True)
+    assert r['x'] == -8.
+
+
+def _lane_change_rear():
+  motion = {'key': (9, 0), 'phase': 'rear', 'distance': 3., 'force_at': 10., 'deadline': 14., 'max_speed': 8.,
+            'end_reason': 'lane_change'}
+  flow = SideFlow()
+  flow.rear = dict(car(9, -3., 2.8), phase='virtual', motion=motion, model_distance=3.)
+  return flow
+
+
+def test_lane_change_end_reason_exits_like_other_retired_tracking():
+  _, r = _lane_change_rear().update(1., .05, None, False, 2.8, v_ego=20., lane_change=True)
+  assert r['phase'] == 'exit' and r['x'] == pytest.approx(-3.4)
+
+
+def test_lane_change_still_removes_an_identity_moved_to_another_slot():
+  flow = _lane_change_rear()
+  assert flow.update(1., .05, None, False, 2.8, elsewhere=((9, 0),), lane_change=True) == (None, None)
+
+
+def test_production_display_pass_at_a_standstill_keeps_the_front_drawing():
+  d = Drive()
+  d.policy = SmoothHandover()
+  d.cs.out.vEgo = 0.
+  for i in range(2):
+    d.step(i, drawn=(1, 3.8))
+  for i in range(2, 100):
+    values, _ = d.step(i)
+    assert values['LF_DETECT'] and values['LF_DETECT_DISTANCE'] == 3.8 and not values['LR_DETECT']
+  d.cs.out.vEgo = 10.
+  for i in range(100, 200):
+    values, _ = d.step(i)
+    if values['LR_DETECT']:
+      assert values['LR_DETECT_DISTANCE'] == 0. and not values['LF_DETECT']
+      break
+  else:
+    pytest.fail('pass did not resume when the ego car moved')
+
+
+# (count, frame step, vEgo, candidate (identity ordinal, display x, lateral, detect) or None, BSD); see _replay_412_8.
+REPLAY_412_8_RF = [
+  (5, 5, 0.0, (1, 3.5, 3.2, 2), False), (1, 5, 0.0, (2, 9.0, 2.6, 2), False), (6, 5, 0.0, (2, 9.0, 2.7, 2), False),
+  (6, 5, 0.0, (2, 9.0, 2.8, 2), False), (7, 5, 0.0, (2, 9.0, 2.9, 2), False), (7, 5, 0.0, (2, 9.0, 3.0, 2), False),
+  (6, 5, 0.0, (2, 9.0, 3.1, 2), False), (5, 5, 0.0, (3, 3.5, 2.5, 2), False), (2, 5, 0.0, (3, 3.6, 2.5, 2), False),
+  (7, 5, 0.0, (3, 3.6, 2.6, 2), False), (1, 5, 0.0, (3, 3.6, 2.7, 2), False), (1, 5, 0.0, (3, 3.7, 2.7, 2), False),
+  (6, 5, 0.0, (4, 9.5, 3.8, 2), False), (1, 5, 0.0, (4, 9.5, 3.7, 2), False), (5, 5, 0.0, (4, 9.6, 3.7, 2), False),
+  (7, 5, 0.0, (4, 9.7, 3.6, 2), False), (4, 5, 0.0, (4, 9.7, 3.5, 2), False), (30, 5, 0.0, None, False),
+  (1, 5, 0.0, (6, 24.0, 4.8, 1), False), (1, 5, 0.1, (6, 24.0, 4.8, 1), False), (1, 5, 0.1, (6, 24.1, 4.8, 1), False),
+  (1, 5, 0.2, (6, 24.2, 4.8, 1), False), (1, 5, 0.3, (6, 24.3, 4.8, 1), False), (1, 5, 0.4, (6, 24.4, 4.9, 1), False),
+  (1, 5, 0.5, (6, 24.6, 4.9, 1), False), (1, 5, 0.5, None, False), (3, 5, 0.6, None, False), (2, 5, 0.7, None, False),
+  (2, 5, 0.8, None, False), (2, 5, 0.9, None, False), (2, 5, 1.0, None, False), (2, 5, 1.1, None, False),
+  (1, 5, 1.2, None, False), (2, 5, 1.3, None, False), (1, 5, 1.4, None, False), (2, 5, 1.5, None, False),
+  (1, 5, 1.6, None, False), (1, 5, 1.7, None, False), (2, 5, 1.8, None, False), (1, 5, 1.9, None, False),
+  (1, 5, 2.0, None, False), (1, 5, 2.1, None, False), (1, 5, 2.2, None, False), (2, 5, 2.3, None, False),
+  (1, 5, 2.4, None, False), (1, 5, 2.5, None, False), (2, 5, 2.6, None, False), (1, 5, 2.7, None, False),
+  (1, 5, 2.8, None, False), (1, 5, 2.9, None, False), (2, 5, 3.0, None, False), (1, 5, 3.1, None, False),
+  (2, 5, 3.2, None, False), (1, 5, 3.3, None, False), (2, 5, 3.4, None, False), (1, 5, 3.5, None, False),
+  (1, 5, 3.6, None, False), (2, 5, 3.7, (7, 29.4, 2.4, 1), False), (1, 5, 3.8, (7, 29.4, 2.4, 1), False),
+  (1, 5, 3.9, (7, 29.4, 2.4, 1), False), (1, 10, 4.0, (7, 29.4, 2.5, 1), False), (2, 5, 4.1, (7, 29.4, 2.5, 1), False),
+  (1, 5, 4.2, (7, 29.4, 2.5, 1), False), (1, 5, 4.3, (7, 29.3, 2.5, 2), False), (1, 5, 4.3, (8, 21.4, 3.1, 2), False),
+  (1, 5, 4.4, (9, 19.1, 3.1, 2), False), (1, 5, 4.5, (10, 13.1, 3.0, 2), False),
+]
