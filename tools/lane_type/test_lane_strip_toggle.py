@@ -20,7 +20,7 @@ from openpilot.selfdrive.carrot.lane_type.marking_daemon import Recogniser
 from tools.lane_type.test_strip_model_v4 import FIX  # noqa: TID251
 
 ROOT = Path(__file__).resolve().parents[2]
-V4_SHIPPED = '23ff1bc749421977e400977e9d14e70dd2e30ab59391a0a59e890f7051f9afb7'  # 10-24 retrain rain1024b D1 s2 (+ 10-24 rain drive, synth double 0.05)
+V4_SHIPPED = 'decb4e8c966fb765323d23631f1c40b261303433f83f04b3bf32e9f9c76ef904'  # 10-26 autolabel1026 R1 large s2 (4 types, 107,870 params)
 
 
 def assets(tmp_path, v4=FIX/'strip_v4_probe.onnx', strip={'half_m': .75, 'cols': 96, 'rows': 128}):
@@ -166,9 +166,9 @@ def test_daemon_without_a_model_publishes_nothing(monkeypatch, tmp_path):
 
 
 def test_shipped_v4_pair():
-  """The shipped model: 10-24 retrain rain1024b D1 s2 (manifest v4, w100 strip, mirror_right)."""
+  """The shipped model: 10-26 autolabel1026 R1 large s2 (manifest v4 with 4 types, w100 strip, mirror_right)."""
   data = (strip_model.ASSETS/f'{strip_model.MODEL_NAME}.onnx').read_bytes()
-  assert hashlib.sha256(data).hexdigest() == V4_SHIPPED and len(data) < 200_000
+  assert hashlib.sha256(data).hexdigest() == V4_SHIPPED and len(data) < 500_000
   v4 = strip_model.load(warn=pytest.fail)
   assert (v4.version, v4.v4, v4.mirror_right, v4.threshold) == (4, True, True, .9)
   assert v4.strip == {'half_m': 1., 'cols': 128, 'rows': 128}

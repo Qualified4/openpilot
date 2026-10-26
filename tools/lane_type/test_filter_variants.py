@@ -27,7 +27,7 @@ def test_default_variant_and_recogniser_filter_unchanged():
           'color_latch_m', 'hold_latch')
   assert {k: getattr(rec, k) for k in keys} == {k: getattr(base, k) for k in keys}
   assert sf.VARIANTS['A8/4L-F1+F2+F3b+F5'] == dict(sf.VARIANTS['A8/4L-legacy'], type_conf='max', color_latch_frames=3, hold_latch=True, color_m=4.)
-  assert not strip_model.HOLD_COLOR and not strip_model.HOLD_BY_FAMILY
+  assert not strip_model.HOLD_COLOR and strip_model.HOLD_BY_FAMILY  # DaBin 10-26: F4 is the product default, F3 stays off
 
 
 def test_f1_type_confidence_matches_the_colour_rule():
@@ -82,8 +82,9 @@ def test_f3_hold_colour_switch(tmp_path, strips, monkeypatch):  # noqa: F811
 def test_f4_family_abstention(tmp_path, monkeypatch):
   m = strip_model.StripModel(manifest4_dir(tmp_path))
   probs = np.log([.50, .05, .42, .03])  # largest class .50, dashed family .92
+  monkeypatch.setattr(strip_model, 'HOLD_BY_FAMILY', False)  # the single-class rule (before 10-26)
   assert m.decide4(probs, C['white'])['reason'] == 'unknown'
-  monkeypatch.setattr(strip_model, 'HOLD_BY_FAMILY', True)
+  monkeypatch.setattr(strip_model, 'HOLD_BY_FAMILY', True)  # the default
   r = m.decide4(probs, C['white'])
   assert (r['reason'], r['type'], r['typeClass']) == ('strip_model', 'dashed', 'dashed')
   assert m.decide4(np.log([.45, .40, .10, .05]), C['white'])['reason'] == 'unknown'  # families .55 / .45

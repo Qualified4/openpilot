@@ -205,11 +205,30 @@ def test_v4_4type_mapping_and_abstention(tmp_path):
   r = m.decide4(np.log([.92, .03, .03, .02]), np.log([.97, .02, .01]))
   assert (r['type'], r['color'], r['reason']) == ('dashed', 'white', 'strip_model') and p_dashed(r) == pytest.approx(.95)
   assert p_yellow(r) == pytest.approx(.02)
-  # abstains although P(dashed) = .95: the largest class probability .85 < .90 (unknown is a confidence state, not a class)
-  for probs in ([.85, .05, .10, .00001], [.5, .4, .05, .05]):
+  # the default (HOLD_BY_FAMILY, DaBin 10-26 F4) abstains when neither display family reaches .90 (unknown is a confidence state,
+  # not a class): families .55 / .45 and .55 / .45
+  for probs in ([.45, .40, .10, .05], [.5, .4, .05, .05]):
     r = m.decide4(np.log(probs), np.log([.03, .96, .01]))
     assert (r['reason'], r['type'], r['color'], r['typeCandidate'], r['colorCandidate']) == ('unknown',)*5
     assert r['typeClass'] == 'dashed' and r['colorClass'] == 'yellow' and r['pUnknown'] == 0.
+  # largest class .85 but dashed family .95: confident by default; the single-class rule (HOLD_BY_FAMILY False) abstains
+  r = m.decide4(np.log([.85, .05, .10, .00001]), np.log([.03, .96, .01]))
+  assert (r['reason'], r['type'], r['color']) == ('strip_model', 'dashed', 'yellow')
+  with pytest.MonkeyPatch.context() as mp:
+    mp.setattr(strip_model, 'HOLD_BY_FAMILY', False)
+    assert m.decide4(np.log([.85, .05, .10, .00001]), np.log([.03, .96, .01]))['reason'] == 'unknown'
+
+
+def test_shipped_product_manifest_is_4type_with_family_abstention():
+  """DaBin 10-26: the shipped lane_strip_v4 is the 4-type autolabel1026 R1 large s2 model; F4 abstention is the default."""
+  m = strip_model.StripModel()
+  assert strip_model.HOLD_BY_FAMILY is True and strip_model.HOLD_COLOR is False
+  assert (m.v4, m.mirror_right, m.threshold, m.heads) == (True, True, .9, ['type', 'color'])
+  manifest = json.loads((strip_model.ASSETS/f'{strip_model.MODEL_NAME}.json').read_text(encoding='utf-8'))
+  assert manifest['outputs'] == strip_model.OUTPUTS_V4_4 and manifest['params'] == 107870 and manifest['deviceValidated'] is False
+  assert strip_model.onnx_output_shape((strip_model.ASSETS/f'{strip_model.MODEL_NAME}.onnx').read_bytes(), 'type') == [None, 4]
+  types, colors = m.forward([np.full((3, 128, 128), 100., np.float32)])
+  assert types.shape == (1, 4) and colors.shape == (1, 3)
 
 
 def test_v4_4type_abstention_pauses_like_the_5type_unknown(tmp_path, strips):

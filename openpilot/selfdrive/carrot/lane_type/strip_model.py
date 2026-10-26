@@ -34,12 +34,12 @@ OUTPUTS_V4 = {'color': list(COLORS_V4), 'type': list(TYPES_V4)}
 # (reason 'unknown', as a 5-type unknown argmax) when its largest type probability is below the manifest threshold.
 TYPES_V4_4 = TYPES_V4[:4]
 OUTPUTS_V4_4 = {'color': list(COLORS_V4), 'type': list(TYPES_V4_4)}
-# A/B switches (filterab1026, replays only; the product keeps both False). HOLD_COLOR (F3): an abstaining decide4 result also
-# carries 'pYellowHeld' (the colour softmax P(yellow)) so marking_daemon can update the colour while the type abstains.
-# HOLD_BY_FAMILY (F4, 4-type head): abstain when max(P(dashed)+P(dbl_near), P(solid)+P(dbl_far)) < threshold instead of the
-# largest single class.
+# HOLD_COLOR (filterab1026 F3, replays only; False in the product): an abstaining decide4 result also carries 'pYellowHeld'
+# (the colour softmax P(yellow)) so marking_daemon can update the colour while the type abstains.
+# HOLD_BY_FAMILY (4-type head; DaBin 10-26 filterab1026 F4, the product default): abstain when
+# max(P(dashed)+P(dbl_near), P(solid)+P(dbl_far)) < threshold; False: abstain when the largest single class is below it.
 HOLD_COLOR = False
-HOLD_BY_FAMILY = False
+HOLD_BY_FAMILY = True
 # profile_scanner.strip_geometry: column 0 = line y - half_m, the last column = y + half_m (image left -> right), so the
 # ego side is the HIGH columns of the left strip and the LOW columns of the right strip. With mirror_right the right
 # strip is flipped on its column axis (the last one of 3 x rows x cols), putting its ego side on the high columns too.
