@@ -474,7 +474,7 @@ class SmoothHandover(RearHandover):
                       max_speed=self.EXIT_MAX_SPEED)
       f, r = self.flows[side].update(now, dt, candidate, bool(CS.out.leftBlindspot if side == 0 else CS.out.rightBlindspot),
                                    rear_laterals[side], elsewhere=(selected[0], selected[2-side]),
-                                   motion=motion, v_ego=self.v_ego, lane_change=self.changing)
+                                   motion=motion, lane_change=self.changing)
       values[fd] = f['detect'] if f is not None else 0
       values[rd] = r['detect'] if r is not None else 0
       if f is not None:

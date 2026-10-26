@@ -14,12 +14,6 @@ class SideFlow:
   FRONT_LIMIT = 204.7  # Preserve the existing DBC range; the display usually shows only about 100 m.
   FAST_SPEED, FAST_TAU = 12., .2
   PASS_SPEED = 3.
-  # A display-only pass (no radar motion, no BSD) is tied to the ego car like the original model, whose retreat is
-  # vRel x (vEgo ratio) x RearHandover.SCALE: a car being passed (vLead >= 0) falls back at most vEgo raw m/s, i.e.
-  # SCALE*vEgo display m/s, and the model does not move at all below RearHandover.ANCHOR_MIN_EGO. So the pass runs at
-  # min(PASS_SPEED, PASS_EGO_SCALE*vEgo) and stops below PASS_MIN_EGO: nothing flows backward at a standstill (DaBin 10-26).
-  PASS_EGO_SCALE = .8  # == RearHandover.SCALE (rear.py imports this module; equality is asserted in the tests)
-  PASS_MIN_EGO = .5  # == RearHandover.ANCHOR_MIN_EGO
   EXIT_SPEED, EXIT_TAU = 4., .65
   LATERAL_SPEED, LATERAL_TAU = 2., .5
 
@@ -47,18 +41,13 @@ class SideFlow:
   def _object(key, x, y, detect, phase):
     return {'key': key, 'x': x, 'y': y, 'detect': detect, 'phase': phase}
 
-  def _pass_speed(self, v_ego):
-    if v_ego is None:
-      return self.PASS_SPEED
-    return min(self.PASS_SPEED, self.PASS_EGO_SCALE*v_ego) if v_ego >= self.PASS_MIN_EGO else 0.
-
   def _new_bsd(self, y):
     self.rear = self._object(None, -self.END, y, 2, 'bsd')
 
-  def update(self, now, dt, candidate, bsd, rear_lateral, *, elsewhere=(), motion=None, v_ego=None, lane_change=False):
+  def update(self, now, dt, candidate, bsd, rear_lateral, *, elsewhere=(), motion=None, lane_change=False):
     """candidate is the final, already stabilised real front drawing or None. Returns F/R drawings.
 
-    v_ego None keeps the fixed PASS_SPEED (unit scenes); lane_change is the original model's blinker/lane-change block."""
+    lane_change is the original model's blinker/lane-change block."""
     self.events = []
     if self.bsd and not bsd:
       self.bsd_off = now
@@ -165,7 +154,7 @@ class SideFlow:
           target = (-8. if bsd or passing and eligible_bsd else r['x'] if eligible_bsd else -self.END)
           speed, tau = (6., .4) if bsd else (self.EXIT_SPEED, self.EXIT_TAU)
           if passing:
-            speed = self.PASS_SPEED if eligible_bsd else self._pass_speed(v_ego)
+            speed = self.PASS_SPEED
           if physical is not None and not (bsd or eligible_bsd):
             if r['phase'] == 'exit':
               delta = physical['max_speed']*dt
@@ -188,12 +177,7 @@ class SideFlow:
       if f_owned:
         speed = 8. if motion['phase'] == 'coast' else motion['speed']
       else:
-        speed = self.PASS_SPEED if eligible_bsd else self._pass_speed(v_ego)  # stopped: F keeps its current position
-      if (not f_owned and speed == 0. and candidate is not None and candidate['key'] != f['key']
-          and candidate['x'] >= self.GAP):
-        # Stopped, a held pass must not hide a new F: hand the old one to R 0 m in this packet (slot swap, same
-        # lateral). R stays at 0 while stopped and retires with the ego speed once moving (DaBin 10-26).
-        f['x'] = 0.
+        speed = self.PASS_SPEED
       f['x'] = max(min(f['x'], target), f['x']-min(8., speed)*dt)
       if target == 0. and f['x'] < 1e-9:
         f['x'] = 0.  # Floating-point residue must not add an extra zero-distance CAN frame.
