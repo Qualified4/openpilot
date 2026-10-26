@@ -219,16 +219,18 @@ def test_v4_4type_mapping_and_abstention(tmp_path):
     assert m.decide4(np.log([.85, .05, .10, .00001]), np.log([.03, .96, .01]))['reason'] == 'unknown'
 
 
-def test_shipped_product_manifest_is_4type_with_family_abstention():
-  """DaBin 10-26: the shipped lane_strip_v4 is the 4-type autolabel1026 R1 large s2 model; F4 abstention is the default."""
+def test_shipped_product_manifest_is_the_5type_d1s2_model():
+  """DaBin 10-26 rollback: the shipped lane_strip_v4 is the 5-type D1 s2 model again (unknown argmax abstains); the F4 default
+  (HOLD_BY_FAMILY) stays set but only acts on 4-type manifests."""
   m = strip_model.StripModel()
   assert strip_model.HOLD_BY_FAMILY is True and strip_model.HOLD_COLOR is False
   assert (m.v4, m.mirror_right, m.threshold, m.heads) == (True, True, .9, ['type', 'color'])
   manifest = json.loads((strip_model.ASSETS/f'{strip_model.MODEL_NAME}.json').read_text(encoding='utf-8'))
-  assert manifest['outputs'] == strip_model.OUTPUTS_V4_4 and manifest['params'] == 107870 and manifest['deviceValidated'] is True  # claude/device1026
-  assert strip_model.onnx_output_shape((strip_model.ASSETS/f'{strip_model.MODEL_NAME}.onnx').read_bytes(), 'type') == [None, 4]
+  assert manifest['outputs'] == strip_model.OUTPUTS_V4 and manifest['params'] == 33775 and manifest['deviceValidated'] is True  # claude/device1026
+  assert strip_model.onnx_output_shape((strip_model.ASSETS/f'{strip_model.MODEL_NAME}.onnx').read_bytes(), 'type') == [None, 5]
   types, colors = m.forward([np.full((3, 128, 128), 100., np.float32)])
-  assert types.shape == (1, 4) and colors.shape == (1, 3)
+  assert types.shape == (1, 5) and colors.shape == (1, 3)
+  assert m.decide4(T['unknown'], C['white'])['reason'] == 'unknown'  # the 5-type abstention path
 
 
 def test_v4_4type_abstention_pauses_like_the_5type_unknown(tmp_path, strips):

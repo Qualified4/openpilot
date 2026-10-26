@@ -1,8 +1,8 @@
 {
  "version": 4,
- "architecture": "StripNet2 (stripnet2-nolat) + central colour pool (ColourPool center) + identity-initialised 64-channel 3x3 residual block at 8x16 (capacity large, codex/capacity1025)",
- "params": 107870,
- "model_sha256": "decb4e8c966fb765323d23631f1c40b261303433f83f04b3bf32e9f9c76ef904",
+ "architecture": "StripNet2 (stripnet2-nolat) + central colour pool (ColourPool center)",
+ "params": 33775,
+ "model_sha256": "23ff1bc749421977e400977e9d14e70dd2e30ab59391a0a59e890f7051f9afb7",
  "strip": {
   "half_m": 1.0,
   "cols": 128,
@@ -30,128 +30,13 @@
    "dashed",
    "solid",
    "dbl_near",
-   "dbl_far"
+   "dbl_far",
+   "unknown"
   ]
  },
  "threshold": 0.9,
- "mapping": "logits; 4-type head, no unknown class: max(P(dashed)+P(dbl_near), P(solid)+P(dbl_far)) < 0.9 -> no inference this frame (abstains, paused like lane_prob_dip; strip_model.HOLD_BY_FAMILY, DaBin 10-26 filterab1026 F4); P(dashed) = dashed + dbl_near (dbl_near = ego-side line of a double marking dashed -> dashed, dbl_far -> solid); P(yellow) = colour softmax yellow, blue shown white; yellow + dashed passed through (strip_model.StripModel.decide4). The only StripNet model; it gives both heads.",
+ "mapping": "logits; type argmax unknown -> no inference this frame (paused like lane_prob_dip); P(dashed) = (dashed + dbl_near)/(1 - unknown) (dbl_near = ego-side line of a double marking -> dashed, dbl_far -> solid); P(yellow) = colour softmax yellow, blue shown white; yellow + dashed passed through (strip_model.StripModel.decide4). This is the only StripNet model; it gives both heads.",
  "training": {
-  "source": ".analysis/ccnc-field-412-20261022/claude/autolabel1026/training/R1_large_s2 (autolabel1026 R1, 10-26)",
-  "manifest": ".analysis/ccnc-field-412-20261022/claude/autolabel1026/manifest-al26-R1.jsonl (sha256 8bb805aab6fa; capacity1025 human review + label_fixes + HUMAL26 crop review; relabeller-hold train auto rows weight x 0.25)",
-  "label_fixes_sha256": "a18a49770ede8fcef0a45db21d974862d28a812e64a5a272dce5ad57db344c86",
-  "recipe": "4 types (unknown rows masked, abstention by confidence), hold row weight 0.25, synth double 0.05, negsyn 0.25, KD 0, AdamW 1e-4/3e-4, batch 256, 40 epochs, seed 2; best validation epoch index 38 (0-based, the 39th of 40; autolabel1026 tables say epoch 38) (type4 macro F1 + colour macro F1)/2 = 0.9515",
-  "init": "pretrained 5-type head rows dashed/solid/dbl_near/dbl_far copied, unknown row dropped; residual block zero-initialised",
-  "seed": 2,
-  "best_epoch_index": 38,
-  "parameters": 107870,
-  "onnx_parity": {
-   "onnxruntime_max_abs": 7.62939453125e-06,
-   "opencv_max_abs": 9.5367431640625e-06,
-   "yellow_probability_max_abs": 1.1920928955078125e-07,
-   "padding_only_yellow_probability_max_abs": 0.0,
-   "blue_logit": -10000.0,
-   "batch_sizes": [
-    1,
-    3,
-    8
-   ]
-  }
- },
- "eval": {
-  "autolabel1026_R1_large_s2": {
-   "source": ".analysis/ccnc-field-412-20261022/claude/autolabel1026/REPORT_KO.md, eval/display.json (replay F1d1 + F4, human labels, label_fixes applied); the previous product (23ff1bc74942, F1d1) in brackets",
-   "six_set_human_misclassified_s": "133.5 (148.7)",
-   "six_set_human_missing_s": "110.5 (113.3)",
-   "display_changes_per_side_min": "4.30 (4.05, +6.1 %)",
-   "single_to_double_412_of_215": "28 (72)",
-   "wrong_41c_of_130": "11 (15)",
-   "validation_human_type4_colour_hold": ".919 / .987 / .103 (.914 / .982 / .004)",
-   "cost": "device measured for this model (eval.device): extract + infer median 18.31 ms, p95 19.90 ms per frame (previous model 14.71)"
-  },
-  "previous_eval": {
-   "rain1024b_D1": {
-    "source": ".analysis/ccnc-field-412-20261022/codex/rain1024b/REPORT_KO.md; human labels, label_fixes fixes/exclusions applied",
-    "six_set_human_error_s": "191.7 (previous e470e03852c0: 193.8); day sets 80.9 (84.5), night 407 18.9 (21.3), rain dusk 404 91.8 (88.0)",
-    "six_set_by_kind_s": {
-     "solid_to_dashed": 98.3,
-     "dashed_to_solid": 72.6,
-     "white_to_yellow": 58.2,
-     "yellow_to_white": 34.1,
-     "previous": {
-      "solid_to_dashed": 98.0,
-      "dashed_to_solid": 69.2,
-      "white_to_yellow": 58.3,
-      "yellow_to_white": 36.1
-     }
-    },
-    "val412_single_called_double": 0.335,
-    "double_recall_val": 0.859,
-    "val41c_rows_wrong": "15/130 (previous 28; solid shown dashed 3 rows, previous 22)",
-    "r417_type_colour_wrong_s": "9.4 / 1.4 (previous 10.1 / 2.4)",
-    "bookmarks_41c": "14/24 (previous 10/24)"
-   },
-   "previous": {
-    "today1023b": {
-     "source": ".analysis/ccnc-field-412-20261022/codex/today1023 (REPORT2_KO.md, TRAIN_EVAL_B.sh); human labels, label_fixes fixes/exclusions applied",
-     "slot1_new_vs_v3_s": {
-      "solid_to_dashed": 1.5,
-      "yellow_to_white": 2.9,
-      "white_to_yellow": 4.0,
-      "note": "white_to_yellow 2.8 s in one rainy-dusk scene (404 seg 12 left)"
-     },
-     "previous_slot1_c621e1e41cab": {
-      "solid_to_dashed": 3.9,
-      "yellow_to_white": 3.4,
-      "white_to_yellow": 0.6
-     },
-     "val412_single_called_double": 0.4,
-     "r417_type_colour_wrong_s": "10.5 / 2.4 (previous 11.4 / 2.1)",
-     "bookmark_validation_accuracy": "0.83 (previous 0.54)"
-    },
-    "previous": {
-     "labelfix1023": {
-      "source": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/eval/REPORT_KO.md (10-23 section), EVAL_LF.sh; human labels, label_fixes exclusions/fixes applied",
-      "sets": "13seg 16seg 404 407 40f 412 (card replay)",
-      "hybrid_slot2": {
-       "new_solid_to_dashed_vs_v3_s": 3.9,
-       "of_which_404_14_rain_s": 2.5,
-       "new_colour_vs_v3_s": 0.0,
-       "E09_dashed_s": "6.31/9.82",
-       "val412_single_called_double": 0.39,
-       "val412_double_recall": 0.98
-      },
-      "previous_hybrid": {
-       "new_solid_to_dashed_vs_v3_s": 2.1,
-       "of_which_404_14_rain_s": 0.0,
-       "E09_dashed_s": "0/9.82",
-       "val412_single_called_double": 0.81
-      },
-      "slot1_alone": {
-       "new_yellow_to_white_vs_v3_s": 3.4,
-       "new_white_to_yellow_vs_v3_s": 0.6
-      },
-      "pc_wsl_ms_per_frame": "single wide-strip model extract+infer ~3.1 (bluew benchmark, narrow/benchmark.json)"
-     }
-    }
-   }
-  },
-  "device": {
-   "source": ".analysis/ccnc-field-412-20261022/claude/device1026/results.json (comma, offroad, 10-26)",
-   "method": "little cores 0-3, nice 10, OpenCV 2 threads, native extractor, 120 frames of 412/9, ABBA blocks against the previous model",
-   "extract_plus_infer_ms": {
-    "median": 18.31,
-    "p95": 19.9,
-    "previous_median": 14.71
-   },
-   "infer_only_ms": {
-    "median": 8.6,
-    "previous_median": 4.93
-   }
-  }
- },
- "previous": "lane_strip_v4 23ff1bc74942 (10-24 rain1024b D1 seed 2, 5 types, 33,775 parameters); before that c621e1e41cab (10-23 label-fix retrain), nolat-v3init-c seed 4 (0e22e71364b6)",
- "deviceValidated": true,
- "previous_training": {
   "source": ".analysis/ccnc-field-412-20261022/codex/trainfast/training-rain1024b/D1/bluew_center_kd0_negsyn0.25_s2 (trainfast, 10-24)",
   "init": "type/backbone from the previous lane_strip_v4 (sha256 0e22e71364b6); colour branch from v3",
   "data": "single/data-rain1024b: data-today1023b + label_fixes.json + 10-24 rain drive 41c (auto labels, 575 user-reviewed rows, Road Viewer bookmarks; dark auto-yellow rows dropped; double rows only where a person confirmed them, 783 -> 659) = 42,066 rows; 417 held out",
@@ -175,5 +60,86 @@
     8
    ]
   }
- }
+ },
+ "eval": {
+  "rain1024b_D1": {
+   "source": ".analysis/ccnc-field-412-20261022/codex/rain1024b/REPORT_KO.md; human labels, label_fixes fixes/exclusions applied",
+   "six_set_human_error_s": "191.7 (previous e470e03852c0: 193.8); day sets 80.9 (84.5), night 407 18.9 (21.3), rain dusk 404 91.8 (88.0)",
+   "six_set_by_kind_s": {
+    "solid_to_dashed": 98.3,
+    "dashed_to_solid": 72.6,
+    "white_to_yellow": 58.2,
+    "yellow_to_white": 34.1,
+    "previous": {
+     "solid_to_dashed": 98.0,
+     "dashed_to_solid": 69.2,
+     "white_to_yellow": 58.3,
+     "yellow_to_white": 36.1
+    }
+   },
+   "val412_single_called_double": 0.335,
+   "double_recall_val": 0.859,
+   "val41c_rows_wrong": "15/130 (previous 28; solid shown dashed 3 rows, previous 22)",
+   "r417_type_colour_wrong_s": "9.4 / 1.4 (previous 10.1 / 2.4)",
+   "bookmarks_41c": "14/24 (previous 10/24)"
+  },
+  "previous": {
+   "today1023b": {
+    "source": ".analysis/ccnc-field-412-20261022/codex/today1023 (REPORT2_KO.md, TRAIN_EVAL_B.sh); human labels, label_fixes fixes/exclusions applied",
+    "slot1_new_vs_v3_s": {
+     "solid_to_dashed": 1.5,
+     "yellow_to_white": 2.9,
+     "white_to_yellow": 4.0,
+     "note": "white_to_yellow 2.8 s in one rainy-dusk scene (404 seg 12 left)"
+    },
+    "previous_slot1_c621e1e41cab": {
+     "solid_to_dashed": 3.9,
+     "yellow_to_white": 3.4,
+     "white_to_yellow": 0.6
+    },
+    "val412_single_called_double": 0.4,
+    "r417_type_colour_wrong_s": "10.5 / 2.4 (previous 11.4 / 2.1)",
+    "bookmark_validation_accuracy": "0.83 (previous 0.54)"
+   },
+   "previous": {
+    "labelfix1023": {
+     "source": ".analysis/ccnc-field-412-20261022/codex/negsyn/bluew/eval/REPORT_KO.md (10-23 section), EVAL_LF.sh; human labels, label_fixes exclusions/fixes applied",
+     "sets": "13seg 16seg 404 407 40f 412 (card replay)",
+     "hybrid_slot2": {
+      "new_solid_to_dashed_vs_v3_s": 3.9,
+      "of_which_404_14_rain_s": 2.5,
+      "new_colour_vs_v3_s": 0.0,
+      "E09_dashed_s": "6.31/9.82",
+      "val412_single_called_double": 0.39,
+      "val412_double_recall": 0.98
+     },
+     "previous_hybrid": {
+      "new_solid_to_dashed_vs_v3_s": 2.1,
+      "of_which_404_14_rain_s": 0.0,
+      "E09_dashed_s": "0/9.82",
+      "val412_single_called_double": 0.81
+     },
+     "slot1_alone": {
+      "new_yellow_to_white_vs_v3_s": 3.4,
+      "new_white_to_yellow_vs_v3_s": 0.6
+     },
+     "pc_wsl_ms_per_frame": "single wide-strip model extract+infer ~3.1 (bluew benchmark, narrow/benchmark.json)"
+    }
+   }
+  },
+  "device": {
+   "source": ".analysis/ccnc-field-412-20261022/claude/device1026/results.json (comma, offroad, 10-26)",
+   "method": "little cores 0-3, nice 10, OpenCV 2 threads, native extractor, 120 frames of 412/9, ABBA blocks",
+   "extract_plus_infer_ms": {
+    "median": 14.71,
+    "p95": 15.64
+   },
+   "infer_only_ms": {
+    "median": 4.93
+   }
+  }
+ },
+ "previous": "lane_strip_v4 c621e1e41cab (10-23 label-fix retrain, e800e663); before that nolat-v3init-c seed 4 (0e22e71364b6)",
+ "deviceValidated": true,
+ "rollback": "10-26: R1 large s2 (decb4e8c966f) was shipped, but in the car dashed lines were shown solid more often, so it was rolled back the same day to this model; cause under investigation (claude/rollback1026). The 4-type model stays in .analysis/ccnc-field-412-20261022/claude/autolabel1026/training/R1_large_s2."
 }
