@@ -28,6 +28,6 @@ Run from the repository root with the project OpenCV on `PYTHONPATH`
 (see `.analysis/lane-profile-20261018/REPRODUCE.ps1`).
 
 Runtime integration (display only): `openpilot/selfdrive/carrot/lane_type/marking_daemon.py` runs the option's
-recogniser (`CcncLaneTypeDetection` 1 Scanner / 2 StripNet), `strip_model.py` + `assets/lane_strip.onnx` hold the
+recogniser (`CcncLaneTypeDetection` 1 Scanner / 2 StripNet), `strip_model.py` + `assets/lane_strip_v4.onnx` hold the
 frozen StripNet, card reads the packet via `lane_type/marking.py`, and `opendbc/car/hyundai/ccnc_lane_marking.py`
 maps it onto the CCNC lane code. `replay_marking.py` replays logs through that exact path.

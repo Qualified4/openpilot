@@ -81,11 +81,12 @@ def test_stripnet_default_is_a8_4_latch_and_false_turns_it_off():
     assert (f.kind, f.long_m, f.short_m) == ('asym', strip_filter.LONG_M, strip_filter.SHORT_M) == ('asym', 8., 4.)
     assert f.color_m == strip_filter.COLOR_M == 8.
     assert f.latch is strip_filter.LATCH is True  # DaBin 10-19: the latch is the default
+    assert (f.type_conf, f.type_latch_m) == (strip_filter.TYPE_CONF, strip_filter.TYPE_LATCH_M) == ('max', 1.)  # DaBin 10-26: F1d1
   assert default.strip_filter is not explicit_none.strip_filter  # one filter (one set of windows) per Recogniser
   assert off.strip_filter is None and Recogniser(1).strip_filter is None
   assert strip_filter.make('A8/4').color_m is None and not strip_filter.make('A8/4').latch  # comparison: type only, no latch
   assert vars(strip_filter.make('A8/4L')) == vars(default.strip_filter)  # 'A8/4L' is the default
-  reference = strip_filter.StripFilter('asym', long_m=8., short_m=4., color_m=8., latch=True)
+  reference = strip_filter.StripFilter('asym', long_m=8., short_m=4., color_m=8., latch=True, type_conf='max', type_latch_m=1.)
   for i, (p, color, kw) in enumerate(CASES):
     raw = expected_raw(frame(i, **kw), p, color)
     # off: the raw filter_input results, untouched
@@ -339,9 +340,10 @@ def test_deep_or_long_lane_prob_dip_resets(probs):
 
 
 def test_default_latch_keeps_the_last_confident_label_and_resets():
-  """DaBin 10-19: the StripNet default latches type and colour (A8/4L); 'A8/4' without it stays for comparison."""
-  rec = Recogniser(2)
-  assert rec.strip_filter.latch and strip_filter.make('A8/4L').latch and not strip_filter.make('A8/4').latch
+  """DaBin 10-19: the StripNet default latches type and colour; 'A8/4' without it stays for comparison. The frame timing below
+  is the pre-10-26 type rule, pinned with 'A8/4L-legacy' (the F1d1 default: test_default_type_latch_f1d1)."""
+  rec = Recogniser(2, strip_filter=strip_filter.make('A8/4L-legacy'))
+  assert Recogniser(2).strip_filter.latch and rec.strip_filter.latch and strip_filter.make('A8/4L').latch and not strip_filter.make('A8/4').latch
   i, outs = 0, []
   for p in [.02]*12 + [.98]*8:
     outs.append(step(rec, i, p))
@@ -373,10 +375,10 @@ def test_default_latch_keeps_the_colour_through_a_flip():
 Y, W, UNSURE = .01, .99, .5  # step(color=...): P(white) of the fake model; 0.5 is no colour decision
 
 
-def single_frame_windows():
+def single_frame_windows(variant=None):
   """The default filter (latch, COLOR_LATCH_FRAMES) with windows of one frame (1 m per frame), so the window result is
-  the frame's own decision and only the latch rules are left."""
-  rec = Recogniser(2)
+  the frame's own decision and only the latch rules are left. variant: a strip_filter.make name instead of the default."""
+  rec = Recogniser(2) if variant is None else Recogniser(2, strip_filter=strip_filter.make(variant))
   f = rec.strip_filter
   assert f.latch and f.color_latch_frames == strip_filter.COLOR_LATCH_FRAMES == 10
   f.color_m = f.long_m = f.short_m = .5
@@ -422,9 +424,21 @@ def test_colour_latch_takes_the_first_confident_colour_at_once_after_a_reset():
 
 
 def test_type_latch_still_changes_on_one_confident_frame():
-  rec = single_frame_windows()
+  """'A8/4L-legacy' (the default until 10-26): the type head changes on the first confident frame of the other type."""
+  rec = single_frame_windows('A8/4L-legacy')
   kinds = types([step(rec, i, p, color=W) for i, p in enumerate([.02]*12 + [.98] + [.02] + [.5])])  # white: yellow dashed is unlearned
   assert kinds == ['solid']*12 + ['dashed', 'solid', 'solid']
+
+
+def test_default_type_latch_f1d1():
+  """DaBin 10-26 (F1d1, filterab1026 A/B): a latched type changes only after confident frames of the other type over 1 m of travel
+  (1 m per frame here: on the second one); an unconfident frame restarts the run; the first type after a reset is stored at once."""
+  rec = single_frame_windows()
+  kinds = types([step(rec, i, p, color=W) for i, p in enumerate([.02]*12 + [.98] + [.02] + [.98, .98] + [.5] + [.02, .02])])
+  assert kinds == ['solid']*12 + ['solid', 'solid'] + ['solid', 'dashed'] + ['dashed'] + ['dashed', 'solid']
+  # F1: the type window's confidence is max(mean, 1 - mean): a window mean of 0.92 is confident (|m - .5| * 2 = .84 was not)
+  f = strip_filter.make('A8/4L')
+  assert f._conf(.92) == pytest.approx(.92) and strip_filter.make('A8/4L-legacy')._conf(.92) == pytest.approx(.84)
 
 
 @pytest.mark.parametrize('blinker, lcs, prob, y, v, reason', [

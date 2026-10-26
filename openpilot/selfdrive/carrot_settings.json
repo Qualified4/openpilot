@@ -423,7 +423,6 @@
             "CcncLaneColor",
             "CcncModelLanes",
             "CcncLaneTypeDetection",
-            "LaneStripModel",
             "CcncRadarVehicles",
             "CcncVehiclePositionCorrection",
             "CcncRadarMap"
@@ -1902,13 +1901,13 @@
       "group": "시작",
       "name": "CcncLaneTypeDetection",
       "title": "CCNC 차선 종류·색상 표시",
-      "descr": "차선의 실선·점선과 흰색·노란색을 인식해 CCNC 계기판 차선 색상과 형태에 반영합니다. 노란선은 주황 실선, 차선 변경 가능 시 녹색, 그 외 흰색. 표시 전용, 차선 변경·조향 제어 영향 없음. 끔: 기존 표시, StripNet: 경량 모델(모델은 차선 종류 모델에서 선택). 별도 프로세스, 기기 연산 프레임당 현재(v3) 약 10.9ms, 새 모델(v4) 약 14.8ms",
+      "descr": "차선의 실선·점선과 흰색·노란색을 인식해 CCNC 계기판 차선 색상과 형태에 반영합니다. 노란선은 주황 실선, 차선 변경 가능 시 녹색, 그 외 흰색. 표시 전용, 차선 변경·조향 제어 영향 없음. 끔: 기존 표시, StripNet: 경량 모델(v4). 별도 프로세스, 기기 연산 프레임당 약 14.8ms",
       "egroup": "START",
       "etitle": "CCNC lane type & color display",
-      "edescr": "Recognises solid/dashed and white/yellow lane lines and reflects them in the CCNC cluster lane color and shape. Yellow shows orange solid, lane-change-available green, otherwise white. Display only; no effect on lane change or steering control. Off: existing display, StripNet: light model (chosen in Lane type model). separate process, device compute about 10.9 ms per frame for current v3, 14.8 ms for new v4",
+      "edescr": "Recognises solid/dashed and white/yellow lane lines and reflects them in the CCNC cluster lane color and shape. Yellow shows orange solid, lane-change-available green, otherwise white. Display only; no effect on lane change or steering control. Off: existing display, StripNet: light model (v4). separate process, device compute about 14.8 ms per frame",
       "cgroup": "启动设置",
       "ctitle": "CCNC 车道线类型·颜色显示",
-      "cdescr": "识别实线/虚线和白色/黄色车道线，并反映到CCNC仪表车道颜色和形状。黄线显示橙色实线，可变道时绿色，其余白色。仅用于显示，不影响变道和转向控制。关闭：原有显示，StripNet：轻量模型(在车道线类型模型中选择)。独立进程，设备计算当前v3每帧约10.9 ms，新v4约14.8 ms",
+      "cdescr": "识别实线/虚线和白色/黄色车道线，并反映到CCNC仪表车道颜色和形状。黄线显示橙色实线，可变道时绿色，其余白色。仅用于显示，不影响变道和转向控制。关闭：原有显示，StripNet：轻量模型(v4)。独立进程，设备计算每帧约14.8 ms",
       "min": 0,
       "max": 1,
       "default": 0,
@@ -1926,37 +1925,6 @@
         "zh": [
           "关闭",
           "StripNet"
-        ]
-      }
-    },
-    {
-      "group": "시작",
-      "name": "LaneStripModel",
-      "title": "차선 종류 모델",
-      "descr": "CCNC 차선 종류·색상 표시(StripNet)에 쓸 모델을 고릅니다. 현재: 배포된 모델, 새 모델(실험용): 복선 라벨을 보정하고 파란선을 흰색으로 처리한 시험 모델. 여전히 실선을 점선으로, 노란선을 흰색으로 또는 흰선을 노란색으로 표시할 수 있어 시험 목적으로만 사용하세요. 새 모델 파일이 없거나 읽을 수 없으면 현재 모델로 실행합니다. 예전에 저장된 하이브리드 값(2)은 새 모델로 실행합니다. 주행 중에 바꾸면 재시작 없이 약 1초 안에 적용되고, 차선 판단은 처음부터 다시 쌓습니다. 표시 전용",
-      "egroup": "START",
-      "etitle": "Lane type model",
-      "edescr": "Chooses the model used by CCNC lane type & color display (StripNet). Current: the deployed model. New model (experimental): a trial model with corrected double-line labels and blue lines treated as white. It can still show solid lines as dashed, yellow as white, or white as yellow; use it for testing only. If the new model files are missing or cannot be read, the current model runs. A previously stored Hybrid value (2) runs the new model. A change while driving applies within about 1 s without a restart, and lane decisions start over. Display only",
-      "cgroup": "启动设置",
-      "ctitle": "车道线类型模型",
-      "cdescr": "选择CCNC车道线类型·颜色显示(StripNet)使用的模型。当前：已部署的模型。新模型(实验用)：修正双线标签并将蓝线按白线处理的测试模型。仍可能把实线显示为虚线、黄线显示为白线或白线显示为黄线，仅供测试。新模型文件缺失或无法读取时使用当前模型。以前保存的混合值(2)按新模型运行。行驶中更改时无需重启，约1秒内生效，车道判断重新开始。仅用于显示",
-      "min": 0,
-      "max": 1,
-      "default": 0,
-      "unit": 1,
-      "control": "select",
-      "options": {
-        "ko": [
-          "현재",
-          "새 모델(실험용)"
-        ],
-        "en": [
-          "Current",
-          "New model (experimental)"
-        ],
-        "zh": [
-          "当前",
-          "新模型(实验用)"
         ]
       }
     },

@@ -1,19 +1,18 @@
 """Frozen StripNet on the 4.5-20 m row-aligned YCbCr strip (display-only lane marking recogniser).
 
 The strip is built exactly as in training (tools/lane_profile/build_dataset.py): profile_scanner geometry
-and sampling, uint8, rows area-resized to 128. Its lateral width comes from the manifest's optional ``strip``
-({half_m, cols, rows}; absent = +-0.75 m, 96 columns, 128 rows = v1-v3); the ONNX input shape must match it.
+and sampling, uint8, rows area-resized to 128. Its lateral width comes from the manifest's ``strip``
+({half_m, cols, rows}; absent keys = DEFAULT_STRIP, the v4 +-1.0 m, 128 columns, 128 rows); the ONNX input shape must match it.
 Inference is OpenCV DNN on the CPU (one thread), the same backend as the existing lane classifier.
 Below the confidence threshold a head is UNKNOWN; dashed+yellow is not a learned class and is UNKNOWN for both heads.
 
-Manifest v4 (``outputs`` == OUTPUTS_V4, ONNX outputs ``color`` (N, 3) and ``type`` (N, 5) logits) is mapped onto the
-same two-class result the strip filter reads (StripModel.decide4); v1-v3 manifests (``outputs`` {line_type, color},
-two softmax heads) keep StripModel.decide unchanged. ``mirror_right`` (v4): marking_daemon flips the v4 model's right
-strip (see MIRROR_AXIS).
+Manifest v4 (``outputs`` == OUTPUTS_V4, ONNX outputs ``color`` (N, 3) and ``type`` (N, 5) logits; or OUTPUTS_V4_4, the
+4-type head without an 'unknown' class, ``type`` (N, 4)) is mapped onto the two-class result the strip filter reads
+(StripModel.decide4, through StripModel.decide). ``mirror_right``: marking_daemon flips the right strip (see MIRROR_AXIS).
 
-Model slots (SLOTS, selected by the LaneStripModel param in marking_daemon, see load_slot): 0 = assets/lane_strip.{onnx,json}
-(the deployed model), 1 = assets/lane_strip_v4.{onnx,json} (the new model). Slot 1 falls back to slot 0 when its files or
-input contracts are invalid.
+The model is assets/lane_strip_v4.{onnx,json} (MODEL_NAME), the only StripNet model (DaBin 10-26: the v1-v3 lane_strip model,
+the model choice setting and its fallback were removed). load() returns None when it is missing or invalid; marking_daemon then
+publishes nothing (the existing lane display stays) and logs a warning.
 """
 import hashlib
 import json
@@ -21,25 +20,34 @@ from pathlib import Path
 
 import numpy as np
 
-from openpilot.selfdrive.carrot.lane_type.profile_scanner import HALF_M, sample, strip_geometry
+from openpilot.selfdrive.carrot.lane_type.profile_scanner import sample, strip_geometry
 
 ASSETS = Path(__file__).with_name('assets')
-ROWS, COLUMNS = 128, 96
-DEFAULT_STRIP = {'half_m': HALF_M, 'cols': COLUMNS, 'rows': ROWS}  # v1-v3 (manifest without 'strip')
-TYPES, COLORS = ('dashed', 'solid'), ('white', 'yellow')
-OUTPUTS_V3 = {'line_type': list(TYPES), 'color': list(COLORS)}
+MODEL_NAME = 'lane_strip_v4'  # the StripNet model (file stem in ASSETS)
+HALF_M, ROWS, COLUMNS = 1., 128, 128
+DEFAULT_STRIP = {'half_m': HALF_M, 'cols': COLUMNS, 'rows': ROWS}  # the v4 strip (a manifest key absent from 'strip')
+TYPES, COLORS = ('dashed', 'solid'), ('white', 'yellow')  # the two-class result decide() makes (strip filter / display)
 # v4 contract (shared with tools/lane_profile training): near = the ego-side line of a double marking.
 TYPES_V4, COLORS_V4 = ('dashed', 'solid', 'dbl_near', 'dbl_far', 'unknown'), ('white', 'yellow', 'blue')
 OUTPUTS_V4 = {'color': list(COLORS_V4), 'type': list(TYPES_V4)}
+# 4-type v4 (2026-10-26, 'unknown is not a class'): the type head learns dashed / solid / dbl_near / dbl_far only and abstains
+# (reason 'unknown', as a 5-type unknown argmax) when its largest type probability is below the manifest threshold.
+TYPES_V4_4 = TYPES_V4[:4]
+OUTPUTS_V4_4 = {'color': list(COLORS_V4), 'type': list(TYPES_V4_4)}
+# A/B switches (filterab1026, replays only; the product keeps both False). HOLD_COLOR (F3): an abstaining decide4 result also
+# carries 'pYellowHeld' (the colour softmax P(yellow)) so marking_daemon can update the colour while the type abstains.
+# HOLD_BY_FAMILY (F4, 4-type head): abstain when max(P(dashed)+P(dbl_near), P(solid)+P(dbl_far)) < threshold instead of the
+# largest single class.
+HOLD_COLOR = False
+HOLD_BY_FAMILY = False
 # profile_scanner.strip_geometry: column 0 = line y - half_m, the last column = y + half_m (image left -> right), so the
 # ego side is the HIGH columns of the left strip and the LOW columns of the right strip. With mirror_right the right
 # strip is flipped on its column axis (the last one of 3 x rows x cols), putting its ego side on the high columns too.
 MIRROR_AXIS = -1
-SLOTS = {0: 'lane_strip', 1: 'lane_strip_v4'}  # file stem in ASSETS per LaneStripModel value
 
 
 def strip_of(manifest):
-  """Strip geometry {half_m, cols, rows} of a manifest; a missing 'strip' (or key) keeps the v1-v3 default."""
+  """Strip geometry {half_m, cols, rows} of a manifest; a missing 'strip' (or key) keeps DEFAULT_STRIP."""
   given = manifest.get('strip') or {}
   if not isinstance(given, dict) or set(given) - set(DEFAULT_STRIP):
     raise ValueError(f'lane strip manifest: invalid strip {given!r}')
@@ -115,7 +123,7 @@ def softmax(x):
 
 
 def strip_input(y_plane, uv_plane, line, rpy, k, half_m=HALF_M, cols=COLUMNS, rows=ROWS):
-  """3 x rows x cols float32 raw YCbCr (default 3 x 128 x 96 over +-0.75 m), or None when the boundary geometry is
+  """3 x rows x cols float32 raw YCbCr (default 3 x 128 x 128 over +-1.0 m), or None when the boundary geometry is
   unavailable. half_m / cols / rows: the model manifest's strip (StripModel.strip)."""
   import cv2
   geo = strip_geometry(line, rpy, k, y_plane.shape[1], y_plane.shape[0], half_m=half_m, cols=cols)
@@ -151,29 +159,28 @@ def batch_strip_inputs(y_plane, uv_plane, lines, rpy, k, geometries, extractor):
 
 
 class StripModel:
-  def __init__(self, directory=ASSETS, threshold=None, name='lane_strip'):
-    """``name``: the file stem of the manifest / ONNX pair in ``directory`` (SLOTS)."""
+  def __init__(self, directory=ASSETS, threshold=None, name=MODEL_NAME):
+    """``name``: the file stem of the manifest / ONNX pair in ``directory`` (MODEL_NAME)."""
     import cv2
     directory = Path(directory)
     manifest = json.loads((directory/f'{name}.json').read_text(encoding='utf-8'))
-    if not isinstance(manifest, dict):  # valid JSON but not an object ([], null, 3): a contract error, so load_slot falls back
+    if not isinstance(manifest, dict):  # valid JSON but not an object ([], null, 3): a contract error (load() returns None)
       raise ValueError(f'lane strip manifest {name}.json: top level is {type(manifest).__name__}, expected an object')
     data = (directory/f'{name}.onnx').read_bytes()
-    self.name, self.version, self.slot = name, manifest.get('version'), next((s for s, n in SLOTS.items() if n == name), None)
+    self.name, self.version = name, manifest.get('version')
     outputs = manifest.get('outputs')
-    if hashlib.sha256(data).hexdigest() != manifest['model_sha256'] or outputs not in (OUTPUTS_V3, OUTPUTS_V4):
+    if hashlib.sha256(data).hexdigest() != manifest['model_sha256'] or outputs not in (OUTPUTS_V4, OUTPUTS_V4_4):
       raise ValueError('lane strip model artifact contract mismatch')
-    self.v4 = outputs == OUTPUTS_V4
+    self.v4 = True  # the only supported manifest (kept for replays that read it)
     self.mirror_right = manifest.get('mirror_right', False)
-    if not isinstance(self.mirror_right, bool) or (self.mirror_right and not self.v4):
-      raise ValueError(f"lane strip manifest: mirror_right {self.mirror_right!r} needs a bool and the v4 outputs")
-    if self.v4:
-      for head, classes in outputs.items():
-        dims = onnx_output_shape(data, head)
-        if dims is None or len(dims) != 2 or dims[1] != len(classes):
-          expects = f'[N, {len(classes)}] for {classes}'
-          raise ValueError(f"lane strip ONNX output {head!r} shape {dims} does not match the manifest v4 outputs (expects {expects})")
-    self.heads = ['type', 'color'] if self.v4 else ['line_type', 'color']
+    if not isinstance(self.mirror_right, bool):
+      raise ValueError(f"lane strip manifest: mirror_right {self.mirror_right!r} needs a bool")
+    for head, classes in outputs.items():
+      dims = onnx_output_shape(data, head)
+      if dims is None or len(dims) != 2 or dims[1] != len(classes):
+        expects = f'[N, {len(classes)}] for {classes}'
+        raise ValueError(f"lane strip ONNX output {head!r} shape {dims} does not match the manifest v4 outputs (expects {expects})")
+    self.heads = ['type', 'color']
     self.strip = strip_of(manifest)
     want = [3, self.strip['rows'], self.strip['cols']]
     geometry = f"strip +-{self.strip['half_m']:g} m / {self.strip['cols']} cols / {self.strip['rows']} rows"
@@ -191,10 +198,10 @@ class StripModel:
 
   def info(self):
     """What the daemon logs and publishes for the active model (packet 'model')."""
-    return {'slot': self.slot, 'name': self.name, 'version': self.version, 'sha256': self.model_hash[:12], 'v4': self.v4}
+    return {'name': self.name, 'version': self.version, 'sha256': self.model_hash[:12], 'v4': self.v4}
 
   def forward(self, strips):
-    """The network's (type, colour) output rows for a non-empty list of strips (v4: logits, v1-v3: softmax probabilities)."""
+    """The network's (type, colour) logit rows for a non-empty list of strips."""
     self.net.setInput(np.ascontiguousarray(np.stack(strips)))
     return self.net.forward(self.heads)
 
@@ -203,8 +210,7 @@ class StripModel:
     if not strips:
       return []
     types, colors = self.forward(strips)
-    decide = self.decide4 if self.v4 else self.decide
-    return [decide(t, c) for t, c in zip(types, colors, strict=True)]
+    return [self.decide4(t, c) for t, c in zip(types, colors, strict=True)]
 
   def decide(self, type_p, color_p, yellow_dashed_learned=False):
     """yellow_dashed_learned (v4): dashed+yellow is a legal Korean marking (centre-line passing zone, roadside parking line)
@@ -226,13 +232,33 @@ class StripModel:
     Type: an 'unknown' argmax abstains (reason 'unknown': no probabilities, both heads unknown; marking_daemon passes it like
     'lane_prob_dip'); otherwise P(dashed) = (P(dashed) + P(dbl_near)) / (1 - P(unknown)) (near = ego side -> dashed display,
     far -> solid). Colour: P(yellow) of the 3-way softmax; blue is shown as white (P(white) = 1 - P(yellow)). Yellow + dashed
-    is passed through (type dashed, colour yellow, reason strip_model), unlike v1-v3."""
+    is passed through (type dashed, colour yellow, reason strip_model), unlike v1-v3.
+
+    4-type logits (OUTPUTS_V4_4, no unknown class): P(unknown) = 0; the side abstains exactly like an unknown argmax when the
+    largest of the 4 type probabilities is below the threshold; otherwise P(dashed) = P(dashed) + P(dbl_near)."""
     pt, pc = softmax(type_logits), softmax(color_logits)
+    if len(pt) == len(TYPES_V4_4):
+      t, c = int(np.argmax(pt)), int(np.argmax(pc))
+      extras = {'typeClass': TYPES_V4_4[t], 'colorClass': COLORS_V4[c], 'double': TYPES_V4_4[t] in ('dbl_near', 'dbl_far'),
+                'blue': COLORS_V4[c] == 'blue', 'pUnknown': 0.}
+      family = max(float(pt[0] + pt[2]), float(pt[1] + pt[3]))
+      if (family if HOLD_BY_FAMILY else float(pt[t])) < self.threshold:
+        if HOLD_COLOR:
+          extras['pYellowHeld'] = float(pc[1])
+        return {'reason': 'unknown', 'type': 'unknown', 'typeConfidence': 0., 'typeCandidate': 'unknown',
+                'color': 'unknown', 'colorConfidence': 0., 'colorCandidate': 'unknown', **extras}
+      dashed = min(1., float(pt[0] + pt[2]))
+      yellow = float(pc[1])
+      out = self.decide(np.array([dashed, 1. - dashed]), np.array([1. - yellow, yellow]), yellow_dashed_learned=True)
+      out.update(extras)
+      return out
     t, c = int(np.argmax(pt)), int(np.argmax(pc))
     u = float(pt[TYPES_V4.index('unknown')])
     extras = {'typeClass': TYPES_V4[t], 'colorClass': COLORS_V4[c], 'double': TYPES_V4[t] in ('dbl_near', 'dbl_far'),
               'blue': COLORS_V4[c] == 'blue', 'pUnknown': u}
     if TYPES_V4[t] == 'unknown':
+      if HOLD_COLOR:
+        extras['pYellowHeld'] = float(pc[1])
       return {'reason': 'unknown', 'type': 'unknown', 'typeConfidence': 0., 'typeCandidate': 'unknown',
               'color': 'unknown', 'colorConfidence': 0., 'colorCandidate': 'unknown', **extras}
     dashed = min(1., float(pt[0] + pt[2])/(1. - u))
@@ -242,17 +268,14 @@ class StripModel:
     return out
 
 
-def load_slot(slot, directory=None, warn=None):
-  """StripModel of LaneStripModel slot ``slot`` (SLOTS). A slot other than 0
-  whose files are missing, unreadable or fail the manifest / ONNX contract falls back to slot 0 (the deployed model), calling
-  ``warn(message)`` first; an unknown slot is 0. The returned model's ``slot`` is the slot actually loaded. ``directory`` None:
-  ASSETS (looked up at call time)."""
+def load(directory=None, warn=None):
+  """The StripNet model (MODEL_NAME in ``directory``, None: ASSETS looked up at call time), or None when its files are missing,
+  unreadable or fail the manifest / ONNX contract (``warn(message)`` is called first). There is no fallback model."""
   import cv2
   directory = ASSETS if directory is None else directory
-  if slot in SLOTS and slot != 0:
-    try:
-      return StripModel(directory, name=SLOTS[slot])
-    except (OSError, ValueError, KeyError, TypeError, cv2.error) as error:
-      if warn is not None:
-        warn(f'lane strip model slot {slot} ({SLOTS[slot]}) not loaded, using {SLOTS[0]}: {type(error).__name__}: {error}')
-  return StripModel(directory, name=SLOTS[0])
+  try:
+    return StripModel(directory)
+  except (OSError, ValueError, KeyError, TypeError, cv2.error) as error:
+    if warn is not None:
+      warn(f'lane strip model {MODEL_NAME} not loaded, lane types are not shown: {type(error).__name__}: {error}')
+    return None

@@ -1,7 +1,5 @@
-"""StripModel manifest v4 (5-class type / 3-class colour logits, mirror_right) and the unchanged v1-v3 path.
-
-v3: the shipped asset on six cached 407 frames (left + right strips, tools/lane_type/fixtures/v3_golden_407.npz) must give
-exactly the results the pre-v4 StripModel gave. v4: a weightless probe ONNX (fixtures/make_strip_v4.py) reads its logits
+"""StripModel manifest v4 (5-class or 4-class type / 3-class colour logits, mirror_right), the only manifest (10-26: the v1-v3
+lane_strip model was removed). A weightless probe ONNX (fixtures/make_strip_v4.py) reads its logits
 from the strip itself (type = channel 0 row 0 last 5 columns, colour = channel 1 row 0 last 3 columns), so each test
 writes the logits it wants into the strip."""
 import hashlib
@@ -22,11 +20,12 @@ STRONG = 20.  # a logit this far above the others is a ~1.0 softmax
 def manifest_dir(tmp_path, onnx=FIX/'strip_v4_probe.onnx', **over):
   data = Path(onnx).read_bytes()
   mf = {'version': 4, 'model_sha256': hashlib.sha256(data).hexdigest(), 'threshold': .9, 'mirror_right': True,
+        'strip': {'half_m': .75, 'cols': 96, 'rows': 128},  # the probe's 96 columns (the manifest default is the v4 128-column strip)
         'input': {'name': 'strip_ycbcr', 'shape': [3, 128, 96]}, 'outputs': strip_model.OUTPUTS_V4, **over}
   mf = {k: v for k, v in mf.items() if v is not None}
   tmp_path.mkdir(parents=True, exist_ok=True)
-  (tmp_path/'lane_strip.onnx').write_bytes(data)
-  (tmp_path/'lane_strip.json').write_text(json.dumps(mf), encoding='utf-8')
+  (tmp_path/f'{strip_model.MODEL_NAME}.onnx').write_bytes(data)
+  (tmp_path/f'{strip_model.MODEL_NAME}.json').write_text(json.dumps(mf), encoding='utf-8')
   return tmp_path
 
 
@@ -67,28 +66,6 @@ def strips(monkeypatch):
   return cur
 
 
-# ---- v1-v3: unchanged
-
-def test_v3_asset_golden_on_cached_407_frames():
-  z = np.load(FIX/'v3_golden_407.npz')
-  m = strip_model.StripModel()
-  assert not m.v4 and m.mirror_right is False and m.heads == ['line_type', 'color']
-  assert m.infer(list(z['strips'].astype(np.float32))) == json.loads(str(z['golden']))
-
-
-def test_v3_recogniser_does_not_mirror(strips):
-  z = np.load(FIX/'v3_golden_407.npz')
-  golden = json.loads(str(z['golden']))
-  rec = Recogniser(2, strip_filter=False)
-  strips['left'], strips['right'] = z['strips'][0].astype(np.float32), z['strips'][6].astype(np.float32)
-  out = rec.process(None, None, frame(0))
-  for side, g in (('left', golden[0]), ('right', golden[6])):
-    assert (out[side]['type'], out[side]['color'], out[side]['reason']) == (g['type'], g['color'], g['reason'])
-    assert not set(out[side]) & {'typeClass', 'double', 'blue'}
-  pk = packet(2, 1, 0, out, {}, 0, {}, {})
-  assert set(pk['left']['raw']) == {'type', 'color', 'typeConfidence', 'colorConfidence', 'reason'}  # v3 packet unchanged
-
-
 # ---- v4: manifest / ONNX contract
 
 def test_v4_manifest_loads(tmp_path):
@@ -97,13 +74,11 @@ def test_v4_manifest_loads(tmp_path):
   assert strip_model.StripModel(manifest_dir(tmp_path/'nm', mirror_right=None)).mirror_right is False
 
 
-@pytest.mark.parametrize('kind', ['v3_onnx', 'type4', 'outputs', 'mirror_v3', 'mirror_type'])
+@pytest.mark.parametrize('kind', ['v3_outputs', 'type4', 'outputs', 'mirror_type'])
 def test_v4_contract_mismatch_is_a_clear_value_error(tmp_path, kind):
-  asset = Path(strip_model.ASSETS)/'lane_strip.onnx'
-  case = {'v3_onnx': ({'onnx': asset}, r"output 'color' shape \[None, 2\].*expects \[N, 3\]"),  # ONNX outputs line_type/color, manifest color/type
+  case = {'v3_outputs': ({'outputs': {'line_type': ['dashed', 'solid'], 'color': ['white', 'yellow']}}, 'contract mismatch'),  # v1-v3: no longer loaded
           'type4': ({'onnx': FIX/'strip_v4_probe_type4.onnx'}, r"output 'type' shape \[None, 4\].*expects \[N, 5\]"),
           'outputs': ({'outputs': {'color': ['white', 'yellow', 'blue'], 'type': ['dashed', 'solid', 'unknown']}}, 'contract mismatch'),
-          'mirror_v3': ({'onnx': asset, 'outputs': strip_model.OUTPUTS_V3}, 'mirror_right'),
           'mirror_type': ({'mirror_right': 1}, 'mirror_right')}[kind]
   with pytest.raises(ValueError, match=case[1]):
     strip_model.StripModel(manifest_dir(tmp_path, **case[0]))
@@ -200,5 +175,53 @@ def test_v4_yellow_dashed_passes_through_but_v3_stays_unknown(tmp_path, strips):
   for side in ('left', 'right'):
     assert (out[side]['type'], out[side]['color'], out[side]['reason']) == ('dashed', 'yellow', 'strip_model')
     assert out[side]['typePDashed'] > .99 and out[side]['colorPYellow'] > .99  # it enters the filter windows
-  v3 = m.decide(np.array([.99, .01]), np.array([.02, .98]))  # the v1-v3 rule is unchanged
+  v3 = m.decide(np.array([.99, .01]), np.array([.02, .98]))  # decide() itself (the two-class rule) keeps the v1-v3 behaviour
   assert (v3['type'], v3['color'], v3['reason']) == ('unknown', 'unknown', 'yellow_dashed_not_learned')
+
+
+# ---- v4 with the 4-type head (OUTPUTS_V4_4: no 'unknown' class, abstention by the largest type probability)
+
+T4 = {name: onehot(4, i) for i, name in enumerate(strip_model.TYPES_V4_4)}
+
+
+def manifest4_dir(tmp_path, **over):
+  return manifest_dir(tmp_path, onnx=FIX/'strip_v4_probe_type4.onnx', outputs=strip_model.OUTPUTS_V4_4, **over)
+
+
+def test_v4_4type_manifest_loads_and_contract_is_checked(tmp_path):
+  m = strip_model.StripModel(manifest4_dir(tmp_path))
+  assert m.v4 and m.mirror_right is True and m.heads == ['type', 'color']
+  with pytest.raises(ValueError, match=r"output 'type' shape \[None, 5\].*expects \[N, 4\]"):  # 5-type ONNX, 4-type manifest
+    strip_model.StripModel(manifest_dir(tmp_path/'x', outputs=strip_model.OUTPUTS_V4_4))
+
+
+def test_v4_4type_mapping_and_abstention(tmp_path):
+  m = strip_model.StripModel(manifest4_dir(tmp_path))
+  near, far = m.decide4(T4['dbl_near'], C['white']), m.decide4(T4['dbl_far'], C['blue'])
+  assert (near['type'], near['color'], near['double'], near['typeClass'], near['pUnknown']) == ('dashed', 'white', True, 'dbl_near', 0.)
+  assert (far['type'], far['color'], far['double'], far['blue']) == ('solid', 'white', True, True)
+  # confident: largest 4-type probability .92 >= .90; P(dashed) = dashed + dbl_near (no 1 - P(unknown) division)
+  from openpilot.selfdrive.carrot.lane_type.strip_filter import p_dashed, p_yellow
+  r = m.decide4(np.log([.92, .03, .03, .02]), np.log([.97, .02, .01]))
+  assert (r['type'], r['color'], r['reason']) == ('dashed', 'white', 'strip_model') and p_dashed(r) == pytest.approx(.95)
+  assert p_yellow(r) == pytest.approx(.02)
+  # abstains although P(dashed) = .95: the largest class probability .85 < .90 (unknown is a confidence state, not a class)
+  for probs in ([.85, .05, .10, .00001], [.5, .4, .05, .05]):
+    r = m.decide4(np.log(probs), np.log([.03, .96, .01]))
+    assert (r['reason'], r['type'], r['color'], r['typeCandidate'], r['colorCandidate']) == ('unknown',)*5
+    assert r['typeClass'] == 'dashed' and r['colorClass'] == 'yellow' and r['pUnknown'] == 0.
+
+
+def test_v4_4type_abstention_pauses_like_the_5type_unknown(tmp_path, strips):
+  rec = Recogniser(2)
+  rec.model = strip_model.StripModel(manifest4_dir(tmp_path))
+  strips['left'], strips['right'] = strip(T4['solid'], C['yellow']), strip(T4['dbl_near'], C['white'], at='mirrored')
+  for i in range(3):
+    out = rec.process(None, None, frame(i))
+  assert (out['left']['type'], out['left']['color']) == ('solid', 'yellow')
+  assert (out['right']['type'], out['right']['typeClass']) == ('dashed', 'dbl_near')
+  latched = dict(rec.strip_filter.sides['left'].latched)
+  strips['left'] = strip(np.zeros(4), C['white'])  # uniform 4-type softmax (.25): abstains, the latch is kept
+  out = rec.process(None, None, frame(3))
+  assert out['left']['reason'] == 'unknown' and out['left']['typePDashed'] is None and out['left']['colorPYellow'] is None
+  assert rec.strip_filter.sides['left'].latched == latched

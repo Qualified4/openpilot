@@ -20,7 +20,7 @@ SHARE_GEOMETRY = True
 NATIVE = True
 MAP_CACHE_SIZE = 8
 DISTANCES = np.arange(ps.NEAR_M, ps.FAR_M + .001, .02)
-COLUMN_GRID = {c: (np.arange(c*ps.SUB) + .5)/(c*ps.SUB) for c in (96, 128)}
+COLUMN_GRID = {c: (np.arange(c*ps.SUB) + .5)/(c*ps.SUB) for c in (128,)}  # the lane_strip_v4 strip; other widths computed per call
 
 
 def tune_allocator():
@@ -140,7 +140,7 @@ class Extractor:
     image = cv2.resize(image, (cols, rows), interpolation=cv2.INTER_AREA if len(image) > rows else cv2.INTER_LINEAR)
     return image.transpose(2, 0, 1).astype(np.float32)  # caller-owned, never a scratch view
 
-  def extract(self, y, uv, lines, rpy, k, widths=((.75, 96, 128), (1., 128, 128))):
+  def extract(self, y, uv, lines, rpy, k, widths=((1., 128, 128),)):
     """Unmirrored strips, width-major then side-major. No line geometry/pixels survive into the next call."""
     layout = y.shape, y.strides, uv.shape, uv.strides, tuple(widths)
     if layout != self.layout:

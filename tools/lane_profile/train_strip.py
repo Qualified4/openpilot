@@ -547,7 +547,7 @@ def main(a):
                         'validation_at_threshold': metrics(pt, pc, val_rows, threshold),
                         'validation_human_only_at_threshold': metrics(pt[human_val], pc[human_val], [val_rows[i] for i in human_val], threshold)}
   torch.save(net.state_dict(), out/'model.pt')
-  onnx_path = out/'lane_strip.onnx'
+  onnx_path = out/'strip_v3.onnx'  # v1-v3 research export (the product loads only assets/lane_strip_v4)
   report['selected']['onnx_parity_max_abs'] = export(net, onnx_path, scols, srows)
   report['selected']['onnx_bytes'] = onnx_path.stat().st_size
   report['selected']['onnx_sha256'] = hashlib.sha256(onnx_path.read_bytes()).hexdigest()
@@ -570,6 +570,10 @@ T2, C2 = dataset_io.TYPES, dataset_io.COLORS
 DASHED, SOLID, DBL_NEAR, DBL_FAR, UNKNOWN = range(5)
 WHITE, YELLOW, BLUE = range(3)
 RARE_CAP = 3.  # rare-class (dbl_near / dbl_far / unknown, blue) loss weight <= 3 x the mean weight of the common classes
+# 4-type mode (fourclass1026, trainers' --types4): the type head is T2[:4]; 'unknown' is not a class but an abstention (max
+# probability < threshold), so unknown rows carry type -100 (masked in the type and colour losses, kept for abstention metrics).
+# unknown_weight / cap_dbl below take the class count from the weight vector: a 4-entry vector has no unknown weight to solve.
+TYPES4 = T2[:4]
 SYNTH = {'shift': (17, 38), 'shift_yellow': (9, 24), 'period_m': (8., 18.), 'duty': (.35, .55), 'lum': .15,
          'min_peak': 15., 'width': (3, 20), 'margin': 2, 'min_gap': 4}
 # (dCb, dCr) blue paint - white paint relative to the road, measured on dataset-dbl-w100
@@ -845,9 +849,10 @@ def aug_class_mass(X, T, C, W, synth_p, device, seed):
 
 
 def cap_dbl(T, W, wt, cap, unknown_share, S=None):
-  """scale the dbl_near / dbl_far weights so their summed mass share is <= cap, then re-solve the unknown weight. -> (wt, scale)."""
+  """scale the dbl_near / dbl_far weights so their summed mass share is <= cap, then re-solve the unknown weight. -> (wt, scale).
+  4-type weights (len(wt) == 4): no unknown class; pass unknown_share=0 so the doubles get cap of the dashed+solid+dbl mass."""
   if S is None:
-    S = torch.stack([W[T == i].sum() for i in range(len(T2))])
+    S = torch.stack([W[T == i].sum() for i in range(len(wt))])
   m = wt*S
   share = float((m[DBL_NEAR] + m[DBL_FAR])/m.sum())
   if share <= cap:
@@ -863,6 +868,8 @@ def cap_dbl(T, W, wt, cap, unknown_share, S=None):
 def unknown_weight(T, W, wt, share, S=None):
   """type weight of 'unknown' that gives it ``share`` of the effective (class weight x sample weight) training mass:
   w_u = share/(1 - share) * sum_{k != u} w_k S_k / S_u, S_k = summed sample weights of class k (before augmentation)."""
+  if len(wt) <= UNKNOWN:  # 4-type head: unknown is an abstention, not a class -> nothing to weight
+    return wt
   if S is None:
     S = torch.stack([W[T == i].sum() for i in range(len(T2))])
   if float(S[UNKNOWN]) <= 0:

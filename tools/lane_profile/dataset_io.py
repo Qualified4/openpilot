@@ -9,6 +9,19 @@ import numpy as np
 TYPES_V1, COLORS_V1 = ('dashed', 'solid'), ('white', 'yellow')
 TYPES = TYPES_V1 + ('dbl_near', 'dbl_far', 'unknown')
 COLORS = COLORS_V1 + ('blue',)
+# 4-type head (2026-10-26 fourclass1026, user decision: 'unknown is not a class'): the model learns TYPES4 only; 'unknown' in a
+# manifest is an abstention label (not judged / not confidently a lane marking) -> type id -100 (masked from the losses, kept to
+# measure the abstention rate). Display family: dbl_near (ego-side line dashed) -> dashed, dbl_far (ego-side line solid) -> solid.
+# Two solid lines are 'solid' (not a double class). Colour: blue is displayed white.
+TYPES4 = TYPES[:4]
+HOLD = 'unknown'
+DISPLAY_TYPE = {'dashed': 'dashed', 'dbl_near': 'dashed', 'solid': 'solid', 'dbl_far': 'solid'}
+DISPLAY_COLOR = {'white': 'white', 'blue': 'white', 'yellow': 'yellow'}
+
+
+def type4_id(type_):
+  """TYPES4 index of a manifest type, -100 for the 'unknown' abstention label (ValueError for anything else)."""
+  return -100 if type_ == HOLD else TYPES4.index(type_)
 
 
 def check_labels(rows, types=TYPES, colors=COLORS):

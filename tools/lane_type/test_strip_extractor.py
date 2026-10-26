@@ -14,7 +14,7 @@ import pytest
 
 from openpilot.selfdrive.carrot.lane_type import marking, marking_daemon as md, profile_scanner as ps, strip_extractor as fast, strip_model as sm
 
-WIDTHS = ((.75, 96, 128), (1., 128, 128))
+WIDTHS = ((1., 128, 128),)  # the lane_strip_v4 strip (the v3 +-0.75 m / 96-column strip was removed 10-26)
 REAL = Path(__file__).resolve().parents[2]/'.analysis/strip-cache/decoded/412/00000412--4440b61281--9/chunk-0003.npz'
 needs_native = pytest.mark.skipif(fast.native is None, reason='_strip_native not built (SCons / tools/build_native_cpu.py)')
 
@@ -52,7 +52,7 @@ def test_all_switch_combinations_bit_exact(pixels, switches):
   want = scalar(*pixels)
   assert all(s is not None for s in want)
   equal(want, ex.extract(*pixels))
-  for widths in ((WIDTHS[0],), (WIDTHS[1],)):
+  for widths in ((WIDTHS[0],), ((.75, 96, 128),)):  # any other width still matches the scalar sampler
     equal(scalar(*pixels, widths), ex.extract(*pixels, widths))
 
 
@@ -158,7 +158,7 @@ def test_card_parser_ignores_new_timing_keys():
 def test_daemon_timing_fields_and_optional_faults(monkeypatch, tmp_path, faults):
   from tools.lane_type.test_lane_strip_toggle import assets, run_daemon  # noqa: TID251 - repository test helper
   monkeypatch.setattr(md, 'minor_faults', lambda: faults)
-  _, _, _, packets = run_daemon(monkeypatch, assets(tmp_path), [0, 0, 0])
+  _, _, _, packets = run_daemon(monkeypatch, assets(tmp_path), 3)
   assert packets
   for data in packets:
     timing = data['timing']
@@ -208,7 +208,7 @@ def test_native_matches_python_on_real_frames(monkeypatch):
   for frame in real_frames():
     want, got = off.extract(*frame), on.extract(*frame)
     equal(want, got)
-    for (_, c, _), side, strip in zip([w for w in WIDTHS for _ in range(2)], ('left', 'right')*2, got, strict=True):
+    for (_, c, _), side, strip in zip([w for w in WIDTHS for _ in range(2)], ('left', 'right')*len(WIDTHS), got, strict=True):
       compared[(c, side)] += strip is not None
   assert all(n >= 20 for n in compared.values()), compared
   assert calls['column_map'] == calls['area4_interleave'] == sum(compared.values())
@@ -234,7 +234,7 @@ def test_area4_kernel_matches_cv2(rows, cols):
 def test_column_map_matches_numpy():
   rng = np.random.default_rng(23)
   for rows, cols in ((1, 96), (311, 128), (57, 96)):
-    t = fast.COLUMN_GRID[cols]
+    t = fast.COLUMN_GRID.get(cols, (np.arange(cols*4) + .5)/(cols*4))
     e0 = rng.uniform(-2000., 3000., rows)
     e1 = e0 + rng.normal(0., 300., rows)
     e1[:3] = e0[:3]  # zero span

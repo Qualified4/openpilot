@@ -129,7 +129,7 @@ def main(a):
   contract = json.loads((model_dir/'model-contract.json').read_text(encoding='utf-8'))
   threshold = contract['threshold']
   strip = contract.get('strip_geometry') or {'half_m': .75, 'cols': 96, 'rows': 128}  # train_strip.py; absent = v1-v3 width
-  net = cv2.dnn.readNetFromONNX(str(model_dir/'lane_strip.onnx'))
+  net = cv2.dnn.readNetFromONNX(str(model_dir/'strip_v3.onnx'))
   rows, x = load_set(a.data)
   val = [i for i, r in enumerate(rows) if r['split'] == 'validation']
   vh = [i for i in val if rows[i]['origin'] == 'human']
@@ -144,12 +144,12 @@ def main(a):
     report['sets'][name] = {m: score(p, rs) for m, p in methods.items()}
   frame = json.loads(Path('.analysis/pixel-ribbon-hybrid-20261018/frames.json').read_text(encoding='utf-8'))[0]
   report['cpu'] = {'opencv': cv2.__version__, 'threads': 1,
-                   'strip_model_batch2_ms': benchmark(model_dir/'lane_strip.onnx', np.full((2, 3, strip['rows'], strip['cols']), 100., np.float32)),
+                   'strip_model_batch2_ms': benchmark(model_dir/'strip_v3.onnx', np.full((2, 3, strip['rows'], strip['cols']), 100., np.float32)),
                    'active_onnx_batch2_ms': benchmark(Path('openpilot/selfdrive/carrot/lane_type/assets/lane_type.onnx'),
                                                        np.zeros((2, 3, 192, 64), np.float32)),
                    'strip_extraction_fcamera': strip_cost(frame['nv12'], frame['line'], frame['rpy'], frame['intrinsics'],
                                                           half_m=strip['half_m'], cols=strip['cols']),
-                   'model_bytes': (model_dir/'lane_strip.onnx').stat().st_size,
+                   'model_bytes': (model_dir/'strip_v3.onnx').stat().st_size,
                    'active_onnx_bytes': Path('openpilot/selfdrive/carrot/lane_type/assets/lane_type.onnx').stat().st_size}
   Path(a.output).write_text(json.dumps(report, indent=1), encoding='utf-8')
   for name, ms in report['sets'].items():

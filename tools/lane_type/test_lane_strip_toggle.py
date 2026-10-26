@@ -1,12 +1,12 @@
-"""LaneStripModel: runtime choice between the deployed StripNet (slot 0, assets/lane_strip.*, v3), the new-model slot
-(slot 1, assets/lane_strip_v4.*), with fallback to slot 0 and a hot swap in marking_daemon that starts from clean state. A stored
-2 (the removed hybrid option) runs slot 1. Unless a test says otherwise the v4 files are the synthetic probe fixture
-(fixtures/make_strip_v4.py), copied under the slot-1 name; the real shipped pair is checked separately."""
+"""The StripNet model is assets/lane_strip_v4.* only (DaBin 10-26: the v1-v3 model, the model choice setting, its slots, fallback and
+hot swap were removed). A model that is missing or fails its contract checks is not replaced: strip_model.load returns None with a
+warning and marking_daemon publishes nothing (the existing lane display stays) until CcncLaneTypeDetection is turned off. Unless a
+test says otherwise the model files are the synthetic probe fixture (fixtures/make_strip_v4.py) under the model name; the real
+shipped pair is checked separately."""
 import hashlib
 import json
 from pathlib import Path
 import re
-import shutil
 import sys
 import time
 import types
@@ -17,120 +17,77 @@ import pytest
 
 from openpilot.selfdrive.carrot.lane_type import marking, strip_model
 from openpilot.selfdrive.carrot.lane_type.marking_daemon import Recogniser
-from tools.lane_type.test_strip_model_v4 import FIX, FRAME_NS, C, T, frame, strip, strips  # noqa: F401,TID251 - fixture
+from tools.lane_type.test_strip_model_v4 import FIX  # noqa: TID251
 
 ROOT = Path(__file__).resolve().parents[2]
-V3 = 'e6c5f34fb84d1b184d90bda5e245ab4fc32c01b4a3f55665a7b332debb87053f'
 V4_SHIPPED = '23ff1bc749421977e400977e9d14e70dd2e30ab59391a0a59e890f7051f9afb7'  # 10-24 retrain rain1024b D1 s2 (+ 10-24 rain drive, synth double 0.05)
 
 
-def assets(tmp_path, v4=FIX/'strip_v4_probe.onnx', strip=None):
-  """An assets directory with the deployed v3 pair and, unless v4 is None, a v4 manifest + ONNX in slot 1 (``strip``: its
-  manifest strip, e.g. {'half_m': 1.0}; the probe keeps 96 columns)."""
-  for ext in ('onnx', 'json'):
-    shutil.copy(strip_model.ASSETS/f'lane_strip.{ext}', tmp_path/f'lane_strip.{ext}')
-  if v4 is not None:
-    data = v4.read_bytes()
-    mf = {'version': 4, 'model_sha256': hashlib.sha256(data).hexdigest(), 'threshold': .9, 'mirror_right': True,
-          'input': {'name': 'strip_ycbcr', 'shape': [3, 128, 96]}, 'outputs': strip_model.OUTPUTS_V4}
-    if strip is not None:
-      mf['strip'] = strip
-    (tmp_path/'lane_strip_v4.onnx').write_bytes(data)
-    (tmp_path/'lane_strip_v4.json').write_text(json.dumps(mf), encoding='utf-8')
+def assets(tmp_path, v4=FIX/'strip_v4_probe.onnx', strip={'half_m': .75, 'cols': 96, 'rows': 128}):
+  """An assets directory with a v4 manifest + ONNX under strip_model.MODEL_NAME (``strip``: its manifest strip; the probe keeps
+  96 columns)."""
+  data = v4.read_bytes()
+  mf = {'version': 4, 'model_sha256': hashlib.sha256(data).hexdigest(), 'threshold': .9, 'mirror_right': True,
+        'input': {'name': 'strip_ycbcr', 'shape': [3, 128, 96]}, 'outputs': strip_model.OUTPUTS_V4}
+  if strip is not None:
+    mf['strip'] = strip
+  (tmp_path/f'{strip_model.MODEL_NAME}.onnx').write_bytes(data)
+  (tmp_path/f'{strip_model.MODEL_NAME}.json').write_text(json.dumps(mf), encoding='utf-8')
   return tmp_path
 
 
-def test_params_and_defaults():
-  for slot in (0, 1):
-    assert marking.model_of(N(get_int=lambda key, s=slot: s)) == slot
-  assert marking.model_of(N(get_int=lambda key: 2)) == 1  # the removed hybrid option runs the new model
-  for bad in (3, -1):
-    assert marking.model_of(N(get_int=lambda key, b=bad: b)) == 0
-  def broken(key):
-    raise ValueError(key)
-  assert marking.model_of(N(get_int=broken)) == 0 and marking.mode_of(N(get_int=broken)) == 0
+def test_single_model_api_and_setting_removed():
+  assert strip_model.MODEL_NAME == 'lane_strip_v4'
+  assert not hasattr(strip_model, 'SLOTS') and not hasattr(strip_model, 'load_slot') and not hasattr(strip_model, 'OUTPUTS_V3')
+  assert not hasattr(marking, 'model_of') and not hasattr(marking, 'MODEL_PARAM')
+  assert not hasattr(Recogniser, 'swap_model')
+  assert sorted(p.name for p in strip_model.ASSETS.glob('lane_strip*')) == ['lane_strip_v4.json', 'lane_strip_v4.onnx']
   text = (ROOT/'openpilot/selfdrive/carrot_settings.json').read_text(encoding='utf-8')
-  item = next(p for p in json.loads(text)['params'] if p['name'] == marking.MODEL_PARAM)
-  assert (item['min'], item['max'], item['default'], item['control']) == (0, 1, 0, 'select')
-  assert item['options']['ko'] == ['현재', '새 모델(실험용)']
-  assert all(len(v) == 2 for v in item['options'].values())
-  assert set(marking.MODEL_SLOTS) == {0, 1} and set(strip_model.SLOTS) == {0, 1}
-  assert re.search(r'"CcncLaneTypeDetection",\s+"LaneStripModel",', text)  # listed right after it in CANFD·HDA
+  assert re.search(r'"CcncLaneTypeDetection",\s+"CcncRadarVehicles",', text)  # nothing listed between them in CANFD·HDA any more
   keys = (ROOT/'openpilot/common/params_keys.h').read_text(encoding='utf-8')
-  assert '{"LaneStripModel", {PERSISTENT, INT, "0"}}' in keys
+  assert re.search(r'\{"CcncLaneTypeDetection", \{PERSISTENT, INT, "0"\}\},\s+\{"CcncRadarMap"', keys)
 
 
-def test_slot0_is_the_deployed_v3():
-  m = strip_model.load_slot(0)
-  assert (m.slot, m.name, m.version, m.model_hash, m.v4) == (0, 'lane_strip', 3, V3, False)
-  assert m.info() == {'slot': 0, 'name': 'lane_strip', 'version': 3, 'sha256': V3[:12], 'v4': False}
-
-
-def test_slot1_with_v4_files_loads_v4(tmp_path):
+def test_load_v4(tmp_path):
   warned = []
-  m = strip_model.load_slot(1, assets(tmp_path), warn=warned.append)
-  assert (m.slot, m.name, m.version, m.v4, m.mirror_right) == (1, 'lane_strip_v4', 4, True, True) and not warned
+  m = strip_model.load(assets(tmp_path), warn=warned.append)
+  assert (m.name, m.version, m.v4, m.mirror_right) == ('lane_strip_v4', 4, True, True) and not warned
+  assert set(m.info()) == {'name', 'version', 'sha256', 'v4'}
 
 
-@pytest.mark.parametrize('broken', ['missing', 'onnx_missing', 'bad_json', 'contract', 'hash'])
-def test_slot1_falls_back_to_v3_with_a_warning(tmp_path, broken):
+@pytest.mark.parametrize('broken', ['missing', 'onnx_missing', 'bad_json', 'contract', 'hash', '[]', 'null', '3'])
+def test_load_failure_returns_none_with_a_warning(tmp_path, broken):
+  """No fallback model: a missing or invalid model (incl. Codex review F1 10-22: valid JSON that is not an object) is None."""
   d = assets(tmp_path, v4=FIX/('strip_v4_probe_type4.onnx' if broken == 'contract' else 'strip_v4_probe.onnx'))
+  name = strip_model.MODEL_NAME
   if broken == 'missing':
     for ext in ('onnx', 'json'):
-      (d/f'lane_strip_v4.{ext}').unlink()
+      (d/f'{name}.{ext}').unlink()
   elif broken == 'onnx_missing':
-    (d/'lane_strip_v4.onnx').unlink()
+    (d/f'{name}.onnx').unlink()
   elif broken == 'bad_json':
-    (d/'lane_strip_v4.json').write_text('{', encoding='utf-8')
+    (d/f'{name}.json').write_text('{', encoding='utf-8')
   elif broken == 'hash':
-    (d/'lane_strip_v4.onnx').write_bytes((d/'lane_strip_v4.onnx').read_bytes() + b'\0')
+    (d/f'{name}.onnx').write_bytes((d/f'{name}.onnx').read_bytes() + b'\0')
+  elif broken in ('[]', 'null', '3'):
+    (d/f'{name}.json').write_text(broken, encoding='utf-8')
   warned = []
-  m = strip_model.load_slot(1, d, warn=warned.append)
-  assert (m.slot, m.version, m.model_hash) == (0, 3, V3)
-  assert len(warned) == 1 and 'slot 1 (lane_strip_v4) not loaded, using lane_strip' in warned[0]
+  assert strip_model.load(d, warn=warned.append) is None
+  assert len(warned) == 1 and 'lane_strip_v4 not loaded, lane types are not shown' in warned[0]
 
 
-def test_hot_swap_resets_filter_and_dip_state(tmp_path, strips):  # noqa: F811
-  rec = Recogniser(2, model=strip_model.load_slot(0))
-  v4 = strip_model.load_slot(1, assets(tmp_path))
-  z = np.load(FIX/'v3_golden_407.npz')
-  strips['left'], strips['right'] = z['strips'][0].astype(np.float32), z['strips'][6].astype(np.float32)
-  for i in range(10):
-    rec.process(None, None, frame(i))
-  f = frame(10)
-  f['probs']['left'] = .4  # a dip timer is running on the left
-  rec.process(None, None, f)
-  sides = rec.strip_filter.sides
-  assert rec.dip_since and any(len(s.items) for s in sides.values())
-  filt = rec.strip_filter
-  rec.swap_model(v4)
-  assert rec.model is v4 and rec.strip_filter is filt and not rec.dip_since
-  assert all(not s.items and not s.latched for s in sides.values())
-  # the v4 model's own results from here on (probe logits: left solid yellow, right mirrored dbl_near white)
-  strips['left'], strips['right'] = strip(T['solid'], C['yellow']), strip(T['dbl_near'], C['white'], at='mirrored')
-  out = rec.process(None, None, frame(11))
-  assert (out['left']['typeClass'], out['right']['typeClass']) == ('solid', 'dbl_near')
-  with pytest.raises(ValueError):
-    Recogniser(1).swap_model(v4)
-
-
-def run_daemon(monkeypatch, d, slots, remove_at=None):
-  """marking_daemon.main with fake IPC and the assets in ``d``: LaneStripModel follows ``slots`` (one entry per param poll,
-  PARAM_CHECK_S 0: once per loop; CcncLaneTypeDetection on for len(slots) polls, then off); at poll ``remove_at`` the v4
-  files disappear. -> (recognisers built, cloudlog lines, polls at which DisplayPolicy was reset, packets sent)."""
+def run_daemon(monkeypatch, d, polls):
+  """marking_daemon.main with fake IPC and the model files in ``d`` (CcncLaneTypeDetection on for ``polls`` param polls, then
+  off; PARAM_CHECK_S 0). -> (recognisers built, cloudlog lines, polls at which DisplayPolicy was reset, packets sent)."""
   from openpilot.selfdrive.carrot.lane_type import marking_daemon as md
-  real_load = strip_model.load_slot
-  monkeypatch.setattr(strip_model, 'load_slot', lambda slot, directory=None, warn=None: real_load(slot, d, warn))
+  real_load = strip_model.load
+  monkeypatch.setattr(strip_model, 'load', lambda directory=None, warn=None: real_load(d, warn))
   state = {'poll': 0, 'i': 0}
 
   def get_int(key):
-    if key == marking.PARAM:
-      state['poll'] += 1
-      return 1 if state['poll'] <= len(slots) else 0
-    if state['poll'] == remove_at:
-      for ext in ('onnx', 'json'):
-        (d/f'lane_strip_v4.{ext}').unlink(missing_ok=True)
-    return slots[min(state['poll'], len(slots)) - 1] if state['poll'] else slots[0]
+    assert key == marking.PARAM  # the only param the daemon reads
+    state['poll'] += 1
+    return 1 if state['poll'] <= polls else 0
   monkeypatch.setitem(sys.modules, 'openpilot.common.params', N(Params=lambda: N(get_int=get_int)))
   monkeypatch.setattr(md, 'PARAM_CHECK_S', 0.)
   monkeypatch.setattr(md.os, 'nice', lambda n: None, raising=False)
@@ -191,51 +148,31 @@ def run_daemon(monkeypatch, d, slots, remove_at=None):
   return built, logs, resets, sent
 
 
-def test_daemon_polls_the_param_and_hot_swaps(monkeypatch, tmp_path):
-  """LaneStripModel 0 -> 1 (v4 present) -> 0 -> 1 (v4 removed: v3 + warning), with the packet 'model' entry following and the
-  display filter reset at each swap; no recogniser rebuild."""
-  built, logs, resets, sent = run_daemon(monkeypatch, assets(tmp_path), [0]*4 + [1]*4 + [0]*4 + [1]*4, remove_at=13)
-  assert built == [(2,)]  # one recogniser for the whole drive: the model is swapped in place
-  assert [x[0] for x in logs['info']] == ['lane_strip', 'lane_strip_v4', 'lane_strip', 'lane_strip']
-  assert [(x[1], x[2]) for x in logs['info']] == [(0, 0), (1, 1), (0, 0), (1, 0)]  # (LaneStripModel, slot loaded)
-  assert len(logs['warning']) == 1 and 'not loaded, using lane_strip' in logs['warning'][0]
-  assert {5, 9, 13} <= set(resets)  # the display filter restarts at every swap
-  seen = [(p['model']['requested'], p['model']['slot'], p['model']['version']) for p in sent]
-  assert seen and seen[0] == (0, 0, 3) and seen[-1] == (1, 0, 3)
-  assert [s for i, s in enumerate(seen) if i == 0 or s != seen[i - 1]] == [(0, 0, 3), (1, 1, 4), (0, 0, 3), (1, 0, 3)]
-
-
-def test_daemon_legacy_slot2_runs_slot1(monkeypatch, tmp_path):
-  """A stored LaneStripModel 2 (the removed hybrid option) loads slot 1 (the new model): 0 -> 2 -> 0 swaps v3 -> v4 -> v3."""
-  built, logs, resets, sent = run_daemon(monkeypatch, assets(tmp_path), [0]*4 + [2]*4 + [0]*4)
+def test_daemon_runs_the_v4_model(monkeypatch, tmp_path):
+  built, logs, resets, sent = run_daemon(monkeypatch, assets(tmp_path), 8)
   assert built == [(2,)] and not logs['warning']
-  assert [x[0] for x in logs['info']] == ['lane_strip', 'lane_strip_v4', 'lane_strip']
-  assert [(x[1], x[2]) for x in logs['info']] == [(0, 0), (1, 1), (0, 0)]
-  assert {5, 9} <= set(resets)
-  seen = [(p['model']['requested'], p['model']['slot'], p['model']['version']) for p in sent]
-  assert [s for i, s in enumerate(seen) if i == 0 or s != seen[i - 1]] == [(0, 0, 3), (1, 1, 4), (0, 0, 3)]
+  assert [x[0] for x in logs['info']] == ['lane_strip_v4']
+  assert sent and all(p['model'] == {'name': 'lane_strip_v4', 'version': 4, 'sha256': p['model']['sha256'], 'v4': True} for p in sent)
+
+
+def test_daemon_without_a_model_publishes_nothing(monkeypatch, tmp_path):
+  """Missing model files: one warning, no recogniser, no packet (the existing lane display stays); the process returns once the
+  option is turned off."""
+  for ext in ('onnx', 'json'):
+    (assets(tmp_path)/f'{strip_model.MODEL_NAME}.{ext}').unlink()
+  built, logs, resets, sent = run_daemon(monkeypatch, tmp_path, 5)
+  assert built == [] and sent == [] and not logs['info']
+  assert len(logs['warning']) == 1 and 'not loaded, lane types are not shown' in logs['warning'][0]
 
 
 def test_shipped_v4_pair():
-  """The shipped assets: slot 1 = 10-24 retrain rain1024b D1 s2 (manifest v4, w100 strip, mirror_right)."""
-  data = (strip_model.ASSETS/'lane_strip_v4.onnx').read_bytes()
+  """The shipped model: 10-24 retrain rain1024b D1 s2 (manifest v4, w100 strip, mirror_right)."""
+  data = (strip_model.ASSETS/f'{strip_model.MODEL_NAME}.onnx').read_bytes()
   assert hashlib.sha256(data).hexdigest() == V4_SHIPPED and len(data) < 200_000
-  v4 = strip_model.load_slot(1, warn=pytest.fail)
-  assert (v4.slot, v4.version, v4.v4, v4.mirror_right, v4.threshold) == (1, 4, True, True, .9)
+  v4 = strip_model.load(warn=pytest.fail)
+  assert (v4.version, v4.v4, v4.mirror_right, v4.threshold) == (4, True, True, .9)
   assert v4.strip == {'half_m': 1., 'cols': 128, 'rows': 128}
-
-
-def test_non_object_manifest_falls_back_to_slot0(tmp_path):
-  """Codex review F1 (10-22): valid JSON that is not an object ([], null, 3) must fall back to slot 0, not crash."""
-  import shutil
-  from openpilot.selfdrive.carrot.lane_type import strip_model as sm
-  for f in ('lane_strip.onnx', 'lane_strip.json', 'lane_strip_v4.onnx'):
-    shutil.copy(sm.ASSETS/f, tmp_path/f)
-  for bad in ('[]', 'null', '3'):
-    (tmp_path/'lane_strip_v4.json').write_text(bad, encoding='utf-8')
-    warned = []
-    m = sm.load_slot(1, directory=tmp_path, warn=warned.append)
-    assert m.slot == 0 and len(warned) == 1 and 'ValueError' in warned[0], (bad, warned)
+  assert Recogniser(2).model.model_hash == V4_SHIPPED  # the default Recogniser model
 
 
 def test_sample_rejects_wrong_map_width():

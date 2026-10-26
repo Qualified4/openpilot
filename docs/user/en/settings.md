@@ -251,7 +251,7 @@ On supported Tesla vehicles with the additional vehicle bus detected, the device
 <a id="vehicle-hardware"></a>
 ## Vehicle and hardware
 
-This category contains 22 menu settings, two sub-options on the **CCNC HDA1 radar vehicles** detail screen, and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. CCNC display settings, including lane type and color display, are described below.
+This category contains 21 menu settings, two sub-options on the **CCNC HDA1 radar vehicles** detail screen, and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. CCNC display settings, including lane type and color display, are described below.
 
 | Group | Parameters | Purpose |
 |---|---|---|
@@ -260,7 +260,6 @@ This category contains 22 menu settings, two sub-options on the **CCNC HDA1 rada
 | [CCNC display](#ccnc-display) | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes · Off (0) / Standard (1) / Refined (2), default 0 |
 | [CCNC display](#ccnc-display) | `CcncLaneTypeDetection` | CCNC lane type & color display · Off(0) / StripNet(1), default 0 |
-| [CCNC display](#ccnc-display) | `LaneStripModel` | Lane type model · Current(0) / New model (experimental)(1), default 0. An old stored 2 (Hybrid) runs the new model |
 | [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Includes virtual rear handover; default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | Vehicle position correction · Sub-option of radar vehicles, default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncRadarMap` | Radar map · Sub-option of radar vehicles, default OFF (0) |
@@ -328,13 +327,15 @@ Turn off to use the default lane and icon display. Trailer-related lane-change r
 
 Recognizes whether each lane line is solid or dashed and white or yellow, and shows it on the CCNC cluster. Choose **Off** (existing lane display, nothing runs) or **StripNet** (light learned model). The former Scanner (1-D lane profile scanner) choice is gone; a previously stored value (1 or 2) runs StripNet. The recognizer runs in its own background process that reuses the existing camera frames and model lane positions.
 
-**Lane type model** chooses the model StripNet uses: **Current** is the deployed v3 model. **New model (experimental)** is the v4 model retrained with corrected double-line labels plus the 2026-10-23 drives and the 2026-10-24 rain drive and bookmarks, with fewer single lines taken for double lines (SHA `23ff1bc74942`). Blue lines are treated as white. It can still show solid lines as dashed, yellow as white, or white as yellow, so use it for testing only. If the new model files are missing or cannot be read, the current model runs. The Hybrid option, which ran both models, has been removed; an old stored value 2 runs the new model. A change while driving applies within about one second without a restart; lane decisions start over, so the existing display may show briefly.
+StripNet uses one model, the v4 model (SHA `23ff1bc74942`), retrained with corrected double-line labels plus the 2026-10-23 drives and the 2026-10-24 rain drive and bookmarks, with fewer single lines taken for double lines. Blue lines are treated as white. It can still show solid lines as dashed, yellow as white, or white as yellow. If the model files are missing or cannot be read, no lane type is shown (the existing display stays) and a warning is logged; there is no fallback model. The former lane type model setting has been removed.
 
 Lane priority for each side separately: a recognized **yellow** line shows **orange solid**, even when a lane change is otherwise shown as available; otherwise, when the existing lane-change-available condition is met, the line is **green** (solid or dashed as recognized); otherwise it is **white** solid or dashed. A result must be seen twice within 0.4 s and expires 0.5 s after the last evidence; unknown or expired results keep the existing display. Existing lane-departure blinking, lane-line warnings, lane position, curvature and lane-change animation are unchanged. Blind-spot detection no longer turns the lane line orange; the blind-spot warning is shown by the rear-side icons.
 
+The solid/dashed decision averages the recent recognition results over the distance driven and is confirmed when the winning side reaches a probability of 0.9 or more. Once confirmed, it changes to the other type only after the new type is confidently seen continuously over at least 1 m; the first decision after a line is newly picked up applies at once.
+
 Recognition continues through lane changes. At 30 km/h or more, while the blinker is on or a lane change is in progress, only results with model confidence of at least 0.9 are used even when the openpilot lane probability is low (with the blinker alone and no lane-change state, the lane probability must be at least 0.3). Crossing a line restarts that side, and a decision made during the blinker is cleared, with its cluster display, below 30 km/h.
 
-Measured lane recognition cost in its separate process (little cores 0–3, nice 10, two OpenCV threads, both sides): about 10.9 ms/frame for current v3 and 14.8 ms for new v4. Recognition gates and onroad load change the actual timing.
+Measured lane recognition cost in its separate process (little cores 0–3, nice 10, two OpenCV threads, both sides): about 14.8 ms/frame for the v4 model. Recognition gates and onroad load change the actual timing.
 
 This option changes only the cluster display. It does not change whether a lane change is allowed, the lane-change logic, steering or the driving model. Onroad device load and recognition accuracy on the road are not yet measured.
 

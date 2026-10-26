@@ -208,7 +208,7 @@ CPU 1스레드, OpenCV 4.13 DNN(장치와 같은 추론 경로), 양측 batch 2 
 
 ## 실차 통합: CCNC 계기판 차선 종류·색상 표시 (2026-10-19)
 
-옵션 `CcncLaneTypeDetection`(기존 미커밋 BOOL 키를 3단 선택으로 변경, 중복 키 없음): 0 끔(기존 표시, 프로세스 미실행) / 1 Scanner / 2 StripNet(동결 `lane_strip.onnx`, 임계값 0.90). 설정 UI는 **차량·하드웨어 → CANFD·HDA → CCNC 차선 종류·색상 표시**.
+옵션 `CcncLaneTypeDetection`(기존 미커밋 BOOL 키를 3단 선택으로 변경, 중복 키 없음): 0 끔(기존 표시, 프로세스 미실행) / 1 Scanner / 2 StripNet(동결 v3 strip 모델, 임계값 0.90; 이 v3 모델은 2026-10-26 삭제되고 `lane_strip_v4` 하나만 남음). 설정 UI는 **차량·하드웨어 → CANFD·HDA → CCNC 차선 종류·색상 표시**.
 
 구조: `marking_daemon.py`(별도 프로세스, CPU 0~3·nice 10)가 새 modelV2마다 conflate된 최신 원본 NV12 도로 프레임을 받아 frameId·EOF가 정확히 같을 때만 처리하고(불일치는 버림), 선택된 인식기만 실행한다. 결과는 `display.py`의 기존 표시 필터(0.4초 내 동일 2회 확인, 0.5초 만료; `confirm()`으로 분리해 재사용)를 거쳐 `customReservedRawData2`로 발행된다. card는 기존 `sm.update(0)`에서 새 패킷만 해석해 최신 값 하나를 `CS.ccnc_lane_marking`에 두고, `create_ccnc_messages`의 기존 좌우 차선 색상 결정 지점에서 `ccnc_lane_marking.lane_code`가 노란선→4 > 기존 녹색 조건→6/10 > 흰색→2/8을 적용한다. 숨김(0)·차선 이탈 깜빡임·BSD/차선 경고 주황·트레일러 제한·위치·곡률·애니메이션·CAN 송신 방식은 그대로이며, UNKNOWN·만료·OFF는 기존 코드 그대로다. 차선 변경 허용·상태 머신·조향·모델에는 연결하지 않았다(계약 테스트로 고정).
 

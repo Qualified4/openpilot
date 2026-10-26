@@ -1,7 +1,8 @@
 """Temporal filter for StripNet type and colour results.
 
 The StripNet path always uses it: ``marking_daemon.Recogniser(2)`` builds the asymmetric type filter with LONG_M /
-SHORT_M (A8/4) plus the colour window COLOR_M and the latch (LATCH) by default (replay variant 'A8/4L'); the
+SHORT_M (A8/4) plus the colour window COLOR_M and the latch (LATCH) by default, with the type confidence TYPE_CONF and the type
+latch confirmation TYPE_LATCH_M (replay variant 'A8/4L'; the earlier default is 'A8/4L-legacy'); the
 ``strip_filter`` argument (another StripFilter, or False for none) is for tests and replays.
 It runs inside ``Recogniser.process`` (StripNet branch), so it sits between the model and
 ``display.DisplayPolicy.confirm``:
@@ -32,16 +33,27 @@ Variants (``StripFilter(kind, **params)``):
                   frame that is not confident of the other colour (uncertain, or confident of the stored one) starts
                   the count again. Frames without probabilities neither count nor break it. With no stored colour
                   (after a reset, or the first one) the first confident colour is stored at once. The type head
-                  changes on the first confident frame. Resets empty the latch and the count too. Frames without
+                  (DaBin 10-26: F1d1, filterab1026 A/B) changes to the other type only once its consecutive confident
+                  frames span TYPE_LATCH_M (1 m) of travel; a frame not confident of the other type restarts that run,
+                  and the first type after a reset is stored at once ('A8/4L-legacy': it changed on the first confident
+                  frame). Resets empty the latch and the counts too. Frames without
                   probabilities (no inference, lane_prob_dip) still pass through as they are. 'A8/4' (no latch) is
                   kept for comparison.
 The other variants and the ``make`` name table are kept for the replay harness.
+Type confidence (DaBin 10-26: F1d1, filterab1026 A/B): the StripNet default ``type_conf=TYPE_CONF='max'`` gives the type window
+the colour window's confidence, the winning side's weighted mean probability max(mean, 1 - mean) held to 0.90 (the constructor
+default and 'A8/4L-legacy' keep |mean - 0.5| * 2, which needed a mean >= 0.95).
+A/B switches (filterab1026; replays only): ``type_conf`` / ``type_latch_frames`` / ``type_latch_m`` as above; ``color_latch_frames`` (F2: 3) or
+``color_latch_m`` (F2b: the other colour must stay confident over this many metres of travel, frames not counted); ``hold_latch``
+(F3b): a model-abstained side (reason 'unknown', no P(dashed)) shows the latched type instead of unknown, so the display's type
+head is refreshed by its own latch while the model abstains (the colour head likewise when no colour probability arrives).
 Windows are emptied on the same reset reasons DisplayPolicy uses, on trackingReset, and on a camera stamp gap
 or step back (DistanceEvidence's 0.3 s rule). A 'lane_prob_dip' frame (a short lane prob dip, see
 marking_daemon.LANE_PROB_MIN) is not a reset: it comes without probabilities, so it passes through as unknown,
 enters no window and keeps the camera stamp chain (no gap). Distance windows are also capped at
 DistanceEvidence's 3 s, so a stopped car does not hold old frames indefinitely. The model's 0.90 head threshold is
-applied to the filtered confidence (|mean - 0.5| * 2 for distance windows), as StripModel.decide applies it to the raw one.
+applied to the filtered confidence (type_conf: max(mean, 1 - mean), or |mean - 0.5| * 2 when 'abs'), as StripModel.decide
+applies it to the raw one.
 """
 from collections import deque
 
@@ -54,6 +66,10 @@ LONG_M, SHORT_M = 8., 4.  # the StripNet path's default asymmetric filter (A8/4)
 COLOR_M = 8.  # the StripNet path's default colour window
 LATCH = True  # the StripNet path keeps the last confident type / colour (A8/4L)
 COLOR_LATCH_FRAMES = 10  # consecutive confident frames of the other colour before the latched colour changes (0.5 s at 20 fps)
+# DaBin 10-26: F1d1 (filterab1026 A/B). Type confidence as the colour's, max(mean, 1 - mean); a latched type changes only after
+# confident frames of the other type over TYPE_LATCH_M of travel (the first type after a reset is stored at once).
+TYPE_CONF = 'max'
+TYPE_LATCH_M = 1.
 
 
 def p_dashed(model_result):
@@ -79,6 +95,8 @@ class _Side:
     self.colors = deque()  # (stamp, odometer, P(yellow), weight)
     self.latched = {}  # latch: head -> (label, confidence)
     self.flips = 0  # latch: consecutive confident frames of a colour other than the latched one
+    self.flip_odometer = None  # color_latch_m: odometer of the first frame of that run
+    self.tflips, self.tflip_odometer, self.odometer = 0, None, None  # type_latch_frames / type_latch_m (A/B only)
     self.last_stamp = None
 
   def clear(self):
@@ -87,31 +105,52 @@ class _Side:
     self.colors.clear()
     self.latched.clear()
     self.flips = 0
+    self.tflips = 0
 
 
 class StripFilter:
-  def __init__(self, kind='none', n=5, m=12., long_m=12., short_m=4., threshold=THRESHOLD, color_m=None, latch=False):
-    if kind not in ('none', 'median', 'distance', 'asym'):
+  def __init__(self, kind='none', n=5, m=12., long_m=12., short_m=4., threshold=THRESHOLD, color_m=None, latch=False,
+               type_conf='abs', color_latch_frames=None, color_latch_m=None, hold_latch=False, type_latch_frames=None, type_latch_m=None):
+    if kind not in ('none', 'median', 'distance', 'asym') or type_conf not in ('abs', 'max'):
       raise ValueError(kind)
     self.kind, self.n, self.m, self.long_m, self.short_m, self.threshold = kind, n, m, long_m, short_m, threshold
     self.color_m, self.latch = color_m, latch
-    self.color_latch_frames = COLOR_LATCH_FRAMES  # replays set 1 for the first-confident-frame latch (7c5ba9cb)
+    self.color_latch_frames = COLOR_LATCH_FRAMES if color_latch_frames is None else color_latch_frames  # replays set 1 (7c5ba9cb)
+    self.type_conf, self.color_latch_m, self.hold_latch = type_conf, color_latch_m, hold_latch
+    self.type_latch_frames, self.type_latch_m = type_latch_frames, type_latch_m  # A/B F1h/F1d: None = change on the first frame
     self.sides = {}
 
   def reset(self):
     self.sides.clear()
 
-  def _latch(self, s, head, label, confidence, confident):
+  def _latch(self, s, head, label, confidence, confident, odometer=None):
     """latch: a confident label is stored; otherwise the stored one is returned (label, confidence, confident).
-    The colour head stores a different colour only on its color_latch_frames-th consecutive confident frame."""
+    The colour head stores a different colour only on its color_latch_frames-th consecutive confident frame
+    (color_latch_m: once the run of consecutive confident frames of the other colour spans that many metres)."""
     if not self.latch:
       return label, confidence, confident
     if head == 'color':
       if confident and head in s.latched and s.latched[head][0] != label:
         s.flips += 1
-        if s.flips < self.color_latch_frames:
-          return (*s.latched[head], True)
+        if self.color_latch_m is None:
+          if s.flips < self.color_latch_frames:
+            return (*s.latched[head], True)
+        else:
+          if s.flips == 1:
+            s.flip_odometer = odometer
+          if odometer - s.flip_odometer < self.color_latch_m:
+            return (*s.latched[head], True)
       s.flips = 0
+    elif head == 'type' and (self.type_latch_frames is not None or self.type_latch_m is not None):
+      # A/B F1h/F1d: a different type is stored only on the type_latch_frames-th consecutive confident frame of it (or once that run
+      # spans type_latch_m metres); a frame not confident of the other type restarts the count; the first latch is immediate.
+      if confident and head in s.latched and s.latched[head][0] != label:
+        s.tflips += 1
+        if s.tflips == 1:
+          s.tflip_odometer = s.odometer
+        if (s.tflips < self.type_latch_frames if self.type_latch_m is None else s.odometer - s.tflip_odometer < self.type_latch_m):
+          return (*s.latched[head], True)
+      s.tflips = 0
     if confident:
       s.latched[head] = (label, confidence)
     elif head in s.latched:
@@ -140,10 +179,16 @@ class StripFilter:
         (s.last_stamp is not None and not 0 < stamp - s.last_stamp <= MAX_GAP_NS)):
       s.clear()
     s.last_stamp = stamp
+    s.odometer = odometer
     if result.get('reason') in RESET_REASONS:
       return result
     out = result if self.kind == 'none' else self._type(s, result, p, stamp, odometer)
-    return out if self.color_m is None else self._color(s, out, py, stamp, odometer)
+    if self.hold_latch and p is None and result.get('reason') == 'unknown' and 'type' in s.latched:
+      out = self._typed(out, 'unknown', 0., stamp, s)  # F3b: the abstaining model's side shows the latched type
+    out = out if self.color_m is None else self._color(s, out, py, stamp, odometer)
+    if self.hold_latch and py is None and result.get('reason') == 'unknown' and 'color' in s.latched:
+      out = dict(out, color=s.latched['color'][0], colorConfidence=float(s.latched['color'][1]), colorMonoTimeNanos=stamp)
+    return out
 
   def _color(self, s, result, py, stamp, odometer):
     if py is not None:
@@ -157,7 +202,7 @@ class StripFilter:
     confidence = max(m, 1. - m)  # the winning side's mean probability, as a raw decision's confidence
     color = 'yellow' if m > .5 else 'white' if m < .5 else 'unknown'
     confident = color != 'unknown' and confidence >= self.threshold
-    color, confidence, confident = self._latch(s, 'color', color, confidence, confident)
+    color, confidence, confident = self._latch(s, 'color', color, confidence, confident, odometer)
     out = dict(result)
     out['color'] = color if confident else 'unknown'
     out['colorConfidence'] = float(confidence) if confident else 0.
@@ -191,7 +236,7 @@ class StripFilter:
       return sum(q*w for q, w in xs)/total if total > 0 else .5
     if self.kind == 'distance':
       m = mean(self.m)
-      return self._typed(result, 'dashed' if m > .5 else 'solid' if m < .5 else 'unknown', abs(m - .5)*2, stamp, s)
+      return self._typed(result, 'dashed' if m > .5 else 'solid' if m < .5 else 'unknown', self._conf(m), stamp, s)
     short, long = mean(self.short_m), mean(self.long_m)
     if s.state == 'dashed':
       kind, m = ('solid', short) if short < .5 else ('dashed', short)
@@ -209,7 +254,11 @@ class StripFilter:
       while s.items and odometer - s.items[0][1] > self.short_m:
         s.items.popleft()
     s.state = kind
-    return self._typed(result, kind or 'unknown', abs(m - .5)*2, stamp, s)
+    return self._typed(result, kind or 'unknown', self._conf(m), stamp, s)
+
+  def _conf(self, m):
+    """type window confidence: |m - 0.5| * 2 (default; 0.90 needs a mean >= 0.95), or max(m, 1 - m) as the colour window (F1)."""
+    return max(m, 1. - m) if self.type_conf == 'max' else abs(m - .5)*2
 
 
 VARIANTS = {
@@ -218,8 +267,16 @@ VARIANTS = {
   'D8': {'kind': 'distance', 'm': 8.}, 'D12': {'kind': 'distance', 'm': 12.}, 'D15': {'kind': 'distance', 'm': 15.},
   'A12/4': {'kind': 'asym', 'long_m': 12., 'short_m': 4.}, 'A15/4': {'kind': 'asym', 'long_m': 15., 'short_m': 4.},
   'A8/4': {'kind': 'asym', 'long_m': LONG_M, 'short_m': SHORT_M},  # no latch, type only: comparison
-  'A8/4L': {'kind': 'asym', 'long_m': LONG_M, 'short_m': SHORT_M, 'color_m': COLOR_M, 'latch': LATCH},  # the StripNet default
+  'A8/4L': {'kind': 'asym', 'long_m': LONG_M, 'short_m': SHORT_M, 'color_m': COLOR_M, 'latch': LATCH, 'type_conf': TYPE_CONF,
+            'type_latch_m': TYPE_LATCH_M},  # the StripNet default (F1d1, 10-26)
+  'A8/4L-legacy': {'kind': 'asym', 'long_m': LONG_M, 'short_m': SHORT_M, 'color_m': COLOR_M, 'latch': LATCH},  # default until 10-26
 }
+# filterab1026 A/B variants of A8/4L-legacy (replays only; 'A8/4L-F1+d1' is the current default): F1 type confidence max(m, 1-m), F2 colour latch 3 frames, F2b colour latch
+# 2 m, F3b latched heads shown while the model abstains, F5 colour window 4 m. F3 / F4 are strip_model / marking_daemon switches.
+_AB = {'F1': {'type_conf': 'max'}, 'F2': {'color_latch_frames': 3}, 'F2b': {'color_latch_m': 2.}, 'F3b': {'hold_latch': True},
+       'F5': {'color_m': 4.}, 'h2': {'type_latch_frames': 2}, 'h3': {'type_latch_frames': 3}, 'd1': {'type_latch_m': 1.}}
+for _names in (('F1', 'h2'), ('F1', 'h3'), ('F1', 'd1'), ('F1',), ('F2',), ('F2b',), ('F3b',), ('F5',), ('F1', 'F2'), ('F1', 'F2', 'F5'), ('F1', 'F2', 'F3b'), ('F1', 'F2', 'F3b', 'F5')):
+  VARIANTS['A8/4L-' + '+'.join(_names)] = dict(VARIANTS['A8/4L-legacy'], **{k: v for n in _names for k, v in _AB[n].items()})
 
 
 def make(name):

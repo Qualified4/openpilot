@@ -83,7 +83,7 @@ def test_strip_model_threshold_and_unlearned_yellow_dashed():
   assert low['type'] == 'unknown' and low['color'] == 'white'
   yd = model.decide(np.array([.99, .01]), np.array([.02, .98]))
   assert yd['type'] == yd['color'] == 'unknown'
-  out = model.infer([np.full((3, 128, 96), 100., np.float32)]*2)
+  out = model.infer([np.full((3, 128, 128), 100., np.float32)]*2)  # the lane_strip_v4 strip
   assert len(out) == 2 and {'type', 'color', 'typeConfidence', 'colorConfidence'} <= set(out[0])
 
 
@@ -188,7 +188,7 @@ def test_daemon_main_loop_with_fake_ipc(monkeypatch):
   monkeypatch.setattr(cam, 'DEVICE_CAMERAS', {('mici', 'os04c10'): N(fcam=camera)})
   md.main()
   assert len(sent) >= 6 and all(p['mode'] == 'stripnet' for p in sent) and built == [(2,)]
-  assert all(p['model']['slot'] == 0 and p['model']['version'] == 3 and p['model']['requested'] == 0 for p in sent)
+  assert all(p['model']['name'] == 'lane_strip_v4' and p['model']['version'] == 4 and 'slot' not in p['model'] for p in sent)
   assert sent[0]['left']['color'] == 'unknown'  # first result is only pending in the display filter
   assert any(p['left']['color'] == 'yellow' for p in sent)  # the yellow solid boundary is confirmed by StripNet
   assert all(p['timing']['processingMs'] >= 0 and p['counters']['frame_mismatch'] == 0 for p in sent)

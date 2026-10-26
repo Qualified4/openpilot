@@ -1,4 +1,4 @@
-"""Lane strip width as a model-manifest parameter (lane_strip.json 'strip': {half_m, cols, rows}; absent = 0.75 / 96 / 128)."""
+"""Lane strip width as a model-manifest parameter (lane_strip_v4.json 'strip': {half_m, cols, rows}; absent keys = the v4 1.0 / 128 / 128)."""
 import hashlib
 import json
 import shutil
@@ -30,18 +30,20 @@ def sha(a):
   return hashlib.sha256(np.ascontiguousarray(a).tobytes()).hexdigest()
 
 
-def test_default_strip_is_bit_identical_to_v3():
+def test_v3_width_strip_is_bit_identical_and_the_default_is_v4():
   y, uv, line, rpy, k = frame()
-  s = SM.strip_input(y, uv, line, rpy, k)
+  s = SM.strip_input(y, uv, line, rpy, k, half_m=.75, cols=96, rows=128)  # the sampler itself is unchanged at the v3 width
   assert s.shape == (3, 128, 96) and sha(s) == V3_STRIP_SHA
-  assert sha(SM.strip_input(y, uv, line, rpy, k, **SM.strip_of({}))) == V3_STRIP_SHA
+  default = SM.strip_input(y, uv, line, rpy, k)
+  assert default.shape == (3, 128, 128) and np.array_equal(default, SM.strip_input(y, uv, line, rpy, k, **SM.strip_of({})))
+  assert np.array_equal(default, SM.strip_input(y, uv, line, rpy, k, half_m=1., cols=128, rows=128))
   geo = strip_geometry(line, rpy, k, y.shape[1], y.shape[0])
   assert sha(np.stack(sample(y, uv, geo))) == V3_SAMPLE_SHA
 
 
 def test_wide_strip_has_128_columns_at_the_same_pitch():
   y, uv, line, rpy, k = frame()
-  narrow, wide = SM.strip_input(y, uv, line, rpy, k), SM.strip_input(y, uv, line, rpy, k, half_m=1., cols=128)
+  narrow, wide = SM.strip_input(y, uv, line, rpy, k, half_m=.75, cols=96), SM.strip_input(y, uv, line, rpy, k, half_m=1., cols=128)
   assert wide.shape == (3, 128, 128)
   assert 2*1./128 == 2*.75/96  # 1.5625 cm per column
   g0 = strip_geometry(line, rpy, k, y.shape[1], y.shape[0])
@@ -54,8 +56,8 @@ def test_wide_strip_has_128_columns_at_the_same_pitch():
 
 
 def test_manifest_strip_defaults_and_validation():
-  assert SM.strip_of({}) == SM.strip_of({'strip': None}) == {'half_m': .75, 'cols': 96, 'rows': 128}
-  assert SM.strip_of({'strip': {'half_m': 1, 'cols': 128}}) == {'half_m': 1., 'cols': 128, 'rows': 128}
+  assert SM.strip_of({}) == SM.strip_of({'strip': None}) == {'half_m': 1., 'cols': 128, 'rows': 128}
+  assert SM.strip_of({'strip': {'half_m': .75, 'cols': 96}}) == {'half_m': .75, 'cols': 96, 'rows': 128}
   for bad in ({'cols': 0}, {'half_m': -1}, {'cols': 12.5}, {'width': 2}, {'half_m': True}, [1, 2]):
     with pytest.raises(ValueError):
       SM.strip_of({'strip': bad})
@@ -64,28 +66,28 @@ def test_manifest_strip_defaults_and_validation():
 def model_dir(tmp_path, strip=None, shape=None):
   d = tmp_path/'m'
   d.mkdir()
-  shutil.copy(SM.ASSETS/'lane_strip.onnx', d/'lane_strip.onnx')
-  m = json.loads((SM.ASSETS/'lane_strip.json').read_text(encoding='utf-8'))
+  shutil.copy(SM.ASSETS/f'{SM.MODEL_NAME}.onnx', d/f'{SM.MODEL_NAME}.onnx')
+  m = json.loads((SM.ASSETS/f'{SM.MODEL_NAME}.json').read_text(encoding='utf-8'))
   if strip is not None:
     m['strip'] = strip
   if shape is not None:
     m['input']['shape'] = shape
-  (d/'lane_strip.json').write_text(json.dumps(m), encoding='utf-8')
+  (d/f'{SM.MODEL_NAME}.json').write_text(json.dumps(m), encoding='utf-8')
   return d
 
 
-def test_shipped_model_keeps_v3_geometry(tmp_path):
-  assert SM.StripModel().strip == {'half_m': .75, 'cols': 96, 'rows': 128}
-  assert SM.onnx_input_shape((SM.ASSETS/'lane_strip.onnx').read_bytes(), 'strip_ycbcr') == [None, 3, 128, 96]
-  assert SM.StripModel(model_dir(tmp_path, {'half_m': .75, 'cols': 96, 'rows': 128})).strip['cols'] == 96
+def test_shipped_model_keeps_v4_geometry(tmp_path):
+  assert SM.StripModel().strip == {'half_m': 1., 'cols': 128, 'rows': 128}
+  assert SM.onnx_input_shape((SM.ASSETS/f'{SM.MODEL_NAME}.onnx').read_bytes(), 'strip_ycbcr') == [None, 3, 128, 128]
+  assert SM.StripModel(model_dir(tmp_path, {'half_m': 1., 'cols': 128, 'rows': 128})).strip['cols'] == 128
 
 
 def test_shape_mismatch_is_a_clear_error(tmp_path):
-  with pytest.raises(ValueError, match=r'ONNX input .* \[None, 3, 128, 96\] does not match the manifest strip \+-1 m / 128 cols'):
-    SM.StripModel(model_dir(tmp_path, {'half_m': 1., 'cols': 128, 'rows': 128}, [3, 128, 128]))
-  with pytest.raises(ValueError, match=r'manifest input shape \[3, 128, 96\] does not match its strip \+-1 m / 128 cols'):
+  with pytest.raises(ValueError, match=r'ONNX input .* \[None, 3, 128, 128\] does not match the manifest strip \+-0.75 m / 96 cols'):
+    SM.StripModel(model_dir(tmp_path, {'half_m': .75, 'cols': 96, 'rows': 128}, [3, 128, 96]))
+  with pytest.raises(ValueError, match=r'manifest input shape \[3, 128, 128\] does not match its strip \+-0.75 m / 96 cols'):
     (tmp_path/'b').mkdir()
-    SM.StripModel(model_dir(tmp_path/'b', {'half_m': 1., 'cols': 128, 'rows': 128}))
+    SM.StripModel(model_dir(tmp_path/'b', {'half_m': .75, 'cols': 96, 'rows': 128}))
 
 
 def test_onnx_input_shape_reader():
