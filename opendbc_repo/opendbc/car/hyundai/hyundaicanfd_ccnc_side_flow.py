@@ -73,9 +73,17 @@ class SideFlow:
     eligible_bsd = bsd or (self.bsd_off is not None and now-self.bsd_off < self.HOLD)
 
     # The upstream lane-change tracker owns cross-slot identity movement. Never leave an old copy on this side.
+    # Identity = the drawing's key plus the key/aliases the original model already confirmed for it (review M3: during a
+    # blinker an alias may move to FF/the other side while the retired R still exits). No new identity guess here.
     for name in ('front', 'rear'):
       obj = getattr(self, name)
-      if obj is not None and obj['key'] is not None and obj['key'] in elsewhere:
+      if obj is None:
+        continue
+      owner = obj.get('motion')
+      if owner is None and motion is not None and (obj['key'] == motion['key'] or obj['key'] in motion.get('aliases', ())):
+        owner = motion
+      if (obj['key'] is not None and obj['key'] in elsewhere
+          or owner is not None and (owner['key'] in elsewhere or any(k in elsewhere for k in owner.get('aliases', ())))):
         setattr(self, name, None)
 
     f, r = self.front, self.rear
@@ -149,6 +157,9 @@ class SideFlow:
         if r is None:
           self.events.append('rear_cancelled')
         else:
+          if lane_change and not eligible_bsd and physical is None and r['phase'] == 'virtual':
+            # Blinker without BSD: a display-only R retires like a radar one, also at a standstill (review M2).
+            r['phase'] = 'exit'
           # A freshly received R is not held (no visual wait after the origin): only BSD presence holds it.
           passing = physical is None and r['phase'] == 'virtual'
           target = (-8. if bsd or passing and eligible_bsd else r['x'] if eligible_bsd else -self.END)

@@ -661,6 +661,51 @@ def test_lane_change_still_removes_an_identity_moved_to_another_slot():
   assert flow.update(1., .05, None, False, 2.8, elsewhere=((9, 0),), lane_change=True) == (None, None)
 
 
+@pytest.mark.parametrize('v_ego', [0., .49, .5])
+@pytest.mark.parametrize('candidate', [None, 24.])
+@pytest.mark.parametrize('start', [0., -8.])
+def test_blinker_retires_a_stopped_display_only_rear(v_ego, candidate, start):
+  """Review M2: R0 from a stopped slot swap (or a display R left at 8 m) must still retire to 16 m when the blinker
+  comes on with BSD off, at the bounded EXIT_SPEED even at a standstill; without the blinker it stays put."""
+  for blinker in (False, True):
+    flow = SideFlow()
+    flow.rear = dict(car(1, start, 2.8), phase='virtual', motion=None, model_distance=0.)
+    xs = []
+    for i in range(200):
+      f, r = flow.update(i*.05, .05, car(2, candidate) if candidate else None, False, 2.8, v_ego=v_ego,
+                         lane_change=blinker)
+      xs.append(r['x'] if r else None)
+      if r is None:
+        break
+    if not blinker:
+      assert all(x is not None and x <= start for x in xs)
+      if v_ego < .5:
+        assert set(xs) == {start}
+      continue
+    assert xs[-1] is None and xs[-2] <= -15.96  # retired through 16 m, never removed mid-screen
+    steps = [a-b for a, b in zip([start]+xs[:-2], xs[:-1], strict=True)]
+    assert all(0. <= d <= SideFlow.EXIT_SPEED*.05+1e-9 for d in steps)
+
+
+@pytest.mark.parametrize('side_moved', ['ff', 'other'])
+@pytest.mark.parametrize('obj', ['rear', 'front'])
+def test_lane_change_removes_a_copy_whose_confirmed_alias_moved_to_another_slot(side_moved, obj):
+  """Review M3: the original model confirmed (7, 0) as an alias of the drawn (9, 0). When (7, 0) is selected as FF or
+  on the other side during a blinker, the old copy goes at once instead of exiting next to the new slot."""
+  motion = {'key': (9, 0), 'aliases': [(7, 0)], 'phase': 'rear', 'distance': 3., 'force_at': 10., 'deadline': 14.,
+            'max_speed': 8., 'end_reason': 'lane_change', 'signed': 0., 'speed': 2.}
+  elsewhere = ((7, 0), None) if side_moved == 'ff' else (None, (7, 0))
+  flow = SideFlow()
+  if obj == 'rear':
+    flow.rear = dict(car(9, -3., 2.8), phase='virtual', motion=motion, model_distance=3.)
+    current = None  # the original model already dropped its memory for lane_change
+  else:
+    flow.front = dict(car(9, 2., 3.), phase='front')
+    current = dict(motion, phase='coast', end_reason=None)
+  assert flow.update(1., .05, None, False, 2.8, elsewhere=elsewhere, motion=current, v_ego=20.,
+                     lane_change=True) == (None, None)
+
+
 def test_production_display_pass_at_a_standstill_keeps_the_front_drawing():
   d = Drive()
   d.policy = SmoothHandover()
