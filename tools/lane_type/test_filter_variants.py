@@ -19,9 +19,9 @@ def feed(f, p, py, n, start=0, metres=1., side='left', reason='strip_model'):
 
 
 def test_default_variant_and_recogniser_filter_unchanged():
-  base = sf.make('A8/4L')  # DaBin 10-26: the default is F1d1; the colour latch and hold switches are unchanged
+  base = sf.make('A8/4L')  # DaBin 10-26: F1d1 returned the same day, the default is the earlier rule again; other switches unchanged
   assert (base.type_conf, base.type_latch_m, base.color_latch_frames, base.color_latch_m, base.hold_latch) == \
-         ('max', 1., sf.COLOR_LATCH_FRAMES, None, False)
+         ('abs', None, sf.COLOR_LATCH_FRAMES, None, False)
   rec = Recogniser(2).strip_filter
   keys = ('kind', 'long_m', 'short_m', 'color_m', 'latch', 'type_conf', 'type_latch_frames', 'type_latch_m', 'color_latch_frames',
           'color_latch_m', 'hold_latch')
@@ -32,7 +32,7 @@ def test_default_variant_and_recogniser_filter_unchanged():
 
 def test_f1_type_confidence_matches_the_colour_rule():
   """Window mean P(dashed) 0.92 after a solid latch: |m - .5| * 2 = .84 keeps solid; max(m, 1 - m) = .92 turns dashed (repro B)."""
-  for name, want in (('A8/4L-legacy', 'solid'), ('A8/4L-F1', 'dashed'), ('A8/4L', 'dashed')):
+  for name, want in (('A8/4L-legacy', 'solid'), ('A8/4L-F1', 'dashed'), ('A8/4L', 'solid')):
     f = sf.make(name)
     feed(f, .01, .01, 10)
     assert feed(f, .92, .01, 12, start=10)['type'] == want
@@ -122,16 +122,17 @@ def test_type_latch_legacy_is_off():
   assert f.type_latch_frames is None and f.type_latch_m is None and f.type_conf == 'abs'
 
 
-def test_new_default_is_f1d1():
-  """DaBin 10-26: the product filter (Recogniser default and 'A8/4L') equals the filterab1026 A/B variant F1d1."""
-  assert sf.VARIANTS['A8/4L'] == sf.VARIANTS['A8/4L-F1+d1']
-  assert vars(sf.make('A8/4L-F1+d1')) == vars(Recogniser(2).strip_filter)
+def test_default_is_the_earlier_rule_again():
+  """DaBin 10-26: F1d1 was the default in the morning and returned after drive 425 (rollback1026): the product filter (Recogniser
+  default and 'A8/4L') equals 'A8/4L-legacy' again; F1d1 stays a replay variant."""
+  assert vars(sf.make('A8/4L-legacy')) == vars(sf.make('A8/4L')) == vars(Recogniser(2).strip_filter)
+  assert vars(sf.make('A8/4L-F1+d1')) != vars(Recogniser(2).strip_filter)
 
 
 def test_f1d1_travel_without_probabilities_does_not_count():
   """codex review1026 M1: frames without P(dashed) (model abstention, lane_prob_dip, lead_close) pause the 1 m type confirmation;
   their travel is not counted, so 1.5 m of held frames plus one confident frame cannot flip the latch."""
-  f = sf.make('A8/4L')  # the product default (F1d1)
+  f = sf.make('A8/4L-F1+d1')  # F1d1 (the product default on 10-26 only)
   feed(f, .01, .01, 10, metres=.5)  # solid latched, odometers 0 .. 4.5
   f.long_m = f.short_m = .2
   assert feed(f, .99, .01, 1, start=10, metres=.5)['type'] == 'solid'  # odometer 5.0: the run starts

@@ -13,6 +13,10 @@ WHITE_SOLID, ORANGE_SOLID, GREEN_SOLID, WHITE_DASHED, GREEN_DASHED = 2, 4, 6, 8,
 HOLD_S, GREEN_ON_S, STOP_SPEED, HOLD_STOP_SPEED = 5., 1., .5, 2.
 LOW_PROB_OFF, LOW_PROB_S, MAX_DT = .5, 1.5, .2
 HIDDEN = 14
+# rollback1026 H (replay switch only, off in the product; not adopted 10-26: grey +47 s on drive 425, visible<->hidden +45 %; None = off): while changing lanes, once the lane prob has stayed < LOW_PROB_OFF for LC_HOLD_LIMIT_S
+# (1.5 s in the A/B) the unlimited lane-change hold of each head ends (lapsed grey) until that head is confirmed fresh again or the
+# change ends. The slow / stopped hold (v < HOLD_STOP_SPEED) and the driving HOLD_S are unchanged.
+LC_HOLD_LIMIT_S = None
 
 
 def _head(marking, side, head, now_ns):
@@ -70,6 +74,7 @@ class SideDisplay:
     self.lapsed = {'type': False, 'color': False}  # head -> hold ran out, no fresh value since
     self.last = {'type': None, 'color': None}  # head -> last confirmed value, kept for the card's lifetime
     self.green, self.green_s, self.low, self.low_s, self.last_t = None, 0., False, 0., None
+    self.lc_low_s, self.lc_expired = 0., {'type': False, 'color': False}  # LC_HOLD_LIMIT_S (A/B H only)
     self.display_reset_ns = 0
 
   def update(self, t, v_ego, lane_change_available, prob, changing, kind, color, enabled=True, display_reset_ns=None):
@@ -100,6 +105,13 @@ class SideDisplay:
       elif prob >= LOW_PROB_OFF:
         self.low = False
 
+    limit = LC_HOLD_LIMIT_S
+    if limit is not None and changing and not slow:
+      self.lc_low_s = self.lc_low_s + dt if prob is not None and prob < LOW_PROB_OFF else 0.
+      if self.lc_low_s >= limit:
+        self.lc_expired = {'type': True, 'color': True}
+    else:
+      self.lc_low_s, self.lc_expired = 0., {'type': False, 'color': False}
     shown = {}
     for head, value, classes in (('type', kind, ('dashed', 'solid')), ('color', color, ('white', 'yellow'))):
       held = self.hold[head]
@@ -107,6 +119,10 @@ class SideDisplay:
         held = (value, t)
         self.lapsed[head] = False
         self.last[head] = value
+        self.lc_expired[head] = False
+      elif self.lc_expired[head]:  # A/B H: the lane-change hold ran out (lane prob low for LC_HOLD_LIMIT_S) -> lapsed grey
+        held, value = None, None
+        self.lapsed[head] = True
       elif held is not None and (slow or changing or t - held[1] <= HOLD_S):
         value = held[0]
         if slow or changing:

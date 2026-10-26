@@ -11,6 +11,15 @@ from openpilot.selfdrive.carrot.lane_type.display import DisplayPolicy
 from opendbc.car.hyundai.ccnc_lane_marking import SideDisplay
 import json
 
+PRODUCT_GATE = md.GATE_RELAX  # read before the pre_g1_gate fixture pins the replay value
+
+
+@pytest.fixture(autouse=True)
+def pre_g1_gate(monkeypatch):
+  # These tests are written around the pre-10-26 lane prob floors (.5 / .3, GATE_RELAX None); the product default G1 (.25 / .15,
+  # DaBin 10-26, rollback1026) is checked by test_product_gate_is_g1. By module path: a test may re-import marking_daemon.
+  monkeypatch.setattr('openpilot.selfdrive.carrot.lane_type.marking_daemon.GATE_RELAX', None)
+
 
 def frame(i, state='laneChangeStarting', prob=0.1, speed=10.0, ys=(-1.8, 1.8), blinker=True):
   return {
@@ -324,3 +333,15 @@ def test_optional_paint_reset_token_is_strict(token):
   assert 'displayResetNs' not in marking.parse(json.dumps(data), 100)['left']
   data['left']['displayResetNs'] = 100
   assert marking.parse(json.dumps(data), 100)['left']['displayResetNs'] == 100
+
+
+@pytest.mark.parametrize('relax,prob,want', [(None, .4, 'lane_prob_dip'), (None, .1, 'not_detected'), ('G1', .4, None),
+                                             ('G1', .2, 'lane_prob_dip'), ('G1', .1, 'not_detected'), ('G2', .01, None)])
+def test_gate_relax_switch_replays_only(recogniser, monkeypatch, relax, prob, want):
+  """Gate switch: G1 (the product default since 10-26) halves the pre-10-26 lane prob floors, None restores them, G2 ignores the
+  lane prob; the lane change gate is unchanged."""
+  assert PRODUCT_GATE == 'G1' and (md.LANE_PROB_MIN, md.LANE_PROB_LOST) == (.25, .15)
+  monkeypatch.setattr(md, 'GATE_RELAX', relax)
+  rec = recogniser('C2')
+  assert rec._skip_reason('left', frame(0, 'off', prob=prob, blinker=False)) == want
+  assert rec._skip_reason('left', frame(1, 'laneChangeStarting', prob=prob, speed=6.0)) == 'lane_change'

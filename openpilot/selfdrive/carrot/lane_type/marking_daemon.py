@@ -37,7 +37,16 @@ MAX_HOLD_NS = 500_000_000
 # LANE_DIP_MAX_NS since the side first fell below LANE_PROB_MIN) is 'lane_prob_dip': the frame is skipped (unknown, not
 # entered in the strip filter's windows) and neither those windows nor DisplayPolicy are emptied. Below LANE_PROB_LOST,
 # or a dip lasting longer, is 'not_detected', which empties both.
-LANE_PROB_MIN, LANE_PROB_LOST, LANE_DIP_MAX_NS = .5, .3, 1_000_000_000
+# DaBin 10-26 gate G1 (the product default GATE_RELAX = 'G1'): the floors are half the earlier .5 / .3 (LANE_PROB_MIN_OLD /
+# LANE_PROB_LOST_OLD), so a fading line (yellow solid widening into a white dashed one, 425 bookmark 21/6.3) keeps being inferred
+# when its strip geometry is valid. rollback1026 follow-up 3 (D1 s2): 425 bookmark windows misclassified -8 s, five sets not
+# shown -7 s, new errors +10 s, style changes +6 %.
+LANE_PROB_MIN, LANE_PROB_LOST, LANE_DIP_MAX_NS = .25, .15, 1_000_000_000
+LANE_PROB_MIN_OLD, LANE_PROB_LOST_OLD = .5, .3
+# Gate switch (replays): 'G1' = the floors above (default); None = the pre-10-26 floors (LANE_PROB_*_OLD); 'G2' ignores the lane
+# prob, so a side is inferred whenever its strip geometry is valid (strip_input succeeds; otherwise 'invalid_lane_geometry' as
+# before). The lane change and lead_close gates are the same in every variant.
+GATE_RELAX = 'G1'
 # Replay variant A, blinker alone (laneChangeState off): at vEgo >= BLINKER_INFER_SPEED (30 km/h) a side
 # whose line is confident (prob >= BLINKER_PROB) and beside the car (|y at the first model point| >= BLINKER_Y m, not
 # the line being crossed) is inferred as usual; otherwise the blinker resets it ('lane_change'), as does any
@@ -141,8 +150,8 @@ class Recogniser:
 
   StripNet (mode 2) always runs its type and colour results through a strip_filter.StripFilter, by default the
   asymmetric A8/4 type filter (strip_filter.LONG_M / SHORT_M) with the strip_filter.COLOR_M colour window and the
-  latch (strip_filter.LATCH: the last confident type / colour is kept until the other one is confident; a type change needs
-  strip_filter.TYPE_LATCH_M of confident travel, type confidence strip_filter.TYPE_CONF; DaBin 10-26 F1d1), applied
+  latch (strip_filter.LATCH: the last confident type / colour is kept until the other one is confident; type confidence
+  strip_filter.TYPE_CONF, type change confirmation strip_filter.TYPE_LATCH_M: none since the 10-26 return to it), applied
   to each side's filter_input result before it leaves process(). ``strip_filter`` is for tests and replays only:
   None builds that default, another StripFilter is used instead of it, and False turns the filter off (the raw
   filter_input results, both heads). The Scanner (mode 1) has no filter unless one is passed, and ignores it."""
@@ -276,7 +285,8 @@ class Recogniser:
     if self.lanechange != 'A' and (frame.get('blinker') or frame.get('lcs_change')
                                  or frame.get('lcs') in ('preLaneChange', 'laneChangeStarting', 'laneChangeFinishing')):
       return 'lane_change'  # Below 24 km/h still resets.
-    if prob >= LANE_PROB_MIN:
+    floor, lost = {'G1': (LANE_PROB_MIN, LANE_PROB_LOST), 'G2': (-math.inf, -math.inf)}.get(GATE_RELAX, (LANE_PROB_MIN_OLD, LANE_PROB_LOST_OLD))
+    if prob >= floor:
       self.dip_since.pop(side, None)
     else:
       since = self.dip_since.setdefault(side, stamp)
@@ -289,10 +299,10 @@ class Recogniser:
         return 'lane_change'
     elif frame['lane_change']:  # a frame without the split flags (older callers): any lane change resets
       return 'lane_change'
-    if prob >= LANE_PROB_MIN:
+    if prob >= floor or (GATE_RELAX == 'G2' and math.isfinite(prob)):
       lead = frame.get('lead_d_rel')
       return 'lead_close' if lead is not None and lead < LEAD_GATE_DREL else None
-    return 'lane_prob_dip' if prob >= LANE_PROB_LOST and stamp - since <= LANE_DIP_MAX_NS else 'not_detected'
+    return 'lane_prob_dip' if prob >= lost and stamp - since <= LANE_DIP_MAX_NS else 'not_detected'
 
   def process(self, y_plane, uv_plane, frame):
     """frame: lines/probs per side, rpy, k, stamp (camera EOF ns), odometer, leads, lane_change (blinker or

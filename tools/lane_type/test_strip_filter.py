@@ -4,7 +4,10 @@ import numpy as np
 import pytest
 
 from openpilot.selfdrive.carrot.lane_type import strip_filter, strip_model
+from openpilot.selfdrive.carrot.lane_type import marking_daemon
 from openpilot.selfdrive.carrot.lane_type.marking_daemon import LEAD_GATE_DREL, Recogniser, filter_input, lead_d_rel
+
+PRODUCT_GATE = marking_daemon.GATE_RELAX  # read before the pre_g1_gate fixture pins the replay value
 
 FRAME_NS = 50_000_000
 STRIP = np.zeros((3, 128, 96), np.float32)
@@ -27,6 +30,23 @@ def fake_model(monkeypatch):
   # by module path: another test drops strip_model from sys.modules, and Recogniser imports it afresh
   monkeypatch.setattr(f'{strip_model.__name__}.StripModel', FakeStripModel)
   monkeypatch.setattr(f'{strip_model.__name__}.strip_input', lambda y, uv, line, rpy, k: None if line == 'bad' else STRIP)
+
+
+@pytest.fixture(autouse=True)
+def pre_g1_gate(monkeypatch):
+  # These tests are written around the pre-10-26 lane prob floors (.5 / .3, GATE_RELAX None); the product default G1 (.25 / .15,
+  # DaBin 10-26, rollback1026) is checked by test_product_gate_is_g1. By module path: a test may re-import marking_daemon.
+  monkeypatch.setattr('openpilot.selfdrive.carrot.lane_type.marking_daemon.GATE_RELAX', None)
+
+
+def test_product_gate_is_g1(monkeypatch):
+  """DaBin 10-26: the product lane prob floors are .25 / .15 (G1); a fading line keeps being inferred down to .25."""
+  assert PRODUCT_GATE == 'G1' and (marking_daemon.LANE_PROB_MIN, marking_daemon.LANE_PROB_LOST) == (.25, .15)
+  monkeypatch.setattr('openpilot.selfdrive.carrot.lane_type.marking_daemon.GATE_RELAX', 'G1')
+  rec = Recogniser(2)
+  f = frame(0, probs=(.3, .2))
+  assert rec._skip_reason('left', f) is None and rec._skip_reason('right', f) == 'lane_prob_dip'
+  assert rec._skip_reason('right', frame(1, probs=(1., .1))) == 'not_detected'
 
 
 def frame(i, *, lane_change=False, probs=(1., 1.), lines=('L', 'R'), metres=1., lead=None):
@@ -81,12 +101,12 @@ def test_stripnet_default_is_a8_4_latch_and_false_turns_it_off():
     assert (f.kind, f.long_m, f.short_m) == ('asym', strip_filter.LONG_M, strip_filter.SHORT_M) == ('asym', 8., 4.)
     assert f.color_m == strip_filter.COLOR_M == 8.
     assert f.latch is strip_filter.LATCH is True  # DaBin 10-19: the latch is the default
-    assert (f.type_conf, f.type_latch_m) == (strip_filter.TYPE_CONF, strip_filter.TYPE_LATCH_M) == ('max', 1.)  # DaBin 10-26: F1d1
+    assert (f.type_conf, f.type_latch_m) == (strip_filter.TYPE_CONF, strip_filter.TYPE_LATCH_M) == ('abs', None)  # F1d1 returned 10-26
   assert default.strip_filter is not explicit_none.strip_filter  # one filter (one set of windows) per Recogniser
   assert off.strip_filter is None and Recogniser(1).strip_filter is None
   assert strip_filter.make('A8/4').color_m is None and not strip_filter.make('A8/4').latch  # comparison: type only, no latch
   assert vars(strip_filter.make('A8/4L')) == vars(default.strip_filter)  # 'A8/4L' is the default
-  reference = strip_filter.StripFilter('asym', long_m=8., short_m=4., color_m=8., latch=True, type_conf='max', type_latch_m=1.)
+  reference = strip_filter.StripFilter('asym', long_m=8., short_m=4., color_m=8., latch=True, type_conf='abs', type_latch_m=None)
   for i, (p, color, kw) in enumerate(CASES):
     raw = expected_raw(frame(i, **kw), p, color)
     # off: the raw filter_input results, untouched
@@ -424,21 +444,21 @@ def test_colour_latch_takes_the_first_confident_colour_at_once_after_a_reset():
 
 
 def test_type_latch_still_changes_on_one_confident_frame():
-  """'A8/4L-legacy' (the default until 10-26): the type head changes on the first confident frame of the other type."""
+  """'A8/4L-legacy' (= the default again since the 10-26 return): the type head changes on the first confident frame of the other type."""
   rec = single_frame_windows('A8/4L-legacy')
   kinds = types([step(rec, i, p, color=W) for i, p in enumerate([.02]*12 + [.98] + [.02] + [.5])])  # white: yellow dashed is unlearned
   assert kinds == ['solid']*12 + ['dashed', 'solid', 'solid']
 
 
-def test_default_type_latch_f1d1():
-  """DaBin 10-26 (F1d1, filterab1026 A/B): a latched type changes only after confident frames of the other type over 1 m of travel
+def test_f1d1_type_latch():
+  """F1d1 ('A8/4L-F1+d1', the default on 10-26 only): a latched type changes only after confident frames of the other type over 1 m of travel
   (1 m per frame here: on the second one); an unconfident frame restarts the run; the first type after a reset is stored at once."""
-  rec = single_frame_windows()
+  rec = single_frame_windows('A8/4L-F1+d1')
   kinds = types([step(rec, i, p, color=W) for i, p in enumerate([.02]*12 + [.98] + [.02] + [.98, .98] + [.5] + [.02, .02])])
   assert kinds == ['solid']*12 + ['solid', 'solid'] + ['solid', 'dashed'] + ['dashed'] + ['dashed', 'solid']
   # F1: the type window's confidence is max(mean, 1 - mean): a window mean of 0.92 is confident (|m - .5| * 2 = .84 was not)
-  f = strip_filter.make('A8/4L')
-  assert f._conf(.92) == pytest.approx(.92) and strip_filter.make('A8/4L-legacy')._conf(.92) == pytest.approx(.84)
+  f = strip_filter.make('A8/4L-F1+d1')
+  assert f._conf(.92) == pytest.approx(.92) and strip_filter.make('A8/4L')._conf(.92) == pytest.approx(.84)
 
 
 @pytest.mark.parametrize('blinker, lcs, prob, y, v, reason', [

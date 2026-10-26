@@ -2,7 +2,7 @@
 
 The StripNet path always uses it: ``marking_daemon.Recogniser(2)`` builds the asymmetric type filter with LONG_M /
 SHORT_M (A8/4) plus the colour window COLOR_M and the latch (LATCH) by default, with the type confidence TYPE_CONF and the type
-latch confirmation TYPE_LATCH_M (replay variant 'A8/4L'; the earlier default is 'A8/4L-legacy'); the
+latch confirmation TYPE_LATCH_M (replay variant 'A8/4L' = 'A8/4L-legacy'; F1d1 'A8/4L-F1+d1' was the default on 10-26 only); the
 ``strip_filter`` argument (another StripFilter, or False for none) is for tests and replays.
 It runs inside ``Recogniser.process`` (StripNet branch), so it sits between the model and
 ``display.DisplayPolicy.confirm``:
@@ -33,17 +33,18 @@ Variants (``StripFilter(kind, **params)``):
                   frame that is not confident of the other colour (uncertain, or confident of the stored one) starts
                   the count again. Frames without probabilities neither count nor break it. With no stored colour
                   (after a reset, or the first one) the first confident colour is stored at once. The type head
-                  (DaBin 10-26: F1d1, filterab1026 A/B) changes to the other type only once its consecutive confident
-                  frames span TYPE_LATCH_M (1 m) of travel; a frame not confident of the other type restarts that run,
+                  (F1d1 'A8/4L-F1+d1' and the type_latch_* replay variants; the default changes on the first confident frame) changes to the other type only once its consecutive confident
+                  frames span type_latch_m (1 m in d1) of travel; a frame not confident of the other type restarts that run,
                   a frame without probabilities (model abstention, lane_prob_dip, lead_close) pauses it (the travel up to
                   such a frame is not counted; codex review1026 M1), and the first type after a reset is stored at once ('A8/4L-legacy': it changed on the first confident
                   frame). Resets empty the latch and the counts too. Frames without
                   probabilities (no inference, lane_prob_dip) still pass through as they are. 'A8/4' (no latch) is
                   kept for comparison.
 The other variants and the ``make`` name table are kept for the replay harness.
-Type confidence (DaBin 10-26: F1d1, filterab1026 A/B): the StripNet default ``type_conf=TYPE_CONF='max'`` gives the type window
-the colour window's confidence, the winning side's weighted mean probability max(mean, 1 - mean) held to 0.90 (the constructor
-default and 'A8/4L-legacy' keep |mean - 0.5| * 2, which needed a mean >= 0.95).
+Type confidence: the StripNet default ``type_conf=TYPE_CONF='abs'`` is |mean - 0.5| * 2 held to 0.90 (a mean >= 0.95); 'max' (F1,
+replays) gives the type window the colour window's confidence max(mean, 1 - mean). DaBin 10-26: F1d1 (max + 1 m type change
+confirmation, filterab1026) was adopted in the morning and returned from the same day after the on-road drive 425 (dashed shown
+solid more often; reason: rollback1026), so the default is the earlier behaviour again ('A8/4L' = 'A8/4L-legacy').
 A/B switches (filterab1026; replays only): ``type_conf`` / ``type_latch_frames`` / ``type_latch_m`` as above; ``color_latch_frames`` (F2: 3) or
 ``color_latch_m`` (F2b: the other colour must stay confident over this many metres of travel, frames not counted); ``hold_latch``
 (F3b): a model-abstained side (reason 'unknown', no P(dashed)) shows the latched type instead of unknown, so the display's type
@@ -67,10 +68,10 @@ LONG_M, SHORT_M = 8., 4.  # the StripNet path's default asymmetric filter (A8/4)
 COLOR_M = 8.  # the StripNet path's default colour window
 LATCH = True  # the StripNet path keeps the last confident type / colour (A8/4L)
 COLOR_LATCH_FRAMES = 10  # consecutive confident frames of the other colour before the latched colour changes (0.5 s at 20 fps)
-# DaBin 10-26: F1d1 (filterab1026 A/B). Type confidence as the colour's, max(mean, 1 - mean); a latched type changes only after
-# confident frames of the other type over TYPE_LATCH_M of travel (the first type after a reset is stored at once).
-TYPE_CONF = 'max'
-TYPE_LATCH_M = 1.
+# DaBin 10-26: F1d1 (max(mean, 1 - mean) type confidence, TYPE_LATCH_M = 1 m change confirmation) adopted, then returned the same
+# day after the on-road check (drive 425, rollback1026): |mean - 0.5| * 2 and no confirmation again. F1d1 stays as 'A8/4L-F1+d1'.
+TYPE_CONF = 'abs'
+TYPE_LATCH_M = None
 
 
 def p_dashed(model_result):
@@ -271,10 +272,10 @@ VARIANTS = {
   'A12/4': {'kind': 'asym', 'long_m': 12., 'short_m': 4.}, 'A15/4': {'kind': 'asym', 'long_m': 15., 'short_m': 4.},
   'A8/4': {'kind': 'asym', 'long_m': LONG_M, 'short_m': SHORT_M},  # no latch, type only: comparison
   'A8/4L': {'kind': 'asym', 'long_m': LONG_M, 'short_m': SHORT_M, 'color_m': COLOR_M, 'latch': LATCH, 'type_conf': TYPE_CONF,
-            'type_latch_m': TYPE_LATCH_M},  # the StripNet default (F1d1, 10-26)
-  'A8/4L-legacy': {'kind': 'asym', 'long_m': LONG_M, 'short_m': SHORT_M, 'color_m': COLOR_M, 'latch': LATCH},  # default until 10-26
+            'type_latch_m': TYPE_LATCH_M},  # the StripNet default (= 'A8/4L-legacy'; F1d1 on 10-26 only, then returned)
+  'A8/4L-legacy': {'kind': 'asym', 'long_m': LONG_M, 'short_m': SHORT_M, 'color_m': COLOR_M, 'latch': LATCH},  # = the default
 }
-# filterab1026 A/B variants of A8/4L-legacy (replays only; 'A8/4L-F1+d1' is the current default): F1 type confidence max(m, 1-m), F2 colour latch 3 frames, F2b colour latch
+# filterab1026 A/B variants of A8/4L-legacy (replays only; 'A8/4L-F1+d1' was the default on 10-26 only): F1 type confidence max(m, 1-m), F2 colour latch 3 frames, F2b colour latch
 # 2 m, F3b latched heads shown while the model abstains, F5 colour window 4 m. F3 / F4 are strip_model / marking_daemon switches.
 _AB = {'F1': {'type_conf': 'max'}, 'F2': {'color_latch_frames': 3}, 'F2b': {'color_latch_m': 2.}, 'F3b': {'hold_latch': True},
        'F5': {'color_m': 4.}, 'h2': {'type_latch_frames': 2}, 'h3': {'type_latch_frames': 3}, 'd1': {'type_latch_m': 1.}}

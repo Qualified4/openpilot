@@ -305,3 +305,17 @@ def test_cluster_start_hidden_until_confirmed_and_priorities(display):  # noqa: 
   assert lanes(send, 205) == (4, 10)  # first confirmation: drawn at once
   cs.ccnc_lane_marking = None
   assert lanes(send, 210) == (4, 10)
+
+
+def test_lane_change_hold_limit_switch_replays_only(monkeypatch):
+  """rollback1026 H (default off): a lane-change hold with the lane prob < 0.5 for LC_HOLD_LIMIT_S ends in lapsed grey; a fresh
+  value is shown at once again."""
+  assert lm.LC_HOLD_LIMIT_S is None
+  for limit, grey in ((None, False), (1.5, True)):
+    monkeypatch.setattr(lm, 'LC_HOLD_LIMIT_S', limit)
+    d = lm.SideDisplay()
+    d.update(0., 20., False, .9, False, 'solid', 'yellow')
+    for k in range(1, 41):  # 2 s changing lanes at 20 m/s, lane prob 0.2, nothing fresh
+      out = d.update(k*.05, 20., False, .2, True, None, None)
+    assert out[4] is grey and (out[3] is None) is grey and (out[3] == 'yellow') is not grey
+    assert d.update(2.1, 20., False, .2, True, 'dashed', 'white')[2:5] == ('dashed', 'white', False)
