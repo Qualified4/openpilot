@@ -1106,6 +1106,9 @@ struct ModelDataV2 {
       gasDisengageProb @3 :Float32;
       steerOverrideProb @4 :Float32;
     }
+    cameraYawTrim @22 :Int32; # applied CameraYawTrimDeg, units of 0.01 degree; zero until calibrated
+    calibrationYaw @23 :Float32; # radians, after trim, used for this frame's camera warp
+    calibrationYawValid @24 :Bool; # false until a liveCalibration warp has been applied (also false in old logs)
   }
 
   enum ConfidenceClass {

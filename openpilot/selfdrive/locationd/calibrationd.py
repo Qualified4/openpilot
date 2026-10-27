@@ -269,6 +269,7 @@ def main() -> NoReturn:
 
   calibrator = Calibrator(param_put=True)
   calibrator.not_car = CP.notCar
+  was_frozen = False
 
   while 1:
     timeout = 0 if sm.frame == -1 else 100
@@ -282,6 +283,9 @@ def main() -> NoReturn:
       calib_done = calibrator.cal_status == log.LiveCalibrationData.Status.calibrated
 
       freeze_calibration = trim_active and calib_done
+      if freeze_calibration and not was_frozen:
+        calibrator.params.put_nonblocking("CalibrationParams", calibrator.get_msg(True).to_bytes())
+      was_frozen = freeze_calibration
       if not freeze_calibration:
         new_rpy = calibrator.handle_cam_odom(sm['cameraOdometry'].trans,
                                              sm['cameraOdometry'].rot,

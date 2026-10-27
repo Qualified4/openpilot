@@ -417,7 +417,10 @@ def main(demo=False):
   custom_lat_delay = 0.0
   lat_smooth_seconds = LAT_SMOOTH_SECONDS
   vEgoStopping = get_stopping_speed(params)
-  camera_yaw_trim_deg = params.get_float("CameraYawTrimDeg") * 0.01
+  camera_yaw_trim = params.get_int("CameraYawTrimDeg")
+  cloudlog.info("CameraYawTrimDeg None → %s", camera_yaw_trim)
+  applied_yaw_trim = 0
+  applied_calibration_yaw = 0.0
   lat_delay_dynamic = lat_smooth_seconds
   diagnostics = RuntimeDiagnostics('modeld', cloudlog.event)
   camera_gap = CameraGapTrace(cloudlog.event)
@@ -429,7 +432,10 @@ def main(demo=False):
       lat_smooth_seconds = params.get_float("LatSmoothSec") * 0.01
       long_delay = params.get_float("LongActuatorDelay")*0.01
       vEgoStopping = get_stopping_speed(params)
-      camera_yaw_trim_deg = params.get_float("CameraYawTrimDeg") * 0.01
+      new_camera_yaw_trim = params.get_int("CameraYawTrimDeg")
+      if new_camera_yaw_trim != camera_yaw_trim:
+        cloudlog.info("CameraYawTrimDeg %s → %s", camera_yaw_trim, new_camera_yaw_trim)
+        camera_yaw_trim = new_camera_yaw_trim
       # eGPU power follows ignition on the vehicle. Keep UI state current when
       # the shared USB hub is connected or removed after modeld starts.
       usbgpu_present_now = usbgpu_present()
@@ -457,15 +463,16 @@ def main(demo=False):
       device_from_calib_euler = np.array(sm["liveCalibration"].rpyCalib, dtype=np.float32)
 
       calib_done = sm["liveCalibration"].calStatus == log.LiveCalibrationData.Status.calibrated
-      applied_yaw_trim_deg = camera_yaw_trim_deg if calib_done else 0.0
+      applied_yaw_trim = camera_yaw_trim if calib_done else 0
 
-      if applied_yaw_trim_deg != 0.0:
-        device_from_calib_euler[2] -= np.radians(applied_yaw_trim_deg)
+      if applied_yaw_trim != 0:
+        device_from_calib_euler[2] -= np.radians(applied_yaw_trim * 0.01)
 
       dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['roadCameraState'].sensor))]
       model_transform_main = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics if main_wide_camera else dc.fcam.intrinsics, False).astype(np.float32)
       has_wide_camera = use_extra_client or main_wide_camera
       model_transform_extra = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics if has_wide_camera else dc.fcam.intrinsics, True).astype(np.float32)
+      applied_calibration_yaw = float(device_from_calib_euler[2])
       live_calib_seen = True
 
     traffic_convention = np.zeros(2)
@@ -573,6 +580,10 @@ def main(demo=False):
       modelv2_send.modelV2.meta.desireLog = DH.desireLog #carrot
       modelv2_send.modelV2.meta.laneChangeBlinkerHold = DH.blinker_hold_direction
       modelv2_send.modelV2.meta.leverTurn = DH.lever_turn
+      # Snapshot of the calibration used for this inference's warp, not the latest Params read.
+      modelv2_send.modelV2.meta.cameraYawTrim = applied_yaw_trim
+      modelv2_send.modelV2.meta.calibrationYaw = applied_calibration_yaw
+      modelv2_send.modelV2.meta.calibrationYawValid = live_calib_seen
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 
