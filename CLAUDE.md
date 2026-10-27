@@ -12,6 +12,18 @@
 - 각 단계가 끝나면 사용자에게 변경 파일과 테스트 결과를 짧게 보고한다.
 - 되돌리기 어려운 결정(구조 변경, 의존성 추가, 데이터 삭제 등)은 진행 전에 사용자에게 확인한다.
 
+### 작업자 선택 규칙 (사용량 기준, 2026-10-27)
+
+위임할 작업자는 **현재 사용량 잔여분**으로 고른다. 사용량은 사용자가 알려 준 값, 세션 한도 메시지(429 "session limit", 리셋 시각), `codex` 한도 메시지로 파악하고, 모르면 작업 시작 전에 사용자에게 묻는다. 한 작업 안에서 작업자를 바꾸지 않는다(작업 단위로 결정).
+
+1. **Claude 사용량(사용한 비율)이 70% 미만** → `implementer` 서브에이전트, 모델 **Opus 5.5**(`model: "opus"`).
+2. 그 외(Claude 70% 이상 사용) → **GPT(Codex CLI)**:
+   - GPT 잔여량 **50% 이상** → `codex exec -m gpt-6-astra -c model_reasoning_effort=medium -s danger-full-access "<지시>" < /dev/null > <log> 2>&1`
+   - GPT 잔여량 **10% 이상 50% 미만** → `codex exec -m gpt-6.1-sol -c model_reasoning_effort=high ...`
+   - GPT 잔여량 **10% 미만** → 다시 `implementer`(Opus 5.5).
+3. Codex에 맡길 때는 지시서를 `.analysis/ccnc-field-412-20261022/CODEX_PROMPT_<작업>_KO.md`로 쓰고 로그의 `tokens used`로 완료를 확인한다. 검증 범위·시간 상한·금지 사항은 implementer 지시와 같은 수준으로 적는다.
+4. 사용량이 한도에 걸려 작업자가 멈추면(429), 리셋을 기다리지 말고 위 규칙으로 다른 작업자에게 같은 지시서로 이어 맡긴다(진행 상태·산출물 경로를 지시서에 적는다).
+
 ## 로그 분석·재생 규칙 (모든 모델·세션 공통)
 
 - **디코드 결과는 반드시 캐시한다.** fcamera/qcamera를 디코드해 만든 StripNet 입력 띠와 프레임 메타(시각, odometer, laneLineProbs, 차선 y, vEgo, 깜빡이, laneChangeState)는 `.analysis/strip-cache/<세트>/<구간>.npz`에 저장하고, 재생·분석은 캐시에서 읽는다. 캐시가 없을 때만 디코드하되 그 결과도 캐시에 저장한다. 같은 로그를 두 번 디코드하지 않는다. 캐시는 지우지 않는다.
