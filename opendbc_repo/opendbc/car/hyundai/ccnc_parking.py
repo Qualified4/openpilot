@@ -13,7 +13,8 @@ No lane-change permission, DesireHelper, steering or modeld input is read for an
 """
 PROB_ON, EDGE_STD_ON = .2, 1.5
 MIN_SPEED, MAX_SPEED = .5, 4.5          # m/s
-ENTRY_M = 10.
+# DaBin 10-27: 10 -> 5 m. 42b/22 47.6 s felt late (203 m driven, longest continuous qualifying run 28.8 m, 22 resets).
+ENTRY_M = 5.
 PROB_OFF, EXIT_M = .5, 10.
 EXIT_SPEED, EXIT_SPEED_S = 24. / 3.6, 1.
 GRACE_S, NO_MODEL_S, MAX_DT = 3., 1., .2

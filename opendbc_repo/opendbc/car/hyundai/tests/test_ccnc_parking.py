@@ -23,9 +23,9 @@ def test_enters_after_slow_lane_free_travel_not_while_standing():
   hide = cp.ParkingLaneHide()
   t, hidden = drive(hide, 0., 600., 0., model())  # ten minutes stopped (red light, queue): never enters
   assert not hidden
-  t, hidden = drive(hide, t, 4.9, 2., model())    # 9.8 m
+  t, hidden = drive(hide, t, 2.4, 2., model())    # 4.8 m
   assert not hidden
-  t, hidden = drive(hide, t, .2, 2., model())     # 10.2 m
+  t, hidden = drive(hide, t, .2, 2., model())     # 5.2 m
   assert hidden
   t, hidden = drive(hide, t, 300., 0., model(p=.9, std=.3))  # standing still keeps the state
   assert hidden
@@ -34,9 +34,9 @@ def test_enters_after_slow_lane_free_travel_not_while_standing():
 @pytest.mark.parametrize('md,v', [(model(p=.6), 2.), (model(std=.5), 2.), (model(), 6.)])
 def test_lanes_edges_or_speed_reset_entry_evidence(md, v):
   hide = cp.ParkingLaneHide()
-  t, _ = drive(hide, 0., 4., 2., model())
+  t, _ = drive(hide, 0., 2., 2., model())         # 4 m
   t, _ = drive(hide, t, .1, v, md)
-  t, hidden = drive(hide, t, 4., 2., model())     # only 8 m since the reset
+  t, hidden = drive(hide, t, 2., 2., model())     # only 4 m since the reset
   assert not hidden
 
 
