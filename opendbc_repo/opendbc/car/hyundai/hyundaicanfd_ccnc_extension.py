@@ -2673,7 +2673,14 @@ def _model_lanes_absent(md):
     return True
 
 
-def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane_color=True, model_lanes=True, frame=None):
+# CcncLaneCurvatureSource: 0 straight (curvature 0), 1 steering angle only,
+# 2 model curvature while lateral is enabled, otherwise steering angle (default),
+# 3 model curvature always, steering angle when the model curvature is missing.
+CURVATURE_SOURCE_DEFAULT = 2
+
+
+def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane_color=True, model_lanes=True, frame=None,
+                 *, curvature_source=CURVATURE_SOURCE_DEFAULT):
   # 주행 기어에서만 가속도·드라이브 모드에 따른 차로 색 변경
   if lane_color and CS.out.gearShifter == structs.CarState.GearShifter.drive:
     now = time.monotonic()
@@ -2733,14 +2740,20 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
       state.radar_display_tracker._update_model(md)
       curve_cache = state.radar_display_tracker._curves
     curvature = geometry.update(md, v_ego_kph, now, is_currently_lane_changing, compute_curve=precise, curve_cache=curve_cache)
-    if lat_enabled and not precise:
-      curvature = round(state.lane_curv.apply(_ccnc_basic_curve(md, v_ego_kph, is_currently_lane_changing)))
-    elif not lat_enabled:
+    if curvature_source not in (0, 1, 2, 3):
+      curvature_source = CURVATURE_SOURCE_DEFAULT
+    # Option 3 falls back to the steering angle when the model has no lanes or no recent valid curve.
+    model_missing = curvature_source == 3 and (absent or (precise and geometry.target is None and now - geometry.valid_time > .35))
+    if curvature_source == 0:
+      curvature = 0
+    elif curvature_source == 1 or (curvature_source == 2 and not lat_enabled) or model_missing:
       curvature = round(CS.out.steeringAngleDeg / 3)
+    elif not precise:
+      curvature = round(state.lane_curv.apply(_ccnc_basic_curve(md, v_ego_kph, is_currently_lane_changing)))
 
   except:
     # 모델 데이터 예외 발생 시 핸들 각도 기반 백업
-    curvature = round(CS.out.steeringAngleDeg / 3)
+    curvature = 0 if curvature_source == 0 else round(CS.out.steeringAngleDeg / 3)
     values["LFA_ICON"] = 5
 
   values["LANELINE_CURVATURE"] = min(abs(curvature), 15) + (-1 if curvature < 0 else 0)

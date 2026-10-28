@@ -31,6 +31,16 @@ class CcncCatalogTest(unittest.TestCase):
         self.assertIn(params[key][field], page)
     self.assertEqual(params['CcncModelLanes']['control'], 'select')
     self.assertEqual(params['CcncModelLanes']['options']['ko'], ['끔', '일반', '정밀'])
+    curvature = params['CcncLaneCurvatureSource']
+    self.assertEqual((curvature['min'], curvature['max'], curvature['default'], curvature['control']), (0, 3, 2, 'select'))
+    self.assertEqual(curvature['options']['ko'], ['사용 안 함', '핸들 각도', '조향 보조 시 모델', '항상 모델'])
+    self.assertEqual(curvature['options']['en'], ['Off', 'Steering angle', 'Model with lateral', 'Always model'])
+    for field in ("descr", "edescr", "cdescr"):
+      for internal in ("liveTracks", "radarState", "Params", "carrot-wip", "ccnc-hda1", "lat_active"):
+        self.assertNotIn(internal, curvature[field])
+    for locale in ("ko", "en", "zh"):
+      page = result.pages[result.index["settings"]['CcncLaneCurvatureSource']["locales"][locale]["page"]]
+      self.assertEqual(VALIDATOR.validate_wiki_markdown(page), [])
     self.assertEqual(params['CcncLaneTypeDetection']['control'], 'select')
     self.assertEqual(params['CcncLaneTypeDetection']['options']['en'], ['Off', 'StripNet'])  # the Scanner is no longer offered
 

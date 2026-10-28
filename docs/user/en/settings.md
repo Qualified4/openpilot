@@ -105,7 +105,7 @@ Ignoring `x0.01`, `x0.001`, `cm`, `km/h`, or `%` can make a value appear one hun
 
 ## Settings map
 
-The current `carrot_settings.json` contains **203 parameters** (distinct names in its `params` list). The driver-monitoring exception and `NNFF` are search only; the remaining entries appear in these menus:
+The current `carrot_settings.json` contains **204 parameters** (distinct names in its `params` list). The driver-monitoring exception and `NNFF` are search only; the remaining entries appear in these menus:
 
 | Category | Count | Groups |
 |---|---:|---|
@@ -251,7 +251,7 @@ On supported Tesla vehicles with the additional vehicle bus detected, the device
 <a id="vehicle-hardware"></a>
 ## Vehicle and hardware
 
-This category contains 21 menu settings, two sub-options on the **CCNC HDA1 radar vehicles** detail screen, and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. CCNC display settings, including lane type and color display, are described below.
+This category contains 22 menu settings, two sub-options on the **CCNC HDA1 radar vehicles** detail screen, and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. CCNC display settings, including lane type and color display, are described below.
 
 | Group | Parameters | Purpose |
 |---|---|---|
@@ -259,6 +259,7 @@ This category contains 21 menu settings, two sub-options on the **CCNC HDA1 rada
 | CAN FD/HDA | `CanfdHDA2`, `HyundaiCanfdClusterDirectTx`, `CanfdDebug`, `HDPuse` | HDA2 selection, cluster direct send, CAN FD diagnostics, and HDP |
 | [CCNC display](#ccnc-display) | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes · Off (0) / Standard (1) / Refined (2), default 0 |
+| [CCNC display](#ccnc-display) | `CcncLaneCurvatureSource` | CCNC lane curvature display · Off (0) / Steering angle (1) / Model with lateral (2) / Always model (3), default 2 |
 | [CCNC display](#ccnc-display) | `CcncLaneTypeDetection` | CCNC lane type & color display · Off(0) / StripNet(1), default 0 |
 | [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Includes virtual rear handover; default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | Vehicle position correction · Sub-option of radar vehicles, default OFF (0) |
@@ -303,7 +304,7 @@ In modes `EnableRadarTracks=1`–`3`, a confirmed departing front lead can recei
 <a id="ccnc-display"></a>
 ### CCNC instrument cluster display
 
-Under **Vehicle and hardware → CAN FD/HDA**, configure the CCNC display options. **Vehicle position correction** and **Radar map** are on the detail screen opened from **CCNC HDA1 radar vehicles**; they have no effect while radar vehicles is off (the screen does not grey them out). All are off by default, and changes appear within about one second.
+Under **Vehicle and hardware → CAN FD/HDA**, configure the CCNC display options. **Vehicle position correction** and **Radar map** are on the detail screen opened from **CCNC HDA1 radar vehicles**; they have no effect while radar vehicles is off (the screen does not grey them out). All except lane curvature display (default Model with lateral) are off by default, and changes appear within about one second.
 
 #### CCNC acceleration/mode lane color
 
@@ -322,6 +323,17 @@ Refined does not discard curvature solely because of low lane confidence during 
 Device compute: added time per CCNC display call, measured by replaying recorded logs on comma big core 5 (1.69 GHz while offroad) on 2026-10-24 after native optimization, with the other options off. Standard +0.16 ms and Refined +0.33 ms over a 0.88 ms all-off baseline. On the same basis, radar vehicles add 2.9 ms, position correction 0.54 ms (radar vehicles on, map off), radar map 1.2 ms and acceleration/mode lane color 0.05 ms. Shared work and tracked state depend on the combination, so these values cannot be added; the tested user combination took 6.27 ms. These times include CAN message generation and packing and are not whole-device CPU usage.
 
 Turn off to use the default lane and icon display. Trailer-related lane-change restrictions take priority. Nearby vehicle display is controlled separately by the next option.
+
+#### CCNC lane curvature display
+
+Chooses what bends the cluster lanes. Applies while **CCNC model lanes** is on (Standard or Refined).
+
+- **Off (0)**: sends zero curvature, so lanes are drawn straight.
+- **Steering angle (1)**: always uses the steering wheel angle, regardless of steering assistance.
+- **Model with lateral (2)**: uses the model's lane curvature while steering assistance is on, otherwise the steering angle. This is the previous behavior and the default.
+- **Always model (3)**: uses the model's lane curvature even when steering assistance is off. Falls back to the steering angle when there are no model lanes or no usable curvature for more than 0.35 s.
+
+Changes apply within about one second. Display only; no effect on steering control.
 
 #### CCNC lane type & color display
 

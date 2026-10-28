@@ -980,8 +980,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         params.get_bool("CcncVehiclePositionCorrection"),
         params.get_bool("CcncRadarMap"),
         params.get_int("CcncLaneTypeDetection"),
+        params.get_int("CcncLaneCurvatureSource"),
       )
-    lane_color_enabled, model_lane_mode, radar_vehicles, position_correction, radar_map, lane_marking_mode = create_ccnc_messages._display_options
+    (lane_color_enabled, model_lane_mode, radar_vehicles, position_correction, radar_map, lane_marking_mode,
+     curvature_source) = create_ccnc_messages._display_options
     model_lane_mode = model_lane_mode if model_lane_mode in (0, 1, 2) else 0
     model_lanes = model_lane_mode != 0
   else:
@@ -989,6 +991,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
     model_lane_mode = 2 if model_lanes else 0
     position_correction = radar_map = False
     lane_marking_mode = 0
+    curvature_source = ccnc_extension.CURVATURE_SOURCE_DEFAULT
   # Display-only lane marking recogniser result (card keeps the latest packet; never waited for here).
   lane_marking = getattr(CS, 'ccnc_lane_marking', None) if lane_marking_mode in (1, 2) else None
   radar_vehicles = radar_vehicles and not (CP.flags & HyundaiFlags.CANFD_HDA2.value)
@@ -1230,7 +1233,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
           if lane_color_enabled or model_lanes:
             ccnc_extension.update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled,
-                                     lane_color_enabled, model_lanes, frame)
+                                     lane_color_enabled, model_lanes, frame, curvature_source=curvature_source)
 
         _apply_driver_monitoring_alert(values, hud_control, CS.adrv_0x161)
         values.update(debug_values.get("ADRV_0x161", {}))

@@ -422,6 +422,7 @@
             "HDPuse",
             "CcncLaneColor",
             "CcncModelLanes",
+            "CcncLaneCurvatureSource",
             "CcncLaneTypeDetection",
             "CcncRadarVehicles",
             "CcncVehiclePositionCorrection",
@@ -1894,6 +1895,43 @@
           "关闭",
           "普通",
           "精细"
+        ]
+      }
+    },
+    {
+      "group": "시작",
+      "name": "CcncLaneCurvatureSource",
+      "title": "CCNC 차선 곡률 표시",
+      "descr": "계기판 차선의 휘어짐을 무엇으로 그릴지 고릅니다. CCNC 모델 차선이 켜져 있을 때 적용됩니다. 사용 안 함: 차선을 직선으로 표시, 핸들 각도: 항상 핸들 각도로 표시, 조향 보조 시 모델: 조향 보조가 켜져 있으면 모델이 인식한 차선 곡률, 꺼져 있으면 핸들 각도(기존 동작), 항상 모델: 조향 보조가 꺼져 있어도 모델 곡률로 표시하고 모델 곡률이 없으면 핸들 각도. 기본 조향 보조 시 모델",
+      "egroup": "START",
+      "etitle": "CCNC lane curvature display",
+      "edescr": "Chooses what bends the cluster lanes. Applies while CCNC model lanes is on. Off: lanes are drawn straight, Steering angle: always from the steering wheel angle, Model with lateral: the model's lane curvature while lane keeping assist is on, otherwise the steering angle (previous behavior), Always model: the model's lane curvature even when lane keeping assist is off, falling back to the steering angle when no model curvature is available. Default Model with lateral",
+      "cgroup": "启动设置",
+      "ctitle": "CCNC 车道弯曲显示",
+      "cdescr": "选择仪表盘车道弯曲的依据。在开启CCNC模型车道时生效。不使用：车道显示为直线，方向盘角度：始终按方向盘角度显示，转向辅助时用模型：转向辅助开启时用模型识别的车道曲率，关闭时用方向盘角度(原有行为)，始终用模型：转向辅助关闭时也用模型曲率显示，没有模型曲率时用方向盘角度。默认 转向辅助时用模型",
+      "min": 0,
+      "max": 3,
+      "default": 2,
+      "unit": 1,
+      "control": "select",
+      "options": {
+        "ko": [
+          "사용 안 함",
+          "핸들 각도",
+          "조향 보조 시 모델",
+          "항상 모델"
+        ],
+        "en": [
+          "Off",
+          "Steering angle",
+          "Model with lateral",
+          "Always model"
+        ],
+        "zh": [
+          "不使用",
+          "方向盘角度",
+          "转向辅助时用模型",
+          "始终用模型"
         ]
       }
     },

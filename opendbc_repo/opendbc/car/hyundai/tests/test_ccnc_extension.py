@@ -15,12 +15,14 @@ from opendbc.car.hyundai.values import HyundaiFlags
 KEYS = ("CcncLaneColor", "CcncModelLanes", "CcncRadarVehicles")
 POSITION_KEY = "CcncVehiclePositionCorrection"
 MAP_KEY = "CcncRadarMap"
+CURVATURE_KEY = "CcncLaneCurvatureSource"
 
 
 @pytest.fixture
 def display(monkeypatch):
   params = dict.fromkeys(KEYS, False)
   params[POSITION_KEY] = params[MAP_KEY] = False
+  params[CURVATURE_KEY] = ccnc_extension.CURVATURE_SOURCE_DEFAULT  # Params default "2"
   monkeypatch.setattr(main, "Params", lambda: N(get_bool=lambda key: bool(params[key]), get_int=lambda key: int(params.get(key, 0)), get=lambda key: "0"))
   monkeypatch.setattr(ccnc_extension, "Params", lambda: N(get_int=lambda key: 3))
   monkeypatch.delattr(main.create_ccnc_messages, "_display_options", raising=False)
@@ -902,3 +904,69 @@ def test_short_bsd_gap_holds_then_slides_the_same_rear_car_toward_16_and_back(di
   drawn = [d for _, code, d in out if code]
   assert all(code == 4 for _, code, _ in out if code) and drawn == sorted(drawn) and drawn[-1] >= 14.5
   assert not out[-1][1]  # reaches 16 before retiring
+
+
+def _cluster_curvature(cs, lat_enabled, source=None, md=lambda stamp: lane_geometry_model(stamp=stamp, bend=.004)):
+  kwargs = {} if source is None else {"curvature_source": source}
+  for i in range(40):
+    values = {}
+    ccnc_extension.update_lanes(values, cs, md(i + 1), 90, 0, 0, lat_enabled, False, True, i * 5, **kwargs)
+  return values["LANELINE_CURVATURE"], values["LANELINE_CURVATURE_DIRECTION"]
+
+
+def _encode(curvature):
+  return min(abs(curvature), 15) + (-1 if curvature < 0 else 0), 1 if curvature < 0 else 0
+
+
+STEER = _encode(10)  # steeringAngleDeg 30 / 3
+MODEL = _encode(round(-1800 * .004))  # lane_geometry_model bend .004 in the precise geometry
+
+
+def test_curvature_source_off_sends_straight_lanes_through_params(display):
+  params, cs, send = display
+  params["CcncModelLanes"], params[CURVATURE_KEY] = 2, 0
+  cs.out.steeringAngleDeg = 30.
+  for frame in (0, 5, 10):
+    values = dict(send(frame))["ADRV_0x161"]
+  assert (values["LANELINE_CURVATURE"], values["LANELINE_CURVATURE_DIRECTION"]) == (0, 0)
+  ccnc_extension.reset()
+  assert _cluster_curvature(cs, True, 0) == (0, 0)
+
+
+def test_curvature_source_steering_ignores_model(display):
+  _, cs, _ = display
+  cs.out.steeringAngleDeg = 30.
+  assert _cluster_curvature(cs, True, 1) == STEER
+
+
+@pytest.mark.parametrize("lat_enabled", [False, True])
+def test_curvature_source_default_keeps_lateral_switch(display, lat_enabled):
+  _, cs, _ = display
+  cs.out.steeringAngleDeg = 30.
+  default = _cluster_curvature(cs, lat_enabled)
+  ccnc_extension.reset()
+  assert _cluster_curvature(cs, lat_enabled, 2) == default == (MODEL if lat_enabled else STEER)
+
+
+def test_curvature_source_always_model_without_lateral(display):
+  _, cs, _ = display
+  cs.out.steeringAngleDeg = 30.
+  assert MODEL != STEER
+  assert _cluster_curvature(cs, False, 3) == MODEL
+
+
+@pytest.mark.parametrize("missing", ["no_model", "no_lanes", "invalid_curve"])
+def test_curvature_source_always_model_falls_back_to_steering(display, missing):
+  _, cs, _ = display
+  cs.out.steeringAngleDeg = 30.
+  def md(stamp):
+    if missing == "no_model":
+      return None
+    m = lane_geometry_model(stamp=stamp, bend=.004)
+    if missing == "no_lanes":
+      m.laneLines = [N(x=[], y=[]) for _ in range(4)]
+    else:
+      m.position.yStd = [1.] * len(m.position.x)
+    return m
+  assert _cluster_curvature(cs, False, 3, md) == STEER
+  assert _cluster_curvature(cs, True, 3, md) == STEER
