@@ -36,7 +36,7 @@
   ],
   "blue_logit_padding": -10000.0,
   "threshold": 0.9,
-  "deviceValidated": false,
+  "deviceValidated": true,
   "training": {
     "pool": "center",
     "kd": 0.0,
@@ -127,5 +127,15 @@
     "requested_model": "Claude certlabel1026 R5 small s0",
     "previous_sha256": "23ff1bc749421977e400977e9d14e70dd2e30ab59391a0a59e890f7051f9afb7",
     "scope": "Repository asset replacement; no device install or device validation."
+  },
+  "device_validation": {
+    "date": "2026-10-28",
+    "commit": "3b08adad",
+    "route": "42d",
+    "device_replay_agreement": 0.9884143711098786,
+    "user_score": 95,
+    "processing_p50_ms": 30.1873575,
+    "source": ".analysis/ccnc-field-412-20261022/claude/drive1028/analysis.json",
+    "scope": "Previously recorded drive and user assessment; this round did not access a device."
   }
 }

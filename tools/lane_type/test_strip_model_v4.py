@@ -227,7 +227,9 @@ def test_shipped_product_manifest_is_the_5type_r5_small_s0_model():
   manifest = json.loads((strip_model.ASSETS/f'{strip_model.MODEL_NAME}.json').read_text(encoding='utf-8'))
   assert manifest['outputs'] == strip_model.OUTPUTS_V4 and manifest['params'] == 34079
   assert manifest['training']['seed'] == 0 and manifest['training']['capacity'] == 'small'
-  assert manifest['deviceValidated'] is False  # R5 has not been validated on the device.
+  assert manifest['deviceValidated'] is True  # Existing R5: user-confirmed 10-28 drive.
+  assert manifest['device_validation']['commit'] == '3b08adad'
+  assert manifest['device_validation']['route'] == '42d'
   assert strip_model.onnx_output_shape((strip_model.ASSETS/f'{strip_model.MODEL_NAME}.onnx').read_bytes(), 'type') == [None, 5]
   types, colors = m.forward([np.full((3, 128, 128), 100., np.float32)])
   assert types.shape == (1, 5) and colors.shape == (1, 3)
