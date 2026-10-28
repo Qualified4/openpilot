@@ -1250,6 +1250,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         rx_counter = values.pop("COUNTER", None)
         # blinker hold: the confirmed lane change until the body is across (see _blink_hold_side)
         hold = _blink_hold_side(md, desire, create_ccnc_messages.__dict__.setdefault("_blink_hold", {}))
+        # physicalBlinkerHold (carrot-wip USB-CAN lease) only applies when our lane-change/lever hold is idle;
+        # an active _blink_hold_side hold wins, including over an external release (1).
+        external_hold = getattr(hud_control, "physicalBlinkerHold", 0)
+        if hold == 0 and external_hold in (2, 3):
+          hold = {2: 3, 3: 4}[external_hold]
         values['LEFT_BLINK_HOLD'] = 1 if hold == 3 else 0
         values['RIGHT_BLINK_HOLD'] = 1 if hold == 4 else 0
 

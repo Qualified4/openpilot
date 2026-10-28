@@ -71,6 +71,7 @@ window.CarrotTranslations.register("en", {
     rv_error_invalid_pairing_request: "The pairing code is invalid, expired, or already used. Generate a new code.",
     rv_error_upload_busy: "An upload is already running. Wait or cancel it first.",
     rv_error_upload_incomplete: "Some files have not finished transferring. Resume the upload.",
+    model_library_title: "External driving model",
     egpu_model_recovering: "eGPU reconnecting",
     egpu_model_recovering_detail: "The internal model remains in use while eGPU recovery is attempted, up to three times.",
     egpu_model_recovery_ready: "eGPU READY",

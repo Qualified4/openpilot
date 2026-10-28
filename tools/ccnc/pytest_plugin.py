@@ -7,7 +7,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 # carrot-wip settings catalog revision used by the merged upstream tests.
-BASELINE = "10cd6868d3715d7068bd38634bf7b808ba9d1834"
+BASELINE = "2f94a4e0c9405e4a4ccd147b770a306325a732cb"
 
 
 @pytest.fixture(scope="session")
@@ -36,8 +36,10 @@ def ccnc_original_test_environment(request, monkeypatch):
     "opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_lead.py",
     "opendbc_repo/opendbc/car/hyundai/tests/test_alt2_adas_buttons.py",
     "opendbc_repo/opendbc/car/hyundai/tests/test_dm_cluster.py",
+    # carrot-wip 605e7e2d calls create_ccnc_messages with a get_int-only Params stub.
+    "opendbc_repo/opendbc/car/hyundai/tests/test_blink_hold.py",
   ):
-    main = request.module.hyundaicanfd
+    from opendbc.car.hyundai import hyundaicanfd as main
     original = main.create_ccnc_messages
 
     def baseline_messages(*args, **kwargs):
