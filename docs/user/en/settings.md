@@ -261,7 +261,7 @@ This category contains 22 menu settings, two sub-options on the **CCNC HDA1 rada
 | [CCNC display](#ccnc-display) | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes · Off (0) / Standard (1) / Refined (2), default 0 |
 | [CCNC display](#ccnc-display) | `CcncLaneCurvatureSource` | CCNC lane curvature display · Off (0) / Steering angle (1) / Model with lateral (2) / Always model (3), default 2 |
-| [CCNC display](#ccnc-display) | `CcncLaneTypeDetection` | CCNC lane type & color display · Off(0) / StripNet(1), default 0 |
+| [CCNC display](#ccnc-display) | `CcncLaneTypeDetection` | CCNC lane type & color display · Off(0) / On(1), default 0 |
 | [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Includes virtual rear handover; default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | Vehicle position correction · Sub-option of radar vehicles, default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncRadarMap` | Radar map · Sub-option of radar vehicles, default OFF (0) |
@@ -338,7 +338,7 @@ Changes apply within about one second. Display only; no effect on steering contr
 
 #### CCNC lane type & color display
 
-Recognizes whether each lane line is solid or dashed and white or yellow, and shows it on the CCNC cluster. Choose **Off** (existing lane display, nothing runs) or **StripNet** (light learned model). The former Scanner (1-D lane profile scanner) choice is gone; a previously stored value (1 or 2) runs StripNet. The recognizer runs in its own background process that reuses the existing camera frames and model lane positions.
+Recognizes whether each lane line is solid or dashed and white or yellow, and shows it on the CCNC cluster. Choose **Off** (existing lane display, nothing runs) or **On** (light learned model StripNet). The former Scanner (1-D lane profile scanner) choice is gone; a previously stored value (1 or 2) runs StripNet. The recognizer runs in its own background process that reuses the existing camera frames and model lane positions.
 
 StripNet uses one model, the v4 model (SHA `23ff1bc74942`), retrained with corrected double-line labels plus the 2026-10-23 drives and the 2026-10-24 rain drive and bookmarks, with fewer single lines taken for double lines. Blue lines are treated as white. It outputs dashed, solid, two double-line types and an abstention output; a frame whose abstention output is the highest is skipped. It can still show solid lines as dashed, yellow as white, or white as yellow. If the model files are missing or cannot be read, no lane type is shown (the existing display stays) and a warning is logged; there is no fallback model. The former lane type model setting has been removed.
 
