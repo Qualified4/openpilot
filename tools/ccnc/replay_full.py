@@ -33,7 +33,8 @@ RX_ADDRESSES = (0x161, 0x162, 0x200, 0x1ea, 0x1e0)
 WANTED = ('carState', 'modelV2', 'liveTracks', 'sendcan', 'radarState', 'carControl', 'can')
 sys.path[:0] = [str(ROOT/'opendbc_repo'), str(ROOT)]
 PARAMS = dict(CcncLaneColor=True, CcncModelLanes=2, CcncRadarVehicles=True, CcncVehiclePositionCorrection=True,
-              CcncRadarMap=True, CcncLaneTypeDetection=0, LaneLineCheck=0)
+              CcncRadarMap=True, CcncLaneTypeDetection=0, LaneLineCheck=0,
+              CcncTrafficBackground=True)
 
 
 def _params_stub():

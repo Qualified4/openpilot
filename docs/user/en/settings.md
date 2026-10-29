@@ -105,12 +105,12 @@ Ignoring `x0.01`, `x0.001`, `cm`, `km/h`, or `%` can make a value appear one hun
 
 ## Settings map
 
-The current `carrot_settings.json` contains **208 parameters** (distinct names in its `params` list). The driver-monitoring exception and `NNFF` are search only; the remaining entries appear in these menus:
+The current `carrot_settings.json` contains **209 parameters** (distinct names in its `params` list). The driver-monitoring exception and `NNFF` are search only; the remaining entries appear in these menus:
 
 | Category | Count | Groups |
 |---|---:|---|
 | Driving control | 124 | Startup and auto, buttons and presets, steering, speed and deceleration, cruise and following gap |
-| Vehicle and hardware | 22 | Hyundai/Kia, CAN FD/HDA, radar, driver monitoring, vehicle assistance, device hardware |
+| Vehicle and hardware | 23 | Hyundai/Kia, CAN FD/HDA, radar, driver monitoring, vehicle assistance, device hardware |
 | Display | 34 | Information, path, brightness/on-road view, external HUD |
 | System | 12 | Recording/power, network/map, sound, software |
 
@@ -252,7 +252,7 @@ On supported Tesla vehicles with the additional vehicle bus detected, the device
 <a id="vehicle-hardware"></a>
 ## Vehicle and hardware
 
-This category contains 22 menu settings, two sub-options on the **CCNC HDA1 radar vehicles** detail screen, and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. CCNC display settings, including lane type and color display, are described below.
+This category contains 23 menu settings, two sub-options on the **CCNC HDA1 radar vehicles** detail screen, and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. CCNC display settings, including lane type and color display, are described below.
 
 | Group | Parameters | Purpose |
 |---|---|---|
@@ -262,6 +262,7 @@ This category contains 22 menu settings, two sub-options on the **CCNC HDA1 rada
 | [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes · Off (0) / Standard (1) / Refined (2), default 0 |
 | [CCNC display](#ccnc-display) | `CcncLaneCurvatureSource` | CCNC lane curvature display · Off (0) / Steering angle (1) / Model with lateral (2) / Always model (3), default 2 |
 | [CCNC display](#ccnc-display) | `CcncLaneTypeDetection` | CCNC lane type & color display · Off(0) / On(1), default 0 |
+| [CCNC display](#ccnc-display) | `CcncTrafficBackground` | CCNC traffic light background · Red (5) on a stop decision, green (8) for 2 s after a go decision; default ON (1). Unverified on the Sonata; turn off if not shown |
 | [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Includes virtual rear handover; default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | Vehicle position correction · Sub-option of radar vehicles, default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncRadarMap` | Radar map · Sub-option of radar vehicles, default OFF (0) |
@@ -305,7 +306,7 @@ In modes `EnableRadarTracks=1`–`3`, a confirmed departing front lead can recei
 <a id="ccnc-display"></a>
 ### CCNC instrument cluster display
 
-Under **Vehicle and hardware → CAN FD/HDA**, configure the CCNC display options. **Vehicle position correction** and **Radar map** are on the detail screen opened from **CCNC HDA1 radar vehicles**; they have no effect while radar vehicles is off (the screen does not grey them out). All except lane curvature display (default Model with lateral) are off by default, and changes appear within about one second.
+Under **Vehicle and hardware → CAN FD/HDA**, configure the CCNC display options. **Vehicle position correction** and **Radar map** are on the detail screen opened from **CCNC HDA1 radar vehicles**; they have no effect while radar vehicles is off (the screen does not grey them out). All except lane curvature display (default Model with lateral) and traffic light background (default on) are off by default, and changes appear within about one second.
 
 #### CCNC acceleration/mode lane color
 
@@ -351,6 +352,12 @@ Recognition continues through lane changes. At 30 km/h or more, while the blinke
 Strip extraction plus inference in its separate process, measured on the device for the shipped model (little cores 0–3, nice 10, two OpenCV threads, both sides): median about 14.7 ms/frame (p95 15.6 ms). Recognition gates and onroad load change the actual timing.
 
 This option changes only the cluster display. It does not change whether a lane change is allowed, the lane-change logic, steering or the driving model. Onroad device load and recognition accuracy on the road are not yet measured.
+
+#### CCNC traffic light background
+
+Shows carrot's traffic light decision (`longitudinalPlan.trafficState`) as the cluster background. While the model decides to stop, the background is **steady red** (5); after it decides to go, it is **steady green** (8) for **2 s**; otherwise the normal background (cruise/steering state, flashing red during a turn) is used. A traffic light decision takes priority over the turn background. On by default; off keeps the normal background.
+
+Values 5 and 8 were confirmed on an Ioniq 5 PE cluster and are not verified on the Sonata. Turn this off if the background does not show or looks wrong. Display only; stopping and starting behavior is unchanged.
 
 #### CCNC HDA1 radar vehicles
 

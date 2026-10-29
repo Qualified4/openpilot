@@ -875,7 +875,23 @@ def _hide_replaced_adas_service_warning(values):
     values["FAULT_DAS"] = 0
 
 
-def _select_cluster_background(cruise_enabled, lat_active, paddle_pressed, paddle_mode, turning=False):
+TRAFFIC_BACKGROUND = {1: 5, 2: 8}  # red light -> steady red, green light -> steady green (Ioniq 5 PE, 10-20)
+
+
+def _traffic_display_state(traffic_state, frame):
+  # Like the C4 traffic light ball: red while red, green only for 2 s after it turns green
+  # (model-based green is on for most normal driving).
+  if traffic_state == 2 and _traffic_display_state.last != 2:
+    _traffic_display_state.green_until = frame + 200
+  _traffic_display_state.last = traffic_state
+  return 0 if traffic_state == 2 and frame >= _traffic_display_state.green_until else traffic_state
+_traffic_display_state.last, _traffic_display_state.green_until = 0, 0
+
+
+def _select_cluster_background(cruise_enabled, lat_active, paddle_pressed, paddle_mode, turning=False, traffic_state=0):
+  # A detected traffic light takes over the background until detection ends.
+  if traffic_state in TRAFFIC_BACKGROUND:
+    return TRAFFIC_BACKGROUND[traffic_state]
   # Reuse the existing flashing-red background to identify an active model turn.
   if (lat_active and turning) or (paddle_mode > 0 and paddle_pressed):
     return 6
@@ -981,9 +997,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         params.get_bool("CcncRadarMap"),
         params.get_int("CcncLaneTypeDetection"),
         params.get_int("CcncLaneCurvatureSource"),
+        params.get_bool("CcncTrafficBackground"),
       )
     (lane_color_enabled, model_lane_mode, radar_vehicles, position_correction, radar_map, lane_marking_mode,
-     curvature_source) = create_ccnc_messages._display_options
+     curvature_source, traffic_background) = create_ccnc_messages._display_options
     model_lane_mode = model_lane_mode if model_lane_mode in (0, 1, 2) else 0
     model_lanes = model_lane_mode != 0
   else:
@@ -992,6 +1009,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
     position_correction = radar_map = False
     lane_marking_mode = 0
     curvature_source = ccnc_extension.CURVATURE_SOURCE_DEFAULT
+    traffic_background = False
   # Display-only lane marking recogniser result (card keeps the latest packet; never waited for here).
   lane_marking = getattr(CS, 'ccnc_lane_marking', None) if lane_marking_mode in (1, 2) else None
   radar_vehicles = radar_vehicles and not (CP.flags & HyundaiFlags.CANFD_HDA2.value)
@@ -1111,6 +1129,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         values["BACKGROUND"] = _select_cluster_background(
           cruise_enabled, lat_active, CS.paddle_button_prev > 0, paddle_mode, turning=desire in (1, 2),
+          traffic_state=_traffic_display_state(getattr(hud_control, "trafficState", 0), frame) if traffic_background else 0,
         )
         values["CENTERLINE"] = 1 if HDA_CntrlModSta > 0 else 0
         values["CAR_CIRCLE"] = 2 if hdp_active else 1 if cruise_enabled else 0

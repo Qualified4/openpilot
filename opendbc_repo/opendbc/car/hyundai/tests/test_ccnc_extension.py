@@ -16,6 +16,7 @@ KEYS = ("CcncLaneColor", "CcncModelLanes", "CcncRadarVehicles")
 POSITION_KEY = "CcncVehiclePositionCorrection"
 MAP_KEY = "CcncRadarMap"
 CURVATURE_KEY = "CcncLaneCurvatureSource"
+TRAFFIC_KEY = "CcncTrafficBackground"
 
 
 @pytest.fixture
@@ -23,6 +24,7 @@ def display(monkeypatch):
   params = dict.fromkeys(KEYS, False)
   params[POSITION_KEY] = params[MAP_KEY] = False
   params[CURVATURE_KEY] = ccnc_extension.CURVATURE_SOURCE_DEFAULT  # Params default "2"
+  params[TRAFFIC_KEY] = False
   monkeypatch.setattr(main, "Params", lambda: N(get_bool=lambda key: bool(params[key]), get_int=lambda key: int(params.get(key, 0)), get=lambda key: "0"))
   monkeypatch.setattr(ccnc_extension, "Params", lambda: N(get_int=lambda key: 3))
   monkeypatch.delattr(main.create_ccnc_messages, "_display_options", raising=False)
@@ -53,7 +55,28 @@ def display(monkeypatch):
     return main.create_ccnc_messages(N(flags=flags), packer, N(ECAN=0, CAM=2), frame,
                                     N(enabled=True, latActive=lat_active), cs, hud, 0, False, False, 0, False, 0, 0,
                                     extended_ccnc=extended_ccnc)
+  send.hud = hud
   return params, cs, send
+
+
+@pytest.mark.parametrize("toggle", (False, True))
+def test_traffic_background_option(display, toggle):
+  # CcncTrafficBackground off: the light is ignored and the normal background stays.
+  params, cs, send = display
+  params[TRAFFIC_KEY] = toggle
+  main._traffic_display_state.last, main._traffic_display_state.green_until = 0, 0
+
+  def background(frame, traffic_state):
+    send.hud.trafficState = traffic_state
+    return dict(send(frame))["ADRV_0x161"]["BACKGROUND"]
+
+  normal = background(0, 0)
+  assert normal not in (5, 8)
+  assert background(5, 1) == (5 if toggle else normal)       # red
+  assert background(10, 2) == (8 if toggle else normal)      # turned green
+  assert background(205, 2) == (8 if toggle else normal)
+  assert background(210, 2) == normal                        # 2 s after green: normal
+  assert background(215, 0) == normal
 
 
 @pytest.mark.parametrize("options", list(product((False, True), (0, 1, 2), (False, True))))

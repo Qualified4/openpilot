@@ -428,6 +428,7 @@
             "CcncModelLanes",
             "CcncLaneCurvatureSource",
             "CcncLaneTypeDetection",
+            "CcncTrafficBackground",
             "CcncRadarVehicles",
             "CcncVehiclePositionCorrection",
             "CcncRadarMap"
@@ -2019,6 +2020,23 @@
           "开启"
         ]
       }
+    },
+    {
+      "group": "시작",
+      "name": "CcncTrafficBackground",
+      "title": "CCNC 신호등 배경색",
+      "descr": "모델이 신호등 정지로 판단하면 계기판 배경을 고정 빨강(5)으로, 출발로 판단하면 그 뒤 2초 동안 고정 초록(8)으로 표시합니다. 끄면 기존 배경색. 값 5·8은 아이오닉 5 PE에서 확인된 값이며 소나타는 미확인, 배경이 보이지 않으면 끄세요.",
+      "egroup": "START",
+      "etitle": "CCNC traffic light background",
+      "edescr": "When the model decides to stop for a traffic light, the cluster background shows steady red (5); when it decides to go, it shows steady green (8) for 2 s. Off keeps the normal background. Values 5 and 8 were confirmed on an Ioniq 5 PE and are unverified on the Sonata; turn this off if the background does not show.",
+      "cgroup": "启动设置",
+      "ctitle": "CCNC 红绿灯背景色",
+      "cdescr": "模型判断为红绿灯停车时，仪表背景显示固定红色(5)；判断为起步后，2秒内显示固定绿色(8)。关闭时保持原有背景色。数值5·8在Ioniq 5 PE上确认，索纳塔未确认，若看不到背景请关闭。",
+      "min": 0,
+      "max": 1,
+      "default": 1,
+      "unit": 1,
+      "control": "toggle"
     },
     {
       "group": "시작",
