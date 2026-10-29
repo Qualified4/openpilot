@@ -67,6 +67,10 @@ This setting changes only the wait **before the lane change starts**. It does no
 
 Vehicle BSD is an assistive signal. It cannot cover every fast-closing vehicle, motorcycle, object outside its sensing area, adverse condition, or sensor fault. Never interpret the absence of a BSD warning as proof that no vehicle is behind you.
 
+### `LaneChangeYellowSolid` — block lane change at yellow solid
+
+On by default. While [CCNC lane type & color display](settings.md#ccnc-display) (`CcncLaneTypeDetection`) is on and shows that side's line as a yellow solid line, a lane change toward that side waits just as it does for the stock camera's yellow line (the same path as the BSD wait). The other side is unaffected. Held, white, dashed or expired results never block, and the stock camera yellow-line block works as before regardless of this setting. Recognition can miss a yellow solid line, so the driver remains responsible for checking the lane line.
+
 ### `ShareData` — ONNX lane and BSD detection
 
 Enable **Carrot Web → Settings → Driving → Steering → ONNX Lane & BSD → ONNX Lane and BSD Detection**. This setting runs the lane-type ONNX. Camera BSD has a separate `OnnxBsdEnabled` switch in the detail screen and defaults to off; an existing saved `ShareData` value is preserved. The service starts after onroad initialization and model/CAN/Panda readiness have settled for 0.5 seconds. Engaging cruise is not required. It stops offroad and waits again at the next onroad start.

@@ -149,6 +149,7 @@
                 "LaneChangeNeedTorque",
                 "LaneChangeDelay",
                 "LaneChangeBsd",
+                "LaneChangeYellowSolid",
                 "LaneLineCheck",
                 "AutoBlinkerControl",
                 "BlinkerLatchedTurn",
@@ -2767,6 +2768,23 @@
       "max": 1,
       "default": 0,
       "unit": 1
+    },
+    {
+      "group": "조향일반",
+      "name": "LaneChangeYellowSolid",
+      "title": "차선변경 노란 실선 차단",
+      "descr": "CCNC 차선 종류 인식이 그 쪽 차선을 노란 실선으로 표시 중이면 BSD처럼 차선변경을 대기시킵니다. 판단 보류·흰색·점선·오래된 값은 막지 않습니다. CCNC 차선 종류·색상 표시가 켜져 있을 때만 적용되며, 순정 카메라 노란선 차단은 기존대로 동작합니다.",
+      "egroup": "LAT",
+      "etitle": "Block lane change at yellow solid",
+      "edescr": "While CCNC lane type recognition shows that side's line as a yellow solid line, the lane change waits as it does for BSD. Held, white, dashed or stale results never block. Applies only while CCNC lane type & color display is on; the stock camera yellow-line block works as before.",
+      "cgroup": "转向",
+      "ctitle": "黄色实线阻止变道",
+      "cdescr": "CCNC车道线类型识别将该侧车道线显示为黄色实线时，像BSD一样让变道等待。判断保留、白色、虚线或过期的结果不会阻止。仅在开启CCNC车道线类型·颜色显示时生效，原厂摄像头黄线阻止照常工作。",
+      "min": 0,
+      "max": 1,
+      "default": 1,
+      "unit": 1,
+      "control": "toggle"
     },
     {
       "group": "조향일반",

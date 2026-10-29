@@ -57,11 +57,19 @@ def test_default_off_manager_predicate_and_manual_entrypoint_do_not_load_or_impo
 
 
 def test_lane_marking_reaches_only_the_ccnc_display_path():
-  """Display-only integration contract: no control/lane-change code reads the recogniser; card imports only
-  the light packet parser; on the Hyundai side only the CCNC sender and its mapping module do."""
+  """Integration contract: control code reads the recogniser only through the light packet parser in desire_helper
+  (LaneChangeYellowSolid, 10-29); card imports only that parser; on the Hyundai side only the CCNC sender and its
+  mapping module do."""
   for path in (ROOT/'openpilot/selfdrive/controls').rglob('*.py'):
     text = path.read_text(encoding='utf-8', errors='replace')
-    assert 'CcncLaneTypeDetection' not in text and 'carrot.lane_type' not in text and 'ccnc_lane_marking' not in text
+    assert 'CcncLaneTypeDetection' not in text and 'ccnc_lane_marking' not in text
+    relative = path.relative_to(ROOT).as_posix()
+    if relative.startswith('openpilot/selfdrive/controls/tests/'):
+      continue  # tests build marking packets themselves
+    allowed = 'from openpilot.selfdrive.carrot.lane_type import marking as lane_marking_lib'       if relative == 'openpilot/selfdrive/controls/lib/desire_helper.py' else None
+    for line in text.splitlines():
+      if 'carrot.lane_type' in line:
+        assert line.strip() == allowed, (path.name, line)
   for path in (ROOT/'openpilot/selfdrive/car').glob('*.py'):
     text = path.read_text(encoding='utf-8', errors='replace')
     allowed = 'from openpilot.selfdrive.carrot.lane_type import marking as lane_marking' if path.name == 'card.py' else None

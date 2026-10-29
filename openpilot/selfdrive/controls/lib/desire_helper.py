@@ -5,7 +5,9 @@ from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.params import Params
+from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.carrot.bluetooth.model import CommandReader
+from openpilot.selfdrive.carrot.lane_type import marking as lane_marking_lib
 
 from openpilot.selfdrive.controls.lib.desire_lib.constants import (
   LaneChangeState, LaneChangeDirection, TurnDirection,
@@ -103,6 +105,12 @@ class DesireHelper:
     self.laneChangeDelay = 0.0
     self.blinkerLatchedTurn = 0.0  # m/s, 0 = off
     self.laneChangeLeverWait = False
+    self.laneChangeYellowSolid = False  # LaneChangeYellowSolid on and CCNC lane type detection on
+
+    # StripNet lane marking (customReservedRawData2, parsed by modeld); a confirmed yellow solid blocks that side
+    self.lane_marking = None
+    self.yellow_solid_left = False
+    self.yellow_solid_right = False
 
     # misc
     self.prev_desire_enabled = False
@@ -123,6 +131,19 @@ class DesireHelper:
       self.laneChangeDelay = self.params.get_float("LaneChangeDelay") * 0.1
       self.blinkerLatchedTurn = self.params.get_int("BlinkerLatchedTurn") * CV.KPH_TO_MS
       self.laneChangeLeverWait = self.params.get_bool("LaneChangeLeverWait")
+      self.laneChangeYellowSolid = self.params.get_bool("LaneChangeYellowSolid") and                                    lane_marking_lib.mode_of(self.params) != 0
+
+  def _update_yellow_solid(self):
+    # Only a confirmed, unexpired (solid, yellow) blocks; held/white/dashed/stale values never do.
+    left = right = False
+    if self.laneChangeYellowSolid and self.lane_marking is not None:
+      now_ns = time.monotonic_ns()
+      left = lane_marking_lib.current(self.lane_marking, 'left', now_ns) == ('solid', 'yellow')
+      right = lane_marking_lib.current(self.lane_marking, 'right', now_ns) == ('solid', 'yellow')
+    for name, blocked, previous in (('left', left, self.yellow_solid_left), ('right', right, self.yellow_solid_right)):
+      if blocked != previous:
+        cloudlog.info(f"lane change {name}: StripNet yellow solid {'block' if blocked else 'release'}")
+    self.yellow_solid_left, self.yellow_solid_right = left, right
 
   def _check_desire_state(self, modeldata, carstate, maneuver_type):
     desire_state = modeldata.meta.desireState
@@ -329,6 +350,10 @@ class DesireHelper:
       # Hyundai lane color: 0 none, 1 white, 2 yellow, 3 blue. Only yellow blocks a lane change.
       left_line_ok = self.left.lane_line_info_raw // 10 != 2
       right_line_ok = self.right.lane_line_info_raw // 10 != 2
+    # StripNet (CCNC lane type) yellow solid on that side waits like the camera's yellow line.
+    self._update_yellow_solid()
+    left_line_ok = left_line_ok and not self.yellow_solid_left
+    right_line_ok = right_line_ok and not self.yellow_solid_right
     self.left.compute_lane_change_available(lane_line_info_lt_20=left_line_ok, ignore_bsd=ignore_bsd)
     self.right.compute_lane_change_available(lane_line_info_lt_20=right_line_ok, ignore_bsd=ignore_bsd)
 
@@ -349,9 +374,10 @@ class DesireHelper:
   # ─────────────────────────────────────────────
   # main update
   # ─────────────────────────────────────────────
-  def update(self, carstate, modeldata, lateral_active, lane_change_prob, carrotMan, radarState):
+  def update(self, carstate, modeldata, lateral_active, lane_change_prob, carrotMan, radarState, lane_marking=None):
     self.frame += 1
     self._update_params_periodic()
+    self.lane_marking = lane_marking
 
     # counts
     self.carrot_lane_change_count = max(0, self.carrot_lane_change_count - 1)
@@ -437,6 +463,8 @@ class DesireHelper:
         #f"T={side.lane_available_trigger},A={side.lane_appeared}, "
         #f"OBJ={side.side_object_detected},BSD={side.bsd_hold_counter>0}"
       )
+      if self.yellow_solid_left if side is self.left else self.yellow_solid_right:
+        self.desireLog += "YS"
     else:
       self.auto_lane_change_enable = False
       self.next_lane_change = False

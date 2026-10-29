@@ -105,18 +105,18 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 
 ## 전체 설정 지도
 
-현재 `ccnc-hda1`의 `carrot_settings.json`에는 **209개 파라미터**가 있습니다(`params` 목록의 중복 없는 이름 수). 운전자 감시 예외 설정과 `NNFF` 2개는 검색으로만 표시되며, 나머지는 아래 메뉴에 표시됩니다.
+현재 `ccnc-hda1`의 `carrot_settings.json`에는 **210개 파라미터**가 있습니다(`params` 목록의 중복 없는 이름 수). 운전자 감시 예외 설정과 `NNFF` 2개는 검색으로만 표시되며, 나머지는 아래 메뉴에 표시됩니다.
 
 | 대분류 | 항목 수 | 중분류 |
 |---|---:|---|
-| 주행 제어 | 124 | 시작·오토, 버튼·프리셋, 차량 조향, 속도·감속, 크루즈·차간 |
+| 주행 제어 | 125 | 시작·오토, 버튼·프리셋, 차량 조향, 속도·감속, 크루즈·차간 |
 | 차량·하드웨어 | 23 | 현대·기아, CANFD·HDA, 레이더, 운전자 모니터링, 차량 보조, 기기 하드웨어 |
 | 화면 표시 | 34 | 정보 표시, 경로 표시, 밝기·주행화면, 외부 HUD |
 | 시스템 | 12 | 녹화·전원, 네트워크·지도, 사운드, 소프트웨어 |
 
 ## 주행 제어
 
-주행 제어는 주행 동작에 영향을 줄 수 있는 124개 항목입니다. 한 번에 여러 값을 변경하지 마세요.
+주행 제어는 주행 동작에 영향을 줄 수 있는 125개 항목입니다. 한 번에 여러 값을 변경하지 마세요.
 
 <a id="start-auto"></a>
 ### 시작·오토 — 10개
@@ -149,14 +149,14 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 폭스바겐의 별도 `SET`은 현재 속도 설정, `RES`는 이전 설정속도 복원에 사용하고, `+`·`-`는 버튼 모드·속도 단위·길게 누르기 설정을 따릅니다. 오픈파일럿 종방향 제어의 수동 인게이지 버튼은 기존 물리 `SET`·`RES`로 유지됩니다.
 
 <a id="vehicle-steering"></a>
-### 차량 조향 — 상위 37개 + ONNX 상세 6개 + 검색 전용 1개
+### 차량 조향 — 상위 38개 + ONNX 상세 6개 + 검색 전용 1개
 
 | 세부 구역 | 파라미터 | 용도 |
 |---|---|---|
 | ONNX 차선·BSD | `ShareData`, `OnnxBsdEnabled`, `OnnxLaneThreshold`, `OnnxLaneIntervalMs`, `OnnxBsdThreshold`, `OnnxBsdSmoothingMs`, `OnnxBsdIntervalMs` | 차선 종류 인식과 별도 카메라 BSD 실행 및 세부 조정 |
 | 중앙 보정 | `PathOffset`, `CameraYawTrimDeg` | 레인모드 경로의 좌우 위치와 카메라 YAW 미세 보정 |
 | 조향감 | `SteerActuatorDelay`, `LatSmoothSec`, `LatSuspendAngleDeg`, `CustomSR`, `SteerRatioRate` | 조향 시점, 평활화, 일시중지 각도와 조향비 |
-| [차로 변경](lane-change.md)·자동 턴 | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneLineCheck`, `BlinkerLatchedTurn`, `LaneChangeLeverWait`, `AutoTurnControl`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | 차로 변경 진입 조건과 ATC 동작 |
+| [차로 변경](lane-change.md)·자동 턴 | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneChangeYellowSolid`, `LaneLineCheck`, `BlinkerLatchedTurn`, `LaneChangeLeverWait`, `AutoTurnControl`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | 차로 변경 진입 조건과 ATC 동작 |
 | 레인모드 | `LatMpcPathCost`, `LatMpcMotionCost`, `LatMpcAccelCost`, `LatMpcJerkCost`, `LatMpcSteeringRateCost`, `LatMpcInputOffset`, `UseLaneLineSpeed`, `UseLaneLineCurveSpeed`, `AdjustLaneOffset` | 레인모드 MPC 가중치와 차선 사용 조건 |
 | 고급 토크·토크 계수 | `LateralTorqueCustom`, `LateralTorqueAccelFactor`, `LateralTorqueFriction`, `LateralTorqueKpV`, `LateralTorqueKiV`, `LateralTorqueKf`, `LateralTorqueKd` | 커스텀 토크 제어 계수 |
 | 고급 토크·검색 전용 | `NNFF` | 토크 조향의 신경망 피드포워드 옵션 |
@@ -350,7 +350,7 @@ StripNet은 v4 모델(SHA `23ff1bc74942`) 하나를 씁니다. 복선 라벨 보
 
 별도 차선 종류 프로세스의 띠 추출+추론 시간은 배포 모델 기기 실측(작은 코어 0–3, nice 10, OpenCV 2스레드, 좌우 합) 중앙값 약 14.7ms(p95 15.6ms)/프레임입니다. 인식 게이트와 주행 중 부하에 따라 실제 시간은 달라집니다.
 
-이 설정은 계기판 표시만 바꿉니다. 차선 변경 허용 여부, 차선 변경 동작, 조향, 주행 모델에는 영향을 주지 않습니다. 주행 중 기기 부하와 실도로 인식 정확도는 아직 측정하지 않았습니다.
+이 설정은 계기판 표시만 바꿉니다. 차선 변경 동작, 조향, 주행 모델에는 영향을 주지 않으며, 차선 변경 허용 여부는 `LaneChangeYellowSolid`(차선변경 노란 실선 차단, 기본 켜짐)가 켜져 있을 때만 바뀝니다. 그 쪽이 노란 실선으로 표시되는 동안 BSD처럼 차선 변경을 대기시키고, 판단 보류·흰색·점선·만료된 결과는 막지 않습니다. 주행 중 기기 부하와 실도로 인식 정확도는 아직 측정하지 않았습니다.
 
 #### CCNC 신호등 배경색
 

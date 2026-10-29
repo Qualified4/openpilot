@@ -105,18 +105,18 @@ Ignoring `x0.01`, `x0.001`, `cm`, `km/h`, or `%` can make a value appear one hun
 
 ## Settings map
 
-The current `carrot_settings.json` contains **209 parameters** (distinct names in its `params` list). The driver-monitoring exception and `NNFF` are search only; the remaining entries appear in these menus:
+The current `carrot_settings.json` contains **210 parameters** (distinct names in its `params` list). The driver-monitoring exception and `NNFF` are search only; the remaining entries appear in these menus:
 
 | Category | Count | Groups |
 |---|---:|---|
-| Driving control | 124 | Startup and auto, buttons and presets, steering, speed and deceleration, cruise and following gap |
+| Driving control | 125 | Startup and auto, buttons and presets, steering, speed and deceleration, cruise and following gap |
 | Vehicle and hardware | 23 | Hyundai/Kia, CAN FD/HDA, radar, driver monitoring, vehicle assistance, device hardware |
 | Display | 34 | Information, path, brightness/on-road view, external HUD |
 | System | 12 | Recording/power, network/map, sound, software |
 
 ## Driving control
 
-These 124 settings can affect driving behavior. Change one item at a time.
+These 125 settings can affect driving behavior. Change one item at a time.
 
 <a id="start-auto"></a>
 ### Startup and auto — 10 settings
@@ -149,14 +149,14 @@ The result depends heavily on whether the car uses stock SCC and which button me
 Volkswagen's separate `SET` button sets current speed and `RES` restores the previous set speed, while `+`/`-` follow the button mode, speed units, and long-press setting. Manual engagement with openpilot longitudinal control remains tied to the physical `SET`/`RES` buttons.
 
 <a id="vehicle-steering"></a>
-### Vehicle steering — 37 top-level + 6 ONNX detail + 1 search-only setting
+### Vehicle steering — 38 top-level + 6 ONNX detail + 1 search-only setting
 
 | Section | Parameters | Purpose |
 |---|---|---|
 | ONNX Lane and BSD | `ShareData`, `OnnxBsdEnabled`, `OnnxLaneThreshold`, `OnnxLaneIntervalMs`, `OnnxBsdThreshold`, `OnnxBsdSmoothingMs`, `OnnxBsdIntervalMs` | Lane-type detection plus separately controlled camera BSD and tuning |
 | Centering | `PathOffset`, `CameraYawTrimDeg` | Path position and camera-yaw trim |
 | Steering feel | `SteerActuatorDelay`, `LatSmoothSec`, `LatSuspendAngleDeg`, `CustomSR`, `SteerRatioRate` | Timing, smoothing, suspension angle, and steering ratio |
-| [Lane change](lane-change.md) and automatic turn | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneLineCheck`, `BlinkerLatchedTurn`, `LaneChangeLeverWait`, `AutoTurnControl`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | Lane-change entry conditions and ATC behavior |
+| [Lane change](lane-change.md) and automatic turn | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneChangeYellowSolid`, `LaneLineCheck`, `BlinkerLatchedTurn`, `LaneChangeLeverWait`, `AutoTurnControl`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | Lane-change entry conditions and ATC behavior |
 | Lane mode | `LatMpcPathCost`, `LatMpcMotionCost`, `LatMpcAccelCost`, `LatMpcJerkCost`, `LatMpcSteeringRateCost`, `LatMpcInputOffset`, `UseLaneLineSpeed`, `UseLaneLineCurveSpeed`, `AdjustLaneOffset` | Lane-mode MPC weights and lane-line conditions |
 | Advanced torque | `LateralTorqueCustom`, `LateralTorqueAccelFactor`, `LateralTorqueFriction`, `LateralTorqueKpV`, `LateralTorqueKiV`, `LateralTorqueKf`, `LateralTorqueKd` | Custom torque-control gains |
 | Advanced torque, search only | `NNFF` | Neural-network feedforward for torque steering |
@@ -351,7 +351,7 @@ Recognition continues through lane changes. At 30 km/h or more, while the blinke
 
 Strip extraction plus inference in its separate process, measured on the device for the shipped model (little cores 0–3, nice 10, two OpenCV threads, both sides): median about 14.7 ms/frame (p95 15.6 ms). Recognition gates and onroad load change the actual timing.
 
-This option changes only the cluster display. It does not change whether a lane change is allowed, the lane-change logic, steering or the driving model. Onroad device load and recognition accuracy on the road are not yet measured.
+This option changes only the cluster display. It does not change the lane-change logic, steering or the driving model; whether a lane change is allowed changes only while `LaneChangeYellowSolid` (Block lane change at yellow solid, default on) is on: while that side shows a yellow solid line, the lane change waits as it does for BSD, and held, white, dashed or expired results never block. Onroad device load and recognition accuracy on the road are not yet measured.
 
 #### CCNC traffic light background
 

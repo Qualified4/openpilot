@@ -21,6 +21,7 @@ from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
+from openpilot.selfdrive.carrot.lane_type import marking as lane_marking_lib
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value, get_curvature_from_plan
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.compile_modeld import make_input_queues, WARP_INPUTS, POLICY_INPUTS
@@ -381,7 +382,9 @@ def main(demo=False):
 
   # messaging
   pm = PubMaster(["modelV2", "drivingModelData", "cameraOdometry"])
-  sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "selfdriveState", "liveDelay", "carrotMan", "radarState", "navInstructionCarrot", "navRoute"])
+  sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "selfdriveState", "liveDelay", "carrotMan", "radarState", "navInstructionCarrot", "navRoute",
+                  "customReservedRawData2"])
+  lane_marking = None  # latest StripNet lane marking packet (marking_daemon), parsed only when it arrives (<= 20 Hz)
 
   publish_state = PublishState()
   params = Params()
@@ -456,6 +459,11 @@ def main(demo=False):
 
     camera_ready = time.monotonic()
     sm.update(0)
+    if sm.updated["customReservedRawData2"]:
+      try:
+        lane_marking = lane_marking_lib.parse(bytes(sm["customReservedRawData2"]), time.monotonic_ns())
+      except (UnicodeDecodeError, ValueError, TypeError):
+        lane_marking = None
     if hasattr(model, 'update'):
       model.update(sm, meta_main)
     desire = DH.desire
@@ -580,7 +588,8 @@ def main(demo=False):
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
       r_lane_change_prob = desire_state[log.Desire.laneChangeRight]
       lane_change_prob = l_lane_change_prob + r_lane_change_prob
-      DH.update(sm['carState'], modelv2_send.modelV2, sm['carControl'].latActive, lane_change_prob, sm['carrotMan'], sm['radarState'])
+      DH.update(sm['carState'], modelv2_send.modelV2, sm['carControl'].latActive, lane_change_prob, sm['carrotMan'], sm['radarState'],
+                lane_marking=lane_marking)
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
       modelv2_send.modelV2.meta.desireLog = DH.desireLog #carrot
