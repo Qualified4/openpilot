@@ -42,7 +42,7 @@ class CcncCatalogTest(unittest.TestCase):
       page = result.pages[result.index["settings"]['CcncLaneCurvatureSource']["locales"][locale]["page"]]
       self.assertEqual(VALIDATOR.validate_wiki_markdown(page), [])
     self.assertEqual(params['CcncLaneTypeDetection']['control'], 'select')
-    self.assertEqual(params['CcncLaneTypeDetection']['options']['en'], ['Off', 'StripNet'])  # the Scanner is no longer offered
+    self.assertEqual(params['CcncLaneTypeDetection']['options']['en'], ['Off', 'On'])  # the Scanner is no longer offered
 
   def test_current_catalog_ci_report(self):
     with tempfile.TemporaryDirectory() as temp:
