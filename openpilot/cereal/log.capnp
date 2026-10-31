@@ -1108,6 +1108,8 @@ struct ModelDataV2 {
     autoTurnSignalLaneChange @23 :Bool;
     autoTurnSignalDirection @24 :LaneChangeDirection;
     autoTurnSignalRequestId @25 :UInt64;
+    manualLaneIndicator @26 :LaneChangeDirection;  # Lamp only; its feedback is excluded from driver lane requests.
+    manualLaneIndicatorMonoTime @27 :UInt64;
 
 
     deprecated :group {
@@ -1115,9 +1117,9 @@ struct ModelDataV2 {
       gasDisengageProb @3 :Float32;
       steerOverrideProb @4 :Float32;
     }
-    cameraYawTrim @26 :Int32; # applied CameraYawTrimDeg, units of 0.01 degree; zero until calibrated
-    calibrationYaw @27 :Float32; # radians, after trim, used for this frame's camera warp
-    calibrationYawValid @28 :Bool; # false until a liveCalibration warp has been applied (also false in old logs)
+    cameraYawTrim @28 :Int32; # applied CameraYawTrimDeg, units of 0.01 degree; zero until calibrated
+    calibrationYaw @29 :Float32; # radians, after trim, used for this frame's camera warp
+    calibrationYawValid @30 :Bool; # false until a liveCalibration warp has been applied (also false in old logs)
   }
 
   enum ConfidenceClass {
@@ -2361,6 +2363,7 @@ struct LiveParametersData {
   angleOffsetAverageValid @18 :Bool = true;
   steerRatioValid @19 :Bool = true;
   stiffnessFactorValid @20 :Bool = true;
+  centerToFrontRatio @21 :Float32;  # Applied geometry; 0 in legacy messages.
 
 
   struct FilterState {

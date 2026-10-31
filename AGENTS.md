@@ -34,6 +34,111 @@
 - On 2026-10-23, merged origin/carrot-wip dfab65d0 (9 commits: Jetlink PR560-562 USB recovery/DHCP/ADB handoff,
   NAV shared input/native image/N16 projection records, Hyundai CAN-FD no-lead stop object state 2 trial) into
   ccnc-hda1 on 895c130b. Only AGENTS.md conflicted; both branches' log entries are kept.
+
+- On 2026-10-30, owner requests Light speed PR39173 as an eGPU/Jetson
+  choice and review of0152aab4. Add catalog light-speed, exact c7cbe5de PKL
+  SHA33ba0928/790445184B and official ONNX6274eb4a/792305602B, checkpoint
+  f22b8b34/16384, noNOO. Apply0152's d39227be tinygrad only to this isolated
+  runtime; keep N16 default, Flip/retiredMD identities and internalCD210/DM.
+  FinalPR retains aliased state feedback; no intermediate ping-pong import.
+  Signed hostd66d445b05/64838820B,1152committed payloads and all HTTPS hashes
+  verified. Normal commaGitPull/selection/BOTHreboots; firstJetson engine build.
+  Desktop260pass/2Linuxskip, focused54overlap,Web17; LinuxeGPU40996730817
+  native old/new runtime3each pass; Jetson40996730849 broad2028/56skip plus
+  supporting232/62/94/119/11/11 andWindows pass. No vehicle write, selection,
+  restart,CAN or physical inference/road validation. Jetson power needed only
+  for actual download/build/load/inference. See docs/light_speed_model_20261030.md.
+
+
+- Later on 2026-10-30, manual boundary indicator retry becomes3s plus1s valid
+  continuous lamp extinction and fresh driver/geometry admission. This supersedes
+  the former12s retry, NOT the12s owned-lamp automatic-steering isolation. Quick
+  opposite requests retain both origin masks and persist them across restarts.
+  No timer replay, CAN/receiver change or live writes. Desktop685 pass/26native
+  excluded. Git Pull/comma restart; no Jetson bundle. See
+  docs/indicator_drive_review_20261030.md.
+
+- Later on 2026-10-30, owner explicitly changes the 250m add-on rear gate to
+  OEM BSD only. This supersedes the corner-distance20m/24.9/25.0 veto for that
+  add-on. Keep BSD freshness/validity and all ordinary lane/driver admission.
+  Historical logs before this change retain the old combined TBT field semantics.
+  Owner adds front gap5m plus3s vRel projection: current/projected >=5m on
+  full right-front radar list (leadRight alone excludes<=5m). Fresh radarState,
+  hardware availability/errors enforced; no new steering request. Desktop679
+  plus53BSD/schema pass,26native excluded. Raw segment10 replay requests20.603s
+  at228m with32.212m/current38.812m/projected gap; no physical acceptance claim.
+
+- On 2026-10-30, owner reports missing 250m/manual/left indicators on the latest
+  drive. Twelve hash-verified rlogs show right-fork TBT4 excluded by TBT2-only
+  admission, then 25.0m special rear values blocking despite clear BSD. Preserve
+  that unknown-distance veto. Admit TBT2/4 and matching right preparation;
+  pre-request steering resets confirmation, owned-request cancellation stays.
+  Manual indicator now ignores ATC/navigation preparation and model desire
+  probabilities; executing lane changes/output ownership remain reserved.
+  Track crossed-boundary confidence for <=1s with continuous two-boundary
+  geometry, torque, gap/jump and own-lamp isolation gates. Recorded14262-frame
+  detector replay0->2 candidates, NOT physical acceptance. Left auto sends
+  completed but lamps unconfirmed; later stalk presses confirmed. No CAN retry
+  or inactive-control bypass, no vehicle writes/reboot. Desktop499/26native
+  excluded. See docs/indicator_drive_review_20261030.md; raw evidence private.
+
+
+- Later again on 2026-10-30, owner clarifies manual driver-lane indication is
+  independent of ATC and explicitly requests restoring it. Restore default-OFF
+  ManualLaneChangeIndicator only; keep 3be19f6332 ATC audio/TBT unchanged.
+  Ioniq5PE+JetsonUSB2CAN/AutoBlinker1/2; no ATC/TBT/distance prerequisite,
+  driver-directed boundary approach only, no steering desire. Own-lamp journal/
+  12s+extinction isolation retained. Startup without owned journal now only
+  delays detections, never masks ordinary lamps. Desktop482/26native excluded,
+  Wiki25; enabled-feature morning replay14558frames matches pre-merge Wip on
+  all LC/desire/arming/ATC fields. Physical detection/lamps unvalidated; no
+  vehicle writes/reboot/CAN/model bundle. See
+  docs/manual_lane_indicator_restore_20261030.md. Do not remove this option
+  when changing/restoring ATC or the separate250m add-on.
+
+
+- Later on 2026-10-30, owner requires restoring existing ATC and retaining only
+  the separate250m physical-right-indicator add-on. This supersedes bd1ea4eb00's
+  manual-boundary trial/audio expansion: remove option/executing paths, restore
+  helper/modeld/source/audio to f5e4f8b8a1. Helper/audio match8f17e43d77^ exactly.
+  Keep unused schema ordinals reserved, existing ATC gates and independent250m
+  helper with matching-right-preparation coexistence. Pre-merge f29102fa83 vs
+  current disabled-trial replay14558frames gives0 differences in LCstate/direction/
+  desire/arming/ATCstate. Older code also fails to start the reported windows;
+  code restoration is NOT proof of road cure or audio-only failure. No vehicle
+  write/reboot/CAN/model/runtime change. Desktop450pass/26native excluded, Wiki25.
+  See docs/atc_restore_20261030.md; previous review is historical/superseded.
+
+
+- On 2026-10-30, owner separates existing ATC preparation/announcement from the
+  250m right-indicator add-on and requests driver-boundary indication without
+  automatic steering. Morning full-rlog replay14558frames finds fork audio/ready
+  at06:46:53/06:49:04, but ATC-right preparation06:53:12 lacks audio. Add exact
+  ATC-left/right prepare transitions; preserve actual lane/edge/side-object gates.
+  Permit250m trigger during matching ATC-right preparation only; old/new recorded
+  replay both0requests, so no road cure claim. Separate ManualLaneChangeIndicator
+  defaultOFF/Ioniq5PE+JetsonUSB2CAN only: sustained driver torque/current reliable
+  boundaries, no activeATC, one existing tap. Own-lamp/stalk feedback isolated
+  before publication, minimum12s plus extinction; journal-before-send/restart
+  recovery, no stale replay/hold/SPAS. Actual lamps/detection unvalidated.
+  Desktop480pass/26native excluded, Wiki25pass; LinuxSignal40968732540
+  1277pass/40skip and Jetson40968732767 1810pass/56skip plus supporting suites
+  and Windows pass. Sourcebd1ea4eb00 published; Wiki a25d12c synchronized.
+  No live device writes/CAN/reboot; normal Wip Git Pull/comma restart, no host
+  bundle/model change. See docs/atc_boundary_indicator_review_20261030.md.
+
+
+- On 2026-10-29, owner separates fixed250m TBT right-indicator helper from
+  AutoTurnControl4 into default-OFF AutoTurnControlRightLaneChange under ATC
+  details. Add-on only with base ATC1/2; existing ATC0..3 meanings retained.
+  Manager startup migrates retired4 to1 plus add-on ON (preserve an explicit
+  add-on value), before defaults; no newly enabled speed control. Existing
+  ATC turn/lane cues preempt an owned TBT indication. USB2CAN profile, rear/BSD,
+  manual/torque/freshness gates and maneuver controller remain unchanged.
+  Desktop187 indicator/migration and47 catalog checks,25 Wiki checks pass;
+  no live vehicle installation, CAN transmission or road acceptance in this task.
+  Normal comma Git Pull/restart delivery; Jetson runtime/model unchanged.
+
 - On 2026-10-27, complete NAV/blink history merged into Wip (2f94a4e0c9,
   3c025cb4f5; docs29fd046a4b), preserving Wip Bosch source/replay byte-for-byte.
   Resolve duplicate auto-merged helper/diagnostic blocks; pin PEAK source LF bytes.

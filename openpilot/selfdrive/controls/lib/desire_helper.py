@@ -6,8 +6,9 @@ from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
-from openpilot.selfdrive.carrot.bluetooth.model import CommandReader
+from openpilot.selfdrive.carrot.bluetooth.model import CommandReader, RUNTIME, read_json
 from openpilot.selfdrive.carrot.lane_type import marking as lane_marking_lib
+from openpilot.selfdrive.controls.lib.desire_lib.boundary_indicator import BoundaryIndicator
 
 from openpilot.selfdrive.controls.lib.desire_lib.constants import (
   LaneChangeState, LaneChangeDirection, TurnDirection,
@@ -27,8 +28,12 @@ AUTO_APP_WAIT_S = 10.0
 
 
 class DesireHelper:
-  def __init__(self, tesla_auto_signals=False):
+  def __init__(self, tesla_auto_signals=False, boundary_indicator_supported=False):
     self.params = Params()
+    self.boundary_indicator_supported = boundary_indicator_supported
+    self.boundary_indicator_enabled = False
+    self.boundary_indicator = BoundaryIndicator(
+      read_json(RUNTIME/'boundary-indicator.json', {}) if boundary_indicator_supported else None)
     self.bluetooth_commands = CommandReader('lane')
     self.frame = 0
 
@@ -124,6 +129,9 @@ class DesireHelper:
   # params/model
   # ─────────────────────────────────────────────
   def _update_params_periodic(self):
+    if self.boundary_indicator_supported and (self.frame == 1 or self.frame % 20 == 0):
+      self.boundary_indicator_enabled = (self.params.get_bool("ManualLaneChangeIndicator") and
+        self.params.get_int("AutoBlinkerControl") in (1, 2) and not self.params.get_bool("CanfdBlinkerControl"))
     if self.frame % 100 == 0:
       self.laneChangeNeedTorque = self.params.get_int("LaneChangeNeedTorque")
       self.laneChangeBsd = self.params.get_int("LaneChangeBsd")
@@ -162,6 +170,7 @@ class DesireHelper:
   # ─────────────────────────────────────────────
   def _update_driver_blinker(self, carstate):
     st = carstate.leftBlinker * 1 + carstate.rightBlinker * 2
+    st = self.boundary_indicator.filter_lamp(st)
     if self.tesla_auto_signals:
       driver = int(getattr(carstate, "turnSignalDriverDirection", 0))
       driver_valid = bool(getattr(carstate, "turnSignalDriverValid", False))
@@ -374,10 +383,17 @@ class DesireHelper:
   # ─────────────────────────────────────────────
   # main update
   # ─────────────────────────────────────────────
-  def update(self, carstate, modeldata, lateral_active, lane_change_prob, carrotMan, radarState, lane_marking=None):
+  def update(self, carstate, modeldata, lateral_active, lane_change_prob, carrotMan, radarState, lane_marking=None, *,
+             indicator_valid=False):
     self.frame += 1
     self._update_params_periodic()
     self.lane_marking = lane_marking
+    if self.boundary_indicator_supported:
+      self.boundary_indicator.update(time.monotonic(), carstate, modeldata,
+        enabled=self.boundary_indicator_enabled, valid=indicator_valid,
+        # Navigation preparation is not driver intent. Reserve only an executing
+        # lane-change maneuver; model desire probabilities also predict manual moves.
+        busy=self.lane_change_state in (LaneChangeState.laneChangeStarting, LaneChangeState.laneChangeFinishing))
 
     # counts
     self.carrot_lane_change_count = max(0, self.carrot_lane_change_count - 1)
@@ -407,6 +423,7 @@ class DesireHelper:
     # blinkers
     driver_st, driver_changed, driver_enabled = self._update_driver_blinker(carstate)
     stalk_press = self._update_stalk(carstate)
+    stalk_press = self.boundary_indicator.filter_lamp(stalk_press)
     lever = getattr(carstate, "blinkerLever", 0)
     forced_turn = self.lever_forced_turn.update(lever, getattr(carstate, "blinkerLamp", 0))
     if self.lever_wait.update(self.laneChangeLeverWait, stalk_press, lever, driver_st, self.lane_change_state,

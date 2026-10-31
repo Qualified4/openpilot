@@ -9,7 +9,8 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from blink_protocol import PACKAGE_CONFIG, LIMIT, encode, finite, fresh
 from blink_policy import Policy, AutomaticSignals
-from blink_tbt import TbtBlinker
+from blink_tbt import TbtBlinker, right_front_clear
+from blink_boundary import BoundaryEvents, vehicle_allowed as boundary_vehicle_allowed
 
 
 def vehicle_ready(sm, now, fingerprint, spas=False):
@@ -77,6 +78,7 @@ def main(fd, spas=False):
   from openpilot.cereal import car
   with car.CarParams.from_bytes(Params().get('CarParams')) as cp:
     fingerprint = cp.carFingerprint
+    front_radar_available = not getattr(cp, 'radarUnavailable', True)
     if spas:
       from opendbc.car.hyundai.values import HyundaiFlags
       if cp.brand != 'hyundai' or not cp.flags & HyundaiFlags.CANFD_SPAS_BLINKERS or cp.passive:
@@ -85,11 +87,12 @@ def main(fd, spas=False):
     return
   sock = socket.socket(fileno=fd)
   sock.setblocking(False)
-  sm = messaging.SubMaster(['carState', 'carControl', 'selfdriveState', 'pandaStates', 'modelV2', 'carrotMan', 'livePose'])
+  sm = messaging.SubMaster(['carState', 'carControl', 'selfdriveState', 'pandaStates', 'modelV2', 'carrotMan', 'livePose', 'radarState'])
   events = Events(time.monotonic())
   policy, params = Policy(), Params()
   automatic = AutomaticSignals()
   tbt = TbtBlinker()
+  boundary = BoundaryEvents(read_json(RUNTIME/'boundary-indicator.json', {}))
   feedback, activated_id = {}, None
   release_until = 0.
   while True:
@@ -137,9 +140,15 @@ def main(fd, spas=False):
                               distance=sm['carrotMan'].xDistToTurn)
     else:
       automatic.update(now, mode, False, 0., 'none', '', 'none')
-    # Mode 4 lights the real right indicator. Its CAN feedback goes through the
+    # The ATC add-on lights the real right indicator. Its CAN feedback goes through the
     # unchanged driver-blinker lane-change path; no LANECHANGE command is sent.
-    tbt_auto = tbt.update(now, enabled=(not spas and mode == 2 and params.get_int('AutoTurnControl') == 4),
+    tbt_enabled = (not spas and mode == 2 and params.get_int('AutoTurnControl') in (1, 2) and
+                   params.get_bool('AutoTurnControlRightLaneChange'))
+    front_clear = (tbt_enabled and front_radar_available and 'radarState' in sm.services and sm.valid['radarState'] and
+                   sm.alive['radarState'] and fresh(sm.recv_time['radarState'], now, .35) and
+                   right_front_clear(sm['radarState']))
+    tbt_auto = tbt.update(now, enabled=tbt_enabled,
+                          front_clear=front_clear,
                           valid=(auto_valid and sm['carControl'].latActive and params.get_int('LaneChangeNeedTorque') == 0),
                           cs=cs, model=sm['modelV2'] if auto_fresh else None, nav=sm['carrotMan'] if auto_fresh else None,
                           manual=bool(commands) or (fresh(feedback.get('stamp'), now, .35) and feedback.get('state') == 'driver_override'),
@@ -162,6 +171,18 @@ def main(fd, spas=False):
       release_until = 0.
     if not spas and policy.relight(now, activated_id, acknowledged, cs.leftBlinker, cs.rightBlinker):
       hold, activated_id = policy.hold, None
+    model_fresh = ('modelV2' in sm.services and sm.valid['modelV2'] and sm.alive['modelV2'] and fresh(sm.recv_time['modelV2'], now, .35))
+    meta = sm['modelV2'].meta if model_fresh else None
+    boundary_direction = {'left':1, 'right':2}.get(str(getattr(meta, 'manualLaneIndicator', 'none')), 0)
+    boundary_commands = boundary.read(now, boundary_direction,
+      getattr(meta, 'manualLaneIndicatorMonoTime', 0)/1e9,
+      allowed=(not spas and mode in (1, 2) and params.get_bool('ManualLaneChangeIndicator') and
+               ok and model_fresh and not commands and not hold and
+               boundary_vehicle_allowed(cs, boundary_direction) and
+               str(meta.laneChangeState) in ('off', 'preLaneChange') and
+               fresh(feedback.get('stamp'), now, .35) and feedback.get('state') == 'ready'),
+      record=lambda value: atomic_json(RUNTIME/'boundary-indicator.json', value))
+    commands = commands + boundary_commands
     if mode and not spas:
       atomic_json(HOLD_PATH, {'stamp':now, 'mode':mode, 'fingerprint':fingerprint,
                              'direction':hold['direction'] if hold and activated_id == hold['id'] else None,
