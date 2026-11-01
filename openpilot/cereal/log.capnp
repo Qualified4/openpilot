@@ -1110,6 +1110,13 @@ struct ModelDataV2 {
     autoTurnSignalRequestId @25 :UInt64;
     manualLaneIndicator @26 :LaneChangeDirection;  # Lamp only; its feedback is excluded from driver lane requests.
     manualLaneIndicatorMonoTime @27 :UInt64;
+    observedIndicator @28 :LaneChangeDirection; # Lamp-only observation; never steering admission.
+    observedIndicatorMonoTime @29 :UInt64;
+    observedIndicatorSource @30 :Text;
+    indicatorIsolationMask @31 :UInt8;
+    indicatorJournalMonoTime @32 :UInt64;
+    indicatorPrepareDirection @33 :LaneChangeDirection; # Display only; never an actuation request.
+    indicatorPrepareSource @34 :Text;
 
 
     deprecated :group {
@@ -1117,9 +1124,9 @@ struct ModelDataV2 {
       gasDisengageProb @3 :Float32;
       steerOverrideProb @4 :Float32;
     }
-    cameraYawTrim @28 :Int32; # applied CameraYawTrimDeg, units of 0.01 degree; zero until calibrated
-    calibrationYaw @29 :Float32; # radians, after trim, used for this frame's camera warp
-    calibrationYawValid @30 :Bool; # false until a liveCalibration warp has been applied (also false in old logs)
+    cameraYawTrim @35 :Int32; # applied CameraYawTrimDeg, units of 0.01 degree; zero until calibrated
+    calibrationYaw @36 :Float32; # radians, after trim, used for this frame's camera warp
+    calibrationYawValid @37 :Bool; # false until a liveCalibration warp has been applied (also false in old logs)
   }
 
   enum ConfidenceClass {
