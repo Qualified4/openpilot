@@ -101,7 +101,7 @@ def test_update_waits_for_manager_and_checkout_lock(monkeypatch, phase):
   ("Git configuration repair failed: No valid upstream or matching remote branch for x", False),
   ("fatal: couldn't find remote ref refs/heads/gone", False),
 ])
-def test_fetch_failure_retry_delay_by_error_kind(monkeypatch, output, network):
+def test_fetch_failure_retries_next_cycle_and_reports_network_kind(monkeypatch, output, network):
   monitor = types.SimpleNamespace(ready=lambda: True)
   recorded = {}
 
@@ -120,13 +120,12 @@ def test_fetch_failure_retry_delay_by_error_kind(monkeypatch, output, network):
   monkeypatch.setattr(auto_update, "prepare_git_pull", lambda repo: (1, output, ""))
   monkeypatch.setattr(auto_update, "_git", git)
   monkeypatch.setattr(auto_update, "_last_pull_at", float("-inf"))
-  monkeypatch.setattr(auto_update, "_pull_cooldown", auto_update.AUTO_UPDATE_COOLDOWN)
   monkeypatch.setattr(auto_update, "_record_error", lambda code, detail, **fields: recorded.update(code=code, **fields))
   assert asyncio.run(auto_update._attempt_update(monitor)) == (False, False, "")
-  expected = 60.0 if network else 300.0
   assert auto_update.is_network_error(output) == network
-  assert auto_update._pull_cooldown == expected
-  assert recorded["code"] == "pull_failed" and recorded["retry_in"] == int(expected)
+  # A failed fetch never arms the pull cooldown, network error or not.
+  assert auto_update._last_pull_at == float("-inf")
+  assert recorded["code"] == "pull_failed" and recorded["retry_in"] == 60 and recorded["network_error"] == network
 
 
 def test_manual_pull_clears_verified_lock_error_and_preserves_receipt(tmp_path, monkeypatch):
