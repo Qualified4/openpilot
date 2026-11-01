@@ -42,7 +42,7 @@ def file_size_label(size: int) -> str:
     return f"{n / 1024:.1f} KB"
   if n < 1024 * 1024 * 1024:
     return f"{n / (1024 * 1024):.1f} MB"
-  return f"{n / (1024 * 1024 * 1024):.1f} GB"
+  return f"{n / (1024 * 1024 * 1024):.3f} GB"
 
 
 def segment_dir(segment: str) -> str:
