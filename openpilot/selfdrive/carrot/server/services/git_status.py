@@ -163,7 +163,7 @@ async def get_git_status(force: bool = False) -> dict[str, Any]:
     if _cache and not force and (_now() - float(_cache.get("checked_at", 0))) < GIT_STATUS_TTL:
       return dict(_cache)
     try:
-      with repo_lock():
+      with repo_lock(owner="git_status"):
         _cache = await _read_status()
     except RepoBusyError:
       return {**_error_state("Build or another Git operation is running"), "state": "busy"}

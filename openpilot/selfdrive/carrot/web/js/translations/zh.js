@@ -1481,6 +1481,23 @@ window.CarrotTranslations.register("zh", {
     PROFILE_NAME_REQUIRED: () => "请输入配置档名称",
     CMD_TIMEOUT:         () => "命令执行超时",
     TMUX_CAPTURE_FAIL:   () => "日志捕获失败",
+    GIT_BUSY: (_d, j = {}) => {
+      if (!j.busy_owner) return j.error || "正在构建或执行其他 Git 操作，请完成后重试。";
+      const who = {
+        auto_update: "自动更新正在执行 git pull",
+        git_pull_tool: "另一个 git pull 正在运行",
+        git_tool: "另一个 Git 工具正在运行",
+        build: "正在构建",
+        git_status: "正在检查 Git 状态",
+        recovery: "启动恢复正在运行",
+        startup: "启动（引导、构建或管理器初始化）可能正在进行",
+      }[j.busy_owner] || `另一个 Git 操作（${j.busy_owner}）正在运行`;
+      const parts = [
+        Number.isFinite(j.busy_elapsed) ? `${j.busy_elapsed} 秒前开始` : "",
+        j.busy_detail ? `${j.busy_detail} 阶段` : "",
+      ].filter(Boolean);
+      return `${who}${parts.length ? `（${parts.join("，")}）` : ""}。请完成后重试。`;
+    },
   },
   driveModes: { normal: "标准", eco: "经济", safe: "安全", sport: "运动" },
 });

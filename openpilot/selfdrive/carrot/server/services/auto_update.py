@@ -7,7 +7,7 @@ import subprocess
 import time
 
 from openpilot.common.async_process import prepare_repo, run_locked_thread, run_process
-from openpilot.common.repo_update import RepoBusyError, repo_lock
+from openpilot.common.repo_update import RepoBusyError, repo_lock, set_lock_detail
 from .git_config import prepare_git_pull
 from .git_state import read_auto_update_state, write_auto_update_event, write_git_pull_time
 from .git_status import REPO_DIR, clear_git_status_cache, get_git_status
@@ -19,6 +19,7 @@ from .web_settings import read_web_settings
 # the pull actually changes HEAD, then waits for the configured condition.
 AUTO_UPDATE_POLL_INTERVAL = 60.0
 AUTO_UPDATE_COOLDOWN = 300.0       # min seconds between pulls
+AUTO_UPDATE_NETWORK_RETRY = 60.0   # sooner retry after a network-type fetch failure
 AUTO_UPDATE_INITIAL_DELAY = 0.0
 AUTO_UPDATE_READY_DELAY = 10.0
 AUTO_REBOOT_POLL_INTERVAL = 0.1
@@ -36,6 +37,31 @@ AUTO_REBOOT_DISENGAGED = "disengaged"
 AUTO_REBOOT_MODES = {AUTO_REBOOT_OFF, AUTO_REBOOT_PARK, AUTO_REBOOT_DISENGAGED}
 
 _last_pull_at = float("-inf")
+_pull_cooldown = AUTO_UPDATE_COOLDOWN
+
+# Lowercase substrings of git/subprocess output that mean the remote was not
+# reachable (as opposed to a configuration, ref or authentication problem).
+NETWORK_ERROR_MARKERS = (
+  "timed out",
+  "could not resolve host",
+  "temporary failure in name resolution",
+  "failed to connect",
+  "unable to access",
+  "connection reset",
+  "connection refused",
+  "network is unreachable",
+  "no route to host",
+  "the remote end hung up unexpectedly",
+)
+
+
+def is_network_error(output: str) -> bool:
+  lower = str(output or "").lower()
+  return any(marker in lower for marker in NETWORK_ERROR_MARKERS)
+
+
+def fetch_retry_delay(output: str) -> float:
+  return AUTO_UPDATE_NETWORK_RETRY if is_network_error(output) else AUTO_UPDATE_COOLDOWN
 
 
 async def _git(args: list[str], timeout: float) -> tuple[int, str]:
@@ -217,15 +243,15 @@ class ManagerMonitor:
 
 async def _attempt_update(monitor) -> tuple[bool, bool, str]:
   """Do not hold the checkout lock while waiting for manager initialization."""
-  global _last_pull_at
+  global _last_pull_at, _pull_cooldown
   if not monitor.ready():
     return False, False, ""
   status = await get_git_status()
   behind, target_head = _verified_update_target(status)
-  if not behind or time.monotonic() - _last_pull_at < AUTO_UPDATE_COOLDOWN:
+  if not behind or time.monotonic() - _last_pull_at < _pull_cooldown:
     return False, False, ""
   try:
-    with repo_lock():
+    with repo_lock(owner="auto_update", detail="check"):
       if not monitor.ready():
         return False, False, ""
       await prepare_repo(REPO_DIR)
@@ -237,13 +263,18 @@ async def _attempt_update(monitor) -> tuple[bool, bool, str]:
       rc, head = await _git(["rev-parse", "HEAD"], GIT_INFO_TIMEOUT)
       if rc or head != status.get("head") or not monitor.ready():
         return False, False, ""
+      set_lock_detail("fetch")
       rc, output, target_head = await run_locked_thread(prepare_git_pull, REPO_DIR)
       if rc:
-        _record_error("pull_failed", output)
+        _last_pull_at = time.monotonic()
+        _pull_cooldown = fetch_retry_delay(output)
+        retry_at = int(time.time() + _pull_cooldown)  # noqa: TID251 -- shown to users as a wall-clock time
+        _record_error("pull_failed", output, retry_in=int(_pull_cooldown), retry_at=retry_at)
         return False, False, ""
       if not monitor.ready():
         return False, False, ""
       _last_pull_at = time.monotonic()
+      _pull_cooldown = AUTO_UPDATE_COOLDOWN
       return await _run_git_pull(target_head)
   except RepoBusyError as exc:
     # Contention is a retry condition, not an update failure/offroad alert.
@@ -439,12 +470,15 @@ async def _run_git_pull(target_head: str) -> tuple[bool, bool, str]:
     pull_rc=None,
     error_code="",
     error="",
+    retry_in=None,
+    retry_at=None,
   )
   if not started:
     _record_error("state_write_failed", "Unable to save automatic-update attempt")
     return False, False, ""
 
   # Keep the existing hard-reset behavior, but never pull or reboot if it fails.
+  set_lock_detail("reset")
   reset_rc, reset_out = await _git(["reset", "--hard"], RESET_TIMEOUT)
   if reset_rc != 0:
     if "index.lock" in reset_out and "File exists" in reset_out:
@@ -461,6 +495,7 @@ async def _run_git_pull(target_head: str) -> tuple[bool, bool, str]:
 
   # Apply only the selected branch's pinned commit. FETCH_HEAD can be rewritten
   # by another fetch and must never determine which branches get merged.
+  set_lock_detail("merge")
   pull_rc, pull_out = await _git(["merge", "--ff-only", target_head], PULL_TIMEOUT)
   if pull_rc != 0:
     if "index.lock" in pull_out and "File exists" in pull_out:

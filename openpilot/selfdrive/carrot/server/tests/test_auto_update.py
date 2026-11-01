@@ -61,7 +61,7 @@ def test_update_waits_for_manager_and_checkout_lock(monkeypatch, phase):
     calls.append("status")
     return {"available": True, "state": "ok", "behind": 1, "target_head": "new", "head": "old", "branch": "carrot-wip"}
 
-  def lock():
+  def lock(*args, **kwargs):
     if phase == "busy":
       raise RepoBusyError("another operation")
     return nullcontext()
@@ -90,6 +90,43 @@ def test_update_waits_for_manager_and_checkout_lock(monkeypatch, phase):
   assert result[1] == (phase == "ready")
   if phase == "building":
     assert not calls
+
+
+@pytest.mark.parametrize("output,network", [
+  ("fatal: unable to access 'https://github.com/x/y.git/': Could not resolve host: github.com", True),
+  ("fatal: unable to access 'https://github.com/x/y.git/': Failed to connect to github.com port 443", True),
+  ("Git configuration repair failed: Command '['git', 'ls-remote']' timed out after 30.0 seconds", True),
+  ("error: RPC failed; curl 56 Recv failure: Connection reset by peer", True),
+  ("ssh: connect to host github.com port 22: Network is unreachable", True),
+  ("Git configuration repair failed: No valid upstream or matching remote branch for x", False),
+  ("fatal: couldn't find remote ref refs/heads/gone", False),
+])
+def test_fetch_failure_retry_delay_by_error_kind(monkeypatch, output, network):
+  monitor = types.SimpleNamespace(ready=lambda: True)
+  recorded = {}
+
+  async def status():
+    return {"available": True, "state": "ok", "behind": 1, "target_head": "new", "head": "old", "branch": "carrot-wip"}
+
+  async def prepare(repo):
+    pass
+
+  async def git(args, timeout):  # noqa: ASYNC109 -- matches the production Git adapter
+    return 0, "carrot-wip" if args[0] == "branch" else "old"
+
+  monkeypatch.setattr(auto_update, "get_git_status", status)
+  monkeypatch.setattr(auto_update, "repo_lock", lambda *args, **kwargs: nullcontext())
+  monkeypatch.setattr(auto_update, "prepare_repo", prepare)
+  monkeypatch.setattr(auto_update, "prepare_git_pull", lambda repo: (1, output, ""))
+  monkeypatch.setattr(auto_update, "_git", git)
+  monkeypatch.setattr(auto_update, "_last_pull_at", float("-inf"))
+  monkeypatch.setattr(auto_update, "_pull_cooldown", auto_update.AUTO_UPDATE_COOLDOWN)
+  monkeypatch.setattr(auto_update, "_record_error", lambda code, detail, **fields: recorded.update(code=code, **fields))
+  assert asyncio.run(auto_update._attempt_update(monitor)) == (False, False, "")
+  expected = 60.0 if network else 300.0
+  assert auto_update.is_network_error(output) == network
+  assert auto_update._pull_cooldown == expected
+  assert recorded["code"] == "pull_failed" and recorded["retry_in"] == int(expected)
 
 
 def test_manual_pull_clears_verified_lock_error_and_preserves_receipt(tmp_path, monkeypatch):

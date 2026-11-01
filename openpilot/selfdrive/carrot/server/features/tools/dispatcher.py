@@ -270,17 +270,29 @@ def _needs_repo_lock(action: str, body: dict) -> bool:
   )
 
 
+def _lock_owner_for(action: str) -> str:
+  return "git_pull_tool" if action == "git_pull" else "build" if action == "rebuild_all" else "git_tool"
+
+
+def _lock_failure(exc: Exception) -> dict:
+  busy = isinstance(exc, RepoBusyError)
+  result = {"ok": False, "error": str(exc), "error_code": "GIT_BUSY" if busy else "GIT_PRECHECK_FAILED"}
+  if busy:
+    result.update(exc.fields())
+  return result
+
+
 async def run_tool_job(job: Dict[str, Any]) -> None:
-  if not _needs_repo_lock(normalize_action(job.get("action")), job.get("payload") or {}):
+  action = normalize_action(job.get("action"))
+  if not _needs_repo_lock(action, job.get("payload") or {}):
     return await _run_tool_job(job)
   try:
-    with repo_lock():
+    with repo_lock(owner=_lock_owner_for(action), detail=action):
       await prepare_repo("/data/openpilot")
       return await _run_tool_job(job)
   except (RepoBusyError, OSError, RuntimeError) as exc:
-    busy = isinstance(exc, RepoBusyError)
-    jobs.finish(job, ok=False, result={"ok": False, "error": str(exc), "error_code": "GIT_BUSY" if busy else "GIT_PRECHECK_FAILED"},
-                error=str(exc), error_code="GIT_BUSY" if busy else "GIT_PRECHECK_FAILED")
+    result = _lock_failure(exc)
+    jobs.finish(job, ok=False, result=result, error=result["error"], error_code=result["error_code"])
 
 
 async def _run_tool_job(job: Dict[str, Any]) -> None:
@@ -877,14 +889,15 @@ async def _run_tool_job(job: Dict[str, Any]) -> None:
 
 
 async def dispatch_sync(request: web.Request, body: Dict[str, Any]) -> web.Response:
-  if not _needs_repo_lock(normalize_action(body.get("action")), body):
+  action = normalize_action(body.get("action"))
+  if not _needs_repo_lock(action, body):
     return await _dispatch_sync(request, body)
   try:
-    with repo_lock():
+    with repo_lock(owner=_lock_owner_for(action), detail=action):
       await prepare_repo("/data/openpilot")
       return await _dispatch_sync(request, body)
   except (RepoBusyError, OSError, RuntimeError) as exc:
-    return web.json_response({"ok": False, "error": str(exc), "error_code": "GIT_BUSY" if isinstance(exc, RepoBusyError) else "GIT_PRECHECK_FAILED"}, status=409)
+    return web.json_response(_lock_failure(exc), status=409)
 
 
 async def _dispatch_sync(request: web.Request, body: Dict[str, Any]) -> web.Response:

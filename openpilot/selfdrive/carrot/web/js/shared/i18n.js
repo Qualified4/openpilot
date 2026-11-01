@@ -94,7 +94,8 @@ function friendlyError(json) {
   const code = json.error_code;
   const detail = json.error_detail || "";
   const langMap = ERROR_MESSAGES[LANG] || ERROR_MESSAGES.en;
-  if (code && langMap[code]) return langMap[code](detail);
+  // Second argument: the whole payload, for codes with structured fields (GIT_BUSY).
+  if (code && langMap[code]) return langMap[code](detail, json);
   // fallback: try to make raw errors more readable
   const raw = json.error || "";
   if (raw.startsWith("git subcommand not allowed:")) {

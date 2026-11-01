@@ -178,3 +178,45 @@ def test_real_git_process_prevents_recovery(tmp_path, monkeypatch):
     assert lock.exists()
   finally:
     child.communicate(b"")
+
+
+def test_busy_error_names_holder_stage_and_elapsed(repo, monkeypatch):
+  import json
+  with repo_update.repo_lock(owner="auto_update", detail="check"):
+    repo_update.set_lock_detail("fetch")
+    with open(repo_update.owner_path(), encoding="utf-8") as f:
+      record = json.load(f)
+    assert record["owner"] == "auto_update" and record["pid"] == os.getpid() and record["detail"] == "fetch"
+    monkeypatch.setattr(repo_update.time, "time", lambda: record["started_at"] + 42)
+    with pytest.raises(repo_update.RepoBusyError) as busy, repo_update.repo_lock(owner="git_pull_tool"):
+      pass
+  err = busy.value
+  assert err.owner == "auto_update" and err.detail == "fetch" and err.elapsed == 42 and not err.presumed
+  assert "Automatic update is running git pull (started 42 s ago, fetch stage)" in str(err)
+  assert err.fields()["busy_since"] == record["started_at"]
+  assert not os.path.exists(repo_update.owner_path())
+
+
+def test_stale_owner_file_without_flock_is_not_busy(repo):
+  import json
+  with open(repo_update.owner_path(), "w", encoding="utf-8") as f:
+    json.dump({"owner": "auto_update", "pid": os.getpid(), "started_at": 1, "detail": "fetch"}, f)
+  with repo_update.repo_lock(owner="git_pull_tool"):
+    assert json.loads(open(repo_update.owner_path(), encoding="utf-8").read())["owner"] == "git_pull_tool"
+  assert not os.path.exists(repo_update.owner_path())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="dead-pid probe is POSIX only")
+def test_held_lock_with_dead_owner_is_presumed_startup(repo):
+  import json
+  fd = os.open(repo_update.LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+  child = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True)
+  with open(repo_update.owner_path(), "w", encoding="utf-8") as f:
+    json.dump({"owner": "auto_update", "pid": int(child.stdout), "started_at": 1, "detail": "fetch"}, f)
+  try:
+    repo_update._flock(fd)
+    with pytest.raises(repo_update.RepoBusyError) as busy, repo_update.repo_lock():
+      pass
+  finally:
+    os.close(fd)
+  assert busy.value.owner == "startup" and busy.value.presumed

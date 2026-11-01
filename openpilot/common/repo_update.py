@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from contextvars import ContextVar
+import json
 import os
 from pathlib import Path
 import stat
@@ -18,10 +19,111 @@ import time
 LOCK_PATH = os.environ.get("CARROT_REPO_LOCK_PATH", "/tmp/carrot_repo_update.lock")
 STALE_INDEX_SECONDS = 60.0
 _lock_fd: ContextVar[int | None] = ContextVar("carrot_repo_lock_fd", default=None)
+_lock_owner: ContextVar[dict | None] = ContextVar("carrot_repo_lock_owner", default=None)
+
+# The launcher takes the flock in shell without an owner file; a held lock with
+# no live owner record is therefore presumed to be startup (bootstrap/build/init).
+PRESUMED_OWNER = "startup"
+_OWNER_LABELS = {
+  "auto_update": "Automatic update is running git pull",
+  "git_pull_tool": "Manual git pull is running",
+  "git_tool": "Another Git tool is running",
+  "build": "A build is running",
+  "git_status": "Git status check is running",
+  "recovery": "Startup recovery is running",
+  PRESUMED_OWNER: "Startup (bootstrap, build or manager init) is probably running",
+}
 
 
 class RepoBusyError(RuntimeError):
-  pass
+  def __init__(self, message: str = "", *, owner: str = "", since: int | None = None, detail: str = "",
+               elapsed: int | None = None, presumed: bool = False):
+    super().__init__(message)
+    self.owner = owner
+    self.since = since
+    self.detail = detail
+    self.elapsed = elapsed
+    self.presumed = presumed
+
+  def fields(self) -> dict:
+    """Response fields for GIT_BUSY; empty when the holder is not known."""
+    if not self.owner:
+      return {}
+    return {"busy_owner": self.owner, "busy_since": self.since, "busy_detail": self.detail,
+            "busy_elapsed": self.elapsed, "busy_presumed": self.presumed}
+
+
+def owner_path() -> str:
+  base = LOCK_PATH[:-len(".lock")] if LOCK_PATH.endswith(".lock") else LOCK_PATH
+  return base + ".owner.json"
+
+
+def _pid_alive(pid) -> bool:
+  if not isinstance(pid, int) or pid <= 0:
+    return False
+  if os.name == "nt":
+    return True  # os.kill(pid, 0) is not a probe on Windows
+  try:
+    os.kill(pid, 0)
+  except ProcessLookupError:
+    return False
+  except OSError:
+    return True
+  return True
+
+
+def _write_owner(info: dict) -> None:
+  # Diagnostics only: never fail or block the lock because of this file.
+  path = owner_path()
+  tmp = f"{path}.{os.getpid()}.tmp"
+  try:
+    with open(tmp, "w", encoding="utf-8") as f:
+      json.dump(info, f)
+    os.replace(tmp, path)
+  except OSError:
+    pass
+
+
+def read_lock_owner() -> dict:
+  """Only meaningful while the flock is held by someone else (busy path).
+
+  A crashed holder leaves its file behind but its flock is released, so a stale
+  file is never consulted unless the lock is actually held; a dead pid falls
+  back to the presumed startup owner.
+  """
+  try:
+    with open(owner_path(), encoding="utf-8") as f:
+      info = json.load(f)
+  except (OSError, ValueError):
+    info = None
+  if isinstance(info, dict) and info.get("owner") and _pid_alive(info.get("pid")):
+    return {"owner": str(info["owner"]), "pid": info.get("pid"), "started_at": info.get("started_at"),
+            "detail": str(info.get("detail") or ""), "presumed": False}
+  return {"owner": PRESUMED_OWNER, "pid": None, "started_at": None, "detail": "", "presumed": True}
+
+
+def busy_error() -> RepoBusyError:
+  info = read_lock_owner()
+  started = info["started_at"]
+  elapsed = max(0, int(time.time() - started)) if isinstance(started, (int, float)) else None  # noqa: TID251 -- compared with a wall-clock record from another process
+  label = _OWNER_LABELS.get(info["owner"], f"Another Git operation ({info['owner']}) is running")
+  parts = []
+  if elapsed is not None:
+    parts.append(f"started {elapsed} s ago")
+  if info["detail"]:
+    parts.append(f"{info['detail']} stage")
+  message = label + (f" ({', '.join(parts)})" if parts else "") + "; retry when it finishes."
+  return RepoBusyError(message, owner=info["owner"], since=int(started) if elapsed is not None else None,
+                       detail=info["detail"], elapsed=elapsed, presumed=info["presumed"])
+
+
+def set_lock_detail(detail: str) -> None:
+  """Update the current holder's stage (e.g. fetch/reset/merge)."""
+  info = _lock_owner.get()
+  if info is None:
+    return
+  info["detail"] = str(detail or "")
+  _write_owner(info)
 
 
 def _flock(fd: int, *, unlock: bool = False) -> None:
@@ -40,7 +142,7 @@ def child_lock_kwargs() -> dict:
 
 
 @contextmanager
-def repo_lock():
+def repo_lock(owner: str = "", detail: str = ""):
   # Do not make this reentrant: separate asyncio tasks must also exclude each
   # other. Callers take one lock around the complete multi-command transaction.
   fd = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
@@ -48,12 +150,20 @@ def repo_lock():
     try:
       _flock(fd)
     except OSError as exc:
-      raise RepoBusyError("Build or another Git operation is running; retry when it finishes.") from exc
+      raise busy_error() from exc
+    info = {"owner": owner or "unknown", "pid": os.getpid(), "started_at": int(time.time()), "detail": str(detail or "")}  # noqa: TID251 -- read by other processes
+    _write_owner(info)
     token = _lock_fd.set(fd)
+    owner_token = _lock_owner.set(info)
     try:
       yield
     finally:
+      _lock_owner.reset(owner_token)
       _lock_fd.reset(token)
+      try:
+        os.unlink(owner_path())
+      except OSError:
+        pass
       # close, rather than LOCK_UN, keeps children protected if the caller dies.
   finally:
     os.close(fd)
@@ -132,7 +242,7 @@ def main() -> int:
   parser.add_argument("command", nargs=argparse.REMAINDER)
   args = parser.parse_args()
   try:
-    with repo_lock():
+    with repo_lock(owner="recovery", detail="repo_update"):
       recover_stale_index_lock(args.repo)
       if args.command:
         return subprocess.call(args.command, cwd=args.repo, **child_lock_kwargs())

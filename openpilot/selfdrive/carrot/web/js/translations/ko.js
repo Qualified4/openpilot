@@ -1592,6 +1592,23 @@ window.CarrotTranslations.register("ko", {
     PROFILE_NAME_REQUIRED: () => "프로필 이름을 입력해주세요",
     CMD_TIMEOUT:         () => "명령 실행 시간이 초과되었습니다",
     TMUX_CAPTURE_FAIL:   () => "로그 캡처에 실패했습니다",
+    GIT_BUSY: (_d, j = {}) => {
+      if (!j.busy_owner) return j.error || "빌드나 다른 Git 작업이 실행 중입니다. 끝난 뒤 다시 시도하세요.";
+      const who = {
+        auto_update: "자동 업데이트가 git pull 중입니다",
+        git_pull_tool: "다른 git pull이 실행 중입니다",
+        git_tool: "다른 Git 도구가 실행 중입니다",
+        build: "빌드가 실행 중입니다",
+        git_status: "Git 상태 확인이 실행 중입니다",
+        recovery: "시작 복구 작업이 실행 중입니다",
+        startup: "시작(부트스트랩·빌드·매니저 초기화) 작업이 진행 중인 것 같습니다",
+      }[j.busy_owner] || `다른 Git 작업(${j.busy_owner})이 실행 중입니다`;
+      const parts = [
+        Number.isFinite(j.busy_elapsed) ? `시작 ${j.busy_elapsed}초 전` : "",
+        j.busy_detail ? `${j.busy_detail} 단계` : "",
+      ].filter(Boolean);
+      return `${who}${parts.length ? ` (${parts.join(", ")})` : ""}. 끝난 뒤 다시 시도하세요.`;
+    },
   },
   driveModes: { normal: "일반", eco: "연비", safe: "안전", sport: "고속" },
 });

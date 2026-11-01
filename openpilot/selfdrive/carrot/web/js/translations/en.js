@@ -1579,6 +1579,23 @@ window.CarrotTranslations.register("en", {
     PROFILE_NAME_REQUIRED: () => "Enter a profile name",
     CMD_TIMEOUT:         () => "Command timed out",
     TMUX_CAPTURE_FAIL:   () => "Failed to capture log",
+    GIT_BUSY: (_d, j = {}) => {
+      if (!j.busy_owner) return j.error || "Build or another Git operation is running; retry when it finishes.";
+      const who = {
+        auto_update: "Automatic update is running git pull",
+        git_pull_tool: "Another git pull is running",
+        git_tool: "Another Git tool is running",
+        build: "A build is running",
+        git_status: "Git status check is running",
+        recovery: "Startup recovery is running",
+        startup: "Startup (bootstrap, build or manager init) is probably running",
+      }[j.busy_owner] || `Another Git operation (${j.busy_owner}) is running`;
+      const parts = [
+        Number.isFinite(j.busy_elapsed) ? `started ${j.busy_elapsed} s ago` : "",
+        j.busy_detail ? `${j.busy_detail} stage` : "",
+      ].filter(Boolean);
+      return `${who}${parts.length ? ` (${parts.join(", ")})` : ""}. Retry when it finishes.`;
+    },
   },
   driveModes: { normal: "Normal", eco: "Eco", safe: "Safe", sport: "Sport" },
 });

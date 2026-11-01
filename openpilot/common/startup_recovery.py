@@ -117,7 +117,7 @@ class RecoveryUpdate:
       # Defer cleanup to the launcher: a broken build environment can prevent
       # SCons cleanup, and cached outputs must also be removed. Reset build state
       # and cache on the next boot, before the Params build.
-      with repo_lock():
+      with repo_lock(owner="recovery", detail="rebuild"):
         request_full_rebuild()
         self._set('rebuild_rebooting', 'Full rebuild requested. Rebuilding after reboot.')
         self.reboot()
@@ -129,7 +129,7 @@ class RecoveryUpdate:
     try:
       # No credential prompts or detached Git maintenance on an error screen.
       os.environ['GIT_TERMINAL_PROMPT'] = '0'
-      with repo_lock():
+      with repo_lock(owner="recovery", detail="git pull"):
         target, changed = pull_current_branch(self.repo)
         if automatic and not changed and target != self._pending_reboot:
           self._set('waiting', 'No new commit. Waiting for a fix or network connection.')
