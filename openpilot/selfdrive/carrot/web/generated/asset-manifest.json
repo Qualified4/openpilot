@@ -6,7 +6,7 @@
       "kind": "bundle",
       "source": "src/entries/app.js",
       "path": "js/generated/app.js",
-      "hash": "069ccaaf2c260a7991682b752f97da0a118d3605ce928bb984c5dc9f300310e9"
+      "hash": "43f441f569a8669c3eec2a9b0f07672360f8b6ce819343a8b17234ca11f1eb63"
     },
     {
       "id": "drive.runtime",
@@ -41,7 +41,7 @@
       "kind": "bundle",
       "source": "src/entries/logs.js",
       "path": "js/generated/logs.js",
-      "hash": "9dd7670eb9ef56da737812de43aab8512fe8d2c851404bf08207dc3c4a0a3753"
+      "hash": "06407feacda8b3e55366f62ea1789ec223a5f34484dff45688c2b6633711f004"
     },
     {
       "id": "terminal.runtime",
@@ -125,7 +125,7 @@
       "kind": "bundle",
       "source": "src/entries/logs.css",
       "path": "css/generated/logs.css",
-      "hash": "85dd1dfdd9bc83f387bcdb2eefa1f1b176938f0d088379cb42ecac8ac8590065"
+      "hash": "d5a38e3c11e123e39c457cd108fe09cb5620052cdea675f7aa9f1bc322ce6276"
     },
     {
       "id": "terminal.styles",

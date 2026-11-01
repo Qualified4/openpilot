@@ -27,6 +27,12 @@ import {
   dashcamUploadProgressState,
 } from "./upload_progress.js";
 import { dashcamUploadEta, dashcamUploadStats } from "./upload_summary.js";
+import {
+  fetchUploadSnapshotWithRetry,
+  isUploadPollRetryableError,
+  pollUploadJobSnapshots,
+  waitUntilVisibleOrTimeout,
+} from "./upload_poll.js";
 
 // Logs page — Dashcam tab.
 // Route + segment virtual listing, FFmpeg thumb/preview lazy load,
@@ -44,11 +50,15 @@ const DASHCAM_REPLAY_TIME_TOLERANCE_SECONDS = 120;
 const DASHCAM_LOAD_AHEAD_VIEWPORTS = 1.5;
 const DASHCAM_ROUTE_WINDOW_OVERSCAN_VIEWPORTS = 1.25;
 const DASHCAM_UPLOAD_POLL_INTERVAL_MS = 160;
+const DASHCAM_UPLOAD_POLL_TIMEOUT_MS = 10000;
 const DASHCAM_UPLOAD_PROGRESS_MIN_VISIBLE_MS = 800;
 const DASHCAM_UPLOAD_PROGRESS_FINISH_HOLD_MS = 240;
 const DASHCAM_UPLOAD_RESULT_VISIBLE_LIMIT = 5;
 let dashcamUploadActiveJobId = null;
 let dashcamUploadResumePromise = null;
+// Progress of the upload this page is polling; its dialog may be hidden.
+let dashcamUploadProgress = null;
+let dashcamUploadBanner = null;
 let dashcamReadStateLoadPromise = null;
 let dashcamReadStateWritePromise = Promise.resolve();
 let dashcamReadStateInteracted = false;
@@ -1470,34 +1480,109 @@ function openDashcamUploadProgress(total, stats = null, options = {}) {
     stats,
     initialState.progressState,
   );
-  const dialog = openAppProgressDialog({
-    title: getUIText("log_uploading", "Uploading logs"),
+  let view = {
     message: initial.message,
     progressState: initial.progressState,
-    progressLabel: getUIText("upload_progress_label", "Upload progress"),
     summary: initial.summary,
-    cancelLabel: options.cancelLabel || getUIText("cancel", "Cancel"),
-    cancelingLabel: getUIText("upload_canceling", "Canceling..."),
-    onCancel: options.onCancel,
-  });
-  return Object.freeze({
-    completion: dialog.completion,
-    setCancelHandler: dialog.setCancelHandler,
-    setCanceling: dialog.setCanceling,
-    setMessage: dialog.setMessage,
-    setProgressState: dialog.setProgressState,
+  };
+  let waitingForConnection = false;
+  let cancelHandler = typeof options.onCancel === "function" ? options.onCancel : null;
+  let canceling = false;
+  let closed = false;
+  let dialog = null;
+  let controller = null;
+
+  const shownSummary = () => (waitingForConnection
+    ? getUIText("upload_waiting_connection", "Waiting for connection...")
+    : view.summary);
+  const isShown = () => Boolean(dialog?.isOpen?.());
+
+  // Cancel is the only way to stop the job, so confirm it first. The confirm
+  // replaces the progress dialog; show it again whichever way the user answers.
+  async function confirmCancel() {
+    const ok = await appConfirm(getUIText(
+      "upload_cancel_confirm",
+      "Cancel the upload? Segments already sent are kept.",
+    ), {
+      title: getUIText("log_uploading", "Uploading logs"),
+      confirmLabel: getUIText("upload_cancel_action", "Cancel upload"),
+      cancelLabel: getUIText("upload_keep_going", "Keep uploading"),
+    });
+    if (closed) return;
+    show();
+    if (!ok || !cancelHandler) return;
+    canceling = true;
+    dialog?.setCanceling(true);
+    try {
+      await cancelHandler();
+    } catch (error) {
+      canceling = false;
+      dialog?.setCanceling(false);
+      showAppToast(error?.message || String(error), { tone: "error", duration: 3600 });
+    }
+  }
+
+  function show() {
+    if (closed || isShown()) return;
+    const current = openAppProgressDialog({
+      title: getUIText("log_uploading", "Uploading logs"),
+      message: view.message,
+      progressState: view.progressState,
+      progressLabel: getUIText("upload_progress_label", "Upload progress"),
+      summary: shownSummary(),
+      cancelLabel: options.cancelLabel || getUIText("cancel", "Cancel"),
+      cancelingLabel: getUIText("upload_canceling", "Canceling..."),
+      onCancel: cancelHandler ? confirmCancel : null,
+      dismissToBackground: true,
+    });
+    dialog = current;
+    if (canceling) current.setCanceling(true);
+    current.completion.then(() => {
+      if (dialog === current) syncDashcamUploadBanner();
+    });
+    syncDashcamUploadBanner();
+  }
+
+  function render() {
+    dialog?.setMessage(view.message);
+    dialog?.setProgressState(view.progressState);
+    dialog?.setSummary(shownSummary());
+  }
+
+  controller = Object.freeze({
+    isShown,
+    show,
+    setCancelHandler(handler) {
+      cancelHandler = typeof handler === "function" ? handler : null;
+      dialog?.setCancelHandler(cancelHandler ? confirmCancel : null);
+    },
+    setCanceling(active) {
+      canceling = Boolean(active);
+      dialog?.setCanceling(canceling);
+    },
+    setMessage(value) {
+      view = { ...view, message: value };
+      render();
+    },
+    setProgressState(value) {
+      view = { ...view, progressState: value };
+      render();
+    },
+    setWaitingForConnection(active) {
+      if (waitingForConnection === Boolean(active)) return;
+      waitingForConnection = Boolean(active);
+      render();
+    },
     update(snapshot, totalFallback = total) {
       const modelState = model.update(snapshot);
       if (!modelState.accepted) return;
-      const view = dashcamUploadProgressView(
+      view = dashcamUploadProgressView(
         snapshot,
         totalFallback,
         stats,
         modelState.progressState,
       );
-      dialog.setMessage(view.message);
-      dialog.setProgressState(view.progressState);
-      dialog.setSummary(view.summary);
+      render();
     },
     setSummary(nextStats) {
       const summary = typeof nextStats === "string"
@@ -1505,15 +1590,53 @@ function openDashcamUploadProgress(total, stats = null, options = {}) {
         : nextStats
           ? dashcamUploadSummaryLabel(nextStats)
           : "";
-      dialog.setSummary(summary);
+      view = { ...view, summary };
+      render();
     },
     async settle() {
       const remaining = DASHCAM_UPLOAD_PROGRESS_MIN_VISIBLE_MS - (Date.now() - openedAt);
       if (remaining > 0) await waitMs(remaining);
       await waitMs(DASHCAM_UPLOAD_PROGRESS_FINISH_HOLD_MS);
     },
-    close: dialog.close,
+    close() {
+      closed = true;
+      if (dashcamUploadProgress === controller) dashcamUploadProgress = null;
+      syncDashcamUploadBanner();
+      return dialog?.close() ?? Promise.resolve(true);
+    },
   });
+  dashcamUploadProgress = controller;
+  show();
+  return controller;
+}
+
+// One-line "Uploading - View" banner on the Logs page while the progress
+// dialog of a running upload is hidden.
+function syncDashcamUploadBanner() {
+  const progress = dashcamUploadProgress;
+  const visible = Boolean(progress && !progress.isShown());
+  if (!visible) {
+    if (dashcamUploadBanner) dashcamUploadBanner.hidden = true;
+    return;
+  }
+  if (!dashcamUploadBanner) {
+    const anchor = document.querySelector?.("#pageLogs .logs-tabbar");
+    if (!anchor?.parentNode) return;
+    const banner = document.createElement("button");
+    banner.type = "button";
+    banner.className = "logs-upload-banner";
+    banner.addEventListener("click", () => dashcamUploadProgress?.show());
+    anchor.parentNode.insertBefore(banner, anchor.nextSibling);
+    dashcamUploadBanner = banner;
+  }
+  dashcamUploadBanner.textContent = getUIText("upload_running_banner", "Upload in progress \u00b7 View");
+  dashcamUploadBanner.hidden = false;
+}
+
+function showDashcamUploadProgressIfRunning() {
+  if (!dashcamUploadProgress) return false;
+  dashcamUploadProgress.show();
+  return true;
 }
 
 function rememberDashcamUploadJob(jobId) {
@@ -1539,24 +1662,53 @@ function getRememberedDashcamUploadJob() {
   }
 }
 
-async function pollDashcamUploadJob(jobId, progress, totalFallback = 0) {
-  let snapshot = null;
-  while (jobId) {
-    snapshot = await getJson(`/api/dashcam/upload/job?id=${encodeURIComponent(jobId)}`);
-    progress.update(snapshot, totalFallback);
-    if (snapshot.status === "canceled" || snapshot.result?.canceled) {
-      throw makeDashcamUploadCanceledError();
-    }
-    if (snapshot.done) break;
-    await waitMs(DASHCAM_UPLOAD_POLL_INTERVAL_MS);
+async function fetchDashcamUploadJobSnapshot(jobId) {
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), DASHCAM_UPLOAD_POLL_TIMEOUT_MS) : null;
+  try {
+    return await requestJson(`/api/dashcam/upload/job?id=${encodeURIComponent(jobId)}`, {
+      cache: "no-store",
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
   }
+}
 
+function dashcamUploadPollOptions(progress) {
+  return {
+    wait: waitMs,
+    waitRetry: (ms) => waitUntilVisibleOrTimeout(ms),
+    onRetry: () => progress?.setWaitingForConnection?.(true),
+    onRecovered: () => progress?.setWaitingForConnection?.(false),
+  };
+}
+
+async function pollDashcamUploadJob(jobId, progress, totalFallback = 0) {
+  const snapshot = await pollUploadJobSnapshots(() => fetchDashcamUploadJobSnapshot(jobId), {
+    ...dashcamUploadPollOptions(progress),
+    intervalMs: DASHCAM_UPLOAD_POLL_INTERVAL_MS,
+    onSnapshot: (snapshot) => progress.update(snapshot, totalFallback),
+  });
+
+  if (snapshot.status === "canceled" || snapshot.result?.canceled) {
+    throw makeDashcamUploadCanceledError();
+  }
   const result = snapshot?.result || {};
-  if (result.canceled) throw makeDashcamUploadCanceledError();
   if (!result || !Array.isArray(result.results)) {
-    throw new Error(snapshot?.error || getUIText("error", "Error"));
+    const error = new Error(snapshot?.error || getUIText("error", "Error"));
+    error.uploadJobFinished = true;
+    throw error;
   }
   return result;
+}
+
+// Forget the remembered job only on a definite end: canceled, finished, or a
+// final server answer such as 404. A lost connection keeps it resumable.
+function shouldForgetDashcamUploadJob(error) {
+  return isDashcamUploadCanceledError(error)
+    || error?.uploadJobFinished === true
+    || !isUploadPollRetryableError(error);
 }
 
 async function resumeDashcamUploadJobIfNeeded(options = {}) {
@@ -1568,7 +1720,12 @@ async function resumeDashcamUploadJobIfNeeded(options = {}) {
   dashcamUploadResumePromise = (async () => {
     let snapshot = null;
     try {
-      snapshot = await getJson(`/api/dashcam/upload/job?id=${encodeURIComponent(jobId)}`);
+      // Keep retrying while the device is unreachable; only a definite
+      // answer (404 unknown job) forgets the remembered id.
+      snapshot = await fetchUploadSnapshotWithRetry(
+        () => fetchDashcamUploadJobSnapshot(jobId),
+        dashcamUploadPollOptions(null),
+      );
     } catch {
       clearRememberedDashcamUploadJob(jobId);
       dashcamUploadResumePromise = null;
@@ -1625,7 +1782,7 @@ async function resumeDashcamUploadJobIfNeeded(options = {}) {
       return result;
     } catch (e) {
       progress.close();
-      clearRememberedDashcamUploadJob(jobId);
+      if (shouldForgetDashcamUploadJob(e)) clearRememberedDashcamUploadJob(jobId);
       if (isDashcamUploadCanceledError(e)) {
         showAppToast(getUIText("upload_canceled", "Upload canceled"), { duration: 2600 });
       } else {
@@ -1646,6 +1803,7 @@ async function uploadDashcamSegments(segments, options = {}) {
   const roadViewer = options.destination === "road_viewer";
   const api = roadViewer ? "/api/road-viewer" : "/api/dashcam/upload";
   if (dashcamUploadActiveJobId) {
+    if (showDashcamUploadProgressIfRunning()) return;
     showAppToast(getUIText("upload_already_running", "Upload already running."), { tone: "error", duration: 3200 });
     return;
   }
@@ -1798,7 +1956,11 @@ async function uploadDashcamSegments(segments, options = {}) {
     if (options.showResult !== false) await showDashcamUploadResult(result);
   } catch (e) {
     progress.close();
-    if (jobId) clearRememberedDashcamUploadJob(jobId);
+    // A lost connection does not end the device-side job; keep its id so the
+    // Logs page can pick it up again.
+    if (jobId && shouldForgetDashcamUploadJob(e)) {
+      clearRememberedDashcamUploadJob(jobId);
+    }
     const runningJobId = e?.payload?.job_id || e?.payload?.job?.id || null;
     if (runningJobId) {
       rememberDashcamUploadJob(runningJobId);

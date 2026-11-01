@@ -168,7 +168,7 @@ export function createDialogController(environment = {}) {
     dialogHistoryActive = false;
     event.stopImmediatePropagation();
     if (activeDialog?.mode === "alert") resolveDialogState(activeDialog, true);
-    else cancelAppDialog();
+    else dismissAppDialog();
     // Submitting forms and asynchronous progress cancellation keep their
     // dialog open, so they still need a guard for the next Back press.
     pushDialogHistory();
@@ -310,6 +310,18 @@ export function createDialogController(environment = {}) {
         target.showAppToast(error?.message || String(error), { tone: "error", duration: 3600 });
       }
     }
+  }
+
+  // Backdrop, Escape and mobile Back. A dialog opened with dismissToBackground
+  // only hides itself so the work behind it keeps running; its Cancel button
+  // still goes through onCancel.
+  function dismissAppDialog() {
+    const state = activeDialog;
+    if (state?.dismissToBackground && !state.canceling) {
+      resolveDialogState(state, { dismissed: true });
+      return;
+    }
+    cancelAppDialog();
   }
 
   async function confirmAppDialog() {
@@ -529,6 +541,7 @@ export function createDialogController(environment = {}) {
         onSubmit: options.onSubmit,
         onCancel: options.onCancel,
         closeOnCancel: options.closeOnCancel !== false,
+        dismissToBackground: options.dismissToBackground === true,
         submitting: false,
         canceling: false,
         closing: false,
@@ -602,6 +615,7 @@ export function createDialogController(environment = {}) {
       cancelingLabel: options.cancelingLabel,
       onCancel: options.onCancel,
       closeOnCancel: false,
+      dismissToBackground: options.dismissToBackground === true,
     });
     const state = activeDialog;
     appDialog?.classList?.add("app-dialog--progress");
@@ -612,6 +626,7 @@ export function createDialogController(environment = {}) {
     const isCurrent = () => Boolean(state && activeDialog === state && !state.closing);
     const controller = {
       completion,
+      isOpen: isCurrent,
       setCancelHandler(handler) {
         if (!isCurrent()) return;
         state.onCancel = typeof handler === "function" ? handler : null;
@@ -696,7 +711,7 @@ export function createDialogController(environment = {}) {
     });
   }
 
-  if (appDialogBackdrop) appDialogBackdrop.onclick = cancelAppDialog;
+  if (appDialogBackdrop) appDialogBackdrop.onclick = dismissAppDialog;
   if (appDialogCancel) appDialogCancel.onclick = cancelAppDialog;
   if (appDialogConfirm) appDialogConfirm.onclick = confirmAppDialog;
 
@@ -705,7 +720,7 @@ export function createDialogController(environment = {}) {
     if (event.key === "Escape") {
       event.preventDefault();
       if (activeDialog.mode === "alert") resolveDialogState(activeDialog, true);
-      else cancelAppDialog();
+      else dismissAppDialog();
       return;
     }
     if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.defaultPrevented) return;
