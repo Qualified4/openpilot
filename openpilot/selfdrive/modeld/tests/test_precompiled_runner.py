@@ -135,6 +135,10 @@ def test_inference_shutdown_releases_worker_without_rejecting_artifact(monkeypat
   frames = {key: SimpleNamespace(data=np.zeros(16, np.uint8)) for key in ('img', 'big_img')}
   transforms = {key: np.eye(3, dtype=np.float32) for key in frames}
   inputs = {'desire_pulse': np.zeros(8, np.float32), 'traffic_convention': np.zeros(2), 'action_t': np.zeros(2)}
+  if isinstance(error, TimeoutError):
+    # One late reply is absorbed; the third within the window falls back.
+    from collections import deque
+    model.late_times = deque([runner.time.monotonic()] * (runner.LATE_LIMIT_COUNT - 1))
   with pytest.raises(type(error)):
     model.run(frames, transforms, inputs, False)
   assert closed == [True]

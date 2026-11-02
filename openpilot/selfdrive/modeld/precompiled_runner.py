@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import deque
 
 import numpy as np
 
@@ -16,8 +17,20 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.egpu_worker_progress import worker_snapshot
 from openpilot.selfdrive.modeld.egpu_output_recovery import MAX_HOLD_SECONDS
+from openpilot.selfdrive.modeld.egpu_events import log_event
 
 INFERENCE_TIMEOUT = .15  # three 20 Hz periods; first-use initialization has its own budget
+# A reply later than INFERENCE_TIMEOUT is absorbed (nothing published for those
+# frames, worker kept) instead of killing the worker. Before fec41098 every
+# reply had a 1 s budget, which absorbed transient USB stalls (11-02 route 442
+# stalled 151 ms in input upload). The total stays under the 0.5 s modelV2
+# alive window (SubMaster: 10 / 20 Hz), the shorter of the two bounds: a longer
+# silence raises commIssue anyway, so the internal model should take over then.
+LATE_RESPONSE_LIMIT = .45
+# A link that stalls repeatedly is not transient: the third late reply (each
+# already three 20 Hz camera periods) within ten seconds falls back as before.
+LATE_WINDOW_SECONDS = 10.
+LATE_LIMIT_COUNT = 3
 
 _retiring_workers = []
 _retiring_lock = threading.Lock()
@@ -78,7 +91,9 @@ class PrecompiledModelState:
   def _receive(self, timeout: float) -> bytes:
     with selectors.DefaultSelector() as selector:
       selector.register(self.process.stdout, selectors.EVENT_READ)
-      deadline, ready, value = time.monotonic() + timeout, False, b''
+      # A reply split across an absorbed timeout continues on the next wait.
+      deadline, ready, value = time.monotonic() + timeout, False, getattr(self, 'partial_response', b'')
+      self.partial_response = b''
       while not ready and time.monotonic() < deadline:
         if self.recovery_cancel is not None and self.recovery_cancel.is_set():
           raise InterruptedError('eGPU recovery cancelled')
@@ -91,8 +106,10 @@ class PrecompiledModelState:
             raise RuntimeError('oversized eGPU worker response')
           ready = value.endswith(b'\n')
       if not ready:
+        self.partial_response = value
         error = TimeoutError('precompiled eGPU worker timed out')
-        error.worker_diagnostics = worker_snapshot(Path(self.file.name + '.progress'), self.process.pid)
+        if not getattr(self, 'defer_snapshot', False):
+          error.worker_diagnostics = self._snapshot()
         raise error
     if not value:
       raise RuntimeError(f'precompiled eGPU worker exited ({self.process.poll()})')
@@ -100,7 +117,57 @@ class PrecompiledModelState:
       raise RuntimeError(json.loads(value[6:]))
     return value
 
+  def _snapshot(self):
+    try:
+      return worker_snapshot(Path(self.file.name + '.progress'), self.process.pid)
+    except Exception:
+      return {}  # diagnostics are optional; the fallback itself must still happen
+
+  def _late_timeout(self, waited: float):
+    # The exact message keeps the failure retryable by egpu_recovery and classified by record_failure.
+    error = TimeoutError('precompiled eGPU worker timed out')
+    error.worker_diagnostics = {**self._snapshot(), 'late_reply_ms': round(waited * 1000, 1)}
+    return error
+
+  def _wait_pending(self) -> bool:
+    """Wait for the reply of an absorbed late request; True once the worker is free."""
+    pending = self.pending_request
+    waited = time.monotonic() - pending['sent']
+    if waited >= LATE_RESPONSE_LIMIT:
+      raise self._late_timeout(waited)
+    self.defer_snapshot = True
+    try:
+      response = self._receive(min(INFERENCE_TIMEOUT, LATE_RESPONSE_LIMIT - waited))
+    except TimeoutError:
+      waited = time.monotonic() - pending['sent']
+      if waited >= LATE_RESPONSE_LIMIT:
+        raise self._late_timeout(waited) from None
+      pending['held_frames'] += 1
+      return False
+    finally:
+      self.defer_snapshot = False
+    self.pending_request = None
+    waited_ms = round((time.monotonic() - pending['sent']) * 1000, 1)
+    log_event('late_response', ms=waited_ms, stage='consumed_before_next_request', held_frames=pending['held_frames'],
+              response=response.decode('ascii', errors='replace').strip()[:16])
+    from openpilot.common.swaglog import cloudlog
+    cloudlog.warning(f"eGPU worker reply {waited_ms} ms late; absorbed, {pending['held_frames']} frame(s) unpublished")
+    if response == b'1\n':
+      # The worker advanced its recurrent state with that old frame. Its output
+      # is never published, but split graphs feed back the hidden state, and the
+      # desire pulse that request carried has been consumed.
+      result = self.output.copy()
+      if not np.isfinite(result).all():
+        raise ValueError('non-finite model output')
+      if 'prev_feat' in self.views:
+        self.views['prev_feat'][:] = result[self.output_slices['hidden_state']]
+      self.prev_desire[:] = pending['desire']
+    elif response != b'0\n':
+      raise RuntimeError('invalid model worker response')
+    return True
+
   def reset_after_probe(self):
+    self.pending_request = None
     self.process.stdin.write(b'z')
     if self._receive(1) != b'Z\n':
       raise RuntimeError('invalid eGPU recovery reset response')
@@ -109,6 +176,15 @@ class PrecompiledModelState:
     self.held_output = False
 
   def run(self, bufs, transforms, inputs, prepare_only):
+    # At most one request is outstanding. While a late reply is pending the
+    # worker may still read the shared inputs, so neither write them nor send 'r'.
+    if getattr(self, 'pending_request', None) is not None:
+      try:
+        if not self._wait_pending():
+          return None
+      except BaseException as exc:
+        self._fail(exc)
+        raise
     for name in ('img', 'big_img'):
       data = np.frombuffer(bufs[name].data, dtype=np.uint8, count=self.frame_size)
       np.copyto(self.views[name], data)
@@ -125,7 +201,30 @@ class PrecompiledModelState:
     self.views['big_tfm'][:] = transforms['big_img']
     try:
       self.process.stdin.write(b'r')
-      response = self._receive(20 if self.first_run else INFERENCE_TIMEOUT)
+      sent = time.monotonic()
+      # First use (20 s budget) and recovery probes keep their own timeouts.
+      absorbable = not self.first_run and getattr(self, 'recovery_cancel', None) is None
+      self.defer_snapshot = absorbable
+      try:
+        response = self._receive(20 if self.first_run else INFERENCE_TIMEOUT)
+      except TimeoutError as exc:
+        if not absorbable:
+          raise
+        if getattr(self, 'late_times', None) is None:
+          self.late_times = deque()
+        now = time.monotonic()
+        while self.late_times and now - self.late_times[0] > LATE_WINDOW_SECONDS:
+          self.late_times.popleft()
+        self.late_times.append(now)
+        if len(self.late_times) >= LATE_LIMIT_COUNT:
+          raise self._late_timeout(now - sent) from exc
+        # Keep the worker and publish nothing this cycle, as the held-output path does.
+        self.pending_request = {'sent': sent, 'desire': self.prev_desire.copy(), 'held_frames': 1}
+        self.prev_desire[:] = previous_desire
+        self.held_output = True
+        return None
+      finally:
+        self.defer_snapshot = False
       if (response == b'0\n' and not self.first_run and not self.held_output and self.last_good_time is not None
           and 0 <= time.monotonic() - self.last_good_time <= MAX_HOLD_SECONDS):
         # Worker restored recurrent history. Preserve the matching pulse history
@@ -142,14 +241,7 @@ class PrecompiledModelState:
       self.last_good_time = time.monotonic()
       self.held_output = False
     except BaseException as exc:
-      self.failed = True
-      self.close()
-      # The manager sends SIGINT when ignition turns off. KeyboardInterrupt and
-      # SystemExit release the worker but must not blacklist a healthy artifact.
-      cancel = getattr(self, 'recovery_cancel', None)
-      if isinstance(exc, Exception) and not (cancel is not None and cancel.is_set()):
-        from openpilot.selfdrive.modeld.precompiled_model import record_failure
-        record_failure(self.pkl_path, exc, 'inference')
+      self._fail(exc)
       raise
     if 'prev_feat' in self.views:
       self.views['prev_feat'][:] = result[self.output_slices['hidden_state']]
@@ -162,6 +254,17 @@ class PrecompiledModelState:
     if os.getenv('SEND_RAW_PRED'):
       outputs['raw_pred'] = result
     return outputs
+
+  def _fail(self, exc):
+    self.failed = True
+    self.pending_request = None
+    self.close()
+    # The manager sends SIGINT when ignition turns off. KeyboardInterrupt and
+    # SystemExit release the worker but must not blacklist a healthy artifact.
+    cancel = getattr(self, 'recovery_cancel', None)
+    if isinstance(exc, Exception) and not (cancel is not None and cancel.is_set()):
+      from openpilot.selfdrive.modeld.precompiled_model import record_failure
+      record_failure(self.pkl_path, exc, 'inference')
 
   def close(self):
     if self.process is not None:
