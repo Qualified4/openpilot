@@ -14,6 +14,8 @@ LIMIT = 64 * 1024
 PARAM_KEYS = ('UsbGpuPresent', 'UsbGpuHardwareSeen', 'UsbGpuCompiled', 'UsbGpuLoading',
               'UsbGpuActive', 'UsbGpuStartupFailed', 'GitCommit', 'GitBranch')
 MARKER = '\n===== EGPU DIAGNOSTICS v1 =====\n'
+LINK_LIMIT = 8 * 1024  # unfiltered kernel tail plus USB link state, together
+KERNEL_TAIL_LINES = 80
 
 
 def redact(text: str) -> str:
@@ -69,6 +71,26 @@ def command_tail(argv: list[str], *, cwd: Path | None = None, pattern: str | Non
       return f'exit={result.returncode}\n' + data
   except (OSError, subprocess.TimeoutExpired) as exc:
     return f'[unavailable: {type(exc).__name__}]'
+
+
+def kernel_tail(lines: int = KERNEL_TAIL_LINES) -> str:
+  # Unfiltered: a USB stall can follow non-USB kernel lines (thermal, memory).
+  for argv in (['dmesg'], ['journalctl', '-k', '-n', str(lines), '--no-pager']):
+    text = command_tail(argv)
+    if text.startswith('exit=0\n'):
+      return f'source={argv[0]}\n' + '\n'.join(text.split('\n', 1)[1].splitlines()[-lines:])
+  return 'unavailable'
+
+
+def usb_link_state(usb_root: Path) -> list[dict]:
+  # Every device, not only the eGPU: a hub or port re-enumeration shows up here.
+  state = []
+  for device in sorted(usb_root.glob('*')):
+    if ':' in device.name or not (device / 'speed').exists():
+      continue  # interfaces carry no link state
+    state.append({'port': device.name, 'speed': read_text(device / 'speed', 32).strip(),
+                  'runtime_status': read_text(device / 'power/runtime_status', 32).strip()})
+  return state
 
 
 def collect_report(cache: Path, params: Path, usb_root: Path, repo: Path, update_log: Path) -> dict:
@@ -127,6 +149,11 @@ def collect_report(cache: Path, params: Path, usb_root: Path, repo: Path, update
   kernel = command_tail(['dmesg'], pattern=r'usb|pcie|xhci|over.?current|voltage|unavailable|permitted|denied')
   report['kernel_usb_tail'] = '\n'.join(line for line in kernel.splitlines()
                                        if re.search(r'usb|pcie|xhci|over.?current|voltage|unavailable|permitted|denied|^exit=', line, re.I))[-12000:]
+  links = usb_link_state(usb_root)
+  while links and len(json.dumps(links)) > LINK_LIMIT // 2:
+    links.pop()
+  report['usb_link_state'] = links
+  report['kernel_tail'] = kernel_tail()[-(LINK_LIMIT - len(json.dumps(links))):]
   report['download_error_tail'] = '\n'.join(line for line in read_text(update_log, tail=True).splitlines()
                                            if re.search(r'error|failed|unavailable|reject|precompiled|certificate|download|unavailable', line, re.I))[-8000:]
   report['limits'] = 'No model hashing, GPU initialization, reset or network probe. Missing evidence does not prove hardware health.'

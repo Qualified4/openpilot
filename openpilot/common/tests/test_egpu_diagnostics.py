@@ -46,6 +46,35 @@ def test_rejected_artifact_retains_failure_and_usb_evidence(evidence):
   assert (root / 'rejected').read_text() == sha  # diagnostics never repair or un-reject
 
 
+def test_kernel_tail_and_usb_link_state_are_bounded(evidence, monkeypatch):
+  usb = evidence[2]
+  for index in range(400):
+    device = usb / f'1-{index}'
+    (device / 'power').mkdir(parents=True)
+    (device / 'speed').write_text('480')
+    (device / 'power/runtime_status').write_text('suspended' if index == 0 else 'active')
+  (usb / '1-0:1.0').mkdir()  # interface: no link state
+  calls = []
+  def tail(argv, **kw):
+    calls.append(argv[0])
+    return 'exit=0\n' + '\n'.join(f'line {i} ' + 'x' * 200 for i in range(500))
+  monkeypatch.setattr(diag, 'command_tail', tail)
+  report = diag.collect_report(*evidence)
+  assert report['usb_link_state'][0] == {'port': '1-0', 'speed': '480', 'runtime_status': 'suspended'}
+  assert all(':' not in entry['port'] for entry in report['usb_link_state'])
+  assert len(json.dumps(report['usb_link_state'])) + len(report['kernel_tail']) <= diag.LINK_LIMIT
+  assert 'line 499 ' in report['kernel_tail'] and 'line 419 ' not in report['kernel_tail']
+
+
+@pytest.mark.parametrize('outputs,expected', [(['exit=1\ndmesg: read kernel buffer failed: Operation not permitted',
+                                                'exit=0\nkernel: usb 2-1: reset'], 'source=journalctl\nkernel: usb 2-1: reset'),
+                                               (['[unavailable: FileNotFoundError]', 'exit=1\nNo journal files'], 'unavailable')])
+def test_kernel_tail_falls_back_to_journal_then_unavailable(monkeypatch, outputs, expected):
+  replies = iter(outputs)
+  monkeypatch.setattr(diag, 'command_tail', lambda argv, **kw: next(replies))
+  assert diag.kernel_tail() == expected
+
+
 def test_missing_and_corrupt_metadata_remain_diagnosable(evidence):
   cache = evidence[0]
   (cache / 'state.json').write_text('{bad')
