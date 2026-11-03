@@ -75,6 +75,24 @@ def test_kernel_tail_falls_back_to_journal_then_unavailable(monkeypatch, outputs
   assert diag.kernel_tail() == expected
 
 
+def test_kernel_tail_drops_engaged_noise_before_taking_the_tail(monkeypatch):
+  lines = ['usb 1-1: reset'] + [f'[{i}] [hardware] engaged {i}' for i in range(200)] + ['xhci: event ring full']
+  monkeypatch.setattr(diag, 'command_tail', lambda argv, **kw: 'exit=0\n' + '\n'.join(lines))
+  assert diag.kernel_tail(80) == 'source=dmesg\nusb 1-1: reset\nxhci: event ring full'
+
+
+def test_python_stack_reaches_the_tmux_report(evidence):
+  cache = evidence[0]
+  root = cache / 'precompiled' / ('a' * 64)
+  root.mkdir(parents=True)
+  (root / 'installed.json').write_text(json.dumps({'pickle': {'sha256': 'a' * 64}}))
+  stack = '=== header ===\n' + 'File "precompiled_worker.py", line 163 in main\n' * 400
+  (root / 'last_failure.json').write_text(json.dumps({'error': 'precompiled eGPU worker timed out',
+                                                      'worker': {'stage': 'input_upload', 'python_stack': stack}}))
+  worker = diag.collect_report(*evidence)['artifacts'][0]['last_failure']['worker']
+  assert worker['stage'] == 'input_upload' and worker['python_stack'] == stack[-8192:]
+
+
 def test_missing_and_corrupt_metadata_remain_diagnosable(evidence):
   cache = evidence[0]
   (cache / 'state.json').write_text('{bad')

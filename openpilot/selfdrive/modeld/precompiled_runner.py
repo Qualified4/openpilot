@@ -15,7 +15,7 @@ import numpy as np
 
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
-from openpilot.selfdrive.modeld.egpu_worker_progress import worker_snapshot
+from openpilot.selfdrive.modeld.egpu_worker_progress import MEDIA_ROOT, request_stack_dump, worker_snapshot
 from openpilot.selfdrive.modeld.egpu_output_recovery import MAX_HOLD_SECONDS
 from openpilot.selfdrive.modeld.egpu_events import log_event
 
@@ -118,10 +118,20 @@ class PrecompiledModelState:
     return value
 
   def _snapshot(self):
+    # Called only once a timeout is final; the kill follows in close().
     try:
-      return worker_snapshot(Path(self.file.name + '.progress'), self.process.pid)
+      result = worker_snapshot(Path(self.file.name + '.progress'), self.process.pid, media_root=MEDIA_ROOT)
     except Exception:
       return {}  # diagnostics are optional; the fallback itself must still happen
+    try:
+      # The worker's faulthandler appends every Python stack (bounded 150 ms wait).
+      header = f"pid={self.process.pid} frame={result.get('frame')} stage={result.get('stage')}"
+      stack = request_stack_dump(self.process.pid, header, MEDIA_ROOT)
+      if stack is not None:
+        result['python_stack'] = stack
+    except Exception:
+      pass
+    return result
 
   def _late_timeout(self, waited: float):
     # The exact message keeps the failure retryable by egpu_recovery and classified by record_failure.

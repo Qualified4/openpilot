@@ -61,6 +61,8 @@ def make_model(monkeypatch, tmp_path):
     if model.process.poll() is None:
       model.process.kill()
     model.process.wait()
+    model.process.stdin.close()  # a leaked pipe fails a later test with an unraisable ResourceWarning
+    model.process.stdout.close()
 
 
 def frame(model, desire=0):

@@ -11,6 +11,7 @@ import time
 import traceback
 
 _gpu_owner = None
+_stack_dump = None
 
 
 def claim_gpu_owner():
@@ -53,7 +54,11 @@ def main():
   pkl, shared_path, width, height = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
   background_recovery = sys.argv[5:] == ['--recovery']
   # This entry point is executed by filename; keep early diagnostics stdlib-only.
-  from egpu_worker_progress import WorkerProgress
+  from egpu_worker_progress import WorkerProgress, register_stack_dump
+  # The runner sends SIGUSR1 on a final timeout: dump where every thread is stuck
+  # to persistent storage (/var is tmpfs; apport drops venv crashes). Kept open.
+  global _stack_dump
+  _stack_dump = register_stack_dump()
   progress = WorkerProgress(Path(str(shared_path) + '.progress'))
   threading.Thread(target=watch_parent, args=(parent, progress), daemon=True).start()
   manifest = json.loads((pkl.parent / 'installed.json').read_text())

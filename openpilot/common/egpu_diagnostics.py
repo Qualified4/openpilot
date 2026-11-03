@@ -16,6 +16,7 @@ PARAM_KEYS = ('UsbGpuPresent', 'UsbGpuHardwareSeen', 'UsbGpuCompiled', 'UsbGpuLo
 MARKER = '\n===== EGPU DIAGNOSTICS v1 =====\n'
 LINK_LIMIT = 8 * 1024  # unfiltered kernel tail plus USB link state, together
 KERNEL_TAIL_LINES = 80
+NOISE = '[hardware] engaged'
 
 
 def redact(text: str) -> str:
@@ -75,10 +76,12 @@ def command_tail(argv: list[str], *, cwd: Path | None = None, pattern: str | Non
 
 def kernel_tail(lines: int = KERNEL_TAIL_LINES) -> str:
   # Unfiltered: a USB stall can follow non-USB kernel lines (thermal, memory).
+  # Only the periodic '[hardware] engaged' lines are dropped; they filled all 80 lines.
   for argv in (['dmesg'], ['journalctl', '-k', '-n', str(lines), '--no-pager']):
     text = command_tail(argv)
     if text.startswith('exit=0\n'):
-      return f'source={argv[0]}\n' + '\n'.join(text.split('\n', 1)[1].splitlines()[-lines:])
+      kept = [line for line in text.split('\n', 1)[1].splitlines() if NOISE not in line]
+      return f'source={argv[0]}\n' + '\n'.join(kept[-lines:])
   return 'unavailable'
 
 
@@ -128,7 +131,7 @@ def collect_report(cache: Path, params: Path, usb_root: Path, repo: Path, update
     failure_report = select(failure, ('time', 'phase', 'rejected', 'pickle_sha256', 'error', 'boot_id', 'read_error'))
     if isinstance(failure.get('worker'), dict):
       failure_report['worker'] = select(failure['worker'], ('pid', 'stage', 'frame', 'stage_age_ms', 'thread_cpu_seconds',
-                                                         'thread_id', 'stat', 'schedstat', 'wchan'))
+                                                         'thread_id', 'stat', 'schedstat', 'wchan', 'python_stack'))
     artifacts.append({'model_sha256': root.name, 'is_active': root.name == active_sha,
                       'model_exists': model_file.is_file(), 'model_bytes': model_file.stat().st_size if model_file.is_file() else None,
                       'pickle': select(installed.get('pickle', {}) if isinstance(installed.get('pickle'), dict) else {}, ('sha256', 'size')),

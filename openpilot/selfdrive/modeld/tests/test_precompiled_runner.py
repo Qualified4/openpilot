@@ -335,3 +335,59 @@ def test_hold_protocol_keeps_old_timestamp_and_desire_without_parsing(monkeypatc
       assert model.views['desire'][1] == 1  # replay the rolled-back pulse once
   finally:
     model.process = None
+
+
+# Blocks in a pipe read like the stuck worker; registers the real SIGUSR1 stack dump or ignores SIGUSR1.
+STUCK_WORKER = """
+import signal, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from egpu_worker_progress import register_stack_dump
+if sys.argv[3] == 'dump':
+  stack = register_stack_dump(Path(sys.argv[2]))
+  assert stack is not None
+else:
+  signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+sys.stdout.buffer.write(b'ready\\n')
+sys.stdout.buffer.flush()
+sys.stdin.buffer.read(1)
+"""
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='SIGUSR1 stack dumps are Linux-only')
+@pytest.mark.parametrize('mode', ['dump', 'ignore'])
+def test_final_timeout_dumps_python_stack_then_kills_within_budget(tmp_path, monkeypatch, mode):
+  import tempfile
+  import time
+  media = tmp_path / 'media'
+  media.mkdir()
+  monkeypatch.setattr(runner, 'MEDIA_ROOT', media)
+  process = subprocess.Popen([sys.executable, '-c', STUCK_WORKER, str(Path(runner.__file__).parent), str(media), mode],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+  try:
+    assert process.stdout.readline() == b'ready\n'
+    model = object.__new__(runner.PrecompiledModelState)
+    model.process, model.failed, model.views, model.output, model.shared = process, True, {}, None, None
+    model.file = tempfile.NamedTemporaryFile(dir=tmp_path, delete=False)
+    started = time.perf_counter()
+    diagnostics = model._snapshot()
+    elapsed = time.perf_counter() - started
+    stack = diagnostics['python_stack']
+    assert stack.startswith('=== ') and f'pid={process.pid} frame=None stage=None ===' in stack.splitlines()[0]
+    if mode == 'dump':
+      assert 'File "<string>", line 13 in <module>' in stack and elapsed < .25
+    else:
+      # No dump: the wait stops at its 150 ms cap and the worker is still killed.
+      assert stack.endswith('[no Python stack within 150 ms]\n') and .15 <= elapsed < .35
+    main = diagnostics['threads'][0]
+    assert main['tid'] == process.pid
+    if isinstance(main.get('syscall_nr'), int):  # kernels without task/<tid>/syscall cannot name the fd
+      assert diagnostics['blocked_fd']['fd'] == 0 and diagnostics['blocked_fd']['target'].startswith('pipe:[')
+    assert any(peer['fd'] == process.stdin.fileno() for peer in diagnostics.get('pipe_peers', []))
+    assert len(list((media / 'egpu_timeout').glob('*.json'))) == 1
+    runner.PrecompiledModelState.close(model)
+    assert process.wait(timeout=2) == -9
+  finally:
+    if process.poll() is None:
+      process.kill()
+      process.wait()
