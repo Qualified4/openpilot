@@ -34,6 +34,35 @@
 - On 2026-10-23, merged origin/carrot-wip dfab65d0 (9 commits: Jetlink PR560-562 USB recovery/DHCP/ADB handoff,
   NAV shared input/native image/N16 projection records, Hyundai CAN-FD no-lead stop object state 2 trial) into
   ccnc-hda1 on 895c130b. Only AGENTS.md conflicted; both branches' log entries are kept.
+- On 2026-11-04, owner requests USB wrap correction and curve replay comparison.
+  Backport tinygrad42ea17d1 cast-zero USB memset rule before loading only exact
+  d39227/cb9bf2cf Light runtime; older N16/Flip ranged-store paths untouched.
+  New Light AMD warp cache tag; validation receipts hash hooks. No model/runtime
+  replacement or claimed hardware cure. 26hash-checked rlogs346631805B give
+  30284model/30276usable/25243moving frames; ALL lack yawStd/raw predictions.
+  Current ceiling vs ssh f3bf59fd negative-cap rates6.92/7.01%; assumed sigma
+  .03rad/s gives11.29/11.87, NOT measured uncertainty or braking. Corpus includes
+  retiredMD4798frames and JoiningModel without exact recorded external identity.
+  Some near-straight extra limits and nonmonotonic tighter-curve gate found.
+  Live curve policy unchanged; publish existing orientationRate stds for future
+  logs only. Desktop128 plus pinned matcher pass; eGPU41834213643 passes505+57,
+  native old3/2skip and Light5 plusWeb. Jetson41834213685 passes5+2330/56skip
+  and supporting suites/Windows; docs pass. Physical USB wrap untested.
+  No live writes/CAN/Jetson bundle. See docs/usb_wrap_curve_comparison_20261104.md.
+
+
+- On 2026-11-04, owner reports unintended steering with AutoEngage0 after the
+  Nov3 isolated stock MAIN change. Confirmed source chain OEM MainMode_ACC ->
+  main_enabled -> cruiseState.available rising -> VCruiseCarrot latEnabled ->
+  AlwaysLateral. Nov3 packet tests missed this driver-intent feedback path.
+  CameraSCC+openpilotLong now excludes OEM MAIN feedback from driver's main state;
+  AutoEngage init and physical MAIN/RES/SET still own that state. LFA off survives
+  OEM transitions. Generic cruise/controller/Panda and stock-long paths unchanged.
+  Production helper+full cruise+lateral-gate regression old7fail/2pass, new9pass;
+  combined368 desktop pass. UTF8 required for pre-existing VW metadata reads on
+  Windows. No live vehicle writes or individual complaint log validation.
+  GitPull/comma restart. See docs/ev5_cluster_corner_display.md correction.
+
 
 - On 2026-11-03, owner requests PR569 Comma Pedal review/integration with emphasis
   on unsupported vehicles. Merge head01b8bf5d into currentWip36fbbbae, preserving
