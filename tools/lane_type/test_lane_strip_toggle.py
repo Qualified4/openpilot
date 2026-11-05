@@ -20,7 +20,7 @@ from openpilot.selfdrive.carrot.lane_type.marking_daemon import Recogniser
 from tools.lane_type.test_strip_model_v4 import FIX  # noqa: TID251
 
 ROOT = Path(__file__).resolve().parents[2]
-V4_SHIPPED = '53fb243a2d89507c6e173d598bdd79526dadf2daec12a5678eb4249c0e8d5237'  # 10-27 certlabel1026 R5 small s0 (5 types)
+V4_SHIPPED = 'f452fa69a5228bcc5038cf703404b01d69ce2a798b6af3225c3218d1e6cae656'  # 11-05 certlabel1026 round1105 N s0 (5 types)
 
 
 def assets(tmp_path, v4=FIX/'strip_v4_probe.onnx', strip={'half_m': .75, 'cols': 96, 'rows': 128}):
@@ -43,9 +43,11 @@ def test_single_model_api_and_setting_removed():
   assert not hasattr(Recogniser, 'swap_model')
   assert sorted(p.name for p in strip_model.ASSETS.glob('lane_strip*')) == ['lane_strip_v4.json', 'lane_strip_v4.onnx']
   text = (ROOT/'openpilot/selfdrive/carrot_settings.json').read_text(encoding='utf-8')
-  assert re.search(r'"CcncLaneTypeDetection",\s+"CcncRadarVehicles",', text)  # nothing listed between them in CANFD·HDA any more
+  # The runtime model selector (LaneStripModel) is gone from the settings and the params; its neighbours changed since
+  # (CcncLaneCurvatureSource, CcncTrafficBackground were added after it), so check the key itself.
   keys = (ROOT/'openpilot/common/params_keys.h').read_text(encoding='utf-8')
-  assert re.search(r'\{"CcncLaneTypeDetection", \{PERSISTENT, INT, "0"\}\},\s+\{"CcncRadarMap"', keys)
+  assert '"LaneStripModel"' not in text and '"LaneStripModel"' not in keys
+  assert re.search(r'\{"CcncLaneTypeDetection", \{PERSISTENT, INT, "0"\}\}', keys) and '"CcncLaneTypeDetection"' in text
 
 
 def test_load_v4(tmp_path):
@@ -166,7 +168,7 @@ def test_daemon_without_a_model_publishes_nothing(monkeypatch, tmp_path):
 
 
 def test_shipped_v4_pair():
-  """The shipped model: 10-27 R5 small s0 (manifest v4, 5 types, w100 strip, mirror_right)."""
+  """The shipped model: 11-05 round1105 N s0 (manifest v4, 5 types, w100 strip, mirror_right)."""
   data = (strip_model.ASSETS/f'{strip_model.MODEL_NAME}.onnx').read_bytes()
   assert hashlib.sha256(data).hexdigest() == V4_SHIPPED and len(data) < 500_000
   v4 = strip_model.load(warn=pytest.fail)

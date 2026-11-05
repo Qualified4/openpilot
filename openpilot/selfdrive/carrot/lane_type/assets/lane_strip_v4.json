@@ -1,141 +1,132 @@
 {
-  "version": 4,
-  "model_sha256": "53fb243a2d89507c6e173d598bdd79526dadf2daec12a5678eb4249c0e8d5237",
-  "strip": {
-    "half_m": 1.0,
-    "cols": 128,
-    "rows": 128
-  },
-  "mirror_right": true,
-  "input": {
-    "name": "strip_ycbcr",
-    "shape": [
-      3,
-      128,
-      128
-    ],
-    "dtype": "float32"
-  },
-  "outputs": {
-    "color": [
-      "white",
-      "yellow",
-      "blue"
-    ],
-    "type": [
-      "dashed",
-      "solid",
-      "dbl_near",
-      "dbl_far",
-      "unknown"
-    ]
-  },
+ "version": 4,
+ "model_sha256": "f452fa69a5228bcc5038cf703404b01d69ce2a798b6af3225c3218d1e6cae656",
+ "strip": {
+  "half_m": 1.0,
+  "cols": 128,
+  "rows": 128
+ },
+ "mirror_right": true,
+ "input": {
+  "name": "strip_ycbcr",
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "dtype": "float32"
+ },
+ "outputs": {
+  "color": [
+   "white",
+   "yellow",
+   "blue"
+  ],
+  "type": [
+   "dashed",
+   "solid",
+   "dbl_near",
+   "dbl_far",
+   "unknown"
+  ]
+ },
+ "color_classes_trained": [
+  "white",
+  "yellow"
+ ],
+ "blue_logit_padding": -10000.0,
+ "threshold": 0.9,
+ "deviceValidated": false,
+ "training": {
+  "pool": "center",
+  "kd": 0.0,
+  "negsyn": 0.25,
+  "seed": 0,
+  "epochs": 40,
+  "batch": 256,
+  "manifest_sha256": "c2f24142580d12798256f7ce876aae839071dc2dc719102383c537df858dbba8",
+  "patch_bank_sha256": "883efdeecaa385171119f9bdadae5a6eaa2f5c293ceda03d7eb162c93f05d15d",
+  "patch_manifest_sha256": "5858e5b916d8407f81ce2fa50e37b519e27f05ed7dba03447723740d746406ab",
+  "augment_sha256": "73bf224eb191e53bcb5f255bf8abd9b539506da9fa48c69880c30e5cd16ddd63",
+  "train_strip_sha256": "6235f392535408174198efc5cc2eeef55d53a4edd76b32c48598ee46ee90cafd",
+  "teacher_checkpoint_sha256": "4bf50fca9f58612e9a43eb0bdba084a8d7bf0c548ec5fba4a204b5c416272f7a",
+  "student_checkpoint_sha256": "5bf8c55377ed2eebf8e63a93372e182b05f01ed7cdac0c27cb89eb5ff86e84ad",
+  "reference_sha256": "6102b2b94c94d8c7d489e04c5b03c849bd26d038c830f6611c70dcafbea0ba83",
+  "trainer_sha256": "e904a513b34f592167d67931d3568f671c8e4ff33aacfd566b4eadd282ff6115",
+  "teacher_sha": "e6c5f34fb84d1b184d90bda5e245ab4fc32c01b4a3f55665a7b332debb87053f",
+  "type_initial_sha": "0e22e71364b60bdb8761590d77a8b08880fa6571aef75184e76882405729e745",
+  "synth_double_probability": 0.05,
   "color_classes_trained": [
-    "white",
-    "yellow"
+   "white",
+   "yellow"
   ],
   "blue_logit_padding": -10000.0,
-  "threshold": 0.9,
-  "deviceValidated": true,
-  "training": {
-    "pool": "center",
-    "kd": 0.0,
-    "negsyn": 0.25,
-    "seed": 0,
-    "epochs": 40,
-    "batch": 256,
-    "manifest_sha256": "41d0fa2865dc9f62b12fb211a174da7d2bd416248495f5c09329465ebb3fa6df",
-    "patch_bank_sha256": "883efdeecaa385171119f9bdadae5a6eaa2f5c293ceda03d7eb162c93f05d15d",
-    "patch_manifest_sha256": "5858e5b916d8407f81ce2fa50e37b519e27f05ed7dba03447723740d746406ab",
-    "augment_sha256": "73bf224eb191e53bcb5f255bf8abd9b539506da9fa48c69880c30e5cd16ddd63",
-    "train_strip_sha256": "6235f392535408174198efc5cc2eeef55d53a4edd76b32c48598ee46ee90cafd",
-    "teacher_checkpoint_sha256": "4bf50fca9f58612e9a43eb0bdba084a8d7bf0c548ec5fba4a204b5c416272f7a",
-    "student_checkpoint_sha256": "5bf8c55377ed2eebf8e63a93372e182b05f01ed7cdac0c27cb89eb5ff86e84ad",
-    "reference_sha256": "6102b2b94c94d8c7d489e04c5b03c849bd26d038c830f6611c70dcafbea0ba83",
-    "trainer_sha256": "e904a513b34f592167d67931d3568f671c8e4ff33aacfd566b4eadd282ff6115",
-    "teacher_sha": "e6c5f34fb84d1b184d90bda5e245ab4fc32c01b4a3f55665a7b332debb87053f",
-    "type_initial_sha": "0e22e71364b60bdb8761590d77a8b08880fa6571aef75184e76882405729e745",
-    "synth_double_probability": 0.05,
-    "color_classes_trained": [
-      "white",
-      "yellow"
-    ],
-    "blue_logit_padding": -10000.0,
-    "blue_hue_shift": false,
-    "note": "negative after synth_double only unchanged white/yellow singles; all changed samples excluded from KD; no product install",
-    "double_rare_cap": 3.0,
-    "reference_trainer_sha256": "1a927c48e7b2c4a011233a1d709eb3c40302e549d1cc05d3b4198e4503fc726d",
-    "common_fast_sha256": "0730706c0c584cbb124590e1e182a88ca08e63b312047534cbda318410f0c932",
-    "resident_uint8": true,
-    "shuffle": "gpu",
-    "teacher_skipped_at_kd0": true,
-    "engine": "trainfast-v1",
-    "label_fixes_sha256": "0d5030166fae7ec0eefe5a06ffbb73da7125418b1d74f35f43d8030ea6c7bdae",
-    "packed_complete_sha256": "30cf167d18a1b9842318f2400cf067474fa17e11f67695859575c1ea7fa5f4d6",
-    "estimated_augmented_mass": null,
-    "type_weights": [
-      0.36465927958488464,
-      0.5519639849662781,
-      1.3749349117279053,
-      1.3749349117279053,
-      0.6651941537857056
-    ],
-    "color_weights": [
-      0.5927643179893494,
-      3.195002794265747
-    ],
-    "double_weight_scale": null,
-    "variant": "H",
-    "manifest": ".analysis/ccnc-field-412-20261022/claude/certlabel1026/data/manifest-hr1027.jsonl",
-    "reviewed": true,
-    "capacity": "small",
-    "types4": false,
-    "type_classes": [
-      "dashed",
-      "solid",
-      "dbl_near",
-      "dbl_far",
-      "unknown"
-    ],
-    "unknown_rows": "type -100: masked from type/colour loss and denominator; abstention metric only",
-    "type_head_init": "pretrained 5-type head rows dashed/solid/dbl_near/dbl_far copied, unknown row dropped (train_fast.student4)",
-    "negsyn_labels": "unchanged (negsyn pastes nuisance paint beside dashed/solid white/yellow lines; labels are never modified)",
-    "unknown_share": null,
-    "dbl_max_share": 0.2,
-    "selection": "validation (type4 macro F1 + colour macro F1)/2",
-    "cert_experiment_sha256": "cb4ca4016051bd99ee01f565bd79e24f52fc6edb7085a2fb8ef7341ffbaeeb93",
-    "train_fast_sha256": "54d104e7c966d103cb85ae76927c77f5e200b893cd7aa594f93eac743dfdf685",
-    "parameters": 34079,
-    "source": ".analysis/ccnc-field-412-20261022/claude/certlabel1026/data/training/R5_small_s0"
-  },
-  "onnx_parity": {
-    "onnxruntime_max_abs": 9.5367431640625e-06,
-    "opencv_max_abs": 7.62939453125e-06,
-    "yellow_probability_max_abs": 0.0,
-    "padding_only_yellow_probability_max_abs": 0.0,
-    "blue_logit": -10000.0,
-    "batch_sizes": [
-      1,
-      3,
-      8
-    ]
-  },
-  "elapsed_s": 190.46362963299998,
-  "params": 34079,
-  "replacement": {
-    "date": "2026-10-27",
-    "requested_model": "Claude certlabel1026 R5 small s0",
-    "previous_sha256": "23ff1bc749421977e400977e9d14e70dd2e30ab59391a0a59e890f7051f9afb7",
-    "scope": "Repository asset replacement; no device install or device validation."
-  },
-  "device_validation": {
-    "date": "2026-10-28",
-    "commit": "3b08adad",
-    "route": "42d",
-    "device_replay_agreement": 0.9884143711098786,
-    "user_score": 95,
-    "processing_p50_ms": 30.1873575,
-    "source": ".analysis/ccnc-field-412-20261022/claude/drive1028/analysis.json",
-    "scope": "Previously recorded drive and user assessment; this round did not access a device."
-  }
+  "blue_hue_shift": false,
+  "note": "negative after synth_double only unchanged white/yellow singles; all changed samples excluded from KD; no product install",
+  "double_rare_cap": 3.0,
+  "reference_trainer_sha256": "1a927c48e7b2c4a011233a1d709eb3c40302e549d1cc05d3b4198e4503fc726d",
+  "common_fast_sha256": "0730706c0c584cbb124590e1e182a88ca08e63b312047534cbda318410f0c932",
+  "resident_uint8": true,
+  "shuffle": "gpu",
+  "teacher_skipped_at_kd0": true,
+  "engine": "trainfast-v1",
+  "label_fixes_sha256": "c749794fc96b62801ee6b732433443e1abe8d694557eea03f8b325de892e7daf",
+  "packed_complete_sha256": "30cf167d18a1b9842318f2400cf067474fa17e11f67695859575c1ea7fa5f4d6",
+  "estimated_augmented_mass": null,
+  "type_weights": [
+   0.36465927958488464,
+   0.5519639849662781,
+   1.3749349117279053,
+   1.3749349117279053,
+   0.6651941537857056
+  ],
+  "color_weights": [
+   0.5927643179893494,
+   3.195002794265747
+  ],
+  "double_weight_scale": null,
+  "variant": "N",
+  "manifest": ".analysis/ccnc-field-412-20261022/claude/certlabel1026/round1105/manifest-N.jsonl",
+  "reviewed": true,
+  "capacity": "small",
+  "types4": false,
+  "type_classes": [
+   "dashed",
+   "solid",
+   "dbl_near",
+   "dbl_far",
+   "unknown"
+  ],
+  "unknown_rows": "type -100: masked from type/colour loss and denominator; abstention metric only",
+  "type_head_init": "pretrained 5-type head rows dashed/solid/dbl_near/dbl_far copied, unknown row dropped (train_fast.student4)",
+  "negsyn_labels": "unchanged (negsyn pastes nuisance paint beside dashed/solid white/yellow lines; labels are never modified)",
+  "unknown_share": null,
+  "dbl_max_share": 0.2,
+  "selection": "validation (type4 macro F1 + colour macro F1)/2",
+  "cert_experiment_sha256": "303c293f44fbcef3c9d662c8dc264d2e64f93236d9e299f044dad856e825b3fc",
+  "train_fast_sha256": "54d104e7c966d103cb85ae76927c77f5e200b893cd7aa594f93eac743dfdf685",
+  "parameters": 34079
+ },
+ "onnx_parity": {
+  "onnxruntime_max_abs": 8.58306884765625e-06,
+  "opencv_max_abs": 9.5367431640625e-06,
+  "yellow_probability_max_abs": 0.0,
+  "padding_only_yellow_probability_max_abs": 0.0,
+  "blue_logit": -10000.0,
+  "batch_sizes": [
+   1,
+   3,
+   8
+  ]
+ },
+ "elapsed_s": 288.98414279100007,
+ "params": 34079,
+ "replacement": {
+  "date": "2026-11-05",
+  "requested_model": "Claude certlabel1026 round1105 N s0 (product set + 11-04 night auto rows)",
+  "source": ".analysis/ccnc-field-412-20261022/claude/certlabel1026/round1105/candidate/model.{onnx,json}",
+  "previous_sha256": "53fb243a2d89507c6e173d598bdd79526dadf2daec12a5678eb4249c0e8d5237",
+  "evidence": ".analysis/ccnc-field-412-20261022/claude/latchcombo1105/REPORT_KO.md (N_s0+F0: 6-set 164.27 s vs 165.36, style changes -2.5%, rain holdout 322/322)",
+  "scope": "Repository asset replacement on user request; not yet validated on the device."
+ }
 }

@@ -219,17 +219,17 @@ def test_v4_4type_mapping_and_abstention(tmp_path):
     assert m.decide4(np.log([.85, .05, .10, .00001]), np.log([.03, .96, .01]))['reason'] == 'unknown'
 
 
-def test_shipped_product_manifest_is_the_5type_r5_small_s0_model():
-  """DaBin 10-27: ship R5 small s0 (unknown argmax abstains); HOLD_BY_FAMILY only acts on 4-type manifests."""
+def test_shipped_product_manifest_is_the_5type_n_s0_model():
+  """DaBin 11-05: ship round1105 N s0 (R5 small recipe + 11-04 night rows; unknown argmax abstains); HOLD_BY_FAMILY only acts on
+  4-type manifests."""
   m = strip_model.StripModel()
   assert strip_model.HOLD_BY_FAMILY is True and strip_model.HOLD_COLOR is False
   assert (m.v4, m.mirror_right, m.threshold, m.heads) == (True, True, .9, ['type', 'color'])
   manifest = json.loads((strip_model.ASSETS/f'{strip_model.MODEL_NAME}.json').read_text(encoding='utf-8'))
   assert manifest['outputs'] == strip_model.OUTPUTS_V4 and manifest['params'] == 34079
   assert manifest['training']['seed'] == 0 and manifest['training']['capacity'] == 'small'
-  assert manifest['deviceValidated'] is True  # Existing R5: user-confirmed 10-28 drive.
-  assert manifest['device_validation']['commit'] == '3b08adad'
-  assert manifest['device_validation']['route'] == '42d'
+  assert manifest['deviceValidated'] is False  # N s0 has not been validated on the device yet.
+  assert manifest['replacement']['previous_sha256'].startswith('53fb243a2d89')
   assert strip_model.onnx_output_shape((strip_model.ASSETS/f'{strip_model.MODEL_NAME}.onnx').read_bytes(), 'type') == [None, 5]
   types, colors = m.forward([np.full((3, 128, 128), 100., np.float32)])
   assert types.shape == (1, 5) and colors.shape == (1, 3)
