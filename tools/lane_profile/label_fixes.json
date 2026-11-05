@@ -62398,6 +62398,16 @@
       "reason": "user excluded in blue1026 crop review (option 8: bumper / not a lane line), whole scene",
       "reviewer": "user",
       "evidence": ".analysis/ccnc-field-412-20261022/claude/autolabel1026/blue1026/judgements.json#B025"
+    },
+    {
+      "id": "HUM1030-X-439s3R-crosswalk-1025900000000",
+      "route_segment": "00000439--b001933fc3--3",
+      "side": "right",
+      "start_s": 1025.9,
+      "end_s": 1027.9,
+      "reason": "user confirmed 2026-11-05: crosswalk / yellow kerb at a crossing, not a lane line (auto_cert judged dashed/yellow, judge frames 64-74, eof 1026.417-1026.919 s; window padded 0.5 s before, 1 s after)",
+      "reviewer": "user",
+      "evidence": ".analysis/ccnc-lane-additions-20261030/review/dashed_yellow_439_3_71_right.jpg"
     }
   ],
   "exclusion_rule": "Frames of route--segment/side with eof_s in [start_s, end_s] are dropped from type and colour scoring (manifest rows and card-replay truth alike).",
