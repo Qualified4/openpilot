@@ -140,3 +140,107 @@ def test_f1d1_travel_without_probabilities_does_not_count():
   assert f.sides['left'].latched['type'][0] == 'solid'
   assert feed(f, .99, .01, 1, start=14, metres=.5)['type'] == 'solid'  # 7.0: 0.5 m counted (2.0 m without the pause)
   assert feed(f, .99, .01, 1, start=15, metres=.5)['type'] == 'dashed'  # 7.5: 1.0 m of confident travel
+
+
+# latchdecay1105 graded latch ('A8/4L-G' / '-Gs' / '-Gf', replays only; graded=False is the default)
+def test_graded_is_off_by_default():
+  for f in (sf.make('A8/4L'), sf.make('A8/4L-legacy'), Recogniser(2).strip_filter):
+    assert f.graded is False
+  assert sf.VARIANTS['A8/4L-G'] == dict(sf.VARIANTS['A8/4L'], graded=True, **sf.GRADED)
+  assert (sf.VARIANTS['A8/4L-Gs']['g_opp'], sf.VARIANTS['A8/4L-Gf']['g_opp']) == (24., 6.)
+  with pytest.raises(ValueError):
+    sf.StripFilter('asym', graded=True)  # needs the latch
+
+
+def test_graded_without_decay_equals_the_default():
+  """At strength 1 (decay lengths huge) the graded colour rule is exactly 0.90 on 10 frames and the type never expires."""
+  rng = np.random.default_rng(0)
+  a = sf.make('A8/4L'); b = sf.StripFilter(**dict(sf.VARIANTS['A8/4L-G'], g_same=1e12, g_neutral=1e12, g_opp=1e12))
+  for i in range(3000):
+    p = None if rng.random() < .1 else float(rng.choice([rng.random(), .01, .99, .3, .7]))
+    py = None if p is None else float(rng.choice([rng.random(), .01, .99, .2, .8]))
+    reason = 'lane_change' if rng.random() < .003 else 'strip_model' if p is not None else 'lane_prob_dip'
+    r = filter_input('dashed' if p and p > .5 else 'solid', 'yellow' if py and py > .5 else 'white', .99, .99, i*NS, reason=reason)
+    assert a.update('left', r, p, i*NS, i*.8, py) == b.update('left', r, p, i*NS, i*.8, py), i
+
+
+def test_graded_strength_decays_by_travel():
+  f = sf.make('A8/4L-G')
+  feed(f, .01, .01, 10)  # solid / white latched, strength 1
+  s = f.sides['left']
+  assert s.strength == {'type': 1., 'color': 1.}
+  feed(f, None, None, 30, start=10, reason='lane_prob_dip')  # 30 m without probabilities: neutral length 30 m
+  assert s.strength['type'] == pytest.approx(np.exp(-1.)) and s.strength['color'] == pytest.approx(np.exp(-1.))
+  for k in range(5):  # no travel, no decay
+    f.update('left', filter_input('unknown', 'unknown', 0., 0., (40 + k)*NS, reason='lane_prob_dip'), None, (40 + k)*NS, 39., None)
+  assert s.strength['type'] == pytest.approx(np.exp(-1.))
+  feed(f, .01, .01, 1, start=45, metres=39./45)  # a confident frame of the latched labels restores strength 1
+  assert s.strength == {'type': 1., 'color': 1.}
+
+
+def test_graded_colour_switch_relaxes_with_strength():
+  """Yellow latched, then a 0.75-confident white window: the default keeps yellow, the graded latch turns white once
+  0.65 + 0.25 * strength <= 0.75 (strength <= 0.4, ~11 m at 12 m) on its (rounded) 3 + 7 * strength consecutive frames."""
+  got = {}
+  for name in ('A8/4L', 'A8/4L-G'):
+    f = sf.make(name)
+    feed(f, .01, .99, 20)
+    got[name] = [feed(f, .01, .25, 1, start=20 + k)['color'] for k in range(40)]
+  assert set(got['A8/4L']) == {'yellow'}
+  k = got['A8/4L-G'].index('white')
+  assert 12 <= k <= 25 and set(got['A8/4L-G'][k:]) == {'white'} and set(got['A8/4L-G'][:k]) == {'yellow'}
+
+
+def test_graded_colour_expiry_keeps_the_latch():
+  f = sf.make('A8/4L-G')
+  feed(f, .01, .99, 20)
+  got = [feed(f, .01, .37, 1, start=20 + k)['color'] for k in range(40)]  # 0.63 white: below c_min, never switchable
+  assert got[0] == 'yellow' and got[-1] == 'unknown' and 'white' not in got
+  assert f.sides['left'].latched['color'][0] == 'yellow'
+
+
+def test_graded_type_expiry_shows_unknown_then_relatches():
+  """Dashed latched, then P(dashed) 0.3 (not a confident solid): the default keeps dashed; the graded latch expires after
+  ~12 * ln 5 = 19 m on the opposite side: type unknown, latch emptied; the next confident solid latches at once."""
+  got = {}
+  for name in ('A8/4L', 'A8/4L-G'):
+    f = sf.make(name)
+    feed(f, .99, .01, 20)
+    got[name] = [feed(f, .3, .01, 1, start=20 + k)['type'] for k in range(40)]
+  assert set(got['A8/4L']) == {'dashed'}
+  k = got['A8/4L-G'].index('unknown')
+  assert 18 <= k <= 24 and set(got['A8/4L-G'][k:]) == {'unknown'} and 'solid' not in got['A8/4L-G']
+  assert 'type' not in f.sides['left'].latched
+  assert feed(f, .01, .01, 8, start=60)['type'] == 'solid'
+
+
+def test_graded_type_neutral_window_does_not_expire():
+  f = sf.make('A8/4L-G')
+  feed(f, .99, .01, 20)
+  assert {feed(f, .45, .01, 1, start=20 + k)['type'] for k in range(60)} == {'dashed'}  # neutral (|m - .5| < .1): decay only
+
+
+# latchcombo1105: g_type_expire=False ('A8/4L-GsC') = graded colour only, plain type latch
+def test_graded_colour_only_keeps_the_type_latch():
+  assert sf.StripFilter(**sf.VARIANTS['A8/4L-Gs']).g_type_expire is True and sf.make('A8/4L').g_type_expire is True
+  assert sf.VARIANTS['A8/4L-GsC'] == dict(sf.VARIANTS['A8/4L-Gs'], g_type_expire=False)
+  got = {}
+  for name in ('A8/4L', 'A8/4L-Gs', 'A8/4L-GsC'):
+    f = sf.make(name)
+    feed(f, .99, .01, 20)
+    got[name] = [feed(f, .3, .01, 1, start=20 + k)['type'] for k in range(80)]
+  assert 'unknown' in got['A8/4L-Gs'] and got['A8/4L-GsC'] == got['A8/4L'] == ['dashed']*80
+
+
+def test_graded_colour_only_type_equals_default_and_colour_equals_gs():
+  """Random stream: GsC's type output is the default's, its colour output Gs's."""
+  rng = np.random.default_rng(1)
+  a, g, c = sf.make('A8/4L'), sf.make('A8/4L-Gs'), sf.make('A8/4L-GsC')
+  for i in range(3000):
+    p = None if rng.random() < .1 else float(rng.choice([rng.random(), .01, .99, .3, .7, .45]))
+    py = None if p is None else float(rng.choice([rng.random(), .01, .99, .2, .8, .3, .7]))
+    reason = 'lane_change' if rng.random() < .003 else 'strip_model' if p is not None else 'lane_prob_dip'
+    r = filter_input('dashed' if p and p > .5 else 'solid', 'yellow' if py and py > .5 else 'white', .99, .99, i*NS, reason=reason)
+    ra, rg, rc = (f.update('left', r, p, i*NS, i*.8, py) for f in (a, g, c))
+    assert (rc['type'], rc['typeConfidence']) == (ra['type'], ra['typeConfidence']), i
+    assert (rc['color'], rc['colorConfidence']) == (rg['color'], rg['colorConfidence']), i

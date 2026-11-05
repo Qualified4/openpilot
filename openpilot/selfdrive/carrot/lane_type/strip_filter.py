@@ -56,8 +56,22 @@ enters no window and keeps the camera stamp chain (no gap). Distance windows are
 DistanceEvidence's 3 s, so a stopped car does not hold old frames indefinitely. The model's 0.90 head threshold is
 applied to the filtered confidence (type_conf: max(mean, 1 - mean), or |mean - 0.5| * 2 when 'abs'), as StripModel.decide
 applies it to the raw one.
+Graded latch (``graded=True``; latchdecay1105, replays only, variants 'A8/4L-G' / '-Gs' / '-Gf'; off by default): per side and head
+(type, colour) a latch strength in [0, 1] is 1 when the head (re)latches or a frame is confident (the normal 0.90 rule) of the
+latched label, and otherwise decays by travel, strength *= exp(-d / L): L = g_same while the head's window mean is on the latched
+label's side by >= g_band, g_neutral within g_band of 0.5 (and on frames without probabilities: lane_prob_dip, model abstention),
+g_opp on the other side by >= g_band; no travel, no decay. The type head's mean is the asym window mean it decided on (P(dashed)),
+the colour head's the colour window mean P(yellow). Colour: the other colour replaces the latched one once its window confidence
+reaches g_cmin + (0.90 - g_cmin) * strength on g_nmin + (COLOR_LATCH_FRAMES - g_nmin) * strength (rounded half up) consecutive
+frames (at strength 1 exactly the default rule). Type: the change rule is unchanged; the latch expires when its strength is below
+g_expire and the window mean is on the other side: the side shows type unknown and the type latch is emptied (so a 0.4-0.55 window
+cannot bring the stale type back; the next confident type latches at once, as after a reset). Colour expiry (strength below
+g_expire, window on the other side, not yet switchable) shows colour unknown but keeps the colour latch, so the relaxed switch can
+still happen. ``g_type_expire=False`` (variant 'A8/4L-GsC' = Gs colour only; latchcombo1105): the graded rule is applied to the
+colour head only; the type head uses the plain latch (no type decay, no type expiry).
 """
 from collections import deque
+import math
 
 from openpilot.selfdrive.carrot.lane_type.temporal import WINDOW_NS
 
@@ -72,6 +86,7 @@ COLOR_LATCH_FRAMES = 10  # consecutive confident frames of the other colour befo
 # day after the on-road check (drive 425, rollback1026): |mean - 0.5| * 2 and no confirmation again. F1d1 stays as 'A8/4L-F1+d1'.
 TYPE_CONF = 'abs'
 TYPE_LATCH_M = None
+GRADED = dict(g_same=60., g_neutral=30., g_opp=12., g_band=.1, g_cmin=.65, g_nmin=3, g_expire=.2)  # latchdecay1105 base set (replays only)
 
 
 def p_dashed(model_result):
@@ -100,6 +115,7 @@ class _Side:
     self.flip_odometer = None  # color_latch_m: odometer of the first frame of that run
     self.tflips, self.tflip_odometer, self.odometer = 0, None, None  # type_latch_frames / type_latch_m (A/B only)
     self.last_stamp = None
+    self.strength, self.g_mean, self.g_odometer, self.g_dist = {}, {}, None, 0.  # graded latch (replays only)
 
   def clear(self):
     self.items.clear()
@@ -108,11 +124,14 @@ class _Side:
     self.latched.clear()
     self.flips = 0
     self.tflips = 0
+    self.strength.clear()
+    self.g_mean.clear()
 
 
 class StripFilter:
   def __init__(self, kind='none', n=5, m=12., long_m=12., short_m=4., threshold=THRESHOLD, color_m=None, latch=False,
-               type_conf='abs', color_latch_frames=None, color_latch_m=None, hold_latch=False, type_latch_frames=None, type_latch_m=None):
+               type_conf='abs', color_latch_frames=None, color_latch_m=None, hold_latch=False, type_latch_frames=None, type_latch_m=None,
+               graded=False, g_same=60., g_neutral=30., g_opp=12., g_band=.1, g_cmin=.65, g_nmin=3, g_expire=.2, g_type_expire=True):
     if kind not in ('none', 'median', 'distance', 'asym') or type_conf not in ('abs', 'max'):
       raise ValueError(kind)
     self.kind, self.n, self.m, self.long_m, self.short_m, self.threshold = kind, n, m, long_m, short_m, threshold
@@ -120,6 +139,10 @@ class StripFilter:
     self.color_latch_frames = COLOR_LATCH_FRAMES if color_latch_frames is None else color_latch_frames  # replays set 1 (7c5ba9cb)
     self.type_conf, self.color_latch_m, self.hold_latch = type_conf, color_latch_m, hold_latch
     self.type_latch_frames, self.type_latch_m = type_latch_frames, type_latch_m  # A/B F1h/F1d: None = change on the first frame
+    if graded and not latch:
+      raise ValueError('graded needs latch')
+    self.graded, self.g_same, self.g_neutral, self.g_opp, self.g_band = graded, g_same, g_neutral, g_opp, g_band
+    self.g_cmin, self.g_nmin, self.g_expire, self.g_type_expire = g_cmin, g_nmin, g_expire, g_type_expire
     self.sides = {}
 
   def reset(self):
@@ -131,6 +154,8 @@ class StripFilter:
     (color_latch_m: once the run of consecutive confident frames of the other colour spans that many metres)."""
     if not self.latch:
       return label, confidence, confident
+    if self.graded and (head == 'color' or self.g_type_expire):  # g_type_expire False: the type head keeps the plain latch
+      return self._latch_graded(s, head, label, confidence, confident)
     if head == 'color':
       if confident and head in s.latched and s.latched[head][0] != label:
         s.flips += 1
@@ -159,6 +184,45 @@ class StripFilter:
       return (*s.latched[head], True)
     return label, confidence, confident
 
+  def _decay(self, s, head, m):
+    """graded: decay the head's latch strength by this frame's travel; -> 1 / 0 / -1 = window mean m on the latched label's side,
+    neutral (or m None: no probabilities), on the other side; None without a latch."""
+    if head not in s.latched:
+      return None
+    signed = 0. if m is None else (m - .5 if s.latched[head][0] in ('dashed', 'yellow') else .5 - m)
+    side = 1 if signed >= self.g_band else -1 if signed <= -self.g_band else 0
+    if s.g_dist > 0:
+      s.strength[head] = s.strength.get(head, 1.)*math.exp(-s.g_dist/(self.g_neutral, self.g_same, self.g_opp)[side])
+    return side
+
+  def _latch_graded(self, s, head, label, confidence, confident):
+    """graded latch (see the module docstring); the type head changes as the default latch does."""
+    side = self._decay(s, head, s.g_mean.get(head))
+    strength = s.strength.get(head, 1.)
+    if head == 'color':
+      if head in s.latched and label in ('white', 'yellow') and label != s.latched[head][0]:
+        if confidence >= self.g_cmin + (self.threshold - self.g_cmin)*strength:
+          s.flips += 1
+          if s.flips >= int(self.g_nmin + (self.color_latch_frames - self.g_nmin)*strength + .5):
+            s.flips = 0
+            s.latched[head], s.strength[head] = (label, confidence), 1.
+            return label, confidence, True
+        else:
+          s.flips = 0
+        if side == -1 and strength < self.g_expire:
+          return 'unknown', 0., False  # expired: the latch is kept for the relaxed switch
+        return (*s.latched[head], True)
+      s.flips = 0
+    if confident:
+      s.latched[head], s.strength[head] = (label, confidence), 1.
+    elif head in s.latched:
+      if head == 'type' and side == -1 and strength < self.g_expire:
+        del s.latched[head]
+        s.strength.pop(head, None)
+        return 'unknown', 0., False
+      return (*s.latched[head], True)
+    return label, confidence, confident
+
   def _typed(self, result, kind, confidence, stamp, s=None):
     out = dict(result)
     confident = kind in ('dashed', 'solid') and confidence >= self.threshold
@@ -184,12 +248,19 @@ class StripFilter:
     if p is None and s.tflips and s.odometer is not None:
       s.tflip_odometer += odometer - s.odometer  # paused: travel to a frame without P(dashed) does not count toward type_latch_m
     s.odometer = odometer
+    if self.graded:
+      s.g_dist = 0. if s.g_odometer is None else max(0., odometer - s.g_odometer)
+      s.g_odometer = odometer
     if result.get('reason') in RESET_REASONS:
       return result
     out = result if self.kind == 'none' else self._type(s, result, p, stamp, odometer)
+    if self.graded and p is None:
+      self._decay(s, 'type', None)
     if self.hold_latch and p is None and result.get('reason') == 'unknown' and 'type' in s.latched:
       out = self._typed(out, 'unknown', 0., stamp, s)  # F3b: the abstaining model's side shows the latched type
     out = out if self.color_m is None else self._color(s, out, py, stamp, odometer)
+    if self.graded and py is None:
+      self._decay(s, 'color', None)
     if self.hold_latch and py is None and result.get('reason') == 'unknown' and 'color' in s.latched:
       out = dict(out, color=s.latched['color'][0], colorConfidence=float(s.latched['color'][1]), colorMonoTimeNanos=stamp)
     return out
@@ -205,6 +276,7 @@ class StripFilter:
     m = sum(q*w for _, _, q, w in s.colors)/total if total > 0 else .5
     confidence = max(m, 1. - m)  # the winning side's mean probability, as a raw decision's confidence
     color = 'yellow' if m > .5 else 'white' if m < .5 else 'unknown'
+    s.g_mean['color'] = m
     confident = color != 'unknown' and confidence >= self.threshold
     color, confidence, confident = self._latch(s, 'color', color, confidence, confident, odometer)
     out = dict(result)
@@ -240,6 +312,7 @@ class StripFilter:
       return sum(q*w for q, w in xs)/total if total > 0 else .5
     if self.kind == 'distance':
       m = mean(self.m)
+      s.g_mean['type'] = m
       return self._typed(result, 'dashed' if m > .5 else 'solid' if m < .5 else 'unknown', self._conf(m), stamp, s)
     short, long = mean(self.short_m), mean(self.long_m)
     if s.state == 'dashed':
@@ -258,6 +331,7 @@ class StripFilter:
       while s.items and odometer - s.items[0][1] > self.short_m:
         s.items.popleft()
     s.state = kind
+    s.g_mean['type'] = m
     return self._typed(result, kind or 'unknown', self._conf(m), stamp, s)
 
   def _conf(self, m):
@@ -281,6 +355,10 @@ _AB = {'F1': {'type_conf': 'max'}, 'F2': {'color_latch_frames': 3}, 'F2b': {'col
        'F5': {'color_m': 4.}, 'h2': {'type_latch_frames': 2}, 'h3': {'type_latch_frames': 3}, 'd1': {'type_latch_m': 1.}}
 for _names in (('F1', 'h2'), ('F1', 'h3'), ('F1', 'd1'), ('F1',), ('F2',), ('F2b',), ('F3b',), ('F5',), ('F1', 'F2'), ('F1', 'F2', 'F5'), ('F1', 'F2', 'F3b'), ('F1', 'F2', 'F3b', 'F5')):
   VARIANTS['A8/4L-' + '+'.join(_names)] = dict(VARIANTS['A8/4L-legacy'], **{k: v for n in _names for k, v in _AB[n].items()})
+# latchdecay1105 graded latch (replays only): base decay lengths, x2 slower (Gs), x0.5 faster (Gf); thresholds unchanged
+for _name, _k in (('G', 1.), ('Gs', 2.), ('Gf', .5)):
+  VARIANTS['A8/4L-' + _name] = dict(VARIANTS['A8/4L'], graded=True, **dict(GRADED, **{g: GRADED[g]*_k for g in ('g_same', 'g_neutral', 'g_opp')}))
+VARIANTS['A8/4L-GsC'] = dict(VARIANTS['A8/4L-Gs'], g_type_expire=False)  # latchcombo1105: Gs colour relaxation / expiry only
 
 
 def make(name):
