@@ -373,7 +373,9 @@ class Controls:
     hudControl.leadDistanceBars = self.sm['selfdriveState'].personality.raw + 1
     hudControl.visualAlert = self.sm['selfdriveState'].alertHudVisual
     hudControl.driverMonitoringAlert = driver_monitoring_hud_alert(self.sm)
-    hudControl.trafficState = self.sm['longitudinalPlan'].trafficState
+    # Cluster stop/go background input: 1 while the planner owns a stop (xState e2eStop 3 / e2eStopped 5).
+    # The latched xState replaces the per-frame model traffic prediction, which flickered the background.
+    hudControl.trafficState = 1 if self.sm['longitudinalPlan'].xState in (3, 5) else 0
 
     radarState = self.sm['radarState']
     leadOne = radarState.leadOne

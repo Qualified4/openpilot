@@ -264,7 +264,7 @@ This category contains 24 menu settings, two sub-options on the **CCNC HDA1 rada
 | [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes · Off (0) / Standard (1) / Refined (2), default 0 |
 | [CCNC display](#ccnc-display) | `CcncLaneCurvatureSource` | CCNC lane curvature display · Off (0) / Steering angle (1) / Model with lateral (2) / Always model (3), default 2 |
 | [CCNC display](#ccnc-display) | `CcncLaneTypeDetection` | CCNC lane type & color display · Off(0) / On(1), default 0 |
-| [CCNC display](#ccnc-display) | `CcncTrafficBackground` | CCNC traffic light background · Red (5) on a stop decision, green (8) for 2 s after a go decision; default ON (1). Unverified on the Sonata; turn off if not shown |
+| [CCNC display](#ccnc-display) | `CcncTrafficBackground` | CCNC stop/go background · Red (5) while stopping or stopped, green (8) for 2.5 s when pulling away from a stop; default ON (1). Unverified on the Sonata; turn off if not shown |
 | [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Includes virtual rear handover; default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | Vehicle position correction · Sub-option of radar vehicles, default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncRadarMap` | Radar map · Sub-option of radar vehicles, default OFF (0) |
@@ -314,7 +314,7 @@ A saved change takes effect at the **next vehicle-parameter initialization**; it
 <a id="ccnc-display"></a>
 ### CCNC instrument cluster display
 
-Under **Vehicle and hardware → CAN FD/HDA**, configure the CCNC display options. **Vehicle position correction** and **Radar map** are on the detail screen opened from **CCNC HDA1 radar vehicles**; they have no effect while radar vehicles is off (the screen does not grey them out). All except lane curvature display (default Model with lateral) and traffic light background (default on) are off by default, and changes appear within about one second.
+Under **Vehicle and hardware → CAN FD/HDA**, configure the CCNC display options. **Vehicle position correction** and **Radar map** are on the detail screen opened from **CCNC HDA1 radar vehicles**; they have no effect while radar vehicles is off (the screen does not grey them out). All except lane curvature display (default Model with lateral) and stop/go background (default on) are off by default, and changes appear within about one second.
 
 #### CCNC acceleration/mode lane color
 
@@ -361,9 +361,11 @@ Strip extraction plus inference in its separate process, measured on the device 
 
 This option changes only the cluster display. It does not change the lane-change logic, steering or the driving model; whether a lane change is allowed changes only while `LaneChangeYellowSolid` (Block lane change at yellow solid, default on) is on: while that side shows a yellow solid line, the lane change waits as it does for BSD, and held, white, dashed or expired results never block. Onroad device load and recognition accuracy on the road are not yet measured.
 
-#### CCNC traffic light background
+#### CCNC stop/go background
 
-Shows carrot's traffic light decision (`longitudinalPlan.trafficState`) as the cluster background. While the model decides to stop, the background is **steady red** (5); after it decides to go, it is **steady green** (8) for **2 s**; otherwise the normal background (cruise/steering state, flashing red during a turn) is used. A traffic light decision takes priority over the turn background. On by default; off keeps the normal background.
+Shows what the car is about to do as the cluster background. While openpilot owns a stop, slowing for it or holding it (`longitudinalPlan.xState` stop/stopped), and while the car is stopped, the background is **steady red** (5); when the car pulls away from a red stop, it is **steady green** (8) for **2.5 s**; otherwise the normal background (cruise/steering state, flashing red during a turn) is used. Red and green take priority over the turn background.
+
+It does not follow the model's per-frame traffic prediction, so it does not flicker. A colour changes only after its condition lasts 0.5 s, stays at least 1.5 s, and red clears 1 s after its condition ends. Green shows once, when pulling away from a stop. On by default; off keeps the normal background.
 
 Values 5 and 8 were confirmed on an Ioniq 5 PE cluster and are not verified on the Sonata. Turn this off if the background does not show or looks wrong. Display only; stopping and starting behavior is unchanged.
 

@@ -64,19 +64,22 @@ def test_traffic_background_option(display, toggle):
   # CcncTrafficBackground off: the light is ignored and the normal background stays.
   params, cs, send = display
   params[TRAFFIC_KEY] = toggle
-  main._traffic_display_state.last, main._traffic_display_state.green_until = 0, 0
+  main._stop_go_background.reset()
 
-  def background(frame, traffic_state):
-    send.hud.trafficState = traffic_state
+  def background(frame, stop_intent, standstill=False, v_ego=5.):
+    send.hud.trafficState = 1 if stop_intent else 0
+    cs.out.standstill, cs.out.vEgo = standstill, v_ego
     return dict(send(frame))["ADRV_0x161"]["BACKGROUND"]
 
-  normal = background(0, 0)
+  normal = background(0, False)
   assert normal not in (5, 8)
-  assert background(5, 1) == (5 if toggle else normal)       # red
-  assert background(10, 2) == (8 if toggle else normal)      # turned green
-  assert background(205, 2) == (8 if toggle else normal)
-  assert background(210, 2) == normal                        # 2 s after green: normal
-  assert background(215, 0) == normal
+  assert background(10, True) == normal                     # stop intent not yet sustained
+  assert background(60, True) == (5 if toggle else normal)  # red
+  assert background(300, True, True, 0.) == (5 if toggle else normal)
+  assert background(400, False, False, 3.) == (5 if toggle else normal)
+  assert background(420, False, False, 3.) == (8 if toggle else normal)  # pulled away: green
+  assert background(665, False, False, 10.) == (8 if toggle else normal)
+  assert background(670, False, False, 10.) == normal
 
 
 @pytest.mark.parametrize("options", list(product((False, True), (0, 1, 2), (False, True))))

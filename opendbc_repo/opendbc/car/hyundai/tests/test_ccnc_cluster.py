@@ -7,7 +7,7 @@ from opendbc.can import CANDefine, CANPacker
 from opendbc.can.parser import get_raw_value
 from opendbc.car import structs
 from opendbc.car.hyundai import hyundaicanfd
-from opendbc.car.hyundai.hyundaicanfd import _select_cluster_background, _traffic_display_state
+from opendbc.car.hyundai.hyundaicanfd import _select_cluster_background, StopGoBackground
 from opendbc.car.hyundai.values import HyundaiFlags
 
 
@@ -145,12 +145,38 @@ def test_traffic_light_background(traffic_state, expected):
   assert _select_cluster_background(True, True, False, 0, turning=True, traffic_state=traffic_state) == (6 if traffic_state == 0 else expected)
 
 
-def test_traffic_green_shown_only_two_seconds():
-  _traffic_display_state.last, _traffic_display_state.green_until = 0, 0
-  assert _traffic_display_state(1, 0) == 1      # red stays
-  assert _traffic_display_state(1, 500) == 1
-  assert _traffic_display_state(2, 1000) == 2   # turned green
-  assert _traffic_display_state(2, 1199) == 2
-  assert _traffic_display_state(2, 1200) == 0   # 2 s later: back to normal
-  assert _traffic_display_state(0, 1300) == 0
-  assert _traffic_display_state(2, 1400) == 2   # a new green shows again
+def _run(bg, start, end, stop_intent, standstill, v_ego):
+  return [bg.update(f, stop_intent, standstill, v_ego) for f in range(start, end)]
+
+
+def test_stop_go_red_needs_sustained_stop_and_ignores_flicker():
+  bg = StopGoBackground()
+  # stop intent flickering every frame (the old per-frame model prediction) never turns red
+  assert {bg.update(f, f % 2 == 0, False, 10.) for f in range(0, 1000)} == {0}
+  assert _run(bg, 1000, 1049, True, False, 8.)[-1] == 0
+  assert _run(bg, 1049, 1051, True, False, 8.)[-1] == 1     # 0.5 s sustained -> red
+
+
+def test_stop_go_green_once_after_stop_then_normal():
+  bg = StopGoBackground()
+  _run(bg, 0, 100, True, False, 5.)
+  assert _run(bg, 100, 400, True, True, 0.)[-1] == 1       # standstill keeps red
+  shown = _run(bg, 400, 1000, False, False, 3.)            # pulls away
+  assert shown[:20] == [1] * 20 and shown[20] == 2          # 0.2 s moving -> green
+  assert shown.count(2) == StopGoBackground.GREEN and shown[-1] == 0
+  assert sum(a != b for a, b in zip(shown, shown[1:])) == 2  # red->green->normal, no flicker
+
+
+def test_stop_go_dwell_limits_changes():
+  bg = StopGoBackground()
+  _run(bg, 0, 60, True, False, 5.)                          # red at frame 50
+  # stop intent dropped right away: red is held for the dwell, then for the exit delay
+  shown = _run(bg, 60, 400, False, False, 10.)
+  assert shown.index(0) + 60 == 200                         # exit delay ends 160, minimum 1.5 s dwell ends 200
+  # no departure green without a standstill
+  assert 2 not in shown
+
+
+def test_stop_go_ignores_parked_departure_without_red():
+  bg = StopGoBackground()
+  assert 2 not in _run(bg, 0, 30, False, True, 0.) + _run(bg, 30, 300, False, False, 3.)

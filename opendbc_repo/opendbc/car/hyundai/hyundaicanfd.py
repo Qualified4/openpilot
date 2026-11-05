@@ -875,21 +875,62 @@ def _hide_replaced_adas_service_warning(values):
     values["FAULT_DAS"] = 0
 
 
-TRAFFIC_BACKGROUND = {1: 5, 2: 8}  # red light -> steady red, green light -> steady green (Ioniq 5 PE, 10-20)
+TRAFFIC_BACKGROUND = {1: 5, 2: 8}  # stop -> steady red, departure -> steady green (Ioniq 5 PE, 10-20)
 
 
-def _traffic_display_state(traffic_state, frame):
-  # Like the C4 traffic light ball: red while red, green only for 2 s after it turns green
-  # (model-based green is on for most normal driving).
-  if traffic_state == 2 and _traffic_display_state.last != 2:
-    _traffic_display_state.green_until = frame + 200
-  _traffic_display_state.last = traffic_state
-  return 0 if traffic_state == 2 and frame >= _traffic_display_state.green_until else traffic_state
-_traffic_display_state.last, _traffic_display_state.green_until = 0, 0
+class StopGoBackground:
+  """Stop/go cluster background from vehicle intent, not from per-frame model predictions.
+
+  Red while openpilot owns a stop (hud trafficState 1 = longitudinalPlan.xState e2eStop/e2eStopped) or the car is at
+  standstill; green once, for GREEN frames, when the car pulls away from a stop that showed red. Hysteresis and a
+  minimum dwell keep any colour from changing twice within DWELL frames. Frames are the 100 Hz CAN loop frames.
+  """
+  ENTER, EXIT, DWELL, MOVE, GREEN = 50, 100, 150, 20, 250
+  DEPART_SPEED = 0.3  # m/s
+
+  def __init__(self):
+    self.reset()
+
+  def reset(self):
+    self.shown, self.shown_at = 0, None
+    self.want_since = self.clear_since = self.move_since = None
+    self.stopped = False
+
+  def update(self, frame, stop_intent, standstill, v_ego):
+    want_red = bool(stop_intent) or bool(standstill)
+    self.want_since = (self.want_since if self.want_since is not None else frame) if want_red else None
+    self.clear_since = None if want_red else (self.clear_since if self.clear_since is not None else frame)
+    moving = not standstill and not stop_intent and v_ego > self.DEPART_SPEED
+    self.move_since = (self.move_since if self.move_since is not None else frame) if moving else None
+    if standstill and self.shown == 1:
+      self.stopped = True
+
+    dwell_ok = self.shown_at is None or frame - self.shown_at >= self.DWELL
+    red_ready = self.want_since is not None and frame - self.want_since >= self.ENTER
+    if self.shown == 1:
+      if self.stopped and self.move_since is not None and frame - self.move_since >= self.MOVE and dwell_ok:
+        self._show(2, frame)
+      elif self.clear_since is not None and frame - self.clear_since >= self.EXIT and dwell_ok:
+        self._show(0, frame)
+    elif self.shown == 2:
+      if red_ready and dwell_ok:
+        self._show(1, frame)
+      elif frame - self.shown_at >= self.GREEN:
+        self._show(0, frame)
+    elif red_ready and dwell_ok:
+      self._show(1, frame)
+    return self.shown
+
+  def _show(self, state, frame):
+    self.shown, self.shown_at = state, frame
+    self.stopped = False
+
+
+_stop_go_background = StopGoBackground()
 
 
 def _select_cluster_background(cruise_enabled, lat_active, paddle_pressed, paddle_mode, turning=False, traffic_state=0):
-  # A detected traffic light takes over the background until detection ends.
+  # The stop/go state (StopGoBackground) takes over the background while shown.
   if traffic_state in TRAFFIC_BACKGROUND:
     return TRAFFIC_BACKGROUND[traffic_state]
   # Reuse the existing flashing-red background to identify an active model turn.
@@ -1145,7 +1186,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
 
         values["BACKGROUND"] = _select_cluster_background(
           cruise_enabled, lat_active, CS.paddle_button_prev > 0, paddle_mode, turning=desire in (1, 2),
-          traffic_state=_traffic_display_state(getattr(hud_control, "trafficState", 0), frame) if traffic_background else 0,
+          traffic_state=_stop_go_background.update(
+            frame, getattr(hud_control, "trafficState", 0) == 1, getattr(CS.out, "standstill", False), CS.out.vEgo,
+          ) if traffic_background else 0,
         )
         values["CENTERLINE"] = 1 if HDA_CntrlModSta > 0 else 0
         values["CAR_CIRCLE"] = 2 if hdp_active else 1 if cruise_enabled else 0
