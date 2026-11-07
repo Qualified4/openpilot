@@ -96,6 +96,7 @@ def test_final_card_boundary_uses_gated_control_and_fresh_intent(gate, suspend_n
   sm = Messages(messages)
   sm.valid = sm.alive = sm.seen = dict.fromkeys(("modelV2", "carControl", "radarState"), True)
   sm.recv_time = dict.fromkeys(sm.valid, (N - suspend_ns) / 1e9)
+  sm.valid["liveTracks"] = False  # CCNC card also reads liveTracks; absent here.
   if gate.startswith("stale"):
     sm.recv_time["modelV2" if gate == "stale_model" else "carControl"] -= 1
   if gate == "startup":
@@ -112,7 +113,7 @@ def test_final_card_boundary_uses_gated_control_and_fresh_intent(gate, suspend_n
 
   controller = NS(apply=apply)
   stages = ("apply", "sendcan", "total")
-  card = NS(spas_signals=NS(enabled=False), initialized_prev=True, params=params, sm=sm, CI=controller,
+  card = NS(spas_signals=NS(enabled=False), native_voice_indicator=None, initialized_prev=True, params=params, sm=sm, CI=controller,
             pm=NS(send=lambda *args: sent.append(args)), tesla_signals=signals,
             lateral_startup=LateralStartupGate(ready=gate != "startup"), card_diag_recv_ns=N - suspend_ns,
             card_diag_stage_names=stages, card_diag_stage_current=dict.fromkeys(stages, 0),
