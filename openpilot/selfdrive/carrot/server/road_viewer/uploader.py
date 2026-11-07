@@ -52,6 +52,28 @@ def discover(segments, options=None):
   return summaries
 
 
+# Per-segment problems that leave the rest of a selection sendable: still recording or left locked (lock file),
+# no/empty rlog, unsupported log files, unreadable sources. Typically the first or last segment of a drive.
+SKIPPABLE = frozenset({'segment_incomplete', 'invalid_segment', 'file_not_allowed', 'local_file_error'})
+
+
+def partition(segments, options=None):
+  """discover() one segment at a time: -> (summaries of sendable segments, [{'segment', 'error'}] skipped)."""
+  if not 1 <= len(segments) <= 50:
+    raise client.Error('invalid_segments')
+  summaries, skipped = [], []
+  for segment in segments:
+    try:
+      summaries += discover([segment], options)
+    except client.Error as exc:
+      if exc.code not in SKIPPABLE:
+        raise
+      skipped.append({'segment': segment, 'error': exc.code})
+    except (OSError, web.HTTPException):  # segment_file_summary: rlog missing or empty
+      skipped.append({'segment': segment, 'error': 'local_file_error'})
+  return summaries, skipped
+
+
 def fingerprint(source):
   value = os.fstat(source.fileno())
   if not stat.S_ISREG(value.st_mode):

@@ -12,7 +12,7 @@ from . import client, config
 
 def register(app):
   from ..features.dashcam import upload_jobs as jobs
-  from ..features.dashcam.routes import request_upload_segments
+  from ..features.dashcam.paths import safe_segment
   from . import uploader
 
   lock = asyncio.Lock()
@@ -74,8 +74,10 @@ def register(app):
               raise client.Error('retry_unavailable')
             segments = previous['segments']
           else:
-            segments, _ = await request_upload_segments(request)
-            segments = list(dict.fromkeys(segments))
+            # Not request_upload_segments: one incomplete segment must not reject the whole selection here.
+            segments = list(dict.fromkeys(safe_segment(str(segment)) for segment in selected if segment))
+            if not segments:
+              raise client.Error('invalid_segments')
           credentials = await asyncio.to_thread(config.load)
           if not credentials:
             raise client.Error('disconnected')
@@ -88,9 +90,17 @@ def register(app):
           completed = {summary['segment'] for batch in checkpoint.get('batches', []) if batch and batch.get('complete')
                        for summary in batch['summaries']} if checkpoint else set()
           pending = [segment for segment in segments if segment not in completed]
-          summaries = await asyncio.to_thread(uploader.discover, pending, previous.get('road_viewer_options', {}) if previous else options) if pending else []
+          skipped = []
+          if previous is not None:  # A retry resumes its exact earlier selection.
+            summaries = await asyncio.to_thread(uploader.discover, pending, previous.get('road_viewer_options', {})) if pending else []
+          else:
+            # Leave out segments that cannot be sent (still recording, locked, missing/unreadable rlog) and send the rest.
+            summaries, skipped = await asyncio.to_thread(uploader.partition, pending, options)
+            if not summaries:
+              raise client.Error(skipped[0]['error'])
+            segments = [summary['segment'] for summary in summaries]
           if action == 'summary':
-            return web.json_response({'ok': True, 'summaries': summaries})
+            return web.json_response({'ok': True, 'summaries': summaries, 'skipped': skipped})
           running = jobs.running_job()
           if running:
             return web.json_response({'ok': False, 'error': 'upload_running', 'job_id': running['id']}, status=409)
@@ -109,7 +119,7 @@ def register(app):
           if checkpoint:
             job['_road_viewer'] = checkpoint
           jobs.start_job(job, runner=uploader.run_job)
-          return web.json_response({'ok': True, 'job_id': job['id'], 'status': job['status']})
+          return web.json_response({'ok': True, 'job_id': job['id'], 'status': job['status'], 'segments': segments, 'skipped': skipped})
         else:
           raise web.HTTPNotFound()
         return web.json_response({'ok': True, **await asyncio.to_thread(config.status)}, headers={'Cache-Control': 'no-store'})

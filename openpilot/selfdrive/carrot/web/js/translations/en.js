@@ -9,6 +9,7 @@ window.CarrotTranslations.register("en", {
     rv_wide_video: "Wide video",
     rv_video_options_hint: "rlog and qcamera are always included when available. Add optional original videos below. Missing videos are skipped. Large videos use more mobile data and take longer.",
     rv_send_selected: "Send {count} selected segments to Road Viewer",
+    rv_skipped_segments: "{count} segments that are still recording or have a missing or unreadable log are left out.",
     rv_error_device_limit_reached: "Road Viewer has too many registered devices. Remove unused devices and pair again.",
     rv_settings: "Road Viewer connection",
     rv_destination: "Upload destination",

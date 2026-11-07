@@ -82,3 +82,39 @@ test("Road Viewer keeps its file scope and retry destination", async () => {
   assert.equal(summaries[0].bytes, 230);
   assert.ok(requests.every(request => request.include_front === true && request.include_wide === false));
 });
+
+test("Road Viewer leaves out segments the device reports as unsendable", async () => {
+  const requests = [];
+  const confirmed = [];
+  const context = vm.createContext({
+    dashcamUploadActiveJobId: null,
+    getRememberedDashcamUploadJob: () => null,
+    getUIText: (_key, fallback) => fallback,
+    showAppToast: (message) => { throw new Error(message); },
+    ensureRoadViewerConnection: async () => true,
+    chooseRoadViewerVideos: async () => ({ include_front: false, include_wide: false }),
+    appConfirm: async (_message, dialog) => { confirmed.push(dialog.messageHtml); return true; },
+    dashcamUploadConfirmHtml: (stats) => `skipped:${(stats.skipped || []).map((item) => item.segment).join(",")}|summary:${stats.segments}`,
+    dashcamUploadStats,
+    postJson: async (url, body) => {
+      requests.push({ url, ...body });
+      if (url.endsWith("/summary")) return {
+        summaries: [{ segment: "route--1", files: [{ name: "rlog.zst", size: 20 }] }],
+        skipped: [{ segment: "route--0", error: "segment_incomplete" }, { segment: "route--2", error: "segment_incomplete" }],
+      };
+      return { job_id: "job", segments: ["route--1"], skipped: [] };
+    },
+    rememberDashcamUploadJob() {},
+    clearRememberedDashcamUploadJob() {},
+    pollDashcamUploadJob: async () => ({ ok: true, uploaded: 1, total: 1, results: [] }),
+    isDashcamUploadCanceledError: () => false,
+  });
+  vm.runInContext(uploadFunction, context);
+  await context.uploadDashcamSegments(["route--0", "route--1", "route--2"], {
+    destination: "road_viewer", showProgress: false, showResult: false, showSuccessToast: false,
+  });
+  assert.deepEqual(Array.from(requests[0].segments), ["route--0", "route--1", "route--2"]);
+  assert.equal(requests[1].url, "/api/road-viewer/start");
+  assert.deepEqual(Array.from(requests[1].segments), ["route--1"]);
+  assert.equal(confirmed[0], "skipped:route--0,route--2|summary:1");
+});

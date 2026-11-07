@@ -1277,6 +1277,18 @@ function dashcamUploadSummaryLabel(stats) {
   return `${fileLabel} · ${sizeLabel}`;
 }
 
+function roadViewerSkippedText(skipped) {
+  return getUIText("rv_skipped_segments", "{count} segments that are still recording or have a missing or unreadable log are left out.", {
+    count: skipped.length,
+  });
+}
+
+function roadViewerSkippedHtml(skipped) {
+  if (!Array.isArray(skipped) || !skipped.length) return "";
+  const names = skipped.map((item) => item?.segment).filter(Boolean).join(", ");
+  return `<p>${escapeHtml(roadViewerSkippedText(skipped))}</p><p style="opacity:.75;font-size:.9em;word-break:break-all">${escapeHtml(names)}</p>`;
+}
+
 function dashcamUploadConfirmHtml(stats) {
   const segmentCountLabel = getUIText("upload_segment_count", "{count} segments", {
     count: Number(stats?.segments || 0),
@@ -1297,7 +1309,7 @@ function dashcamUploadConfirmHtml(stats) {
   });
   const bytes = Number(stats?.bytes || 0);
   const sizeLabel = bytes > 0 ? formatLogBytes(bytes) : getUIText("upload_size_unknown", "size unknown");
-  return `<section class="app-dialog__uploadBrief" aria-label="${escapeHtml(getUIText("upload_summary_label", "Upload summary"))}">
+  return roadViewerSkippedHtml(stats?.skipped) + `<section class="app-dialog__uploadBrief" aria-label="${escapeHtml(getUIText("upload_summary_label", "Upload summary"))}">
     <div class="app-dialog__uploadBriefCopy">
       <strong class="app-dialog__uploadBriefTitle">${escapeHtml(segmentCountLabel)}</strong>
       <span class="app-dialog__uploadBriefKinds">${escapeHtml(kindsLabel)}</span>
@@ -1812,7 +1824,7 @@ async function uploadDashcamSegments(segments, options = {}) {
     return;
   }
 
-  const targets = Array.from(new Set(segments || [])).filter(Boolean);
+  let targets = Array.from(new Set(segments || [])).filter(Boolean);
   if (!targets.length) {
     showAppToast(getUIText("no_selected_segments", "No segments selected."), { tone: "error" });
     return;
@@ -1832,6 +1844,7 @@ async function uploadDashcamSegments(segments, options = {}) {
   };
   let includeAllFiles = false;
   let roadViewerOptions = {};
+  let skippedSegments = [];
   if (options.confirm !== false) {
     if (roadViewer) {
       roadViewerOptions = await chooseRoadViewerVideos();
@@ -1853,10 +1866,16 @@ async function uploadDashcamSegments(segments, options = {}) {
     }
     try {
       const summary = await postJson(`${api}/summary`, { segments: targets, ...(!roadViewer ? { includeAllFiles } : roadViewerOptions) });
+      if (roadViewer && Array.isArray(summary?.skipped) && summary.skipped.length && Array.isArray(summary?.summaries)) {
+        // The device leaves out segments it cannot send (still recording, locked, missing/unreadable rlog).
+        skippedSegments = summary.skipped;
+        targets = summary.summaries.map((item) => item.segment);
+      }
       if (!Array.isArray(summary?.summaries) || summary.summaries.length !== targets.length) {
         throw new Error(getUIText("upload_summary_unavailable", "Upload information is unavailable."));
       }
       uploadStats = dashcamUploadStats(summary.summaries);
+      if (skippedSegments.length) uploadStats.skipped = skippedSegments;
     } catch (error) {
       showAppToast(`${getUIText("log_upload", "Upload Logs")} ${getUIText("error", "Error")}: ${roadViewer ? roadViewerError(error) : error?.message || error}`, {
         tone: "error",
@@ -1920,6 +1939,9 @@ async function uploadDashcamSegments(segments, options = {}) {
     const started = await postJson(`${api}/start`, { segments: targets, ...(!roadViewer ? { includeAllFiles } : roadViewerOptions), ...(options.retryJobId ? { retry_job_id: options.retryJobId } : {}) });
     jobId = started.job_id;
     rememberDashcamUploadJob(jobId);
+    if (roadViewer && Array.isArray(started?.skipped) && started.skipped.length && options.confirm === false) {
+      showAppToast(roadViewerSkippedText(started.skipped), { duration: 4200 });
+    }
     if (cancelRequested) {
       await cancelDashcamUploadJob(jobId);
       throw makeDashcamUploadCanceledError();

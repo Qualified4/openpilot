@@ -551,6 +551,35 @@ def test_carrot_multi_route_selection_summary_start_and_retry(monkeypatch):
   asyncio.run(run())
 
 
+def test_unsendable_first_and_last_segments_are_left_out(monkeypatch):
+  """Select-all of a drive: a locked first segment (power cut while recording) and a last segment without rlog are
+  skipped and reported; the rest is summarised and started. Only an all-unsendable selection is an error."""
+  from aiohttp import web
+  from aiohttp.test_utils import TestClient, TestServer
+
+  first, middle, last = recording(0, video=False), recording(1, video=False), recording(2)
+  (Path(paths.segment_dir(first)) / 'rlog.zst.lock').touch()
+  (Path(paths.segment_dir(last)) / 'rlog.zst').unlink()
+  monkeypatch.setattr(config, 'load', lambda: {'device_id': 'selected-device'})
+  started = []
+  monkeypatch.setattr(jobs, 'start_job', lambda job, runner: started.append(job))
+
+  async def run():
+    app = web.Application()
+    register(app)
+    async with TestClient(TestServer(app)) as browser:
+      for action in ('summary', 'start'):
+        response = await browser.post(f'/api/road-viewer/{action}', json={'segments': [first, middle, last]})
+        assert response.status == 200, await response.text()
+        body = await response.json()
+        assert body['skipped'] == [{'segment': first, 'error': 'segment_incomplete'}, {'segment': last, 'error': 'segment_incomplete'}]
+      assert [item['segment'] for item in (await (await browser.post('/api/road-viewer/summary', json={'segments': [first, middle, last]})).json())['summaries']] == [middle]
+      assert body['segments'] == [middle] and started[0]['segments'] == [middle]
+      response = await browser.post('/api/road-viewer/summary', json={'segments': [first, last]})
+      assert response.status == 400 and (await response.json())['error'] == 'segment_incomplete'
+  asyncio.run(run())
+
+
 def test_optional_video_selection_and_manifest():
   segment = recording()
   directory = Path(paths.segment_dir(segment))

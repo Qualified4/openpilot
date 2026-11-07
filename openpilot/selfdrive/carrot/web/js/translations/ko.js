@@ -9,6 +9,7 @@ window.CarrotTranslations.register("ko", {
     rv_wide_video: "와이드 영상",
     rv_video_options_hint: "rlog와 qcamera는 기존처럼 전송합니다. 추가할 원본 영상을 선택하세요. 없는 영상은 건너뜁니다. 고화질 영상은 데이터 사용량과 전송 시간이 늘어납니다.",
     rv_send_selected: "선택한 {count}개 구간 Road Viewer로 전송",
+    rv_skipped_segments: "기록 중이거나 로그가 없거나 읽을 수 없는 {count}개 구간은 빼고 전송합니다.",
     rv_error_device_limit_reached: "Road Viewer에 등록된 장치가 너무 많습니다. 사용하지 않는 장치를 제거한 후 연결하세요.",
     rv_settings: "Road Viewer 연결",
     rv_destination: "전송 대상",
