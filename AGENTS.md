@@ -1,5 +1,22 @@
 # Repository memory
 
+- On 2026-11-08, merged ajouatom/carrot-wip8e117140 (13commits: Tesla lamp/optional
+  CAN traffic-stop, independent manual-turn indicator, direct phone voice/settings,
+  Golf wheel-speed fix) into ccnc-hda1. Keep CCNC lane_marking with incoming livePose,
+  turn-pose/yaw inputs; keep CI.apply liveTracks and assistant signal admission.
+  Existing cameraYawTrim/calibrationYaw ordinals35/36 and assistant fields38/39 remain.
+  Resolve docs with221 distinct settings and retain both translation/memory blocks;
+  rebuild settings/tools web bundles. Extend two incoming test fixtures with CCNC
+  inputs and refresh the upstream-only catalog fixture pin. Preserve all228 other
+  ours-only and74 other incoming-only blobs/modes, all11 CCNC/trim/ratio definitions
+  and deployed UB03e5f5153701. Focused signal checks849 plus startup11 pass;
+  web886 and Wiki27 pass; user-docs validation passes. Initial mixed harness failures
+  included missing native Params/safety support and missing CCNC test context;
+  final signal validation uses strict isolated settings and compiled native safety.
+  Native Params gesture/MPC integration, Android build and actual vehicle behavior
+  were not verified here. No device update, reboot or driving command.
+  Evidence .analysis/ccnc-field-412-20261022/claude/merge1108.
+
 - On 2026-11-07 (second), merged ajouatom/carrot-wip b1c82746 (13 commits: voice lane
   change via native/Ioniq 5 PE indicator, assistant context, mini assistant, legacy
   CarrotAssist pairing, English UI) into ccnc-hda1 on 5f2236ff. Incoming
@@ -58,6 +75,61 @@
 - On 2026-10-23, merged origin/carrot-wip dfab65d0 (9 commits: Jetlink PR560-562 USB recovery/DHCP/ADB handoff,
   NAV shared input/native image/N16 projection records, Hyundai CAN-FD no-lead stop object state 2 trial) into
   ccnc-hda1 on 895c130b. Only AGENTS.md conflicted; both branches' log entries are kept.
+
+- On 2026-11-08, owner requests an ATC-independent ManualTurnIndicator option.
+  DefaultOFF/Ioniq5PE/supported indicator adapter/AutoBlinker1or2. Shared lamp-only
+  observer uses5..60km/h, pressed same-side torque150ms/recent800ms, angle45deg
+  plus25deg growth, yaw3deg/s and1.5deg rotation/150ms confirmation. Recognized
+  matching lane curves suppress admission. Fresh pose/CAN/model and ownership
+  gates remain; existing journal/echo/ACK path isolates feedback before steering.
+  Return15deg+yaw<=3deg/s/moving300ms ends, opposite pressed torque pastzero
+  cancels; stop retains up to30s. ATC/nav/lateral activation are not admission.
+  Current14hash-matched logs174387477B plus prior21logs give39081 replayframes,
+  27candidates. Current10candidates reviewed with video include one street-right
+  turn and nine parking-area/ramp/entry maneuvers; unwanted parking indications
+  remain possible. Prior20manual requests have no candidate overlap within4s;
+  remaining older candidates lack new video labels, so no false-positive-rate
+  claim. Morning right0+45.611s starts0.803s after first pressed torque and ends
+  50.164s. Synthetic counterexamples/source ATC0..3 OFF/ON covered; local668 checks
+  pass. C3/C4 manual-turn reason; old USB HUD uses driver category/turning reason.
+  KO/EN guides/catalog updated. Normal GitPull/full comma restart then opt in.
+  No vehicle writes, CAN actuation, model or Jetson bundle; physical lamps untested.
+  Private evidence .analysis/scratch/2026-11-08-manual-turn.
+
+- On 2026-11-08, owner requests PR572 Tesla review/integration with code-only
+  validation because no Tesla is available. Merge contributor d40c8d247b into
+  current Wip, preserving newer native voice indicators and assistant admission.
+  Keep existing shared AlwaysLateral initialization default1, excluding PR's
+  global default0 change. Tesla gesture now toggles AlwaysLateral; new manual,
+  model-desire/path lamp options and CAN traffic-stop remain defaultOFF.
+  Traffic stop accepts only vision-backed8byte APP_trafficControl with active
+  OP longitudinal; retains other obstacles and normal soft-disable on loss.
+  Desktop1042/23subtests pass with32 native-safety cases deferred to Linux;
+  Wiki25 and focused Ruff pass. Add native MPC/planner, gesture/default tests
+  to full-build CI. Linux Signal42433213035 passes1963/40skip/362subtests plus131;
+  eGPU/Jetson/docs pass. First full build passes50 new native checks but one
+  gesture test exposes a pre-existing fixture missing set_lane_change_blinkers
+  after voice integration. Bind the real helper; desktop full-control11 pass.
+  No vehicle writes or physical lamp/braking acceptance.
+
+- CarrotAssist 0.2.10 lets the user copy a Korean or English custom-instructions prompt from the device-name dialog. It shows how to append and save the prompt in ChatGPT. Copying does not modify the user’s ChatGPT account.
+
+- CarrotAssist 0.2.9 gives the Android recognizer left/right phrase hints and explains recognition failures. Keep the final-result confidence, direction agreement and age checks. No live maneuver or cabin accuracy measurement.
+
+- CarrotAssist 0.2.8 phone voice supports numbered results from its most recent search in the same listening session. Bind the position to the displayed row, recheck the parameter before committing, and announce its actual name.
+
+- CarrotAssist 0.2.7 phone voice searches the visible device catalog and writes explicit absolute integer settings without a relay session. Use the existing same-origin setting grant, prepare/commit validation and device readback. Never convert a broad search, ambiguous name or conflicting numerical recognition into a write.
+
+- CarrotAssist 0.2.6 supports foreground Android 12+ on-device speech recognition.
+  A local WebView readiness check precedes greeting/listening; no ChatGPT account,
+  relay pairing, cloud transcription or MCP grant is required on the direct route.
+  Korean/English explicit lane requests use the existing local driving grant and
+  vehicle gates. Execute only final, unambiguous recognition, with a bounded
+  direction-specific challenge if scores are missing. Opening AutoBlinkerControl
+  needs no driving grant. Questions launch the default assistant; repeat them in
+  that voice window. Support depends on the installed language model. The rules
+  and transport are tested offline; no real maneuver or cabin accuracy claim.
+
 - Voice lane changes retain normal admission on all supported vehicles, with or
   without indicator hardware. Bind optional signaling once per request to an active
   receiver on the current vehicle (AutoBlinkerControl=2), a supported native output,
