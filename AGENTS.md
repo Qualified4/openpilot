@@ -1,5 +1,11 @@
 # Repository memory
 
+- On 2026-11-09, merged ajouatom/carrot-wip 2e588afa (2 commits: manual-turn indicator
+  thresholds 45/25 -> 42/22 deg with sooner rearm, external indicator requested as a
+  voice lane change starts) into ccnc-hda1 on a7fff152. Only AGENTS.md conflicted
+  (both blocks kept). WSL bundle 3603 passed/66 failed (same set), assistant-lane/
+  manual-turn/blinker/Tesla card tests 257 passed. No vehicle validation.
+
 - On 2026-11-08, merged ajouatom/carrot-wip8e117140 (13commits: Tesla lamp/optional
   CAN traffic-stop, independent manual-turn indicator, direct phone voice/settings,
   Golf wheel-speed fix) into ccnc-hda1. Keep CCNC lane_marking with incoming livePose,
@@ -75,6 +81,25 @@
 - On 2026-10-23, merged origin/carrot-wip dfab65d0 (9 commits: Jetlink PR560-562 USB recovery/DHCP/ADB handoff,
   NAV shared input/native image/N16 projection records, Hyundai CAN-FD no-lead stop object state 2 trial) into
   ccnc-hda1 on 895c130b. Only AGENTS.md conflicted; both branches' log entries are kept.
+- On 2026-11-08 the owner requests slightly earlier manual turn indications and
+  asks about closely spaced turns. ManualTurnIndicator alone uses 42 degrees
+  steering/22 degrees growth and 100 ms confirmation. Its next observation
+  requires two seconds from last ownership renewal, one continuous dark second
+  and fresh steering. Torque duration, yaw/curve rejection, isolation of lamp
+  feedback and the other observers' quiet periods are preserved. A/B replay of
+  14528 recorded model frames matched all 10 indications on side and segment;
+  nine occurred earlier (median advance 0.054 s, maximum 1.253 s). Real lamp
+  response and the owner's unrecorded missed turn remain unverified.
+
+- On 2026-11-08 the owner requests voice lane changes to use normal lane-change
+  admission and issue the external indicator in parallel. This supersedes the
+  external-adapter confirmation prerequisite. Keep native and Tesla signal gates.
+  Ioniq 5 PE rlog 11b9/2 records one voice request, same-side physical flashes,
+  B1 override without accepted ID, preLaneChange for 3 s and no steering start.
+  The 0x413 lever bit outlasts the tap echo window. Receiver subreason is
+  unrecorded. A desktop replay of recorded inputs with a bound external adapter
+  and absent ACK reproduced the old timeout; new helper starts and requests
+  the left lamp on the same frame at segment 20.702 s. No actual crossing proof.
 
 - On 2026-11-08, owner requests an ATC-independent ManualTurnIndicator option.
   DefaultOFF/Ioniq5PE/supported indicator adapter/AutoBlinker1or2. Shared lamp-only
