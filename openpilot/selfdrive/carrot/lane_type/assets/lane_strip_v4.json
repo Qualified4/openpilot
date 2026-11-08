@@ -1,6 +1,6 @@
 {
  "version": 4,
- "model_sha256": "7fb3d57a6b5dba4ca1dbfa72b6b7b07c7bb2d5d745a3eecfc466dc2d3c71ff0b",
+ "model_sha256": "03e5f51537013160cb33d88f6694edda534baf7df49ee7ca563c8686e7d4b2ad",
  "strip": {
   "half_m": 1.0,
   "cols": 128,
@@ -44,7 +44,7 @@
   "seed": 0,
   "epochs": 40,
   "batch": 256,
-  "manifest_sha256": "477c1b80a9196b3531576f9471e20183d567ee3df75e46fba8d0ad7c3c7d4f40",
+  "manifest_sha256": "0e183a01ecdbd43d2ebd5edb178f2dd75e8571ca16eea5ae0c91885e6ca5e7ef",
   "patch_bank_sha256": "883efdeecaa385171119f9bdadae5a6eaa2f5c293ceda03d7eb162c93f05d15d",
   "patch_manifest_sha256": "5858e5b916d8407f81ce2fa50e37b519e27f05ed7dba03447723740d746406ab",
   "augment_sha256": "73bf224eb191e53bcb5f255bf8abd9b539506da9fa48c69880c30e5cd16ddd63",
@@ -85,8 +85,8 @@
    3.195002794265747
   ],
   "double_weight_scale": null,
-  "variant": "U",
-  "manifest": ".analysis/ccnc-field-412-20261022/claude/certlabel1026/round1108/manifest-U.jsonl",
+  "variant": "UB",
+  "manifest": ".analysis/ccnc-field-412-20261022/claude/certlabel1026/round1108b/manifest-U-bookmark.jsonl",
   "reviewed": false,
   "capacity": "small",
   "types4": false,
@@ -97,24 +97,25 @@
    "dbl_far",
    "unknown"
   ],
-  "unknown_rows": "5-type unknown is an explicit class, unchanged R5 recipe",
-  "type_head_init": "unchanged pretrained 5-type small head, no 4-type head conversion",
+  "unknown_rows": "5-type unknown is explicit class, unchanged R5 recipe",
+  "type_head_init": "unchanged pretrained 5-type small head; full retraining from same initializer as U",
   "negsyn_labels": "unchanged (negsyn pastes nuisance paint beside dashed/solid white/yellow lines; labels are never modified)",
   "unknown_share": null,
   "dbl_max_share": 0.2,
-  "selection": "existing validation (native 5-type macro F1 + 2-colour macro F1)/2",
+  "selection": "existing validation (native 5-type macro F1 +2-colour macro F1)/2",
   "cert_experiment_sha256": "303c293f44fbcef3c9d662c8dc264d2e64f93236d9e299f044dad856e825b3fc",
   "train_fast_sha256": "54d104e7c966d103cb85ae76927c77f5e200b893cd7aa594f93eac743dfdf685",
   "parameters": 34079,
-  "data_provenance": "base manifest-N + Nov06-07 automatic and bookmark labels; complete route454 holdout",
-  "training_rows": 119788,
+  "data_provenance": "round1108 U +116 user-confirmed white dashed left frames44e/8 4.25..10s; route454 still wholly withheld",
+  "additional_pixels_sha256": "60e886863414896d062dba991df8b969ddf3c9c6a92b909682ccd82445c1be4b",
+  "training_rows": 119904,
   "validation_rows": 5621,
-  "best_epoch": 28,
-  "new_training_rows": 75292
+  "best_epoch": 30,
+  "additional_manual_rows": 116
  },
  "onnx_parity": {
-  "onnxruntime_max_abs": 7.62939453125e-06,
-  "opencv_max_abs": 6.67572021484375e-06,
+  "onnxruntime_max_abs": 9.5367431640625e-06,
+  "opencv_max_abs": 1.239776611328125e-05,
   "yellow_probability_max_abs": 0.0,
   "padding_only_yellow_probability_max_abs": 0.0,
   "blue_logit": -10000.0,
@@ -124,14 +125,14 @@
    8
   ]
  },
- "elapsed_s": 289.61191683200013,
+ "elapsed_s": 268.5355927209994,
+ "params": 34079,
  "replacement": {
   "date": "2026-11-08",
-  "requested_model": "round1108 U R5 small s0; single network; owner explicitly selected this candidate",
-  "source": ".analysis/ccnc-field-412-20261022/claude/certlabel1026/round1108/training/U_R5_small_s0/model.{onnx,json}",
-  "previous_sha256": "f452fa69a5228bcc5038cf703404b01d69ce2a798b6af3225c3218d1e6cae656",
-  "evidence": "docs/lane_model_u_s0_20261108.md",
-  "scope": "Owner-requested shipping asset replacement; default filter and display policy retained; no road validation claim."
- },
- "params": 34079
+  "requested_model": "round1108b UB R5 small s0; single network; owner explicitly chose deployment after comparison",
+  "source": ".analysis/ccnc-field-412-20261022/claude/certlabel1026/round1108b/training/UB_R5_small_s0/model.{onnx,json}",
+  "previous_sha256": "7fb3d57a6b5dba4ca1dbfa72b6b7b07c7bb2d5d745a3eecfc466dc2d3c71ff0b",
+  "evidence": "docs/lane_model_ub_s0_20261108.md",
+  "scope": "Weight replacement only. Default production filter/display policy retained; no experimental latch, persistence or opposing-evidence policy deployed; no road acceptance claim."
+ }
 }
