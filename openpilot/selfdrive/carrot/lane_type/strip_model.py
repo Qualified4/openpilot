@@ -38,7 +38,7 @@ OUTPUTS_V4_4 = {'color': list(COLORS_V4), 'type': list(TYPES_V4_4)}
 # (the colour softmax P(yellow)) so marking_daemon can update the colour while the type abstains.
 # HOLD_BY_FAMILY (4-type head; DaBin 10-26 filterab1026 F4, the product default): abstain when
 # max(P(dashed)+P(dbl_near), P(solid)+P(dbl_far)) < threshold; False: abstain when the largest single class is below it.
-# It acts on 4-type manifests only: no effect on the current product asset (lane_strip_v4 f452fa69a522, round1105 N s0, 5 types).
+# It acts on 4-type manifests only: no effect on the current product asset (lane_strip_v4 7fb3d57a6b5d, round1108 U s0, 5 types).
 HOLD_COLOR = False
 HOLD_BY_FAMILY = True
 # profile_scanner.strip_geometry: column 0 = line y - half_m, the last column = y + half_m (image left -> right), so the

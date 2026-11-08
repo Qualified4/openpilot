@@ -20,7 +20,7 @@ from openpilot.selfdrive.carrot.lane_type.marking_daemon import Recogniser
 from tools.lane_type.test_strip_model_v4 import FIX  # noqa: TID251
 
 ROOT = Path(__file__).resolve().parents[2]
-V4_SHIPPED = 'f452fa69a5228bcc5038cf703404b01d69ce2a798b6af3225c3218d1e6cae656'  # 11-05 certlabel1026 round1105 N s0 (5 types)
+V4_SHIPPED = '7fb3d57a6b5dba4ca1dbfa72b6b7b07c7bb2d5d745a3eecfc466dc2d3c71ff0b'  # 11-08 certlabel1026 round1108 U s0 (single small, 5 types)
 
 
 def assets(tmp_path, v4=FIX/'strip_v4_probe.onnx', strip={'half_m': .75, 'cols': 96, 'rows': 128}):
@@ -168,7 +168,7 @@ def test_daemon_without_a_model_publishes_nothing(monkeypatch, tmp_path):
 
 
 def test_shipped_v4_pair():
-  """The shipped model: 11-05 round1105 N s0 (manifest v4, 5 types, w100 strip, mirror_right)."""
+  """The shipped model: 11-08 round1108 U s0 (single small, manifest v4, 5 types, w100, mirror_right)."""
   data = (strip_model.ASSETS/f'{strip_model.MODEL_NAME}.onnx').read_bytes()
   assert hashlib.sha256(data).hexdigest() == V4_SHIPPED and len(data) < 500_000
   v4 = strip_model.load(warn=pytest.fail)

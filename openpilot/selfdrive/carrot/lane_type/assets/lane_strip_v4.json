@@ -1,6 +1,6 @@
 {
  "version": 4,
- "model_sha256": "f452fa69a5228bcc5038cf703404b01d69ce2a798b6af3225c3218d1e6cae656",
+ "model_sha256": "7fb3d57a6b5dba4ca1dbfa72b6b7b07c7bb2d5d745a3eecfc466dc2d3c71ff0b",
  "strip": {
   "half_m": 1.0,
   "cols": 128,
@@ -44,7 +44,7 @@
   "seed": 0,
   "epochs": 40,
   "batch": 256,
-  "manifest_sha256": "c2f24142580d12798256f7ce876aae839071dc2dc719102383c537df858dbba8",
+  "manifest_sha256": "477c1b80a9196b3531576f9471e20183d567ee3df75e46fba8d0ad7c3c7d4f40",
   "patch_bank_sha256": "883efdeecaa385171119f9bdadae5a6eaa2f5c293ceda03d7eb162c93f05d15d",
   "patch_manifest_sha256": "5858e5b916d8407f81ce2fa50e37b519e27f05ed7dba03447723740d746406ab",
   "augment_sha256": "73bf224eb191e53bcb5f255bf8abd9b539506da9fa48c69880c30e5cd16ddd63",
@@ -70,8 +70,8 @@
   "shuffle": "gpu",
   "teacher_skipped_at_kd0": true,
   "engine": "trainfast-v1",
-  "label_fixes_sha256": "c749794fc96b62801ee6b732433443e1abe8d694557eea03f8b325de892e7daf",
-  "packed_complete_sha256": "30cf167d18a1b9842318f2400cf067474fa17e11f67695859575c1ea7fa5f4d6",
+  "label_fixes_sha256": "c48b3076055309c7f00fb2e82c2eccb4626c72da5d0e9b356be0899f1bf1c81b",
+  "packed_complete_sha256": "1f41ff6b996431f6dbcbf2741fa5f190ca7f9ca435e3ebff96931553d9cd0aec",
   "estimated_augmented_mass": null,
   "type_weights": [
    0.36465927958488464,
@@ -85,9 +85,9 @@
    3.195002794265747
   ],
   "double_weight_scale": null,
-  "variant": "N",
-  "manifest": ".analysis/ccnc-field-412-20261022/claude/certlabel1026/round1105/manifest-N.jsonl",
-  "reviewed": true,
+  "variant": "U",
+  "manifest": ".analysis/ccnc-field-412-20261022/claude/certlabel1026/round1108/manifest-U.jsonl",
+  "reviewed": false,
   "capacity": "small",
   "types4": false,
   "type_classes": [
@@ -97,19 +97,24 @@
    "dbl_far",
    "unknown"
   ],
-  "unknown_rows": "type -100: masked from type/colour loss and denominator; abstention metric only",
-  "type_head_init": "pretrained 5-type head rows dashed/solid/dbl_near/dbl_far copied, unknown row dropped (train_fast.student4)",
+  "unknown_rows": "5-type unknown is an explicit class, unchanged R5 recipe",
+  "type_head_init": "unchanged pretrained 5-type small head, no 4-type head conversion",
   "negsyn_labels": "unchanged (negsyn pastes nuisance paint beside dashed/solid white/yellow lines; labels are never modified)",
   "unknown_share": null,
   "dbl_max_share": 0.2,
-  "selection": "validation (type4 macro F1 + colour macro F1)/2",
+  "selection": "existing validation (native 5-type macro F1 + 2-colour macro F1)/2",
   "cert_experiment_sha256": "303c293f44fbcef3c9d662c8dc264d2e64f93236d9e299f044dad856e825b3fc",
   "train_fast_sha256": "54d104e7c966d103cb85ae76927c77f5e200b893cd7aa594f93eac743dfdf685",
-  "parameters": 34079
+  "parameters": 34079,
+  "data_provenance": "base manifest-N + Nov06-07 automatic and bookmark labels; complete route454 holdout",
+  "training_rows": 119788,
+  "validation_rows": 5621,
+  "best_epoch": 28,
+  "new_training_rows": 75292
  },
  "onnx_parity": {
-  "onnxruntime_max_abs": 8.58306884765625e-06,
-  "opencv_max_abs": 9.5367431640625e-06,
+  "onnxruntime_max_abs": 7.62939453125e-06,
+  "opencv_max_abs": 6.67572021484375e-06,
   "yellow_probability_max_abs": 0.0,
   "padding_only_yellow_probability_max_abs": 0.0,
   "blue_logit": -10000.0,
@@ -119,14 +124,14 @@
    8
   ]
  },
- "elapsed_s": 288.98414279100007,
- "params": 34079,
+ "elapsed_s": 289.61191683200013,
  "replacement": {
-  "date": "2026-11-05",
-  "requested_model": "Claude certlabel1026 round1105 N s0 (product set + 11-04 night auto rows)",
-  "source": ".analysis/ccnc-field-412-20261022/claude/certlabel1026/round1105/candidate/model.{onnx,json}",
-  "previous_sha256": "53fb243a2d89507c6e173d598bdd79526dadf2daec12a5678eb4249c0e8d5237",
-  "evidence": ".analysis/ccnc-field-412-20261022/claude/latchcombo1105/REPORT_KO.md (N_s0+F0: 6-set 164.27 s vs 165.36, style changes -2.5%, rain holdout 322/322)",
-  "scope": "Repository asset replacement on user request; not yet validated on the device."
- }
+  "date": "2026-11-08",
+  "requested_model": "round1108 U R5 small s0; single network; owner explicitly selected this candidate",
+  "source": ".analysis/ccnc-field-412-20261022/claude/certlabel1026/round1108/training/U_R5_small_s0/model.{onnx,json}",
+  "previous_sha256": "f452fa69a5228bcc5038cf703404b01d69ce2a798b6af3225c3218d1e6cae656",
+  "evidence": "docs/lane_model_u_s0_20261108.md",
+  "scope": "Owner-requested shipping asset replacement; default filter and display policy retained; no road validation claim."
+ },
+ "params": 34079
 }
