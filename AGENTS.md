@@ -1,5 +1,15 @@
 # Repository memory
 
+- On 2026-11-09 (second), merged ajouatom/carrot-wip 0436c7f0 (7 commits: CAN-FD signal-stop
+  object + cone trial, vehicle-fault reporting, manual lane-change indicator from 5 km/h,
+  controlsd plan-age crash fix, Bluetooth import paths, GC/private-memory tracing) into
+  ccnc-hda1 on cb79bcd9. Incoming HUDControl.signalStopObject @24 collided with CCNC
+  trafficState @24; renumbered the incoming field to @25 (name-based access only). mici
+  model_renderer takes the incoming stop-object draw. The signal-stop object applies by
+  default to HYUNDAI_SONATA_2024 (CANFD + CAMERA_SCC alias + op long) at no-lead signal
+  stops below 0.7 m/s; not vehicle-validated here. WSL bundle 3637 passed/66 failed (same
+  set), incoming/affected tests 409 passed. Web unchanged.
+
 - On 2026-11-09, merged ajouatom/carrot-wip 2e588afa (2 commits: manual-turn indicator
   thresholds 45/25 -> 42/22 deg with sooner rearm, external indicator requested as a
   voice lane change starts) into ccnc-hda1 on a7fff152. Only AGENTS.md conflicted
@@ -81,6 +91,62 @@
 - On 2026-10-23, merged origin/carrot-wip dfab65d0 (9 commits: Jetlink PR560-562 USB recovery/DHCP/ADB handoff,
   NAV shared input/native image/N16 projection records, Hyundai CAN-FD no-lead stop object state 2 trial) into
   ccnc-hda1 on 895c130b. Only AGENTS.md conflicted; both branches' log entries are kept.
+- 2026-11-09: Fix the four full-build Bluetooth import failures previously
+  reported as pre-existing. Cluster paths expose openpilot/tools as top-level
+  tools, hiding root tools/jetlink even with the repository first on sys.path.
+  Extend only that legacy package namespace using pkgutil; canonical
+  openpilot.tools stays scoped. Fresh-process regressions cover both path orders,
+  vehicle-only paths, preloaded tools, real Monitor/Owner and updater imports.
+  Four cases reproduce failure before correction; all six pass after. Desktop
+  Bluetooth61 pass/one Linux-only skip. This is a production import failure
+  under the same path condition; prior CI failure does not establish device safety.
+  Reviewed PV5 captures show controlsd NameError, plus signal-camera geometry
+  rejection; no tools.jetlink exception in those three captures.
+
+- 2026-11-09: PV5 uploaded process_crash13:30:20 at e318f767 proves controlsd
+  repeatedly exits in publish with undefined t_since_plan. Introduced by our
+  7d337 stop-object change; the previous state_control/helper checks missed the
+  publish scope. Compute plan age from SubMaster in publish. Complete-method
+  real-cereal regression reproduces the NameError before correction and passes
+  54 cases afterward, including inactive/non-CANFD and stale/invalid inputs.
+  Add it to native Signal and full-build CI. Local related97 and F821 check pass.
+  Vehicle installation/restart and physical operation require separate evidence.
+
+- 2026-11-09: Casper EV 1ef4/12 has bus2 SCC11 fixed10.4m/+0.2m/s in
+  2163/2217 plausible objects, 176 SCC/vision handoffs, original FCA fault297/2990.
+  Panda hardwareCAN2/canState1 error-passive has606231 new error IRQs/59.9s;
+  this is distinct from logical SCC bus2, whose counter is continuous. Owner
+  confirms stock wiring; no proven common electrical root cause. Add confirmed
+  current CAN error-storm and recurring raw Casper FCA fault alerts/no-entry/
+  disable; AlwaysLateral cannot bypass them. Preserve raw evidence and outgoing
+  FCA compatibility handling. Replay confirms CAN0.591s/FCA2.141s into segment.
+  Separately owner requests CANFD no-lead signal-stop3m object plus cone; newest
+  recurrence log deleted. Archived I5PE stock1138 StopReq packets have object2,
+  distance3.4..4.4m; older failure has no-object204.6m/239.4mps. Camera-SCC trial
+  fills3m/relative-vEgo/state2 only after final low-speed StopReq/interlocks and
+  fresh signal-stop/no-real-lead gates. No radar/model/MPC/aReq/jerk/band change.
+  Generated-packet marker drives fresh C3/C4 cone; not ESC acceptance or OEM icon.
+  Timestamp-sorted2998-call replay changes681 object/CRC packets,2317 identical.
+  Local465/Wiki25 pass; final native42554894007 passes1960+362subtests/40skip,
+  131backend+216focused. Full build/control/UI pass; final group retains the same
+  four tools.jetlink Bluetooth imports as baseline0df836. Code7d337b0549 plus
+  coneb8f7f3b405; NAS scheduled replay7d337 verified1196 frames/hash/public page.
+  Normal GitPull/full comma restart, no vehicle installation or physical hold
+  proof. See docs/casper_scc_input_20261109.md and docs/canfd_signal_stop_object_20261109.md.
+
+- 2026-11-09: Ioniq 5 PE route 11bb/7 camera shows a manual move into the
+  right lane near 37 s. Speed fell from above 30 to 26.43 km/h during approach;
+  wheel angle was about 22 degrees. The 30 km/h boundary observer reset.
+  Owner requests a 5 km/h minimum for both manual lamp features. Lower the PE
+  manual lane observer and external output admission to 5 km/h; manual turns
+  already use 5–60. Keep lane geometry, torque, feedback isolation, and the
+  separate Tesla/steering thresholds. Low-speed lane relabels do not suppress
+  a turn independently supported by driver steering and measured rotation.
+  Offline A/B through observation and lamp policy, ready adapter assumed:
+  new right request at 36.475 s; unchanged left turn later in this segment.
+  In 14 comparison segments all 19 previous requests matched in time and side.
+  781 focused tests passed, 7 platform-specific skips. No physical lamp test.
+
 - On 2026-11-08 the owner requests slightly earlier manual turn indications and
   asks about closely spaced turns. ManualTurnIndicator alone uses 42 degrees
   steering/22 degrees growth and 100 ms confirmation. Its next observation

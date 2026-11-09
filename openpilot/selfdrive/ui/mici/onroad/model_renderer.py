@@ -193,7 +193,9 @@ class ModelRenderer(Widget):
       self._draw_lead_indicator()
     if ui_state.show_radar_info > 0:
       self._draw_radar_info()
-
+    from openpilot.selfdrive.ui.stop_object import draw_stop_object
+    draw_stop_object(self, sm, started_frame=ui_state.started_frame)
+      
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""
     self._path.raw_points = np.array([model.position.x, model.position.y, model.position.z], dtype=np.float32).T
