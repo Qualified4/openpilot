@@ -26,7 +26,7 @@ import {
   createDashcamUploadProgressModel,
   dashcamUploadProgressState,
 } from "./upload_progress.js";
-import { dashcamUploadEta, dashcamUploadStats } from "./upload_summary.js";
+import { dashcamUploadEta, dashcamUploadSpeed, dashcamUploadStats } from "./upload_summary.js";
 import {
   fetchUploadSnapshotWithRetry,
   isUploadPollRetryableError,
@@ -1460,7 +1460,7 @@ function dashcamUploadProgressView(snapshot = {}, totalFallback = 0, stats = nul
   ].filter(Boolean).join(" · ");
   const bytesCurrent = Math.max(0, Number(snapshot.bytes_current || 0));
   const bytesTotal = Math.max(0, Number(snapshot.bytes_total || stats?.bytes || 0));
-  const bytesPerSecond = Math.max(0, Number(snapshot.bytes_per_second || 0));
+  const bytesPerSecond = dashcamUploadSpeed(snapshot); // windowed wall-clock speed; bytes_per_second burst fallback
   const isPreparing = phase === "queued" || phase === "preparing";
   let summary = stats ? dashcamUploadSummaryLabel(stats) : getUIText("loading", "Loading...");
   if (!isPreparing && bytesTotal > 0) {

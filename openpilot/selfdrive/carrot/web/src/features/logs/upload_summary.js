@@ -45,13 +45,26 @@ export function dashcamUploadStats(items) {
   return stats;
 }
 
-// Remaining upload time from the job's own byte counters and average speed.
-// Rounded coarser as it grows (5 s under a minute, 10 s under an hour, then
-// minutes) so the label does not jump on every progress poll.
+// Displayed speed: bytes sent over the last ~30 s of wall clock (server
+// window), not the instantaneous burst speed, which spikes between pauses.
+export function dashcamUploadSpeed(snapshot) {
+  const windowed = Number(snapshot?.window_bytes_per_second);
+  if (snapshot?.window_bytes_per_second != null && Number.isFinite(windowed)) return Math.max(0, windowed);
+  return Math.max(0, Number(snapshot?.bytes_per_second) || 0);
+}
+
+// Remaining upload time from the job's own byte counters and its whole-job
+// wall-clock average (preparation and registration pauses included), so it is
+// not optimistic like the burst speed. Rounded coarser as it grows (5 s under a
+// minute, 10 s under an hour, then minutes) so the label does not jump on every
+// progress poll.
 export function dashcamUploadEta(snapshot) {
   const total = Number(snapshot?.bytes_total) || 0;
   const current = Number(snapshot?.bytes_current) || 0;
-  const speed = Number(snapshot?.bytes_per_second) || 0;
+  const average = Number(snapshot?.average_bytes_per_second);
+  const speed = snapshot?.average_bytes_per_second != null && Number.isFinite(average)
+    ? average
+    : Number(snapshot?.bytes_per_second) || 0;
   const remaining = total - current;
   if (!(speed > 0) || !(remaining > 0)) return null;
   const seconds = remaining / speed;

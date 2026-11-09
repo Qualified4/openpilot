@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   dashcamUploadArtifactKind,
   dashcamUploadEta,
+  dashcamUploadSpeed,
   dashcamUploadStats,
 } from "../src/features/logs/upload_summary.js";
 
@@ -57,4 +58,16 @@ test("upload ETA comes from remaining bytes and the reported speed, rounded to s
   assert.deepEqual(eta(0, 3599, 1), { hours: 1, minutes: 0, seconds: 0 });
   assert.deepEqual(eta(0, 3 * 3600 + 25 * 60 + 40, 1), { hours: 3, minutes: 26, seconds: 0 });
   assert.deepEqual(eta(20e6, 260e6, 600e3), { hours: 0, minutes: 6, seconds: 40 });
+});
+
+test("upload ETA uses the whole-job wall-clock average and the speed label the windowed rate", () => {
+  // Burst speed 2 MB/s, but pauses bring the real average to 0.5 MB/s: 100 MB left = 200 s, not 50 s.
+  const snapshot = { bytes_current: 0, bytes_total: 100e6, bytes_per_second: 2e6, average_bytes_per_second: 0.5e6, window_bytes_per_second: 0.8e6 };
+  assert.deepEqual(dashcamUploadEta(snapshot), { hours: 0, minutes: 3, seconds: 20 });
+  assert.equal(dashcamUploadSpeed(snapshot), 0.8e6);
+  // Before the server has enough history (null), the burst speed is the fallback.
+  const early = { bytes_current: 0, bytes_total: 100e6, bytes_per_second: 2e6, average_bytes_per_second: null, window_bytes_per_second: null };
+  assert.deepEqual(dashcamUploadEta(early), { hours: 0, minutes: 0, seconds: 50 });
+  assert.equal(dashcamUploadSpeed(early), 2e6);
+  assert.equal(dashcamUploadSpeed({ window_bytes_per_second: 0, bytes_per_second: 5 }), 0);  // a stalled window shows 0, not the burst
 });

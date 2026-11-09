@@ -88,6 +88,36 @@ def append(job: dict[str, Any], text: Any) -> None:
   touch(job)
 
 
+RATE_WINDOW_SECONDS = 30.0
+RATE_MIN_WINDOW_SECONDS = 3.0
+RATE_MIN_AVERAGE_SECONDS = 10.0
+
+
+def _update_rates(job: dict[str, Any], current: int, now: float | None = None) -> bool:
+  """Wall-clock rates over sent bytes, including preparation/registration pauses.
+
+  bytes_per_second from the uploader is the speed inside one transfer burst; it
+  spikes and ignores the time between bursts. The window rate (display) and the
+  whole-job average (remaining time) are measured on the wall clock instead.
+  """
+  now = time.monotonic() if now is None else now
+  samples = job.setdefault("_rate_samples", [])
+  origin = job.get("_rate_origin")
+  if origin is None or current < samples[-1][1]:  # first report, or the counter restarted
+    job["_rate_origin"] = origin = (now, current)
+    samples[:] = [(now, current)]
+  elif current != samples[-1][1] or now - samples[-1][0] >= 1.0:
+    samples.append((now, current))
+  while len(samples) > 2 and now - samples[1][0] >= RATE_WINDOW_SECONDS:
+    samples.pop(0)
+  first_t, first_b = samples[0]
+  window = round((current - first_b) / (now - first_t)) if now - first_t >= RATE_MIN_WINDOW_SECONDS else None
+  average = round((current - origin[1]) / (now - origin[0])) if now - origin[0] >= RATE_MIN_AVERAGE_SECONDS else None
+  changed = job.get("window_bytes_per_second") != window or job.get("average_bytes_per_second") != average
+  job["window_bytes_per_second"], job["average_bytes_per_second"] = window, average
+  return changed
+
+
 def progress(
   job: dict[str, Any],
   *,
@@ -141,6 +171,8 @@ def progress(
     normalized_bytes_per_second = max(0, int(bytes_per_second))
     changed = changed or job.get("bytes_per_second") != normalized_bytes_per_second
     job["bytes_per_second"] = normalized_bytes_per_second
+  if bytes_current is not None:
+    changed = _update_rates(job, max(0, int(bytes_current))) or changed
   if percent is None:
     percent = job.get("progress")
   if percent is not None:
@@ -197,6 +229,8 @@ def snapshot(job: dict[str, Any]) -> dict[str, Any]:
     "bytes_current": job.get("bytes_current"),
     "bytes_total": job.get("bytes_total"),
     "bytes_per_second": job.get("bytes_per_second"),
+    "window_bytes_per_second": job.get("window_bytes_per_second"),
+    "average_bytes_per_second": job.get("average_bytes_per_second"),
     "error": job.get("error"),
     "created_at": job.get("created_at"),
     "updated_at": job.get("updated_at"),

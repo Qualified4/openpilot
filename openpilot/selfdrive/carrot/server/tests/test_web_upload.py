@@ -800,3 +800,35 @@ def test_dashcam_web_upload_honors_cancellation_before_network(tmp_path: Path, m
       lambda: True,
     ))
   assert FakeSession.instances == []
+
+
+def test_upload_rates_use_wall_clock_window_and_whole_job_average():
+  job = {}
+  # Burst at t=0..2 s (40 MB), then a 18 s registration/preparation pause, then 10 MB more by t=30 s.
+  upload_jobs._update_rates(job, 0, now=0.0)
+  upload_jobs._update_rates(job, 20_000_000, now=1.0)
+  assert job["window_bytes_per_second"] is None and job["average_bytes_per_second"] is None  # too little history
+  upload_jobs._update_rates(job, 40_000_000, now=2.0)
+  upload_jobs._update_rates(job, 40_000_000, now=20.0)
+  assert job["average_bytes_per_second"] == 2_000_000  # 40 MB / 20 s, pause included (burst speed was 20 MB/s)
+  upload_jobs._update_rates(job, 50_000_000, now=30.0)
+  assert job["average_bytes_per_second"] == round(50_000_000 / 30)
+  # The window keeps the last sample at or before 30 s ago: here still t=0, so 50 MB / 30 s.
+  assert job["window_bytes_per_second"] == round(50_000_000 / 30)
+  upload_jobs._update_rates(job, 50_000_000, now=55.0)
+  # Window now starts at t=20 (40 MB): 10 MB / 35 s; the job average keeps the full history.
+  assert job["window_bytes_per_second"] == round(10_000_000 / 35)
+  assert job["average_bytes_per_second"] == round(50_000_000 / 55)
+  # A restarted counter (new attempt) restarts both measurements.
+  upload_jobs._update_rates(job, 1_000, now=56.0)
+  assert job["window_bytes_per_second"] is None and job["average_bytes_per_second"] is None
+
+
+def test_upload_rates_reach_the_snapshot():
+  job = upload_jobs.create_job(["00000001--abcdef0123--0"])
+  try:
+    upload_jobs.progress(job, bytes_current=0, bytes_total=100)
+    snap = upload_jobs.snapshot(job)
+    assert "window_bytes_per_second" in snap and "average_bytes_per_second" in snap
+  finally:
+    upload_jobs.jobs().pop(job["id"], None)
