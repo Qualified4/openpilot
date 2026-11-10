@@ -39,8 +39,9 @@ VEHICLE_NAVI_PASSED_EVENT_DISTANCE = 30.0
 VEHICLE_NAVI_CAMERA_MATCH_MARGIN = 40.0
 VEHICLE_NAVI_MAX_EVENTS = 32
 VEHICLE_NAVI_CAMERA_KINDS = (0, 1, 2)
-VEHICLE_NAVI_CONTROLLED_ACCESS_LINK_CLASSES = (1, 2, 3)  # Freeway, IC, JC
+VEHICLE_NAVI_CONTROLLED_ACCESS_LINK_CLASSES = (1, 2, 3)  # Freeway, IC, JC (6 seen only at a roundabout, 2026-11-10)
 VEHICLE_NAVI_CONTROLLED_ACCESS_ROAD_CLASSES = (1, 2)  # Freeway, arterial/city freeway
+VEHICLE_NAVI_MAX_ROAD_SEGMENTS = 32
 VEHICLE_NAVI_SCHOOL_ZONE_MAX_DISTANCE = 1000.0
 VEHICLE_NAVI_POSITION_TIMEOUT_NS = 1_000_000_000
 SPEEDCAM_SKIP_MIN_SPEED = 5.0  # m/s; below this + keeps its resume/set-speed role
@@ -280,6 +281,7 @@ class CarState(CarStateBase):
     self.vehicleNaviRouteState = 0
     self.vehicleNaviRoutePathIndex = None
     self.vehicleNaviRoadClass = 7
+    self.vehicleNaviRoadSegments = []
     self.vehicleNaviCameraTarget = None
     self.vehicleNaviCameraStatusEvent = None
     self.vehicleNaviCameraStatusSpeed = 0.0
@@ -1056,6 +1058,33 @@ class CarState(CarStateBase):
       "functional_road_class": (raw >> 24) & 0x7,
     }
 
+  def _add_vehicle_navi_road_segment(self, segment):
+    # 0x4B9 describes the horizon one segment at a time: offset is where that
+    # segment starts, measured ahead of the car like the 0x4BE profile offset.
+    # A road class 1.5-2 km ahead (2026-11-10, 0000045a seg 7/8) must not be
+    # taken as the current road, or bumps on the current local road get purged.
+    if segment["functional_road_class"] == 7 or segment["offset"] >= 8191:
+      return
+    path = segment["path_index"]
+    if any(road["path"] != path for road in self.vehicleNaviRoadSegments):
+      self.vehicleNaviRoadSegments = []
+    start = self.totalDistance + segment["offset"]
+    for road in self.vehicleNaviRoadSegments:
+      if abs(road["start"] - start) < 5.0:
+        road["start"] = start
+        road["frc"] = segment["functional_road_class"]
+        return
+    self.vehicleNaviRoadSegments.append({"start": start, "path": path, "frc": segment["functional_road_class"]})
+    self.vehicleNaviRoadSegments.sort(key=lambda road: road["start"])
+    self.vehicleNaviRoadSegments = self.vehicleNaviRoadSegments[:VEHICLE_NAVI_MAX_ROAD_SEGMENTS]
+
+  def _update_vehicle_navi_road_class(self):
+    started = [road for road in self.vehicleNaviRoadSegments if road["start"] <= self.totalDistance]
+    if not started:
+      return
+    self.vehicleNaviRoadClass = started[-1]["frc"]
+    self.vehicleNaviRoadSegments = self.vehicleNaviRoadSegments[len(started) - 1:]
+
   def _vehicle_navi_is_controlled_access_road(self):
     link_class = int(self.hda_info_4a3.get("LinkClass", 0)) if self.hda_info_4a3 is not None else 0
     return (link_class in VEHICLE_NAVI_CONTROLLED_ACCESS_LINK_CLASSES or
@@ -1165,8 +1194,9 @@ class CarState(CarStateBase):
         self.vehicleNaviRouteState = segment["calculated_route"]
         self.vehicleNaviRoutePathIndex = (segment["path_index"]
                                           if segment["calculated_route"] in (0, 1) else None)
-        if segment["functional_road_class"] != 7:
-          self.vehicleNaviRoadClass = segment["functional_road_class"]
+        if segment["calculated_route"] == 2:
+          self.vehicleNaviRoadSegments = []
+        self._add_vehicle_navi_road_segment(segment)
         if segment["calculated_route"] == 2:
           self.vehicleNaviRouteResetTimestamp = timestamp
           self._clear_vehicle_navi_events()
@@ -1184,6 +1214,7 @@ class CarState(CarStateBase):
       self.vehicleNaviRoutePathIndex = None
       self._clear_vehicle_navi_route_filtered_events()
 
+    self._update_vehicle_navi_road_class()
     on_controlled_access_road = self._vehicle_navi_is_controlled_access_road()
     if on_controlled_access_road:
       self._clear_vehicle_navi_school_zone()

@@ -71,6 +71,7 @@ def _car_state(distance_time_tenths=60):
   state.vehicleNaviRouteState = 0
   state.vehicleNaviRoutePathIndex = None
   state.vehicleNaviRoadClass = 7
+  state.vehicleNaviRoadSegments = []
   state.vehicleNaviCameraTarget = None
   state.vehicleNaviCameraStatusEvent = None
   state.vehicleNaviCameraStatusSpeed = 0.0
@@ -506,6 +507,39 @@ def test_vehicle_navi_speed_bump_is_blocked_on_controlled_access_road(road_class
   assert not state._update_vehicle_navi_events(cp, ret, False)
   assert ret.speedBumpDistance == 0.0
   assert state.vehicleNaviEvents == []
+
+
+# 2026-11-10 0000045a seg 8 +29..31 s: the current segment (offset 0) is a
+# local road (FRC 5); 0x4B9 then described a FRC 2 road 1544 m ahead, which
+# used to purge the bumps announced on the current road. Raw frames recorded.
+def test_vehicle_navi_road_class_ahead_does_not_purge_current_bumps():
+  state = _car_state()
+  state.vehicleNaviCanControl = 1
+  state.totalDistance = 1000.0
+  cp = SimpleNamespace(ts_nanos={}, _last_update_nanos=0)
+  ret = SimpleNamespace(speedLimit=0.0, speedBumpDistance=0.0, schoolZoneActive=False)
+
+  def feed_segment(raw_hex, ts):
+    state.navi_segment_4b9 = {f"BYTE_{i + 1}": b for i, b in enumerate(bytes.fromhex(raw_hex))}
+    cp.ts_nanos["NEW_MSG_4B9"] = {"BYTE_1": ts}
+    cp._last_update_nanos = ts
+    state._update_vehicle_navi_events(cp, ret, False)
+
+  feed_segment("00007905115" "0fcff", 1)  # offset 0, path 8, route 1, FRC 5
+  assert state.vehicleNaviRoadClass == 5
+  state.navi_profile_4be = {"PROLONG_VALUE": 6, "PROLONG_OFFSET": 102, "PROLONG_CYCLIC_COUNTER": 0,
+                            "PROLONG_UPDATE": 1, "PROLONG_PATH_INDEX": 8, "PROLONG_PROFILE_TYPE": 16}
+  cp.ts_nanos["NEW_MSG_4BE"] = {"PROLONG_VALUE": 2}
+  state._update_vehicle_navi_events(cp, ret, False)
+  assert ret.speedBumpDistance == pytest.approx(102.0)
+
+  feed_segment("0806795a2550fcff", 3)  # offset 1544, FRC 2: a road ahead, not the current one
+  assert state.vehicleNaviRoadClass == 5
+  assert ret.speedBumpDistance == pytest.approx(102.0)
+
+  state.totalDistance = 1000.0 + 1544.0  # the car reaches that segment: now it is controlled access
+  state._update_vehicle_navi_events(cp, ret, False)
+  assert state.vehicleNaviRoadClass == 2
 
 
 def test_vehicle_navi_pending_speed_bump_is_cleared_on_expressway_entry():
