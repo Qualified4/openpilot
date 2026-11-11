@@ -236,7 +236,7 @@ While external navigation is connected, deceleration, countdowns, and navigation
 | [Driving mode](cruise-gap.md#driving-mode) | `MyDrivingMode`, `MyDrivingModeAuto` | Eco, safe, normal, high-speed modes and automatic selection |
 | [Speed-based acceleration](cruise-gap.md#acceleration-table) | `CruiseMaxVals0` through `CruiseMaxVals6` | Maximum acceleration tendency by speed band |
 | [Stopping and restarting](cruise-gap.md#stop-resume) | `StopDistanceCarrot`, `StoppingAccel`, `VEgoStopping`, `AChangeCostStarting` | Stop position, stop entry, and restart behavior |
-| [Longitudinal tuning](cruise-gap.md#longitudinal-tuning) | `LongTuningKpV`, `LongTuningKiV`, `LongTuningKf`, `LongActuatorDelay` | Hyundai/Kia/Genesis fix/hide `100/0/100`; Toyota/Lexus fix/hide `0/0/100`; VW MEB, including ID.4, applies saved gains |
+| [Longitudinal tuning](cruise-gap.md#longitudinal-tuning) | `LongTuningKpV`, `LongTuningKiV`, `LongTuningKf`, `LongActuatorDelay` | Ray EV Comma Pedal applies saved gains; other Hyundai/Kia/Genesis fix/hide `100/0/100`; Toyota/Lexus fix/hide `0/0/100`; VW MEB, including ID.4, applies saved gains |
 | [Following gap](cruise-gap.md#following-gap) | `TFollowGap1` through `TFollowGap4`, `DynamicTFollowLC`, `SpeedTFFactor`, `TFollowDecelBoost` | Gap times, lane-change relief using selected leads, and deceleration margin (default 0%) |
 | [Following responsiveness](cruise-gap.md#lead-response) | `LeadAccelResponse`, `LeadAccelResponseTF1`–`LeadAccelResponseTF4` | Lead-start, acceleration and approach response at every following-distance level |
 | [Carrot cruise](cruise-gap.md#carrot-cruise) | `CruiseEcoControl`, `CruiseCoastingPercent`, `CarrotCruiseDecel`, `CarrotCruiseAtcDecel` | Economy control, coasting margin with a fixed entry reference (default 0%: existing control), and cruise deceleration limits |
@@ -256,7 +256,7 @@ Eco caps lead response at 2 and Safe at 3; Normal and High retain the selected v
 
 Deceleration preview operates independently of the response level. During active control, remaining correction releases progressively when relative acceleration eases or the lead switches between radar and vision or disappears. Accelerator or brake intervention and longitudinal control exit clear it immediately.
 
-`LongTuning*` and `LongActuatorDelay` are advanced settings that directly affect vehicles using openpilot longitudinal control. Hyundai, Kia, and Genesis fix `LongTuningKpV`, `LongTuningKiV`, and `LongTuningKf` at the safe `100/0/100` values and hide them from settings. Toyota/Lexus fix and hide common gains at `0/0/100` to avoid duplicate correction before their dedicated controller. Some parameters have no effect when stock ACC remains responsible for acceleration and braking.
+`LongTuning*` and `LongActuatorDelay` are advanced settings that directly affect vehicles using openpilot longitudinal control. Identified Ray EV Comma Pedal configurations expose these gains and apply saved values to speed PID. Other Hyundai, Kia, and Genesis configurations fix `LongTuningKpV`, `LongTuningKiV`, and `LongTuningKf` at the safe `100/0/100` values and hide them from settings. Toyota/Lexus fix and hide common gains at `0/0/100` to avoid duplicate correction before their dedicated controller. Some parameters have no effect when stock ACC remains responsible for acceleration and braking.
 
 `StoppingAccel` is adjustable again: default `-50`, range `-100 to -50`, step `10`. The stored value is multiplied by 0.01, with the same bounds enforced by control. Original stop-entry and braking behavior and vehicle-specific soft hold are restored; changes apply within about one second. See [Stopping and restarting](cruise-gap.md#stop-resume).
 
@@ -472,6 +472,10 @@ While the external HUD is connected over USB, `ShowCameraWithCluster=0` switches
 
 The final `ClusterHudScreenMode` layout is:
 
+On `thftgr/carrot-wip-cluster`, onroad P selects the parking screen and R selects the reverse reference screen ahead of the selected mode. P shows the clock, tyre pressures, trip statistics and available battery level; R shows a steering-based guide and blind-spot state. Other gears and offroad restore the existing `carrot-wip` display. The driving layout and device-screen sleep behavior are unchanged.
+
+P/R car images follow the detected supported vehicle, falling back to EV6. Reverse lines use illustrative EV6 geometry; they are not rear-camera video or obstacle detection. Create `/data/ev6_park_screen_off` or `/data/ev6_reverse_screen_off` to disable only that screen. `/data/ev6_weather_off` disables parking weather queries. Weather uses the last position rounded to approximately 1 km for Open-Meteo and caches results for up to one hour.
+
 - `-1` uses the full width only in 3D camera views `0` and `1`, with no information panel or world shift. Left-side HUD items retain their margins, right-side gauges and TPMS align to the physical right edge, and the clock, world, and turn signals use the full-display center axis. In road-camera view `2`, it behaves exactly like mode `0`, including automatic navigation/report selection and `ClusterHudPanelLayout`.
 - `0` is the default screen. It shows navigation while live navigation is received and automatically shows the driving report otherwise.
 - `1` is the general live-debug screen, grouping delay, torque, steering, and lateral-plan state into four 2×2 cards. In 3D camera views, the world and driving HUD use the same 1124 px driving region as mode `0`, while the four cards fill the opposite 792 px information region. The acceleration, steering, fuel, and DEF gauges plus TPMS remain inside the driving region's right edge.
@@ -563,7 +567,7 @@ camera supplies 20fps. Reduced processing overhead does not establish sustained
 
 ## Automatic turn signals (supported vehicles)
 
-`AutoBlinkerControl` — Settings > Driving > Steering > Lane Change (Auto Turn). Default: 0. Currently limited to the Ioniq 5 PE, Jetson and PEAK USB-CAN/B1 profile on carrot-wip.
+`AutoBlinkerControl` — Settings > Driving > Steering > Lane Change (Auto Turn). Default: 0. Currently limited to the Ioniq 5 PE, Jetson and PEAK USB-CAN/B1 profile on carrot-wip. Cruise CANCEL stops automatic indicator requests and releases an automatic hold. Parking maneuvers no longer trigger an indication until SET/RES or +/− clears the cruise cancel state. The stock lever and explicit Bluetooth indicator buttons remain available.
 
 ATC indication starts at audioTurn and persists through stops. A fresh cue can start at a full stop in Drive when lateral permission remains valid and steering is fault-free. After the receiver confirms send completion, both lamps staying off for 1.5 seconds permits one recovery attempt per turn, including an initially unlit request. Driver cancellation, communication failure or an unconfirmed send forbids retry. A fresh opposite-turn cue waits at most three seconds for physical completion of the preceding turn.
 
@@ -601,7 +605,7 @@ The manual lane-change indicator can request again after at least three seconds,
 
 An ATC recovery attempt has a new four-second activation deadline. It does not extend the five-minute maximum measured from the original request.
 
-`ModelDesireIndicator` and `ModelPathIndicator` are separate default-off indication-only options. See [lane changes](lane-change.md) for TBT distance holding and each feature’s start/end conditions.
+`ModelDesireIndicator` and `ModelPathIndicator` are separate default-off indication-only options. See [lane changes](lane-change.md) for TBT distance holding and each feature’s start/end conditions. At 30 km/h or above, the two nearest model forecasts can also trigger an indication when both predict the same lane change with at least 65% probability and both measured lane boundaries show the vehicle approaching that side. A forecast alone does not light the indicator or request steering. After forecast-based initiation, widening lane lines at a fork do not end the hold while the model and measured motion still indicate the same direction. Fading or opposite intent ends the fork hold; cruise CANCEL releases it immediately.
 
 Manual indication projects 0.3s of measured boundary approach, advancing the centre-to-boundary threshold by at most 0.3m. Existing speed, centre-line and road-edge gates remain.
 
