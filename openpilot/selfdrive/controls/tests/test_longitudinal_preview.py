@@ -10,6 +10,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_preview import (
   DRIVING_MODE_NORMAL,
   DRIVING_MODE_SAFE,
   LEAD_ACCEL_RESPONSE_TUNING,
+  OPENING_A_CHANGE_COST_FACTOR,
+  OPENING_JERK_COST_FACTOR,
   LeadAccelResponseState,
   apply_preview_target,
   clip_action_time,
@@ -219,6 +221,50 @@ def test_every_level_returns_to_normal_cost_at_configured_tf(level):
 
 def test_level_five_requires_positive_raw_lead_acceleration():
   assert not mpc_request(5, a_lead=0.0, a_ego=-0.5, v_rel=0.5).active
+  assert not mpc_request(5, a_lead=-0.7, a_ego=-2.1, v_rel=0.6).active
+
+
+# 2026-11-11 0000045e seg 4 +45 s: braking at -2.1 m/s^2 while the lead only
+# braked at -0.7 (aLeadK); the gap opened at +0.6..+1.5 m/s but the response
+# stayed off until aLeadK > 0.1, 2.5 s later, and we lost a further 9 km/h.
+@pytest.mark.parametrize("level", range(1, 5))
+@pytest.mark.parametrize("source", ['lead0', 'cruise'])
+def test_lead_opening_while_we_brake_harder_enables_response(level, source):
+  if source == 'cruise' and level < 3:
+    pytest.skip("gentle levels never use the cruise source")
+  result = mpc_request(level, source=source, a_lead=-0.69, a_ego=-2.12, v_rel=0.64, gap_margin=1.5)
+  assert result.active and result.opening
+  tuning = LEAD_ACCEL_RESPONSE_TUNING[level]
+  # The opening release is stronger than the level's positive-lead factors.
+  assert result.a_change_cost_factor < tuning.a_change_cost_factor or result.strength < 1.0
+  assert result.a_change_cost_factor == pytest.approx(1.0 - result.strength * (1.0 - OPENING_A_CHANGE_COST_FACTOR))
+  assert result.jerk_cost_factor == pytest.approx(1.0 - result.strength * (1.0 - OPENING_JERK_COST_FACTOR))
+
+
+@pytest.mark.parametrize("level", range(1, 5))
+def test_lead_opening_release_survives_the_entry_ramp(level):
+  state = LeadAccelResponseState()
+  request = mpc_request(level, source='lead0', a_lead=-0.69, a_ego=-2.12, v_rel=0.64, gap_margin=3.0)
+  for _ in range(40):
+    result = state.update(request, .05, 10)
+  assert result.a_change_cost_factor == pytest.approx(1.0 - result.strength * (1.0 - OPENING_A_CHANGE_COST_FACTOR))
+  assert result.jerk_cost_factor == pytest.approx(1.0 - result.strength * (1.0 - OPENING_JERK_COST_FACTOR))
+  # A positive-lead response at the same level keeps the level's own factors.
+  normal = mpc_request(level, a_lead=1.1, a_ego=0.0, v_rel=0.2, gap_margin=3.0)
+  assert not normal.opening
+  assert normal.a_change_cost_factor == pytest.approx(1.0 - normal.strength * (1.0 - LEAD_ACCEL_RESPONSE_TUNING[level].a_change_cost_factor))
+
+
+@pytest.mark.parametrize("blocked", [
+  {"a_ego": -0.4},                  # not braking: normal cost, as before
+  {"v_rel": 0.2},                   # gap not opening yet
+  {"a_lead": -2.5},                 # lead brakes harder than we do
+  {"gap_margin": 0.0},              # still inside the configured TF
+])
+def test_lead_opening_response_keeps_existing_safety_gates(blocked):
+  kwargs = dict(source='cruise', a_lead=-0.69, a_ego=-2.12, v_rel=0.64, gap_margin=1.5)
+  kwargs.update(blocked)
+  assert not mpc_request(3, **kwargs).active
 
 
 def test_inactive_request_restores_default_mpc_cost_factors():

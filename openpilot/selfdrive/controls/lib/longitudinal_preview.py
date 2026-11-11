@@ -20,6 +20,18 @@ LEAD_ACCEL_RESPONSE_MAX = 5
 LEAD_ACCEL_CRUISE_RESPONSE_MIN = 3
 LEAD_ACCEL_MIN_TRACK_FRAMES = 3
 CRUISE_SPEED_ERROR_DEADBAND = 1.0 / 3.6
+# A lead that merely brakes less than we do opens the gap with aLeadK <= 0.
+# While we are still braking, the fixed aChangeCost=200 kept us braking for
+# 2-3 s after the gap had started to open (2026-11-11 0000045e: -2.1 m/s^2 at
+# 31 km/h lost a further 9 km/h). Treat that as a pulling-away lead too.
+OPENING_EGO_DECEL = -0.5
+OPENING_V_REL = 0.3
+# Opening while braking: release the remaining brake faster than a positive-lead
+# response. Open-loop plannerd replay of that drive: +0.6..2.8 km/h in the first
+# 3 s of the five hard-braking pull-aways, plan jerk <= 2.7 m/s^3 (before: 1.6);
+# a 0.05 / jerk 0.05 reached 2.8 m/s^3 and was not taken.
+OPENING_A_CHANGE_COST_FACTOR = 0.05
+OPENING_JERK_COST_FACTOR = 0.15
 
 # Preview is an offset from the calibrated actuator action time. These bounds
 # affect only the existing early-deceleration preview. Positive lead response
@@ -64,6 +76,14 @@ class LeadAccelMpcRequest:
   a_change_cost_factor: float = 1.0
   jerk_cost_factor: float = 1.0
   strength: float = 0.0
+  opening: bool = False
+
+
+def _full_strength_factors(tuning: LeadAccelResponseTuning, opening: bool) -> tuple[float, float]:
+  if not opening:
+    return tuning.a_change_cost_factor, tuning.jerk_cost_factor
+  return (min(tuning.a_change_cost_factor, OPENING_A_CHANGE_COST_FACTOR),
+          min(tuning.jerk_cost_factor, OPENING_JERK_COST_FACTOR))
 
 
 MODE_TUNING = {
@@ -127,9 +147,10 @@ class LeadAccelResponseState:
       self.strength = request.strength
       return request
     self.strength = min(request.strength, self.strength + dt / tuning.rise_time) if tuning.rise_time > 0.0 else request.strength
+    a_factor, j_factor = _full_strength_factors(tuning, request.opening)
     return replace(request, strength=self.strength,
-                   a_change_cost_factor=1.0 - self.strength * (1.0 - tuning.a_change_cost_factor),
-                   jerk_cost_factor=1.0 - self.strength * (1.0 - tuning.jerk_cost_factor))
+                   a_change_cost_factor=1.0 - self.strength * (1.0 - a_factor),
+                   jerk_cost_factor=1.0 - self.strength * (1.0 - j_factor))
 
 
 def _mode_value(driving_mode) -> int:
@@ -160,9 +181,15 @@ def lead_accel_response_source_allowed(level: int, source: str) -> bool:
   )
 
 
+def lead_opening_while_braking(*, a_ego: float, v_rel: float, lead_accel_signal: float) -> bool:
+  """The gap is opening only because we brake harder than the lead."""
+  return (math.isfinite(a_ego) and a_ego < OPENING_EGO_DECEL and
+          v_rel > OPENING_V_REL and lead_accel_signal > 0.0)
+
+
 def lead_accel_response_allowed(level: int, *, v_rel: float, gap_margin: float,
                                 lead_accel_signal: float, a_lead: float,
-                                cruise_source_active: bool = False) -> bool:
+                                cruise_source_active: bool = False, a_ego: float = 0.0) -> bool:
   """Allow positive MPC response only while the lead is safely pulling away."""
   response_level = clip_lead_accel_response_level(level)
   tuning = LEAD_ACCEL_RESPONSE_TUNING.get(response_level)
@@ -176,11 +203,14 @@ def lead_accel_response_allowed(level: int, *, v_rel: float, gap_margin: float,
   # positive lead acceleration with a cruise source because relative
   # acceleration may be near zero while an existing gap is opening.
   positive_lead_accel = a_lead > LEAD_ACCEL_DEADBAND
+  # Level 5 (explicit maximum-response test mode) keeps requiring raw positive lead acceleration.
+  opening = (response_level < LEAD_ACCEL_RESPONSE_MAX and
+             lead_opening_while_braking(a_ego=a_ego, v_rel=v_rel, lead_accel_signal=lead_accel_signal))
   # Cost reduction is only for catching back up to the configured TF. Once
   # that distance is reached, normal MPC costs resume and maintain the gap.
   if (gap_margin <= 0.0 or
       v_rel < tuning.closing_speed_floor or
-      not positive_lead_accel or
+      not (positive_lead_accel or opening) or
       (response_level < LEAD_ACCEL_RESPONSE_MAX and not cruise_source_active and lead_accel_signal <= 0.0)):
     return False
 
@@ -221,6 +251,7 @@ def get_lead_accel_mpc_request(
     lead_accel_signal=lead_accel_signal,
     a_lead=a_lead,
     cruise_source_active=cruise_source_active,
+    a_ego=a_ego,
   ):
     return LeadAccelMpcRequest(False, level=response_level, lead_accel_signal=lead_accel_signal)
 
@@ -229,16 +260,23 @@ def get_lead_accel_mpc_request(
   # the boost near the target gap and acceleration deadband, without changing
   # the lead prediction or delaying braking. The caller ramps boost entry.
   strength = 1.0
+  opening = (response_level < LEAD_ACCEL_RESPONSE_MAX and
+             lead_opening_while_braking(a_ego=a_ego, v_rel=v_rel, lead_accel_signal=lead_accel_signal))
   if tuning.gap_fade > 0.0:
     signal = a_lead - LEAD_ACCEL_DEADBAND if cruise_source_active else min(a_lead - LEAD_ACCEL_DEADBAND, lead_accel_signal)
+    if opening:
+      # The relative acceleration is the opening signal; the lead's own aLeadK may be negative.
+      signal = max(signal, lead_accel_signal)
     strength = min(1.0, gap_margin / tuning.gap_fade, signal / tuning.accel_fade)
+  a_factor, j_factor = _full_strength_factors(tuning, opening)
   return LeadAccelMpcRequest(
     True,
     level=response_level,
     lead_accel_signal=lead_accel_signal,
-    a_change_cost_factor=tuning.a_change_cost_factor if strength == 1.0 else 1.0 - strength * (1.0 - tuning.a_change_cost_factor),
-    jerk_cost_factor=tuning.jerk_cost_factor if strength == 1.0 else 1.0 - strength * (1.0 - tuning.jerk_cost_factor),
+    a_change_cost_factor=a_factor if strength == 1.0 else 1.0 - strength * (1.0 - a_factor),
+    jerk_cost_factor=j_factor if strength == 1.0 else 1.0 - strength * (1.0 - j_factor),
     strength=strength,
+    opening=opening,
   )
 
 
