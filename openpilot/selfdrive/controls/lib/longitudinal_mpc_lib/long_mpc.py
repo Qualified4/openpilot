@@ -16,6 +16,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_preview import LEAD_ACCEL_MIN
 from openpilot.selfdrive.controls.lib.longitudinal_cutout import cutout_obstacle_relief
 from openpilot.selfdrive.controls.lib.longitudinal_gap_recovery import LeadGapState, displayed_follow_distance
 from openpilot.selfdrive.controls.lib.longitudinal_braking_gap import LeadComfortState, braking_gap_reference, comfort_path_has_reserve
+from openpilot.selfdrive.controls.lib.longitudinal_stop_gap import StopGapWeightState
 from openpilot.selfdrive.carrot.radar_motion.lane_change_gap import LaneChangeGapPlan
 
 if __name__ == '__main__':  # generating code
@@ -256,6 +257,7 @@ class LongitudinalMpc:
     self.jerk_cost_factor = 1.0
     self.lead_accel_response_active = False
     self.lead_accel_response_level = 0
+    self.obstacle_cost_factor = 1.0
 
     self.reset()
     self.source = SOURCES[2]
@@ -297,6 +299,8 @@ class LongitudinalMpc:
     self.lead_response_state = LeadAccelResponseState()
     self.lead_gap_states = (LeadGapState(), LeadGapState())
     self.lead_comfort_states = (LeadComfortState(), LeadComfortState())
+    self.stop_gap_state = StopGapWeightState()
+    self.obstacle_cost_factor = 1.0
     self.lead_gap_margins = np.zeros((N+1, 2))
     self.solve_time = 0.0
     self.time_qp_solution = 0.0
@@ -335,14 +339,15 @@ class LongitudinalMpc:
                   jerk_factor=1.0,
                   a_change_cost_starting=A_CHANGE_COST_STARTING,
                   a_change_cost_factor=1.0,
-                  jerk_cost_factor=1.0):
+                  jerk_cost_factor=1.0,
+                  obstacle_cost_factor=1.0):
     #jerk_factor = get_jerk_factor(personality)
     if self.mode == 'acc':
       a_change_cost = get_a_change_cost(
         prev_accel_constraint, a_change_cost_starting, a_change_cost_factor,
       )
       applied_jerk_cost_factor = float(np.clip(jerk_cost_factor, 0.0, 1.0))
-      cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST,
+      cost_weights = [X_EGO_OBSTACLE_COST * max(1.0, float(obstacle_cost_factor)), X_EGO_COST, V_EGO_COST, A_EGO_COST,
                       a_change_cost, jerk_factor * applied_jerk_cost_factor * J_EGO_COST]
       constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
     elif self.mode == 'blended':
@@ -562,6 +567,19 @@ class LongitudinalMpc:
     response_request = self.lead_response_state.update(response_request, self.dt, response_lead.radarTrackId)
     self.lead_accel_response_active = response_request.active
     self.lead_accel_response_level = response_request.level if response_request.active else 0
+    # Stopping behind a lead: the lead that sets the end of the horizon stops in the plan.
+    stop_lead_index = int(np.argmin(x_obstacles[-1, :2])) if mode == 'acc' else 0
+    stop_lead = (radarstate.leadOne, radarstate.leadTwo)[stop_lead_index]
+    self.obstacle_cost_factor = self.stop_gap_state.update(
+      enabled=mode == 'acc' and not reset_state,
+      lead_status=bool(stop_lead.status),
+      lead_end_speed=float((lead_xv_0, lead_xv_1)[stop_lead_index][-1, 1]),
+      lead_sets_stop=mode == 'acc' and bool(x_obstacles[-1, stop_lead_index] <= np.min(x_obstacles[-1]) + 1e-6),
+      v_ego=v_ego,
+      gap_excess=(float(stop_lead.dRel - self.base_desired_distances[stop_lead_index])
+                  if stop_lead.status else float('inf')),
+      dt=self.dt,
+    )
     self.set_weights(
       prev_accel_constraint,
       personality=personality,
@@ -569,6 +587,7 @@ class LongitudinalMpc:
       a_change_cost_starting=a_change_cost_starting,
       a_change_cost_factor=response_request.a_change_cost_factor,
       jerk_cost_factor=response_request.jerk_cost_factor,
+      obstacle_cost_factor=self.obstacle_cost_factor,
     )
 
     # Extra TF is a comfort preference, not a change to physical lead obstacles,
