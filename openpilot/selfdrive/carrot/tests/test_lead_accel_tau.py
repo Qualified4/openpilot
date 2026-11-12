@@ -21,6 +21,23 @@ def test_ordinary_motion_keeps_existing_policy(a, j):
     assert state.update(a, j, i * .05) == expected
 
 
+# 2026-11-12 00000460 seg 11 +49..56 s: the lead kept accelerating at
+# +0.3..0.57 m/s^2 with small jerk, and every quiet sample reset tau to 1.5.
+@pytest.mark.parametrize('a', [.3, .35, .45])
+def test_sustained_mild_positive_acceleration_keeps_persisting(a):
+  state = LeadAccelTau()
+  for i in range(20):
+    tau = state.update(a, .1, i * .05)
+  assert tau == pytest.approx(1.5 * .9 ** 20)
+
+
+@pytest.mark.parametrize('a', [.29, 0., -.3, -.45])
+def test_quiet_band_below_positive_threshold_and_mild_braking_still_reset(a):
+  state = LeadAccelTau()
+  state.update(1., 0., 0.)
+  assert state.update(a, .1, .05) == 1.5
+
+
 def test_oscillating_jerk_and_single_negative_spike_do_not_accelerate_attack():
   state = LeadAccelTau()
   expected = 1.5

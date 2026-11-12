@@ -22,6 +22,14 @@ BRAKING_JERK_START = 1.5
 BRAKING_JERK_FULL = 3.0
 BRAKING_TAU_ATTACK_RC = 0.05
 BRAKING_CONFIRM_MAX_GAP_S = 0.15
+# Quiet-reset band. Braking keeps the original |a| < 0.5 band. A lead that keeps
+# accelerating at +0.2..0.5 m/s^2 used to reset to 1.5 on every quiet sample, so
+# the MPC assumed its acceleration ends within ~1 s and only matched its speed
+# (2026-11-12 00000460 seg 11 +49..56 s: aLeadK +0.2..0.57, aLeadTau mostly 1.5).
+# Planner replay (11-11 and 11-12): +0.1..0.17 m/s^2 there, never lower by >0.1;
+# 0.2 doubled the raised-then-lead-closed episodes for no further gain.
+QUIET_ACCEL_NEGATIVE = 0.5
+QUIET_ACCEL_POSITIVE = 0.3
 
 
 def _ramp(value: float, start: float, full: float) -> float:
@@ -62,7 +70,7 @@ class LeadAccelTau:
     if not measured:
       self._previous_strength = 0.0
 
-    if abs(a_lead) < 0.5 and abs(j_lead) < 0.5:
+    if -QUIET_ACCEL_NEGATIVE < a_lead < QUIET_ACCEL_POSITIVE and abs(j_lead) < 0.5:
       self.tau = LEAD_ACCEL_TAU_S
       self._ordinary_tau = self.tau
     else:
