@@ -11,7 +11,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_preview import (
   DRIVING_MODE_SAFE,
   LEAD_ACCEL_RESPONSE_TUNING,
   OPENING_A_CHANGE_COST_FACTOR,
+  OPENING_COAST_ACCEL_MAX,
   OPENING_JERK_COST_FACTOR,
+  OPENING_PREDICTION_S,
   LeadAccelResponseState,
   apply_preview_target,
   clip_action_time,
@@ -20,6 +22,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_preview import (
   get_lead_preview_request,
   lead_accel_response_allowed,
   lead_accel_response_source_allowed,
+  lead_gap_opening_while_coasting,
   rate_limit_preview,
 )
 
@@ -183,7 +186,8 @@ def test_gentle_levels_cannot_enable_cruise_source_response():
 
 @pytest.mark.parametrize("level", [3, 4, 5])
 def test_cruise_response_releases_when_lead_acceleration_ends_or_gap_will_close(level):
-  assert not mpc_request(level, source='cruise', a_lead=0.1, v_rel=0.4).active
+  # a_ego 0.5: an ego still below OPENING_COAST_ACCEL_MAX would see an opening gap.
+  assert not mpc_request(level, source='cruise', a_lead=0.1, a_ego=0.5, v_rel=0.4).active
   assert not mpc_request(
     level, source='cruise', a_lead=0.6, a_ego=2.0, v_rel=0.0,
   ).active
@@ -191,7 +195,10 @@ def test_cruise_response_releases_when_lead_acceleration_ends_or_gap_will_close(
 
 @pytest.mark.parametrize("level", range(1, 6))
 def test_every_level_releases_when_raw_lead_acceleration_ends(level):
-  assert not mpc_request(level, a_lead=0.1, a_ego=-0.5, v_rel=0.5).active
+  # v_rel 0.5 with a_ego -0.5 is now an opening gap (released below); keep the
+  # original intent with a gap that is not opening, or an ego that already accelerates.
+  assert not mpc_request(level, a_lead=0.1, a_ego=-0.5, v_rel=0.3).active
+  assert not mpc_request(level, a_lead=0.1, a_ego=0.5, v_rel=0.5).active
 
 
 def test_cruise_response_requires_set_speed_headroom():
@@ -259,7 +266,7 @@ def test_lead_opening_release_survives_the_entry_ramp(level):
   {"a_ego": -0.4},                  # not braking: normal cost, as before
   {"v_rel": 0.2},                   # gap not opening yet
   {"a_lead": -2.5},                 # lead brakes harder than we do
-  {"gap_margin": 0.0},              # still inside the configured TF
+  {"gap_margin": -1.0},             # still inside the TF even 1.5 s ahead (0.0 now opens: predicted +0.96 m)
 ])
 def test_lead_opening_response_keeps_existing_safety_gates(blocked):
   kwargs = dict(source='cruise', a_lead=-0.69, a_ego=-2.12, v_rel=0.64, gap_margin=1.5)
@@ -318,9 +325,10 @@ def test_preview_never_increases_mpc_acceleration_output(mode):
 
 @pytest.mark.parametrize("level", [1, 2, 3, 4])
 def test_small_lead_changes_and_small_gap_margin_fade_boost(level):
-  full = mpc_request(level, a_lead=1., v_rel=.5)
-  quiet = mpc_request(level, a_lead=.101, v_rel=.5)
-  near = mpc_request(level, a_lead=1., v_rel=.5, gap_margin=.001)
+  # v_rel 0.3 (not above OPENING_V_REL) keeps the coasting-opening release out of this test.
+  full = mpc_request(level, a_lead=1., v_rel=.3)
+  quiet = mpc_request(level, a_lead=.101, v_rel=.3)
+  near = mpc_request(level, a_lead=1., v_rel=.3, gap_margin=.001)
   assert full.active and quiet.active and near.active
   assert full.a_change_cost_factor < quiet.a_change_cost_factor < 1.
   assert full.a_change_cost_factor < near.a_change_cost_factor < 1.
@@ -381,3 +389,64 @@ def test_response_ramp_uses_elapsed_time_across_planner_rates(level):
       result = state.update(mpc_request(level), dt, 10)
     strengths.append(result.strength)
   assert strengths == pytest.approx([strengths[0]] * 3)
+
+
+# 2026-11-11/12 closed-loop replay: the gap kept opening (vRel +0.4..0.7 m/s)
+# after the hard braking ended, the ego still at -0.2..-0.45 m/s^2 and the lead
+# coasting (aLeadK -0.3..0). No release applied and a > +0.2 came 2-4 s later.
+@pytest.mark.parametrize("level", range(1, 5))
+@pytest.mark.parametrize("source", ['lead0', 'cruise'])
+def test_gap_opening_while_still_decelerating_releases(level, source):
+  if source == 'cruise' and level < 3:
+    pytest.skip("gentle levels never use the cruise source")
+  for a_ego in (-0.45, -0.2, -0.05):
+    result = mpc_request(level, source=source, a_lead=-0.3, a_ego=a_ego, v_rel=0.6, gap_margin=2.0)
+    assert result.active and result.opening
+    assert result.a_change_cost_factor == pytest.approx(1.0 - result.strength * (1.0 - OPENING_A_CHANGE_COST_FACTOR))
+    assert result.jerk_cost_factor == pytest.approx(1.0 - result.strength * (1.0 - OPENING_JERK_COST_FACTOR))
+
+
+@pytest.mark.parametrize("level", range(1, 5))
+def test_opening_gap_uses_predicted_margin(level):
+  # Still 0.5 m short of the configured TF, but +0.6 m/s opens it within 1.5 s.
+  assert mpc_request(level, a_lead=-0.3, a_ego=-0.3, v_rel=0.6, gap_margin=-0.5).active
+  assert mpc_request(level, a_lead=-0.69, a_ego=-2.12, v_rel=0.64, gap_margin=-0.5).active
+  # Short gap that the opening speed cannot recover within the prediction time.
+  short = -0.6 * OPENING_PREDICTION_S - 0.01
+  assert not mpc_request(level, a_lead=-0.3, a_ego=-0.3, v_rel=0.6, gap_margin=short).active
+  # A positive-lead response without an opening gap keeps the current-margin gate.
+  assert not mpc_request(level, a_lead=1.1, a_ego=0.0, v_rel=0.2, gap_margin=-0.01).active
+
+
+@pytest.mark.parametrize("blocked", [
+  {"a_ego": 0.3},                   # past the coasting acceleration limit
+  {"v_rel": 0.3},                   # gap not opening
+  {"a_lead": -0.5},                 # lead brakes: never release
+  {"a_lead": -1.2, "a_ego": -0.3},  # lead brakes harder than we do
+])
+@pytest.mark.parametrize("level", range(1, 5))
+def test_coasting_opening_release_gates(level, blocked):
+  kwargs = dict(source='lead0', a_lead=-0.3, a_ego=-0.3, v_rel=0.6, gap_margin=2.0)
+  kwargs.update(blocked)
+  assert not mpc_request(level, **kwargs).active
+
+
+def test_level_five_does_not_use_coasting_opening():
+  assert not mpc_request(5, a_lead=-0.3, a_ego=-0.3, v_rel=0.6, gap_margin=2.0).active
+  assert not mpc_request(5, a_lead=1.1, a_ego=0.0, v_rel=0.6, gap_margin=-0.5).active
+
+
+def test_coasting_opening_covers_mild_positive_acceleration():
+  assert OPENING_COAST_ACCEL_MAX == pytest.approx(0.3)
+  assert lead_gap_opening_while_coasting(a_ego=0.2, v_rel=0.6, a_lead=-0.3)
+  assert not lead_gap_opening_while_coasting(a_ego=0.3, v_rel=0.6, a_lead=-0.3)
+
+
+# 2026-11-11/12 closed-loop replay: ending the release at aEgo 0 put the level's
+# jerk cost back on the 0 -> +0.2 rise; the release now continues to +0.3.
+def test_opening_release_continues_while_accelerating_mildly():
+  result = mpc_request(4, a_lead=0.0, a_ego=0.1, v_rel=0.6, gap_margin=3.0)
+  assert result.active and result.opening
+  assert result.a_change_cost_factor == pytest.approx(1.0 - result.strength * (1.0 - OPENING_A_CHANGE_COST_FACTOR))
+  assert result.jerk_cost_factor == pytest.approx(1.0 - result.strength * (1.0 - OPENING_JERK_COST_FACTOR))
+  assert not mpc_request(5, a_lead=0.0, a_ego=0.1, v_rel=0.6, gap_margin=3.0).opening

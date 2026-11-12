@@ -27,11 +27,24 @@ CRUISE_SPEED_ERROR_DEADBAND = 1.0 / 3.6
 OPENING_EGO_DECEL = -0.5
 OPENING_V_REL = 0.3
 # Opening while braking: release the remaining brake faster than a positive-lead
-# response. Open-loop plannerd replay of that drive: +0.6..2.8 km/h in the first
-# 3 s of the five hard-braking pull-aways, plan jerk <= 2.7 m/s^3 (before: 1.6);
-# a 0.05 / jerk 0.05 reached 2.8 m/s^3 and was not taken.
+# response. Closed-loop plannerd replay of the 2026-11-11/12 drives (35 scenes):
+# gap starts opening -> aEgo > +0.2 averaged 2.33 s before the opening releases,
+# 2.12 s with jerk 0.15 and 1.88 s with jerk 0.05 (9 mild pull-aways), with no
+# scene losing more than 0.5 m of gap and no new minimum TTC below 2 s.
 OPENING_A_CHANGE_COST_FACTOR = 0.05
-OPENING_JERK_COST_FACTOR = 0.15
+OPENING_JERK_COST_FACTOR = 0.05
+# The gap keeps opening after the hard braking has ended: the ego is still
+# decelerating gently (above OPENING_EGO_DECEL) and the lead coasts or brakes
+# mildly (aLeadK <= 0). Neither release above applied, so the jerk cost kept the
+# ego below +0.2 m/s^2 for 2-4 s while losing ~3 km/h (2026-11-11/12 closed-loop
+# replay, 10 mild pull-aways). Keep releasing up to aEgo +0.3: ending it at 0
+# put the level's jerk cost (0.35) back on the 0 -> +0.2 rise. A 1.0 limit lost
+# up to 1.29 m of gap in two scenes and was not taken.
+OPENING_COAST_ACCEL_MAX = 0.3
+OPENING_COAST_LEAD_ACCEL_MIN = -0.5
+# Opening releases are judged on the gap predicted this far ahead (current
+# margin + vRel * t), so a gap that is still short but opening is released too.
+OPENING_PREDICTION_S = 1.5
 
 # Preview is an offset from the calibrated actuator action time. These bounds
 # affect only the existing early-deceleration preview. Positive lead response
@@ -187,6 +200,25 @@ def lead_opening_while_braking(*, a_ego: float, v_rel: float, lead_accel_signal:
           v_rel > OPENING_V_REL and lead_accel_signal > 0.0)
 
 
+def lead_gap_opening_while_coasting(*, a_ego: float, v_rel: float, a_lead: float) -> bool:
+  """The gap is opening while we decelerate gently or accelerate up to +0.3 and the lead is not braking hard."""
+  return (all(math.isfinite(value) for value in (a_ego, v_rel, a_lead)) and
+          a_ego < OPENING_COAST_ACCEL_MAX and v_rel > OPENING_V_REL and
+          a_lead > OPENING_COAST_LEAD_ACCEL_MIN)
+
+
+def _lead_opening(response_level: int, *, a_ego: float, v_rel: float, a_lead: float,
+                  lead_accel_signal: float) -> bool:
+  # Level 5 (explicit maximum-response test mode) keeps requiring raw positive lead acceleration.
+  return (response_level < LEAD_ACCEL_RESPONSE_MAX and (
+    lead_opening_while_braking(a_ego=a_ego, v_rel=v_rel, lead_accel_signal=lead_accel_signal) or
+    lead_gap_opening_while_coasting(a_ego=a_ego, v_rel=v_rel, a_lead=a_lead)))
+
+
+def _response_gap_margin(gap_margin: float, v_rel: float, opening: bool) -> float:
+  return gap_margin + v_rel * OPENING_PREDICTION_S if opening else gap_margin
+
+
 def lead_accel_response_allowed(level: int, *, v_rel: float, gap_margin: float,
                                 lead_accel_signal: float, a_lead: float,
                                 cruise_source_active: bool = False, a_ego: float = 0.0) -> bool:
@@ -203,15 +235,16 @@ def lead_accel_response_allowed(level: int, *, v_rel: float, gap_margin: float,
   # positive lead acceleration with a cruise source because relative
   # acceleration may be near zero while an existing gap is opening.
   positive_lead_accel = a_lead > LEAD_ACCEL_DEADBAND
-  # Level 5 (explicit maximum-response test mode) keeps requiring raw positive lead acceleration.
-  opening = (response_level < LEAD_ACCEL_RESPONSE_MAX and
-             lead_opening_while_braking(a_ego=a_ego, v_rel=v_rel, lead_accel_signal=lead_accel_signal))
+  opening = _lead_opening(response_level, a_ego=a_ego, v_rel=v_rel, a_lead=a_lead,
+                          lead_accel_signal=lead_accel_signal)
   # Cost reduction is only for catching back up to the configured TF. Once
   # that distance is reached, normal MPC costs resume and maintain the gap.
-  if (gap_margin <= 0.0 or
+  # An opening gap is judged on its predicted margin; danger limits are unchanged.
+  if (_response_gap_margin(gap_margin, v_rel, opening) <= 0.0 or
       v_rel < tuning.closing_speed_floor or
       not (positive_lead_accel or opening) or
-      (response_level < LEAD_ACCEL_RESPONSE_MAX and not cruise_source_active and lead_accel_signal <= 0.0)):
+      (response_level < LEAD_ACCEL_RESPONSE_MAX and not cruise_source_active
+       and lead_accel_signal <= 0.0 and not opening)):
     return False
 
   predicted_v_rel = float(v_rel) + float(lead_accel_signal) * tuning.prediction_horizon
@@ -260,14 +293,15 @@ def get_lead_accel_mpc_request(
   # the boost near the target gap and acceleration deadband, without changing
   # the lead prediction or delaying braking. The caller ramps boost entry.
   strength = 1.0
-  opening = (response_level < LEAD_ACCEL_RESPONSE_MAX and
-             lead_opening_while_braking(a_ego=a_ego, v_rel=v_rel, lead_accel_signal=lead_accel_signal))
+  opening = _lead_opening(response_level, a_ego=a_ego, v_rel=v_rel, a_lead=a_lead,
+                          lead_accel_signal=lead_accel_signal)
   if tuning.gap_fade > 0.0:
     signal = a_lead - LEAD_ACCEL_DEADBAND if cruise_source_active else min(a_lead - LEAD_ACCEL_DEADBAND, lead_accel_signal)
     if opening:
-      # The relative acceleration is the opening signal; the lead's own aLeadK may be negative.
-      signal = max(signal, lead_accel_signal)
-    strength = min(1.0, gap_margin / tuning.gap_fade, signal / tuning.accel_fade)
+      # The relative acceleration or the opening speed is the signal; the lead's own aLeadK may be negative.
+      signal = max(signal, lead_accel_signal, v_rel - OPENING_V_REL)
+    strength = min(1.0, _response_gap_margin(gap_margin, v_rel, opening) / tuning.gap_fade,
+                   signal / tuning.accel_fade)
   a_factor, j_factor = _full_strength_factors(tuning, opening)
   return LeadAccelMpcRequest(
     True,
