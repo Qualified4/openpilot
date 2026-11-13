@@ -633,21 +633,20 @@ def create_acc_control(packer, CAN, enabled, accel_last, accel, stopping, gas_ov
   return packer.make_can_msg("SCC_CONTROL", CAN.ECAN, values), values["aReqValue"]
 
 
-def create_spas_messages(packer, CAN, frame, left_blink, right_blink):
+def create_spas_messages(packer, CAN, frame, left_blink, right_blink, spas2_template=None):
   ret = []
 
-  values = {
-  }
-  ret.append(packer.make_can_msg("SPAS1", CAN.ECAN, values))
+  ret.append(packer.make_can_msg("SPAS1", CAN.ECAN, {}))
 
   blink = 0
   if left_blink:
     blink = 3
   elif right_blink:
     blink = 4
-  values = {
-    "BLINKER_CONTROL": blink,
-  }
+  # GV80: the car's own SPAS2 (bytes 3/4=01, 10..13=80, 15=03, 20=10 via the BYTEn signals, 10-26 rlog 00000331);
+  # other cars keep the zero-filled frame that lit the lamp on the Ioniq 5 and EV4
+  values = {k: v for k, v in (spas2_template or {}).items() if k not in ("CHECKSUM", "COUNTER")}
+  values["BLINKER_CONTROL"] = blink
   ret.append(packer.make_can_msg("SPAS2", CAN.ECAN, values))
 
   return ret

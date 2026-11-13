@@ -121,6 +121,7 @@ class DesireHelper:
     self.blinkerLatchedTurn = 0.0  # m/s, 0 = off
     self.laneChangeLeverWait = False
     self.laneChangeYellowSolid = False  # LaneChangeYellowSolid on and CCNC lane type detection on
+    self.kick_model = False  # CanfdBlinkerKick + CanfdBlinkerKickModel: carcontroller kicks the lamp on a model start
 
     # StripNet lane marking (customReservedRawData2, parsed by modeld); a confirmed yellow solid blocks that side
     self.lane_marking = None
@@ -162,6 +163,7 @@ class DesireHelper:
       self.laneChangeDelay = self.params.get_float("LaneChangeDelay") * 0.1
       self.blinkerLatchedTurn = self.params.get_int("BlinkerLatchedTurn") * CV.KPH_TO_MS
       self.laneChangeLeverWait = self.params.get_bool("LaneChangeLeverWait")
+      self.kick_model = self.params.get_bool("CanfdBlinkerKick") and self.params.get_bool("CanfdBlinkerKickModel")
       self.laneChangeYellowSolid = self.params.get_bool("LaneChangeYellowSolid") and                                    lane_marking_lib.mode_of(self.params) != 0
 
   def _update_yellow_solid(self):
@@ -747,6 +749,10 @@ class DesireHelper:
                 self.lane_change_state = LaneChangeState.off
                 self.lane_change_direction = LaneChangeDirection.none
               if can_start:
+                if self.kick_model and not driver_enabled and not (carstate.leftBlinker or carstate.rightBlinker):
+                  # carcontroller.kick_pulse lights this side on the Starting edge only when this mask bit rides in the
+                  # same modelV2: the kicked lamp must never read back as the driver's blinker (re-entry, 2nd change)
+                  self.boundary_indicator.own(time.monotonic(), blinker_state)
                 self.lane_change_state = LaneChangeState.laneChangeStarting
 
         elif self.lane_change_state == LaneChangeState.laneChangeStarting:

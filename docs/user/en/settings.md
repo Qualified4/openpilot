@@ -615,3 +615,14 @@ After confirmed turn entry, the TBT indicator ends its hold as the wheel returns
 
 
 The ATC right lane-change distance uses 0m for off and 50m steps up to 500m. The former ON setting migrates to 250m at restart.
+
+### Lane Change Auto Blinker (CAN-FD, trial)
+
+Settings > Vehicle and hardware > CAN FD/HDA. All four are off by default (send mode 1); while off, no parking-ECU (0x7B1) or SPAS (0x165/0x16A) frame is sent.
+
+- `CanfdBlinkerKick` (Lane Change Auto Blinker): flashes the blinker for about 1 s toward the side the driver starts crossing a lane line without signalling. Uses the model lane lines; any speed in D; paused while a model lane change runs. Turning it on switches `CanfdBlinkerControl` off at the next boot.
+- `CanfdBlinkerKickMode` (send mode): 0 only after the ECU answers, 1 panda piggyback (default, sent right behind each stock SPAS frame), 2 direct 25 Hz, 3 direct 100 Hz. Modes 2/3 can cause CAN errors; switching between 1 and 2/3 applies at the next onroad start.
+- `CanfdBlinkerKickModel` (Auto Blinker for Model Lane Changes): one flash as a model lane change started by the remote, app, voice or navigation begins. The same-side lever is then ignored for at least 12 s.
+- `CanfdBlinkerMenuTest` (Blinker Command Test): 0 off, 1 left, 2 right. Pauses the parking ECU and keeps sending the blinker command at any speed or gear. Set it back to 0 after the test; it resets to 0 on reboot.
+
+Changes the panda firmware. The lamp has only been verified on the Ioniq 5 PE, not on this branch's cars (e.g. Sonata 2024). The tunnel and roundabout guards only work where the car provides that information. The yellow (centre) line guard uses the stock camera colour or the CCNC lane marking result (`CcncLaneTypeDetection`): no flash toward a side where a yellow line was seen in the last 2 s.

@@ -79,7 +79,10 @@ def test_lane_marking_reaches_only_the_ccnc_display_path():
   for path in (ROOT/'opendbc_repo/opendbc/car/hyundai').glob('*.py'):
     text = path.read_text(encoding='utf-8', errors='replace')
     assert 'carrot.lane_type' not in text
-    if path.name not in ('hyundaicanfd.py', 'ccnc_lane_marking.py'):
+    if path.name == 'carcontroller.py':
+      # CanfdBlinkerKick yellow-line guard: reads the marking only to hold back a blinker kick, never to send one
+      assert 'CcncLaneTypeDetection' not in text
+    elif path.name not in ('hyundaicanfd.py', 'ccnc_lane_marking.py'):
       assert 'CcncLaneTypeDetection' not in text and 'ccnc_lane_marking' not in text, path.name
   for module in ('daemon.py', 'marking_daemon.py', 'strip_model.py', 'profile_scanner.py'):
     source = ast.parse((ROOT/'openpilot/selfdrive/carrot/lane_type'/module).read_text(encoding='utf-8'))

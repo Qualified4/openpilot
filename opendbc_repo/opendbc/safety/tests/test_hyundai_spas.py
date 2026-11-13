@@ -56,7 +56,9 @@ def test_real_hooks_authorize_exact_compatible_bus_after_ack(flags, bus):
   assert d.tx(0x16A, frame(0x16A, 11, "left", bus).dat)
 
 
-@pytest.mark.parametrize("flags", [0, 4, 8, 16, 16 | 4, 16 | 8 | 4 | 128, 2048])
+# joongyu01 fork: HDA2 camera SCC on bus 0 (16 | 8 ...) and HDA1 (no 16) are left out - without CANFD_SPAS_BLINKERS the
+# runtime menu paths (CanfdBlinkerKick/MenuTest) send these ids under the shape checks in safety_hyundai_canfd.h instead
+@pytest.mark.parametrize("flags", [16, 16 | 4])
 def test_disabled_never_admits_uds_or_spas(flags):
   bus = 1 if flags & 16 and not flags & 8 else 0
   d = Device(flags, bus)
@@ -65,6 +67,20 @@ def test_disabled_never_admits_uds_or_spas(flags):
     assert not d.tx(APRK, data)
   for a in SPAS:
     assert not d.tx(a, frame(a, 0, "left", bus).dat)
+
+
+# HDA1 without CANFD_SPAS_BLINKERS: only the CanfdBlinkerKick shapes get through, never this path's ECU handoff commands
+@pytest.mark.parametrize("flags", [0, 4, 8, 2 | 4 | 8, 2048])
+def test_disabled_hda1_admits_only_the_kick_shapes(flags):
+  d = Device(flags, 0)
+  d.stock()
+  for data in (DISABLE, ENABLE):
+    assert not d.tx(APRK, data)
+  for data in (EXTENDED, DEFAULT, PRESENT, bytes.fromhex("0328830100000000")):
+    assert d.tx(APRK, data)
+  bad = bytearray(frame(0x165, 0, None, 0).dat)
+  bad[4] = 1
+  assert not d.tx(0x165, bytes(bad))
 
 
 def test_requires_stock_and_each_positive_reply():
@@ -189,7 +205,8 @@ def test_parked_comparison_no_uds_ten_seconds_and_cooldown(flags):
 
 @pytest.mark.parametrize('bad', ['moving', 'gear', 'driver', 'controls', 'stock', 'stale', 'bus', 'disabled', 'bad_crc'])
 def test_parked_comparison_rejects_missing_or_unsafe_inputs(bad):
-  d = Device(flags=0 if bad == 'disabled' else 4096 | (16 if bad == 'bus' else 0), bus=1 if bad == 'bus' else 0)
+  # 'disabled' on HDA2 bus 1: on HDA1 the CanfdBlinkerKick shape checks admit these frames without the parked gate
+  d = Device(flags=16 if bad == 'disabled' else 4096 | (16 if bad == 'bus' else 0), bus=1 if bad in ('bus', 'disabled') else 0)
   parked(d, wheel=1 if bad == 'moving' else 0, gear=5 if bad == 'gear' else 0,
          driver=bad == 'driver', stock_direction='right' if bad == 'stock' else None)
   if bad == 'controls':
