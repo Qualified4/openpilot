@@ -347,6 +347,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CanfdBlinkerKickMode", {PERSISTENT, INT, "1"}},
     {"CanfdBlinkerKickModel", {PERSISTENT, BOOL, "0"}},
     {"CanfdBlinkerMenuTest", {CLEAR_ON_MANAGER_START, INT, "0"}},
+    {"CanfdBlinkerHoldChange", {PERSISTENT, BOOL, "0"}},
+    {"CanfdBlinkerHoldWait", {PERSISTENT, BOOL, "0"}},
+    {"CanfdBvmView", {CLEAR_ON_MANAGER_START, INT, "0"}},
     {"CanfdDebug", {PERSISTENT, INT, "0"}},
 
     {"SoundVolumeAdjust", {PERSISTENT, INT, "100"}},

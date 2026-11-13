@@ -221,6 +221,7 @@ class CarState(CarStateBase):
     # UDS reply (50 03) from the parking ECU on ECAN or ACAN, in CAN nanos
     self.can_nanos = self.aprk_stock_nanos = self.aprk_ack_nanos = 0
     self.aprk_watch = False
+    self.svm_status_400 = None
     # GV80 only: the car's own SPAS2, echoed back with just BLINKER_CONTROL changed (GV80 sends no stock SPAS1)
     self.spas2 = None
     self.steer_touch_2af = None
@@ -1383,7 +1384,8 @@ class CarState(CarStateBase):
     if not self.aprk_watch:
       # Optional, counter and checksum ignored: only "did a frame arrive" matters, and a missing or restarting stream
       # must never touch CAN validity
-      for parser, names in ((cp, ("SPAS1", "SPAS2", "APRK_DIAG_RESP")), (cp_alt, ("APRK_DIAG_RESP",))):
+      # SVM_STATUS_400: the car's own blind-spot camera status, copied by CanfdBvmView (carcontroller.bvm_view_msg)
+      for parser, names in ((cp, ("SPAS1", "SPAS2", "APRK_DIAG_RESP", "SVM_STATUS_400")), (cp_alt, ("APRK_DIAG_RESP",))):
         for name in names if parser is not None else ():
           msg = parser.dbc.name_to_msg.get(name)
           if msg is not None and msg.address not in parser.message_states:  # GV80 already parses its SPAS2
@@ -1392,6 +1394,7 @@ class CarState(CarStateBase):
       self.aprk_watch = True
     self.can_nanos = cp._last_update_nanos
     self.aprk_stock_nanos = max((cp.ts_nanos[n]["COUNTER"] for n in ("SPAS1", "SPAS2") if n in cp.ts_nanos), default=0)
+    self.svm_status_400 = cp.dat.get(0x400)  # latest stock 0x400 payload on ECAN, None until one arrived
     for parser in (cp, cp_alt):
       replies = parser.vl_all.get("APRK_DIAG_RESP") if parser is not None else None
       if replies and any(sid == 0x50 and sub == 0x03 for sid, sub in zip(replies["SID"], replies["SUB"])):

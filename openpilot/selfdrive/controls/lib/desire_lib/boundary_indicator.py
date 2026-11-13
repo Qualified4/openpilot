@@ -41,10 +41,11 @@ class BoundaryIndicator:
     self.episode = None
     self.lane_since = [None, None]
 
-  def own(self, now, direction):
+  def own(self, now, direction, isolate=ISOLATE_SEC):
+    # isolate: shorter for a lamp the driver asked for himself (blinker_hold.py), where the tail is all that is ours
     self.blocked |= direction
     self.block_until = max(self.block_until, now + QUIET_SEC)
-    self.isolate_until = max(self.isolate_until, now + ISOLATE_SEC)
+    self.isolate_until = max(self.isolate_until, now + isolate)
     self.dark_since = None
 
   def update(self, now, cs, md, *, enabled, valid, busy):

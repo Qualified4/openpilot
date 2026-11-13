@@ -24,6 +24,7 @@ from openpilot.selfdrive.controls.lib.desire_lib.constants import (
 from openpilot.selfdrive.controls.lib.desire_lib.side_state import SideState
 from openpilot.selfdrive.controls.lib.desire_lib.maneuver_classifier import classify_maneuver_type
 from openpilot.selfdrive.controls.lib.desire_lib.lever import LEVER_REQUEST_WAIT_S, LaneCrossing, LeverForcedTurn, LeverRequestWait, lever_maneuver
+from openpilot.selfdrive.controls.lib.desire_lib.blinker_hold import BlinkerHold
 
 # Without a model-detected crossing, a lever press this early in laneChangeFinishing is still the driver
 # re-lighting the lamp of the change that just crossed, not a request for the next one.
@@ -122,6 +123,10 @@ class DesireHelper:
     self.laneChangeLeverWait = False
     self.laneChangeYellowSolid = False  # LaneChangeYellowSolid on and CCNC lane type detection on
     self.kick_model = False  # CanfdBlinkerKick + CanfdBlinkerKickModel: carcontroller kicks the lamp on a model start
+    # CanfdBlinkerHoldChange / CanfdBlinkerHoldWait: keep the driver's own lane change request lit (blinker_hold.py)
+    self.hold_change = False
+    self.hold_wait = False
+    self.blinker_hold = BlinkerHold()
 
     # StripNet lane marking (customReservedRawData2, parsed by modeld); a confirmed yellow solid blocks that side
     self.lane_marking = None
@@ -164,6 +169,8 @@ class DesireHelper:
       self.blinkerLatchedTurn = self.params.get_int("BlinkerLatchedTurn") * CV.KPH_TO_MS
       self.laneChangeLeverWait = self.params.get_bool("LaneChangeLeverWait")
       self.kick_model = self.params.get_bool("CanfdBlinkerKick") and self.params.get_bool("CanfdBlinkerKickModel")
+      self.hold_change = self.params.get_bool("CanfdBlinkerHoldChange")
+      self.hold_wait = self.params.get_bool("CanfdBlinkerHoldWait")
       self.laneChangeYellowSolid = self.params.get_bool("LaneChangeYellowSolid") and                                    lane_marking_lib.mode_of(self.params) != 0
 
   def _update_yellow_solid(self):
@@ -819,6 +826,12 @@ class DesireHelper:
       self.queued_lane_change = BLINKER_NONE
 
     hold = self.lever_wait.update_hold(self.lane_change_state, blinker_state)
+    # After every FSM decision of this frame (cancel included); a release masks the side from the next frame on.
+    own_hold = self.blinker_hold.update(time.monotonic(), self.boundary_indicator, hold_change=self.hold_change,
+                                        hold_wait=self.hold_wait, state=self.lane_change_state, driver_enabled=driver_enabled,
+                                        driver_st=driver_st, blinker_state=blinker_state, carstate=carstate, model=modeldata)
+    if hold == BLINKER_NONE:
+      hold = own_hold
     if self.queued_lane_change != BLINKER_NONE:
       # The lamp of a press made during a change may stop before that change ends (2026-10-05: ~2.5 s after the
       # press), which would drop the request just as it becomes due: keep it lit until the queued change starts.

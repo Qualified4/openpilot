@@ -539,3 +539,232 @@ class TestKickModelOwnership:
     assert self.run(10, dh=lambda k: {'lateral': False}) == [] and self.helper.lane_change_state == LCS.off
     assert self.cc.blinker_pulse_end <= self.cc.frame  # cut
     assert self.run(200, lamp=lambda j: True) == [] and self.helper.lane_change_state == LCS.off
+
+
+class TestBlinkerHold:
+  """CanfdBlinkerHoldChange / CanfdBlinkerHoldWait (desire_lib/blinker_hold.py). The lamp is simulated as the Sonata reads
+  it: carState.left/rightBlinker are the lamp (no lever signal), lit by the driver's one-touch for BCM_FLASH_S, and by our
+  hold for as long as DesireHelper asks plus TAIL_S (body controller run-on + carState's 0.5 s lamp hold)."""
+  BCM_FLASH_S = 2.4  # one-touch: 3 flashes
+  TAIL_S = 1.7       # ~1.2 s body controller run-on after the command stops (EV4 10-26) + 0.5 s carState lamp hold
+
+  def setup_method(self):
+    TestDesireHelperStalkRequest.setup_method(self)
+    self.t = 100.0
+    self.driver = {1: -1., 2: -1.}  # lamp lit by the driver until
+    self.ours, self.ours_until = 0, -1.  # lamp lit by our hold until
+    self.starts, self.states, self.holds = 0, [], []
+
+  def options(self, change=False, wait=False):
+    self.helper.hold_change, self.helper.hold_wait = change, wait
+
+  def tap(self, side=1):
+    self.driver[side] = self.t + self.BCM_FLASH_S
+
+  def lamps(self):
+    lit = {side for side, until in self.driver.items() if self.t < until}
+    if self.ours and self.t < self.ours_until:
+      lit.add(self.ours)
+    return 1 in lit, 2 in lit
+
+  def step(self, prob=0.5, torque=0., lateral=True, available=True, lever=0, gear='drive', model=None, follow=True):
+    for side in (self.helper.left, self.helper.right):
+      side.lane_change_available = available
+    left, right = self.lamps()
+    car = SimpleNamespace(canValid=True, leftBlinker=left, rightBlinker=right, vEgo=25., aEgo=0., trailerConnected=False,
+                          steeringTorque=torque, steeringPressed=torque != 0., blinkerLever=lever, gearShifter=gear)
+    prev = self.helper.lane_change_state
+    with patch('openpilot.selfdrive.controls.lib.desire_helper.time.monotonic', return_value=self.t):
+      self.helper.update(car, model or SimpleNamespace(), lateral, prob, self.carrot_man, SimpleNamespace(), assistant_valid=True)
+    state = self.helper.lane_change_state
+    self.starts += state == LCS.laneChangeStarting and prev != LCS.laneChangeStarting
+    hold = {LCD.left: 1, LCD.right: 2}.get(self.helper.blinker_hold_direction, 0)
+    if hold and follow:
+      self.ours, self.ours_until = hold, self.t + self.TAIL_S
+    self.states.append(state)
+    self.holds.append(hold)
+    self.t += DT_MDL
+    return state
+
+  def run(self, seconds, **kw):
+    for _ in range(round(seconds / DT_MDL)):
+      self.step(**kw)
+    return self.helper.lane_change_state
+
+  def change(self, seconds=5.0, **kw):
+    """one-touch left, the change runs `seconds` (model probability up), then ends"""
+    self.tap(1)
+    assert self.step(**kw) == LCS.preLaneChange
+    self.run(seconds, **kw)
+    return self.run(3.0, prob=0., **kw)
+
+  def test_change_hold_keeps_the_lamp_to_the_end_and_starts_no_second_change(self):
+    self.options(change=True)
+    self.change(5.0)
+    starting = [h for s, h in zip(self.states, self.holds) if s == LCS.laneChangeStarting]
+    assert set(starting) == {1}  # the whole change, also after the body controller's 3 flashes (2.4 s)
+    assert self.helper.blinker_hold.reason == 'finished' and self.helper.lane_change_state == LCS.off
+    # the tail of our lamp: even with torque toward it, never a second change, never the wait again
+    self.run(4.0, torque=100.)
+    assert self.starts == 1 and self.helper.lane_change_state == LCS.off and not any(self.holds[-80:])
+    # dark for 1 s: the side is free again and a new tap starts the next change
+    assert not any(self.lamps()) and self.helper.boundary_indicator.blocked == 0
+    self.change(1.0)
+    assert self.starts == 2
+
+  def test_without_the_mask_the_held_lamp_would_start_a_second_change(self):
+    # control for the test above: the lamp tail is read as the driver's request if the release does not own the side
+    self.options(change=True)
+    self.helper.boundary_indicator.own = lambda *a, **kw: None
+    self.change(5.0, torque=100.)
+    assert self.starts == 2
+
+  def test_options_off_hold_nothing(self):
+    self.change(5.0)
+    assert not any(self.holds) and self.helper.boundary_indicator.blocked == 0 and self.starts == 1
+    # the body controller's 3 flashes end mid-change: the change still runs, only its lamp stops
+    assert LCS.laneChangeStarting in self.states[round(3.0 / DT_MDL):]
+
+  def test_change_hold_released_at_60_percent(self):
+    self.options(change=True)
+    self.tap(1)
+    self.step()
+    p, released = 0., None
+    while p < 1.0:
+      d = p * 3.6  # lateral move toward the left lane (3.6 m wide)
+      y1, y2 = (-1.8 + d, 1.8 + d) if d < 1.8 else (d - 5.4, d - 1.8)  # the crossed line is relabelled
+      model = SimpleNamespace(laneLines=[SimpleNamespace(y=[y]) for y in (-5.4, y1, y2, 5.4)])
+      self.step(model=model)
+      if released is None and not self.holds[-1]:
+        released = p
+      p += 0.02
+    assert released is not None and 0.6 <= released <= 0.64 and self.helper.blinker_hold.reason == 'across'
+    assert self.helper.lane_change_state == LCS.laneChangeStarting  # released before the change ended
+    self.run(3.0, prob=0., torque=100.)
+    assert self.starts == 1 and self.helper.lane_change_state == LCS.off
+
+  def test_wait_hold_keeps_the_request_until_the_side_clears(self):
+    for change in (False, True):
+      self.setup_method()
+      self.options(change=change, wait=True)
+      self.tap(1)
+      assert self.run(6.0, available=False) == LCS.preLaneChange  # long after the 3 flashes
+      assert set(self.holds[1:]) == {1}
+      self.run(0.2)
+      assert self.starts == 1
+      if change:  # Change takes over from the start
+        assert self.holds[-1] == 1 and self.helper.blinker_hold.phase == 'change'
+      else:  # stops as the change starts
+        assert self.holds[-1] == 0 and self.helper.blinker_hold.reason == 'started'
+      self.run(3.0)
+      self.run(4.0, prob=0., torque=100.)
+      assert self.starts == 1 and self.helper.lane_change_state == LCS.off
+
+  def test_without_wait_hold_the_request_drops_with_the_flashes(self):
+    self.tap(1)
+    self.run(6.0, available=False)
+    assert self.helper.lane_change_state == LCS.off and not any(self.holds)
+
+  def test_wait_hold_times_out_and_does_not_re_arm(self):
+    self.options(wait=True)
+    self.tap(1)
+    self.run(20.0, available=False)
+    held = sum(1 for h in self.holds if h) * DT_MDL
+    assert abs(held - 15.0) <= 2 * DT_MDL and self.helper.blinker_hold.reason == 'timeout'
+    assert self.helper.lane_change_state == LCS.off and self.starts == 0
+    self.run(5.0)  # the side clears while the tail of our lamp is still lit: no change from it
+    assert self.starts == 0 and not any(self.holds[-100:]) and self.helper.boundary_indicator.blocked == 0
+
+  def test_change_hold_has_a_time_cap(self):
+    self.options(change=True)
+    self.tap(1)
+    self.run(15.0)  # the model never ends the change
+    held = sum(1 for h in self.holds if h) * DT_MDL
+    assert held <= 10.0 + DT_MDL and self.helper.lane_change_state == LCS.off and self.starts == 1
+
+  def test_every_cancel_ends_the_hold(self):
+    cases = {
+      'steering against it': (dict(torque=-100.), 'cancel', True),
+      'disengaged': (dict(lateral=False), 'cancel', True),
+      'out of D': (dict(gear='park'), 'gear', True),
+      'lever latched': (dict(lever=2), 'latched', False),
+    }
+    for phase in ('wait', 'change'):
+      for name, (kw, reason, masked) in cases.items():
+        self.setup_method()
+        self.options(change=True, wait=True)
+        self.tap(1)
+        self.run(3.0, available=phase == 'change')
+        assert self.holds[-1] == 1, (phase, name)
+        self.step(**kw)
+        assert self.holds[-1] == 0 and self.helper.blinker_hold.reason == reason, (phase, name)
+        assert bool(self.helper.boundary_indicator.blocked & 1) == masked, (phase, name)
+
+  def test_driver_lever_while_held(self):
+    # the other side tapped while waiting: our hold stops at once and the request turns to that side, as without it
+    self.options(change=True, wait=True)
+    self.tap(1)
+    self.run(3.0, available=False)
+    self.tap(2)
+    self.step(available=False)
+    assert self.holds[-1] == 0 and self.helper.blinker_hold.reason == 'hazard'
+    self.run(3.0)
+    assert self.starts == 1 and self.helper.lane_change_direction == LCD.right
+    # hazard lamps while the change runs stop it too
+    self.setup_method()
+    self.options(change=True)
+    self.tap(1)
+    self.run(1.0)
+    self.driver[2] = self.t + 1.0
+    self.step()
+    assert self.holds[-1] == 0 and self.helper.blinker_hold.reason == 'hazard'
+
+  def test_model_and_remote_changes_are_not_held(self):
+    self.options(change=True, wait=True)
+    self.helper.bluetooth_commands = SimpleNamespace(read=lambda allowed: 'laneLeft' if allowed and self.t < 100.1 else None)
+    self.run(4.0)
+    assert self.starts == 1 and not any(self.holds)
+
+  def test_settings_are_read_with_the_other_lane_change_keys(self):
+    for on in ((), ('CanfdBlinkerHoldChange',), ('CanfdBlinkerHoldWait',), ('CanfdBlinkerHoldChange', 'CanfdBlinkerHoldWait')):
+      self.helper.params = SimpleNamespace(get_bool=lambda key, on=on: key in on, get_int=lambda key: 0, get_float=lambda key: 0.)
+      self.helper.frame = 100
+      DesireHelper._update_params_periodic(self.helper)
+      assert (self.helper.hold_change, self.helper.hold_wait) == ('CanfdBlinkerHoldChange' in on, 'CanfdBlinkerHoldWait' in on)
+
+  def test_integrated_with_carcontroller(self):
+    """DesireHelper at 20 Hz feeding modelV2.meta (seen by the next 100 Hz frame) into CarController.hold_side; the lamp
+    follows what carcontroller sends, with the body controller's run-on. One-touch, 3 s blocked, a 4 s change."""
+    from openpilot.cereal import log as cereal_log
+    from opendbc.car import structs
+    from opendbc.car.hyundai.carcontroller import CarController
+    self.options(change=True, wait=True)
+    cc = SimpleNamespace(blinker_hold_change=True, blinker_hold_wait=True, hold_refused=False, blinker_pulse_end=0, frame=0)
+    md, sent = None, []
+    self.tap(1)
+    for j in range(int(14.0 / 0.01)):
+      if j % 5 == 0:
+        k = j // 5
+        prob = 0.5 if k < round(7.0 / DT_MDL) else 0.
+        self.step(available=k >= round(3.0 / DT_MDL), prob=prob, torque=100. if k > round(7.0 / DT_MDL) else 0., follow=False)
+        self.t -= DT_MDL  # the lamp clock below advances at 100 Hz
+        new = cereal_log.ModelDataV2.new_message()
+        new.meta.laneChangeState = self.helper.lane_change_state
+        new.meta.laneChangeDirection = self.helper.lane_change_direction
+        new.meta.laneChangeBlinkerHold = self.helper.blinker_hold_direction
+        new.meta.indicatorIsolationMask = self.helper.boundary_indicator.blocked
+      left, right = self.lamps()
+      side = CarController.hold_side(cc, SimpleNamespace(modelV2=md, out=SimpleNamespace(
+        gearShifter=structs.CarState.GearShifter.drive, leftBlinker=left, rightBlinker=right)))
+      sent.append((j, side, md and str(md.meta.laneChangeState)))
+      if side:
+        self.ours, self.ours_until = side - 2, self.t + self.TAIL_S
+      md = new.as_reader() if j % 5 == 0 else md
+      cc.frame += 1
+      self.t += 0.01
+    held = [(j, state) for j, side, state in sent if side]
+    assert held and {side for _, side, _ in sent if side} == {3}
+    assert held[0][0] <= 10  # from the first model frame after the tap: no gap after the 3 flashes
+    assert {state for _, state in held} <= {'preLaneChange', 'laneChangeStarting', 'laneChangeFinishing'}
+    assert self.starts == 1 and self.helper.lane_change_state == LCS.off
+    assert not any(self.lamps()) and self.helper.boundary_indicator.blocked == 0

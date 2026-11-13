@@ -11,3 +11,4 @@ import "./bluetooth.js";
 import "./runtime.js";
 import "./settings_qr.js";
 import "./ccnc_debug.js";
+import "./blinker_test.js";

@@ -51,6 +51,7 @@ const CanMsg HYUNDAI_CANFD_HDA2_LONG_TX_MSGS[] = {
   {0x7B1, 1, 8},  // same on bus 1, where a second SPAS1 stream runs
   {0x165, 0, 24}, // SPAS1, sent while APRK is silenced
   {0x16A, 0, 32}, // SPAS2 BLINKER_CONTROL, sent while APRK is silenced
+  {0x400, 0, 8},  // SVM_STATUS_400 BVM_VIEW, CanfdBvmView: always held for the piggyback, never sent directly
   {0x12A, 1, 16}, // LFA
   {0x160, 1, 16}, // ADRV_0x160
   {0x1E0, 1, 16}, // LFAHDA_CLUSTER
@@ -108,6 +109,7 @@ const CanMsg HYUNDAI_CANFD_HDA1_TX_MSGS[] = {
   {0x7B1, 1, 8},  // same on bus 1 (tx hook allows it only with camera SCC)
   {0x165, 0, 24}, // SPAS1, CanfdBlinkerKick; tx hook allows no steering request
   {0x16A, 0, 32}, // SPAS2 BLINKER_CONTROL, CanfdBlinkerKick
+  {0x400, 0, 8},  // SVM_STATUS_400 BVM_VIEW, CanfdBvmView: always held for the piggyback, never sent directly
   {0x1AA, 2, 16}, // CRUISE_ALT_BUTTONS , carrot
   {203, 0, 24}, // CB
   {373, 2, 24}, // TCS(0x175)
@@ -413,10 +415,14 @@ typedef struct {
   uint32_t push_us;
   uint32_t stock_us;
 } HyundaiSpasPiggyback;
-static HyundaiSpasPiggyback hyundai_spas_pb[2];  // 0x165, 0x16A
+static HyundaiSpasPiggyback hyundai_spas_pb[3];  // 0x165, 0x16A, 0x400
 static bool hyundai_spas_direct = false;  // CanfdBlinkerKickMode 2/3: host frames go straight out (collision-prone)
 #define HYUNDAI_SPAS_PB_STOCK_US 100000U  // stock stream counts as present this long after its last frame
 #define HYUNDAI_SPAS_PB_HOLD_US 50000U    // a held frame older than this is dropped, not sent
+// SVM_STATUS_400 (0x400, CanfdBvmView): the car sends it on bus 0 at 5 Hz (Sonata 2024 11-12 logs), so the next stock
+// frame can be up to 200 ms away. Our copy is always held and sent right behind a stock frame, at most one per stock
+// frame: never faster than the car's own 5 Hz, and nothing at all while no stock frame comes.
+#define HYUNDAI_BVM_PB_HOLD_US 250000U
 
 static void canfd_copy_packet(CANPacket_t* dst, const CANPacket_t* src) {
   dst->fd = src->fd;
@@ -739,6 +745,17 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *to_send_const) {
     }
   }
 
+  // SVM_STATUS_400(0x400, CanfdBvmView): the latest stock frame with only BVM_VIEW (byte 4) changed: 0 off, 1..3 left,
+  // 4..6 right. Byte 3 is 0x70 on the Sonata 2024 (0 on the Ioniq 5 PE); every other byte must be 0.
+  if (addr == 0x400) {
+    bool shape_ok = (GET_BYTE(to_send, 4) <= 6U) && ((GET_BYTE(to_send, 3) == 0U) || (GET_BYTE(to_send, 3) == 0x70U)) &&
+                    (GET_BYTE(to_send, 0) == 0U) && (GET_BYTE(to_send, 1) == 0U) && (GET_BYTE(to_send, 2) == 0U) &&
+                    (GET_BYTE(to_send, 5) == 0U) && (GET_BYTE(to_send, 6) == 0U) && (GET_BYTE(to_send, 7) == 0U);
+    if (!shape_ok) {
+      tx = false;
+    }
+  }
+
   // ACCEL: safety check
   if (addr == 0x1a0) {
     int desired_accel_raw = (((GET_BYTE(to_send, 17) & 0x7U) << 8) | GET_BYTE(to_send, 16)) - 1023U;
@@ -800,6 +817,14 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *to_send_const) {
       safety_tx_buffered_for_fwd = true;
     }
   }
+  if (accepted && (addr == 0x400) && (GET_BUS(to_send) == 0)) {
+    HyundaiSpasPiggyback *pb = &hyundai_spas_pb[2];
+    canfd_copy_packet(&pb->pkt, to_send);
+    pb->pending = true;
+    pb->push_us = microsecond_timer_get();
+    extern bool safety_tx_buffered_for_fwd;
+    safety_tx_buffered_for_fwd = true;
+  }
 
   return tx;
 }
@@ -821,6 +846,18 @@ static bool hyundai_canfd_rx_tx_hook(const CANPacket_t *to_push, CANPacket_t *to
         if (addr == 0x16A) {
           canfd_apply_counter_and_update_checksum(to_send, (uint8_t)(GET_BYTE(to_push, 2) + 1U));
         }
+        send = true;
+      }
+    }
+  }
+  if ((GET_BUS(to_push) == 0) && (addr == 0x400)) {
+    HyundaiSpasPiggyback *pb = &hyundai_spas_pb[2];
+    uint32_t now = microsecond_timer_get();
+    pb->stock_us = now;
+    if (pb->pending) {
+      pb->pending = false;
+      if (get_ts_elapsed(now, pb->push_us) < HYUNDAI_BVM_PB_HOLD_US) {
+        canfd_copy_packet(to_send, &pb->pkt);
         send = true;
       }
     }
@@ -939,7 +976,7 @@ static safety_config hyundai_canfd_init(uint16_t param) {
   for (int i = 0; canfd_bfwd[i].addr > 0; i++) {
     canfd_bfwd_reset(&canfd_bfwd[i]);
   }
-  for (int i = 0; i < 2; i++) {
+  for (int i = 0; i < 3; i++) {
     hyundai_spas_pb[i] = (HyundaiSpasPiggyback){0};
   }
   hyundai_spas_direct = GET_FLAG(param, 1024U);

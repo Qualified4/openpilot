@@ -64,6 +64,13 @@ BLINKER_PULSE_FRAMES = int(1.0 / DT_CTRL)
 # No kick across a yellow (centre) line. The camera color drops to 0 while the line is crossed (10-30 seg 22: 10 -> 2
 # at the kick), so a yellow seen on that side in the last 2 s counts (10-30 seg 1: kick over yellow dashed 20)
 YELLOW_HOLD_FRAMES = int(2.0 / DT_CTRL)
+# CanfdBlinkerHoldChange/Wait: a kick lamp reads back as the driver's blinker for its 1 s pulse, ~1.2 s of body
+# controller tail and 0.5 s of carState hold, so a hold DesireHelper asks for this soon after a kick is refused
+HOLD_AFTER_KICK_FRAMES = int(3.0 / DT_CTRL)
+# CanfdBvmView: SVM_STATUS_400 BVM_VIEW values that showed the blind-spot camera on the Ioniq 5 PE (left 1..3, right
+# 4..6, settled 3 / 6), sent at the car's own 5 Hz
+BVM_VIEW_BYTE = {1: 3, 2: 6}
+BVM_SEND_FRAMES = int(0.2 / DT_CTRL)
 CANFD_JERK_ERROR_DELAY = 0.5
 CANFD_JERK_ERROR_FILTER_TIME = 0.4
 CANFD_JERK_ERROR_DEADBAND = 0.25
@@ -230,6 +237,10 @@ class CarController(CarControllerBase):
     self.blinker_kick_mode = 1  # CanfdBlinkerKickMode: 0 only after an ack, 1 panda piggyback, 2 direct 25 Hz, 3 direct 100 Hz
     self.blinker_kick_model = False  # CanfdBlinkerKickModel: also kick on a model lane change start (kick_pulse)
     self.blinker_test = 0  # CanfdBlinkerMenuTest: 1 left, 2 right (menu test, any speed/gear)
+    self.blinker_hold_change = False  # CanfdBlinkerHoldChange: keep the driver's lane change lamp lit until it is done
+    self.blinker_hold_wait = False  # CanfdBlinkerHoldWait: keep it lit while that change waits
+    self.hold_refused = False  # the current hold request came right after a kick: that lamp may be ours, not held
+    self.bvm_view = 0  # CanfdBvmView: 1 left, 2 right blind-spot camera on the cluster, no blinker (display only)
     self.aprk_buses = ()
     self.aprk_state, self.aprk_frame, self.aprk_nanos, self.aprk_acked = APRK_IDLE, 0, 0, False
     self.lane_crossing, self.blinker_side, self.blinker_pulse_end = LaneCrossing(), 0, 0
@@ -326,13 +337,56 @@ class CarController(CarControllerBase):
       self.blinker_side, self.blinker_pulse_end, self.model_pulse = side, self.frame + BLINKER_PULSE_FRAMES, model
     return self.frame < self.blinker_pulse_end
 
+  def hold_side(self, CS):
+    """CanfdBlinkerHoldChange / CanfdBlinkerHoldWait: 3 (left), 4 (right) or 0.
+
+    DesireHelper decides (desire_lib/blinker_hold.py) and sends the side in modelV2.meta.laneChangeBlinkerHold: only for
+    the driver's own request, released at 60 % across / Finishing / its time caps, and it masks the lamp tail itself.
+    Here it is followed only in the phase its setting covers (Wait: preLaneChange, Change: Starting/Finishing), in D,
+    without hazard lamps, and not right after a kick (that lamp may be ours: refused until the request clears)."""
+    if not (self.blinker_hold_change or self.blinker_hold_wait):
+      self.hold_refused = False
+      return 0
+    md = getattr(CS, "modelV2", None)
+    meta = md.meta if md is not None else None
+    if meta is None:
+      return 0
+    state = str(meta.laneChangeState)
+    side = {"left": 3, "right": 4}.get(str(getattr(meta, "laneChangeBlinkerHold", "none")), 0)
+    if not side:
+      self.hold_refused = False
+      return 0
+    if 0 < self.blinker_pulse_end and self.frame < self.blinker_pulse_end + HOLD_AFTER_KICK_FRAMES:
+      self.hold_refused = True
+    phase = ((self.blinker_hold_wait and state == "preLaneChange") or
+             (self.blinker_hold_change and state in ("laneChangeStarting", "laneChangeFinishing")))
+    drive = CS.out.gearShifter == structs.CarState.GearShifter.drive
+    hazard = CS.out.leftBlinker and CS.out.rightBlinker
+    return side if phase and drive and not hazard and not self.hold_refused else 0
+
+  def bvm_view_msg(self, CS):
+    """CanfdBvmView: the latest stock SVM_STATUS_400 (0x400, bus 0, 5 Hz) with only BVM_VIEW (byte 4) changed, so the
+    cluster shows a blind-spot camera without the blinker. Copied, not zero-filled: byte 3 is 0x70 on the Sonata 2024
+    (11-12 logs, 0 on the Ioniq 5 PE). Nothing before a stock frame was seen, or for a stock shape panda would refuse.
+    Sent at 5 Hz; panda sends it right behind the next stock frame (never faster than the car). Display only."""
+    stock = getattr(CS, "svm_status_400", None)
+    view = BVM_VIEW_BYTE.get(self.bvm_view)
+    if view is None or stock is None or len(stock) != 8 or self.frame % BVM_SEND_FRAMES:
+      return []
+    if stock[3] not in (0, 0x70) or any(stock[i] for i in (0, 1, 2, 5, 6, 7)):
+      return []
+    dat = bytearray(stock)
+    dat[4] = view
+    return [CanData(0x400, bytes(dat), self.CAN.ECAN)]
+
   def aprk_blinkers(self, CC, CS):
     ret = []
     drive = CS.out.gearShifter == structs.CarState.GearShifter.drive
     pulse = self.kick_pulse(CS)
-    # the parking ECU is paused only around a kick and restored right after it (menu test: any speed or gear).
+    hold = self.hold_side(CS)
+    # the parking ECU is paused only around a kick or a hold and restored right after it (menu test: any speed or gear).
     # APRK is asked on both buses - bus 0 ignored it 10-26, and a second SPAS1 stream with its own counter runs on bus 1
-    want = self.blinker_test in (1, 2) or (self.blinker_control and drive and pulse)
+    want = self.blinker_test in (1, 2) or (self.blinker_control and drive and pulse) or bool(hold)
     now, stock, ack = getattr(CS, "can_nanos", 0), getattr(CS, "aprk_stock_nanos", 0), getattr(CS, "aprk_ack_nanos", 0)
 
     def give_back():
@@ -375,8 +429,8 @@ class CarController(CarControllerBase):
       # every frame (100 Hz), twice APRK's 50 Hz: 10-26 APRK stayed on, so its BLINKER_CONTROL 0 frames interleave with ours
       if not self.aprk_acked and self.blinker_kick_mode == 2 and self.frame % 4:
         return ret  # direct 25 Hz: a quarter of the frames, a quarter of the collision chances
-      left = (pulse and self.blinker_side == 3) or self.blinker_test == 1
-      right = (pulse and self.blinker_side == 4) or self.blinker_test == 2
+      left = (pulse and self.blinker_side == 3) or self.blinker_test == 1 or hold == 3
+      right = (pulse and self.blinker_side == 4) or self.blinker_test == 2 or hold == 4
       ret.extend(hyundaicanfd.create_spas_messages(self.packer, self.CAN, self.frame, left, right, getattr(CS, "spas2", None)))
     return ret
 
@@ -428,6 +482,9 @@ class CarController(CarControllerBase):
       self.blinker_kick_mode = params.get_int("CanfdBlinkerKickMode")
       self.blinker_kick_model = params.get_bool("CanfdBlinkerKickModel")
       self.blinker_test = params.get_int("CanfdBlinkerMenuTest")
+      self.blinker_hold_change = params.get_bool("CanfdBlinkerHoldChange")
+      self.blinker_hold_wait = params.get_bool("CanfdBlinkerHoldWait")
+      self.bvm_view = params.get_int("CanfdBvmView")
       self.hapticFeedbackWhenSpeedCamera = int(params.get_int("HapticFeedbackWhenSpeedCamera"))
 
       self.button_spam1 = params.get_int("CruiseButtonTest1")
@@ -714,8 +771,13 @@ class CarController(CarControllerBase):
         can_sends.extend(hyundaicanfd.create_spas_messages(self.packer, self.CAN, self.frame, CC.leftBlinker, CC.rightBlinker,
                                                            getattr(CS, "spas2", None)))
       # carrot-wip's own SPAS path (CanfdBlinkerControl -> CANFD_SPAS_BLINKERS, card.py) owns APRK/SPAS when it is on
-      elif not self.CP.flags & HyundaiFlags.CANFD_SPAS_BLINKERS and (self.blinker_control or self.blinker_test or self.aprk_state):
+      elif not self.CP.flags & HyundaiFlags.CANFD_SPAS_BLINKERS and (self.blinker_control or self.blinker_test or self.aprk_state or
+                                                                      self.blinker_hold_change or self.blinker_hold_wait):
         can_sends.extend(self.aprk_blinkers(CC, CS))
+
+      # blind-spot camera view on the cluster without the blinker (CanfdBvmView, any gear or speed, display only)
+      if self.bvm_view:
+        can_sends.extend(self.bvm_view_msg(CS))
 
       if self.camera_scc_params in [2, 3]:
         self.canfd_toggle_adas(CC, CS)

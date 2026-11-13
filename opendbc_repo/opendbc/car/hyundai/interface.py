@@ -156,7 +156,9 @@ class CarInterface(CarInterfaceBase):
         ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.CANFD_SPAS_BLINKERS.value
       # CanfdBlinkerKickMode 2/3: panda queues our SPAS frames as they come instead of holding them for the stock
       # frame (carcontroller.aprk_blinkers). Read at fingerprint time, so it applies from the next onroad start.
-      if params.get_bool("CanfdBlinkerKick") and params.get_int("CanfdBlinkerKickMode") in (2, 3):
+      # The lane change holds (CanfdBlinkerHoldChange/Wait) use the same path and send mode, with or without the kick.
+      if ((params.get_bool("CanfdBlinkerKick") or params.get_bool("CanfdBlinkerHoldChange") or params.get_bool("CanfdBlinkerHoldWait"))
+          and params.get_int("CanfdBlinkerKickMode") in (2, 3)):
         ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.CANFD_SPAS_DIRECT.value
 
 

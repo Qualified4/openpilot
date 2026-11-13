@@ -46,13 +46,15 @@ class Ecu:
       self.stock = now
 
 
-def make_cc(control=True, test=0, ecu=None, mode=1, model=True):
+def make_cc(control=True, test=0, ecu=None, mode=1, model=True, hold_change=False, hold_wait=False):
   cc = SimpleNamespace(blinker_control=control, blinker_test=test, blinker_kick_mode=mode, aprk_state=0, aprk_frame=0, aprk_nanos=0, aprk_acked=False,
+                       blinker_hold_change=hold_change, blinker_hold_wait=hold_wait, hold_refused=False, bvm_view=0,
                        lane_crossing=Crossing(), blinker_side=0, blinker_pulse_end=0, frame=0, yellow_until=[0, 0],
                        blinker_kick_model=model, lane_change_prev="off", model_pulse=False,
                        CAN=SimpleNamespace(ECAN=0, ACAN=1), packer=CANPacker('hyundai_canfd_generated'), params=SimpleNamespace(STEER_THRESHOLD=250),
                        aprk_buses=(), ecu=ecu or Ecu())
   cc.kick_pulse = lambda CS: CarController.kick_pulse(cc, CS)
+  cc.hold_side = lambda CS: CarController.hold_side(cc, CS)
   return cc
 
 
@@ -303,6 +305,12 @@ def test_carstate_sees_stock_frames_and_replies_without_touching_can_validity():
   assert cs.aprk_ack_nanos == 4 * TICK
   feed(5 * TICK, [(0x7B9, bytes([0x03, 0x7F, 0x10, 0x22, 0, 0, 0, 0]), 0)])  # a refusal is not an answer
   assert cs.aprk_ack_nanos == 4 * TICK
+  # CanfdBvmView copies the car's own 0x400 from ECAN only; nothing before one arrived
+  assert cs.svm_status_400 is None
+  feed(6 * TICK, [(0x400, bytes.fromhex('0000007004000000'), 1)])
+  assert cs.svm_status_400 is None
+  feed(7 * TICK, [(0x400, bytes.fromhex('0000007000000000'), 0)])
+  assert cs.svm_status_400 == bytes.fromhex('0000007000000000') and cp.can_valid
 
 
 # CanfdBlinkerKickModel: a model lane change (remote, app, voice, navigation) kicks on its laneChangeStarting edge, only
@@ -391,12 +399,15 @@ def test_crossing_kick_waits_out_a_model_lane_change():
   assert set(spas2(cc, model_step(cc, 30, None, cross=4))) == {4}  # no modelV2: as before
 
 
-# Real CarController.update on the Sonata 2024 CAN-FD camera-SCC setup: with CanfdBlinkerKick, CanfdBlinkerKickModel and
-# CanfdBlinkerMenuTest at their defaults no parking-ECU UDS or SPAS frame is ever produced.
+# Real CarController.update on the Sonata 2024 CAN-FD camera-SCC setup: with CanfdBlinkerKick, CanfdBlinkerKickModel,
+# CanfdBlinkerMenuTest, CanfdBlinkerHoldChange/Wait and CanfdBvmView at their defaults no parking-ECU UDS, SPAS or 0x400
+# frame is ever produced - even with a stock 0x400 seen and DesireHelper asking for a hold.
 APRK_IDS = {carcontroller.APRK_ADDR, 0x165, 0x16A}
+BLINKER_IDS = APRK_IDS | {0x400}
+SONATA_400 = bytes.fromhex('0000007000000000')  # 11-12 logs: byte 3 is always 0x70
 
 
-def sonata_update(monkeypatch, values, frames):
+def sonata_update(monkeypatch, values, frames, md=None):
   params = SimpleNamespace(get_int=lambda key: values.get(key, 0), get_bool=lambda key: bool(values.get(key, 0)),
                            get_float=lambda key: 0.)
   monkeypatch.setattr(carcontroller, "Params", lambda: params)
@@ -409,8 +420,8 @@ def sonata_update(monkeypatch, values, frames):
   controller = carcontroller.CarController({Bus.pt: "hyundai_canfd_generated"}, cp)
   controller.lane_crossing = Crossing()
   controller.lane_crossing.side = 3  # a crossing pending the whole time: still nothing without the setting
-  cs = SimpleNamespace(lfahda_cluster=None, lfa=None, mdps=None, scc_control=None, modelV2=None, is_metric=True,
-                       adrv_0x161=None)
+  cs = SimpleNamespace(lfahda_cluster=None, lfa=None, mdps=None, scc_control=None, modelV2=md, is_metric=True,
+                       adrv_0x161=None, svm_status_400=SONATA_400)
   cs.out = structs.CarState(canValid=True, vEgoRaw=15, vEgo=15, gearShifter=D)
   cc = structs.CarControl(enabled=True, latActive=True, longActive=False).as_reader()
   sent = []
@@ -420,8 +431,20 @@ def sonata_update(monkeypatch, values, frames):
 
 
 def test_defaults_send_no_aprk_or_spas_frames(monkeypatch):
-  sent = sonata_update(monkeypatch, {"CanfdBlinkerKickMode": 1}, 300)
-  assert not [m for m in sent if m[0] in APRK_IDS]
+  for md in (None, model_hold("laneChangeStarting", "left"), model_hold("preLaneChange", "right")):
+    sent = sonata_update(monkeypatch, {"CanfdBlinkerKickMode": 1}, 300, md)
+    assert not [m for m in sent if m[0] in BLINKER_IDS]
+
+
+@pytest.mark.parametrize("values,phase,want", [
+  ({"CanfdBlinkerHoldChange": 1}, "change", carcontroller.APRK_ADDR),
+  ({"CanfdBlinkerHoldWait": 1}, "wait", carcontroller.APRK_ADDR),
+  ({"CanfdBvmView": 2}, None, 0x400),
+])
+def test_the_new_settings_reach_the_bus_in_the_same_setup(monkeypatch, values, phase, want):
+  # control for the test above
+  md = {"change": model_hold("laneChangeStarting", "left"), "wait": model_hold("preLaneChange", "right"), None: None}[phase]
+  assert any(m[0] == want for m in sonata_update(monkeypatch, values, 300, md))
 
 
 @pytest.mark.parametrize("values", [{"CanfdBlinkerKick": 1, "CanfdBlinkerKickMode": 1}, {"CanfdBlinkerMenuTest": 2}])
@@ -429,3 +452,107 @@ def test_the_same_setup_sends_them_when_enabled(monkeypatch, values):
   # control for the test above: the harness reaches aprk_blinkers once a setting is on
   sent = sonata_update(monkeypatch, values, 300)
   assert any(m[0] == carcontroller.APRK_ADDR for m in sent)
+
+
+# CanfdBvmView: blind-spot camera on the cluster without the blinker - the stock 0x400 copied, only byte 4 changed
+def bvm_cc(view, stock=SONATA_400):
+  cc = make_cc(control=False)
+  cc.bvm_view = view
+  return cc, SimpleNamespace(svm_status_400=stock)
+
+
+def test_bvm_view_copies_the_stock_frame_and_changes_byte4_only():
+  for view, byte4 in ((1, 3), (2, 6)):
+    cc, cs = bvm_cc(view)
+    sent = []
+    for cc.frame in range(100):
+      sent += CarController.bvm_view_msg(cc, cs)
+    assert [m[1] for m in sent] == [bytes([0, 0, 0, 0x70, byte4, 0, 0, 0])] * 5  # 5 Hz, never faster than the car
+    assert {m[2] for m in sent} == {0}  # ECAN
+    cc, cs = bvm_cc(view, bytes(8))  # Ioniq 5 PE shape (byte 3 = 0) is copied as is
+    assert CarController.bvm_view_msg(cc, cs)[0][1] == bytes([0, 0, 0, 0, byte4, 0, 0, 0])
+
+
+def test_bvm_view_needs_a_stock_frame_and_the_setting():
+  for view, stock in ((1, None), (2, bytes(4)), (0, SONATA_400), (3, SONATA_400), (4, SONATA_400)):
+    cc, cs = bvm_cc(view, stock)
+    assert all(CarController.bvm_view_msg(cc, cs) == [] for cc.frame in range(100)), (view, stock)
+  for bad in ('0000007100000000', '0100007000000000', '0000007000000001'):  # a shape panda would refuse: not sent
+    cc, cs = bvm_cc(1, bytes.fromhex(bad))
+    assert CarController.bvm_view_msg(cc, cs) == [], bad
+
+
+# CanfdBlinkerHoldChange / CanfdBlinkerHoldWait: carcontroller follows DesireHelper's laneChangeBlinkerHold in the phase
+# its setting covers, through the same APRK/SPAS2 path as the kick
+def hold_md(state, hold, direction=None):
+  return SimpleNamespace(meta=SimpleNamespace(laneChangeState=state, laneChangeDirection=direction or hold, indicatorIsolationMask=0,
+                                              laneChangeBlinkerHold=hold))
+
+
+def model_hold(state, hold):
+  # a real modelV2 for CarController.update, which reads more of it than the hold
+  from openpilot.cereal import log
+  md = log.ModelDataV2.new_message()
+  md.meta.laneChangeState, md.meta.laneChangeDirection, md.meta.laneChangeBlinkerHold = state, hold, hold
+  return md.as_reader()
+
+
+def hold_step(cc, frames, md, gear=D, left=False, right=False):
+  return run(cc, frames, lambda: SimpleNamespace(modelV2=md, out=SimpleNamespace(
+    gearShifter=gear, vEgo=20., leftBlinker=left, rightBlinker=right, steeringTorque=0, naviTunnel=False,
+    naviRoundabout=False, leftLaneLine=10, rightLaneLine=10, cruiseCancelState=False)))
+
+
+def test_hold_follows_desire_helper_without_the_kick():
+  for hold, side in (("left", 3), ("right", 4)):
+    cc = make_cc(control=False, hold_change=True)
+    assert hold_step(cc, 50, hold_md("laneChangeStarting", "none")) == []
+    sent = hold_step(cc, 100, hold_md("laneChangeStarting", hold), left=hold == "left", right=hold == "right")
+    assert set(spas2(cc, sent)) == {side} and cc.aprk_state == carcontroller.APRK_ACTIVE
+    assert set(spas2(cc, hold_step(cc, 30, hold_md("laneChangeFinishing", hold)))) == {side}
+    sent = hold_step(cc, 1, hold_md("laneChangeFinishing", "none"))  # DesireHelper released: restored at once
+    assert spas2(cc, sent) == [] and uds(sent) == [(DEFAULT, 0), (DEFAULT, 1)] and cc.aprk_state == carcontroller.APRK_IDLE
+
+
+def test_hold_only_in_the_phase_of_its_setting():
+  cases = (
+    (dict(hold_change=True), "preLaneChange", False),
+    (dict(hold_change=True), "laneChangeStarting", True),
+    (dict(hold_wait=True), "preLaneChange", True),
+    (dict(hold_wait=True), "laneChangeStarting", False),
+    (dict(hold_wait=True), "laneChangeFinishing", False),
+    (dict(hold_change=True, hold_wait=True), "preLaneChange", True),
+    (dict(), "laneChangeStarting", False),
+  )
+  for opts, state, want in cases:
+    cc = make_cc(control=False, **opts)
+    assert bool(spas2(cc, hold_step(cc, 60, hold_md(state, "left")))) == want, (opts, state)
+
+
+def test_hold_stops_out_of_d_with_hazards_or_without_a_model():
+  for kw in (dict(gear=P), dict(left=True, right=True)):
+    cc = make_cc(control=False, hold_change=True)
+    hold_step(cc, 60, hold_md("laneChangeStarting", "left"))
+    sent = hold_step(cc, 1, hold_md("laneChangeStarting", "left"), **kw)
+    assert spas2(cc, sent) == [] and uds(sent) == [(DEFAULT, 0), (DEFAULT, 1)], kw
+  cc = make_cc(control=False, hold_change=True)
+  assert hold_step(cc, 60, None) == []
+
+
+def test_no_hold_right_after_a_kick():
+  # a kick lamp reads as the driver's blinker: DesireHelper may ask to hold it, but that lamp is ours
+  cc = make_cc(hold_wait=True, model=False)
+  assert set(spas2(cc, step(cc, 30, D, 60, cross=3))) == {3}
+  hold_step(cc, carcontroller.HOLD_AFTER_KICK_FRAMES - 100, hold_md("preLaneChange", "left"), left=True)
+  sent = hold_step(cc, 100, hold_md("preLaneChange", "left"), left=True)  # the kick is over, the request still there
+  assert spas2(cc, sent) == [] and cc.hold_refused
+  hold_step(cc, 120, hold_md("preLaneChange", "none"))  # refused until the request clears and the kick is 3 s old ...
+  assert not cc.hold_refused
+  assert set(spas2(cc, hold_step(cc, 60, hold_md("preLaneChange", "left"), left=True))) == {3}  # ... then held again
+
+
+def test_hold_ending_leaves_a_menu_test_running():
+  cc = make_cc(control=False, test=2, hold_wait=True)
+  hold_step(cc, 60, hold_md("preLaneChange", "left"))
+  sent = hold_step(cc, 20, hold_md("preLaneChange", "none"))
+  assert set(spas2(cc, sent)) == {4} and uds(sent) == []
