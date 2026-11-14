@@ -6,8 +6,9 @@ carcontroller lights it through SPAS2 (aprk_blinkers, same path and send mode as
 - wait (CanfdBlinkerHoldWait): the driver asked, but the change waits in preLaneChange (BSD, side object, lines...).
   The body controller stops after its one-touch flashes (3, ~2.4 s) and the request would drop with the lamp; we keep it
   lit, at most WAIT_MAX_S. The held lamp is read as the driver still asking: that is what keeps the request alive.
-- change (CanfdBlinkerHoldChange): the change runs (laneChangeStarting). Held until the car centre is 60 % into the new
-  lane (same rule as the HDA2 ADRV hold, hyundaicanfd._blink_hold_change), laneChangeFinishing, or CHANGE_MAX_S.
+- change (CanfdBlinkerHoldChange): the change runs (laneChangeStarting). Held until laneChangeFinishing starts, or
+  CHANGE_MAX_S. Not released once the car centre is across the line: in the 11-14 logs that let go 0.2 m into the new
+  lane, the lamp went off 0.24 s later and Finishing came only 1.3 s after that (the driver felt no hold during the change).
 
 Only for a request the driver's own lamp made (driver_enabled when the hold starts): never for changes started by the
 model, remote, app, voice or navigation (that is CanfdBlinkerKickModel), and never with the lever latched.
@@ -37,29 +38,7 @@ RELEASE_ISOLATE_S = 1.0
 # still lit 5 s after the release is the driver's own.
 MASK_MAX_S = 5.0
 
-# 60 % release: same rule and numbers as hyundaicanfd._blink_hold_change (6cfeeb999, d8ba6e75a)
-CROSS_NEAR_M = 1.0
-CROSS_JUMP_M = 1.5
-RELEASE_PROGRESS = 0.6
-
 LEVER_LATCHED = 2
-
-
-def across(model, left: bool, track: dict) -> bool:
-  """True once the car centre is RELEASE_PROGRESS of a lane width into the new lane (model lane lines)."""
-  lines = getattr(model, "laneLines", None)
-  try:
-    if lines is None or len(lines) < 3 or not len(lines[1].y) or not len(lines[2].y):
-      return False
-    target, other = (1, 2) if left else (2, 1)
-    y_target, y_other = abs(float(lines[target].y[0])), abs(float(lines[other].y[0]))
-  except (AttributeError, IndexError, TypeError, ValueError):
-    return False
-  y_min = y_target if track.get("y_min") is None else min(track["y_min"], y_target)
-  track["y_min"] = y_min
-  if not track.get("crossed") and y_min < CROSS_NEAR_M and y_target - y_min > CROSS_JUMP_M:
-    track["crossed"] = True
-  return bool(track.get("crossed")) and y_other >= (RELEASE_PROGRESS - 0.5) * (y_target + y_other)
 
 
 class BlinkerHold:
@@ -68,13 +47,12 @@ class BlinkerHold:
     self.phase = None          # "wait" or "change"
     self.timer = 0.0
     self.done = False          # this request had its hold: none again until the FSM is off
-    self.track = {}
     self.reason = ""           # why the last hold ended (log / tests)
     self.mask = BLINKER_NONE   # side we masked on release and have not seen cleared yet
     self.mask_time = 0.0
 
   def update(self, now, indicator, *, hold_change, hold_wait, state, driver_enabled, driver_st, blinker_state,
-             carstate, model) -> int:
+             carstate) -> int:
     """After DesireHelper's FSM (state is this frame's). Returns the side to hold."""
     lamps = int(bool(carstate.leftBlinker)) | (int(bool(carstate.rightBlinker)) << 1)
     lever = getattr(carstate, "blinkerLever", 0)
@@ -84,7 +62,7 @@ class BlinkerHold:
       self.done = False
 
     if self.side != BLINKER_NONE:
-      reason = self._end_reason(hold_change, hold_wait, state, driver_st, blinker_state, lamps, lever, drive, model)
+      reason = self._end_reason(hold_change, hold_wait, state, driver_st, blinker_state, lamps, lever, drive)
       if reason:
         self._release(now, indicator, reason)
       else:
@@ -95,10 +73,10 @@ class BlinkerHold:
       if hold_wait and state == LaneChangeState.preLaneChange:
         self.side, self.phase, self.timer = blinker_state, "wait", 0.0
       elif hold_change and state == LaneChangeState.laneChangeStarting:
-        self.side, self.phase, self.timer, self.track = blinker_state, "change", 0.0, {}
+        self.side, self.phase, self.timer = blinker_state, "change", 0.0
     return self.side
 
-  def _end_reason(self, hold_change, hold_wait, state, driver_st, blinker_state, lamps, lever, drive, model):
+  def _end_reason(self, hold_change, hold_wait, state, driver_st, blinker_state, lamps, lever, drive):
     if not drive:
       return "gear"
     if lamps == 3:
@@ -113,7 +91,7 @@ class BlinkerHold:
       if state == LaneChangeState.laneChangeStarting:
         if not hold_change:
           return "started"
-        self.phase, self.timer, self.track = "change", 0.0, {}
+        self.phase, self.timer = "change", 0.0
         return ""
       if not hold_wait:
         return "setting"
@@ -124,9 +102,7 @@ class BlinkerHold:
       return "setting"
     if state != LaneChangeState.laneChangeStarting:
       return "finished"
-    if self.timer >= CHANGE_MAX_S:
-      return "timeout"
-    return "across" if across(model, self.side == BLINKER_LEFT, self.track) else ""
+    return "timeout" if self.timer >= CHANGE_MAX_S else ""
 
   def _release(self, now, indicator, reason):
     if reason != "latched":

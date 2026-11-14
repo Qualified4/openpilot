@@ -625,21 +625,24 @@ class TestBlinkerHold:
     # the body controller's 3 flashes end mid-change: the change still runs, only its lamp stops
     assert LCS.laneChangeStarting in self.states[round(3.0 / DT_MDL):]
 
-  def test_change_hold_released_at_60_percent(self):
+  def test_change_hold_kept_across_the_line_and_released_at_finishing(self):
+    # 11-14 logs: a release once the car centre was across the line let the lamp go out mid-change
     self.options(change=True)
     self.tap(1)
     self.step()
-    p, released = 0., None
+    p = 0.
     while p < 1.0:
       d = p * 3.6  # lateral move toward the left lane (3.6 m wide)
       y1, y2 = (-1.8 + d, 1.8 + d) if d < 1.8 else (d - 5.4, d - 1.8)  # the crossed line is relabelled
       model = SimpleNamespace(laneLines=[SimpleNamespace(y=[y]) for y in (-5.4, y1, y2, 5.4)])
-      self.step(model=model)
-      if released is None and not self.holds[-1]:
-        released = p
+      assert self.step(model=model) == LCS.laneChangeStarting
+      assert self.holds[-1] == 1, p  # all the way into the new lane
       p += 0.02
-    assert released is not None and 0.6 <= released <= 0.64 and self.helper.blinker_hold.reason == 'across'
-    assert self.helper.lane_change_state == LCS.laneChangeStarting  # released before the change ended
+    while self.step(prob=0.) == LCS.laneChangeStarting:
+      assert self.holds[-1] == 1
+    # released on the very frame Finishing starts
+    assert self.helper.lane_change_state == LCS.laneChangeFinishing and self.holds[-1] == 0
+    assert self.helper.blinker_hold.reason == 'finished'
     self.run(3.0, prob=0., torque=100.)
     assert self.starts == 1 and self.helper.lane_change_state == LCS.off
 
