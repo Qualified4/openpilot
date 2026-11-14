@@ -1,6 +1,8 @@
 # Manual lane change without the blinker: the car starting to cross a lane line, from modelV2 lane lines.
 # Tuned offline on our rlogs (log_analyze/reports/auto_blinker_20261027/cross_sim.py): 10-26 2 h drive caught 35/38
 # lamp-free crossings above 30 km/h, median 1.05 s before the centre crossed, 7 false; 10-24 holdout 2/2, 3 false.
+from collections import deque
+
 NEAR_M = 0.9          # near line this close to the car centre: the tyre is on it
 RATE_MPS = 0.4        # moving toward it, while the far line moves away at least as fast
 SEEN_S = 3.0          # line probs fall to ~0.01 while crossing, so both lines only have to have been seen (>0.5) lately;
@@ -31,14 +33,17 @@ class LaneCrossing:
     self.seen = {1: -99., 2: -99.}
     self.outer_seen = {1: -99., 2: -99.}  # laneLines[0] beyond the left line, [3] beyond the right
     self.hold = self.last = -99.
-    self.torque = []  # (t, driver torque, + = left)
+    self.torque = deque()  # (t, driver torque, + = left); t only grows, so the oldest are at the front
 
   def update(self, md, t, allowed, torque=None, torque_min=TORQUE_MIN):
     """3 (left) or 4 (right) on the model frame a crossing starts while allowed, else 0. laneLines[1] left, [2] right.
     torque: carState.steeringTorque; given, a crossing also needs the driver pushing toward it."""
     if torque is not None:
-      self.torque = [(ht, hq) for ht, hq in self.torque if t - ht < TORQUE_S] + [(t, torque)]
-    if md is None or len(md.laneLines) < 3 or not len(md.laneLines[1].y) or md.frameId == self.frame_id:
+      while self.torque and t - self.torque[0][0] >= TORQUE_S:
+        self.torque.popleft()
+      self.torque.append((t, torque))
+    # same model frame first: card calls this at 100 Hz, modelV2 changes at 20 Hz
+    if md is None or md.frameId == self.frame_id or len(md.laneLines) < 3 or not len(md.laneLines[1].y):
       return 0
     self.frame_id = md.frameId
     y = {i: abs(md.laneLines[i].y[0]) for i in (1, 2)}

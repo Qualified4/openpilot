@@ -166,7 +166,9 @@ class DPathRadarD:
 
 
 def main() -> None:
-  config_realtime_process(5, Priority.CTRL_LOW)
+  # Core4 with planner/radarcan, not core5: card uses about 80% of core5, and on
+  # 2026-11-14 radard there only got leftover time and radarState fell below 16 Hz.
+  config_realtime_process(4, Priority.CTRL_LOW)
 
   cloudlog.info("dPath radard is waiting for CarParams")
   CP = messaging.log_from_bytes(

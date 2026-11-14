@@ -1,6 +1,7 @@
 import time
 from collections import deque
 
+import capnp
 import numpy as np
 from opendbc.car.hyundai.scalar import clip_float
 from opendbc.can import CANPacker
@@ -71,6 +72,36 @@ HOLD_AFTER_KICK_FRAMES = int(3.0 / DT_CTRL)
 # 4..6, settled 3 / 6), sent at the car's own 5 Hz
 BVM_VIEW_BYTE = {1: 3, 2: 6}
 BVM_SEND_FRAMES = int(0.2 / DT_CTRL)
+OWN_BIT = {"left": 1, "right": 2}  # boundary_indicator.own() bits
+HOLD_SIDE = {"left": 3, "right": 4}
+# card runs these at 100 Hz (11-14: card used ~80% of its core). A CarState field the schema lacks raises inside pycapnp
+# before getattr's default applies (~8 us per read on a PC): it is known absent from the schema instead.
+_CAPNP_STRUCTS = (capnp.lib.capnp._DynamicStructBuilder, capnp.lib.capnp._DynamicStructReader)
+_CAR_STATE_FIELDS = frozenset(structs.CarState.schema.fieldnames)
+_lane_change_memo = (None, None)  # (modelV2 reader, _lane_change_meta of it)
+
+
+def _out_flag(out, name):
+  """getattr(CS.out, name, False), without the pycapnp exception for a field this fork's CarState does not have."""
+  if isinstance(out, _CAPNP_STRUCTS) and name not in _CAR_STATE_FIELDS:
+    return False
+  return getattr(out, name, False)
+
+
+def _lane_change_meta(md):
+  """(laneChangeState, laneChangeDirection, laneChangeBlinkerHold, meta) of a modelV2 as strings; None without one.
+  card hands the same immutable reader until the next modelV2 (20 Hz), so a reader's fields are read once."""
+  global _lane_change_memo
+  if md is None:
+    return None
+  if md is _lane_change_memo[0]:
+    return _lane_change_memo[1]
+  meta = md.meta
+  fields = None if meta is None else (str(meta.laneChangeState), str(getattr(meta, "laneChangeDirection", "none")),
+                                      str(getattr(meta, "laneChangeBlinkerHold", "none")), meta)
+  if isinstance(md, capnp.lib.capnp._DynamicStructReader):
+    _lane_change_memo = (md, fields)
+  return fields
 CANFD_JERK_ERROR_DELAY = 0.5
 CANFD_JERK_ERROR_FILTER_TIME = 0.4
 CANFD_JERK_ERROR_DEADBAND = 0.25
@@ -303,10 +334,10 @@ class CarController(CarControllerBase):
     lamp = CS.out.leftBlinker or CS.out.rightBlinker
     # lane changes are banned in a tunnel announced as no-lane-change, and for 20 s after a roundabout sign. This fork
     # has no naviTunnel / naviRoundabout fields: both read False here.
-    tunnel = getattr(CS.out, "naviTunnel", False) or getattr(CS.out, "naviRoundabout", False)
+    tunnel = _out_flag(CS.out, "naviTunnel") or _out_flag(CS.out, "naviRoundabout")
     md = getattr(CS, "modelV2", None)
-    meta = md.meta if md is not None else None
-    state = str(meta.laneChangeState) if meta is not None else None  # None: no fresh modelV2, not a transition
+    lane_change = _lane_change_meta(md)
+    state = lane_change[0] if lane_change is not None else None  # None: no fresh modelV2, not a transition
     changing = state in ("laneChangeStarting", "laneChangeFinishing")
     side = self.lane_crossing.update(md, self.frame * DT_CTRL,
                                      self.blinker_control and drive and not lamp and not tunnel and not changing,
@@ -323,11 +354,11 @@ class CarController(CarControllerBase):
       side = 0
     model = False
     if state is not None:
-      bit = {"left": 1, "right": 2}.get(str(meta.laneChangeDirection), 0)  # boundary_indicator.own() bits
+      bit = OWN_BIT.get(lane_change[1], 0)
       # no yellow-line guard: the model FSM already decided to change lanes there
       model = (state == "laneChangeStarting" and self.lane_change_prev != state and bit and self.blinker_control and
                self.blinker_kick_model and drive and not lamp and not tunnel and
-               not getattr(CS.out, "cruiseCancelState", False) and bool(meta.indicatorIsolationMask & bit))
+               not getattr(CS.out, "cruiseCancelState", False) and bool(lane_change[3].indicatorIsolationMask & bit))
       self.lane_change_prev = state
       if model:
         side = bit + 2
@@ -348,12 +379,11 @@ class CarController(CarControllerBase):
     if not (self.blinker_hold_change or self.blinker_hold_wait):
       self.hold_refused = False
       return 0
-    md = getattr(CS, "modelV2", None)
-    meta = md.meta if md is not None else None
-    if meta is None:
+    lane_change = _lane_change_meta(getattr(CS, "modelV2", None))
+    if lane_change is None:
       return 0
-    state = str(meta.laneChangeState)
-    side = {"left": 3, "right": 4}.get(str(getattr(meta, "laneChangeBlinkerHold", "none")), 0)
+    state = lane_change[0]
+    side = HOLD_SIDE.get(lane_change[2], 0)
     if not side:
       self.hold_refused = False
       return 0

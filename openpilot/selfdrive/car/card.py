@@ -580,7 +580,7 @@ class Car:
       t.join()
 
 def main():
-  # Share core5 with lower-priority radard, leaving isolated core6 for camera work.
+  # Core5 alone (radard moved to core4 on 2026-11-14), leaving isolated core6 for camera work.
   config_realtime_process(5, Priority.CTRL_HIGH)
   car = Car()
   car.card_thread()

@@ -1,5 +1,11 @@
 # Repository memory
 
+- On 2026-11-14, drive 00000468 lost openpilot to commIssue: radarState fell from 20 Hz to 14..17 Hz,
+  under selfdrived's 16 Hz floor. card (core5 FIFO53) used 7.4..8.2 ms of every 10 ms frame, and
+  radard (core5 FIFO51) waited 630..900 ms/s in the runqueue. radard now runs on core4 FIFO51 with
+  planner/radarcan; card stays alone on core5 FIFO53. Priorities unchanged. This supersedes the
+  "radard core5" placement in earlier entries. No vehicle validation yet.
+
 - On 2026-11-14, merged ajouatom/carrot-wip 9c79e9bc (3 commits: B1 tap echo ownership + manual/model
   indicator replay, slow-queue follow of a persistent close radar/vision match, compact model selection
   dialog) into ccnc-hda1 on 155f5c75. Conflicts: AGENTS.md (both blocks kept) and the generated tools

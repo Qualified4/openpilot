@@ -69,14 +69,14 @@ def test_ui_updates_onroad_policy_even_without_a_render(big_ui, device_type):
 
 
 def test_camera_isolated_from_card_and_planner_without_priority_changes():
-  # Separate card/radard and planner/radarcan; share camera with short controls.
+  # card alone on core5; planner/radarcan/radard on core4; share camera with short controls.
   placements = {
     "openpilot/selfdrive/car/card.py": (5, "Priority.CTRL_HIGH"),
     "openpilot/selfdrive/controls/controlsd.py": (6, "Priority.CTRL_HIGH"),
     "openpilot/selfdrive/selfdrived/selfdrived.py": (6, "Priority.CTRL_HIGH"),
     "openpilot/selfdrive/controls/plannerd.py": (4, "Priority.CTRL_LOW"),
     "openpilot/selfdrive/carrot/radar/radarcan.py": (4, "Priority.CTRL_LOW"),
-    "openpilot/selfdrive/carrot/radar/radard_dpath.py": (5, "Priority.CTRL_LOW"),
+    "openpilot/selfdrive/carrot/radar/radard_dpath.py": (4, "Priority.CTRL_LOW"),
     "openpilot/selfdrive/modeld/modeld.py": (7, "54"),
   }
   for path, (core, priority) in placements.items():

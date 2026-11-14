@@ -551,6 +551,37 @@ def test_no_hold_right_after_a_kick():
   assert set(spas2(cc, hold_step(cc, 60, hold_md("preLaneChange", "left"), left=True))) == {3}  # ... then held again
 
 
+def test_a_new_modelv2_is_followed_on_its_own_frame():
+  # the lane change fields of a modelV2 reader are read once (card hands the same reader until the next one): a new
+  # reader must still count on the very frame it arrives, for the hold and for the model kick
+  cc = make_cc(control=False, hold_change=True)
+  off, held = model_hold("laneChangeStarting", "none"), model_hold("laneChangeStarting", "left")
+  for md, side in ((off, 0), (held, 3), (held, 3), (off, 0), (held, 3)):
+    assert CarController.hold_side(cc, SimpleNamespace(modelV2=md, out=SimpleNamespace(
+      gearShifter=D, leftBlinker=False, rightBlinker=False))) == side
+  cc = make_cc()
+  model_step(cc, 10, model_hold("off", "none"))
+  starting = model_hold("laneChangeStarting", "none")
+  starting = starting.as_builder()
+  starting.meta.laneChangeDirection, starting.meta.indicatorIsolationMask = "left", 1
+  starting = starting.as_reader()
+  cs = SimpleNamespace(modelV2=starting, out=SimpleNamespace(gearShifter=D, vEgo=20., leftBlinker=False, rightBlinker=False,
+                                                              steeringTorque=0, cruiseCancelState=False))
+  assert CarController.kick_pulse(cc, cs) and cc.blinker_side == 3 and cc.model_pulse  # the edge, on the first frame
+
+
+def test_a_capnp_carstate_without_navi_fields_reads_them_as_false():
+  # this fork's CarState has no naviTunnel / naviRoundabout: a real CarState kicks as a stand-in without them does
+  assert "naviTunnel" not in carcontroller._CAR_STATE_FIELDS and "leftLaneLine" in carcontroller._CAR_STATE_FIELDS
+  out = structs.CarState(gearShifter=D, leftLaneLine=20)
+  assert carcontroller._out_flag(out, "naviTunnel") is False and carcontroller._out_flag(out, "naviRoundabout") is False
+  assert carcontroller._out_flag(SimpleNamespace(naviTunnel=True), "naviTunnel") is True
+  cc = make_cc()
+  cc.lane_crossing.side = 4
+  sent = run(cc, 30, lambda: SimpleNamespace(out=structs.CarState(gearShifter=D, vEgo=20.)))
+  assert set(spas2(cc, sent)) == {4}
+
+
 def test_hold_ending_leaves_a_menu_test_running():
   cc = make_cc(control=False, test=2, hold_wait=True)
   hold_step(cc, 60, hold_md("preLaneChange", "left"))

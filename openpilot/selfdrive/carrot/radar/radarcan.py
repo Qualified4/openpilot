@@ -35,7 +35,7 @@ def _rebuild_radar_interface(radar_interface, CP, previous=None):
 
 
 def main():
-  # Share core4/FIFO51 with planner. Card/radard use core5; short control/state
+  # Share core4/FIFO51 with planner and radard. Card uses core5; short control/state
   # work shares core6 with camera; model/DM remain on core7.
   config_realtime_process(4, Priority.CTRL_LOW)
   poller = messaging.Poller()
