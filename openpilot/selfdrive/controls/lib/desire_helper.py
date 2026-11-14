@@ -829,7 +829,8 @@ class DesireHelper:
     # After every FSM decision of this frame (cancel included); a release masks the side from the next frame on.
     own_hold = self.blinker_hold.update(time.monotonic(), self.boundary_indicator, hold_change=self.hold_change,
                                         hold_wait=self.hold_wait, state=self.lane_change_state, driver_enabled=driver_enabled,
-                                        driver_st=driver_st, blinker_state=blinker_state, carstate=carstate)
+                                        driver_st=driver_st, blinker_state=blinker_state, carstate=carstate,
+                                        model=modeldata, crossed=self.crossing.since >= 0.0)
     if hold == BLINKER_NONE:
       hold = own_hold
     if self.queued_lane_change != BLINKER_NONE:

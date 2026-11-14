@@ -625,20 +625,55 @@ class TestBlinkerHold:
     # the body controller's 3 flashes end mid-change: the change still runs, only its lamp stops
     assert LCS.laneChangeStarting in self.states[round(3.0 / DT_MDL):]
 
-  def test_change_hold_kept_across_the_line_and_released_at_finishing(self):
-    # 11-14 logs: a release once the car centre was across the line let the lamp go out mid-change
-    self.options(change=True)
+  @staticmethod
+  def lines(y1, y2):
+    return SimpleNamespace(laneLines=[SimpleNamespace(y=[y]) for y in (y1 - 3.6, y1, y2, y2 + 3.6)])
+
+  def left_change_to(self, end):
+    """one-touch left, the car moves smoothly into the left lane (3.6 m wide) up to progress `end` -> [progress per frame]"""
     self.tap(1)
     self.step()
-    p = 0.
-    while p < 1.0:
-      d = p * 3.6  # lateral move toward the left lane (3.6 m wide)
+    p, seen = 0., []
+    while p < end:
+      d = p * 3.6
       y1, y2 = (-1.8 + d, 1.8 + d) if d < 1.8 else (d - 5.4, d - 1.8)  # the crossed line is relabelled
-      model = SimpleNamespace(laneLines=[SimpleNamespace(y=[y]) for y in (-5.4, y1, y2, 5.4)])
-      assert self.step(model=model) == LCS.laneChangeStarting
-      assert self.holds[-1] == 1, p  # all the way into the new lane
+      self.step(model=self.lines(y1, y2))
+      seen.append(p)
       p += 0.02
-    while self.step(prob=0.) == LCS.laneChangeStarting:
+    return seen
+
+  def test_change_hold_released_70_percent_into_the_new_lane(self):
+    self.options(change=True)
+    seen = self.left_change_to(1.0)
+    released = next(p for p, h in zip(seen, self.holds[1:]) if h == 0)
+    # 0.2 lane widths past the line, ACROSS_FRAMES (3) frames in a row: progress 0.70 .. 0.70 + 2 frames
+    assert 0.70 - 1e-6 <= released <= 0.70 + 3 * 0.02, released
+    assert self.helper.blinker_hold.reason == 'across'
+    assert self.helper.lane_change_state == LCS.laneChangeStarting  # before Finishing
+    # the tail of our lamp starts no second change
+    self.run(3.0, prob=0., torque=100.)
+    assert self.starts == 1 and self.helper.lane_change_state == LCS.off and not any(self.holds[-60:])
+
+  def test_change_hold_not_released_by_the_relabel_frames(self):
+    # 11-14 logs (00000468): laneLines[1..2].y[0] while the model relabels the lines; the old rule let go at the marked
+    # in-between frame, right on the line
+    for side, frames in (
+        (2, [(-1.8, 1.8), (-2.5, 1.1), (-3.31, 0.54), (-1.04, 2.28), (0.02, 3.39), (-0.17, 3.09)]),  # seg 18 at 736.69
+        (1, [(-1.8, 1.8), (-0.9, 2.7), (-0.24, 3.18), (-0.81, 2.62), (-2.72, 1.09), (-3.32, 0.18)])):  # seg 15 at 570.81
+      self.setup_method()
+      self.options(change=True)
+      self.tap(side)
+      self.step()
+      for y1, y2 in frames + [frames[-1]] * 10:
+        assert self.step(model=self.lines(y1, y2)) == LCS.laneChangeStarting
+        assert self.holds[-1] == side, (side, y1, y2)
+      assert self.helper.crossing.since >= 0.0  # the crossing itself was seen
+
+  def test_change_hold_released_at_finishing_short_of_70_percent(self):
+    self.options(change=True)
+    self.left_change_to(0.62)  # across the line, short of 70 %
+    assert self.holds[-1] == 1 and self.helper.crossing.since >= 0.0
+    while self.step(prob=0., model=self.lines(-5.4 + 0.62 * 3.6, -1.8 + 0.62 * 3.6)) == LCS.laneChangeStarting:
       assert self.holds[-1] == 1
     # released on the very frame Finishing starts
     assert self.helper.lane_change_state == LCS.laneChangeFinishing and self.holds[-1] == 0

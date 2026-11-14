@@ -6,9 +6,12 @@ carcontroller lights it through SPAS2 (aprk_blinkers, same path and send mode as
 - wait (CanfdBlinkerHoldWait): the driver asked, but the change waits in preLaneChange (BSD, side object, lines...).
   The body controller stops after its one-touch flashes (3, ~2.4 s) and the request would drop with the lamp; we keep it
   lit, at most WAIT_MAX_S. The held lamp is read as the driver still asking: that is what keeps the request alive.
-- change (CanfdBlinkerHoldChange): the change runs (laneChangeStarting). Held until laneChangeFinishing starts, or
-  CHANGE_MAX_S. Not released once the car centre is across the line: in the 11-14 logs that let go 0.2 m into the new
-  lane, the lamp went off 0.24 s later and Finishing came only 1.3 s after that (the driver felt no hold during the change).
+- change (CanfdBlinkerHoldChange): the change runs (laneChangeStarting). Held until the car is RELEASE_PROGRESS (70 %)
+  into the new lane, laneChangeFinishing starts, or CHANGE_MAX_S, whichever comes first. A lamp kept on much longer reads to
+  the car behind as a second change. 70 % = the car centre a fifth of a lane width past the crossed line, counted only
+  after DesireHelper's LaneCrossing saw the crossing and only when ACROSS_FRAMES frames in a row agree with a sane lane
+  width: while the model relabels the lines (1-2 frames) laneLines y[0] are in-between values that once read as 60 %
+  right at the line (11-14 logs, 00000468 seg 15 and 18: the lamp went off as the car centre crossed).
 
 Only for a request the driver's own lamp made (driver_enabled when the hold starts): never for changes started by the
 model, remote, app, voice or navigation (that is CanfdBlinkerKickModel), and never with the lever latched.
@@ -37,8 +40,30 @@ RELEASE_ISOLATE_S = 1.0
 # The body controller runs on ~1.2 s after the command stops (EV4 10-26) and carState holds a lamp 0.5 s more: a lamp
 # still lit 5 s after the release is the driver's own.
 MASK_MAX_S = 5.0
+# change release: the car centre this far through the change (0.5 = on the crossed line)
+RELEASE_PROGRESS = 0.7
+# 3 model frames (0.15 s) in a row: the relabel's in-between frames last 1-2 frames (11-14 logs)
+ACROSS_FRAMES = 3
+# y_target + y_other outside this is not one lane (a line lost or relabelled): such a frame does not count
+LANE_WIDTH_MIN_M = 2.5
+LANE_WIDTH_MAX_M = 4.5
 
 LEVER_LATCHED = 2
+
+
+def into_new_lane(model, left: bool) -> bool:
+  """This frame's model lane lines put the car centre RELEASE_PROGRESS through a change toward `left` (after the crossing:
+  the crossed line is now on the other side)."""
+  lines = getattr(model, "laneLines", None)
+  try:
+    if lines is None or len(lines) < 3 or not len(lines[1].y) or not len(lines[2].y):
+      return False
+    target, other = (1, 2) if left else (2, 1)
+    y_target, y_other = abs(float(lines[target].y[0])), abs(float(lines[other].y[0]))
+  except (AttributeError, IndexError, TypeError, ValueError):
+    return False
+  width = y_target + y_other
+  return LANE_WIDTH_MIN_M <= width <= LANE_WIDTH_MAX_M and y_other >= (RELEASE_PROGRESS - 0.5) * width
 
 
 class BlinkerHold:
@@ -47,13 +72,15 @@ class BlinkerHold:
     self.phase = None          # "wait" or "change"
     self.timer = 0.0
     self.done = False          # this request had its hold: none again until the FSM is off
-    self.reason = ""           # why the last hold ended (log / tests)
+    self.deep = 0              # frames in a row the car centre has been RELEASE_PROGRESS into the new lane
+    self.reason = ""         # why the last hold ended (log / tests)
     self.mask = BLINKER_NONE   # side we masked on release and have not seen cleared yet
     self.mask_time = 0.0
 
   def update(self, now, indicator, *, hold_change, hold_wait, state, driver_enabled, driver_st, blinker_state,
-             carstate) -> int:
-    """After DesireHelper's FSM (state is this frame's). Returns the side to hold."""
+             carstate, model, crossed=False) -> int:
+    """After DesireHelper's FSM (state is this frame's). crossed: LaneCrossing saw the car centre cross the line in this
+    change. Returns the side to hold."""
     lamps = int(bool(carstate.leftBlinker)) | (int(bool(carstate.rightBlinker)) << 1)
     lever = getattr(carstate, "blinkerLever", 0)
     drive = str(getattr(carstate, "gearShifter", "drive")) == "drive"
@@ -62,7 +89,7 @@ class BlinkerHold:
       self.done = False
 
     if self.side != BLINKER_NONE:
-      reason = self._end_reason(hold_change, hold_wait, state, driver_st, blinker_state, lamps, lever, drive)
+      reason = self._end_reason(hold_change, hold_wait, state, driver_st, blinker_state, lamps, lever, drive, model, crossed)
       if reason:
         self._release(now, indicator, reason)
       else:
@@ -73,10 +100,10 @@ class BlinkerHold:
       if hold_wait and state == LaneChangeState.preLaneChange:
         self.side, self.phase, self.timer = blinker_state, "wait", 0.0
       elif hold_change and state == LaneChangeState.laneChangeStarting:
-        self.side, self.phase, self.timer = blinker_state, "change", 0.0
+        self.side, self.phase, self.timer, self.deep = blinker_state, "change", 0.0, 0
     return self.side
 
-  def _end_reason(self, hold_change, hold_wait, state, driver_st, blinker_state, lamps, lever, drive):
+  def _end_reason(self, hold_change, hold_wait, state, driver_st, blinker_state, lamps, lever, drive, model, crossed):
     if not drive:
       return "gear"
     if lamps == 3:
@@ -91,7 +118,7 @@ class BlinkerHold:
       if state == LaneChangeState.laneChangeStarting:
         if not hold_change:
           return "started"
-        self.phase, self.timer = "change", 0.0
+        self.phase, self.timer, self.deep = "change", 0.0, 0
         return ""
       if not hold_wait:
         return "setting"
@@ -102,7 +129,10 @@ class BlinkerHold:
       return "setting"
     if state != LaneChangeState.laneChangeStarting:
       return "finished"
-    return "timeout" if self.timer >= CHANGE_MAX_S else ""
+    if self.timer >= CHANGE_MAX_S:
+      return "timeout"
+    self.deep = self.deep + 1 if crossed and into_new_lane(model, self.side == BLINKER_LEFT) else 0
+    return "across" if self.deep >= ACROSS_FRAMES else ""
 
   def _release(self, now, indicator, reason):
     if reason != "latched":

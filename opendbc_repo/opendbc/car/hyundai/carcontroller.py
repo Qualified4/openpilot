@@ -341,7 +341,8 @@ class CarController(CarControllerBase):
     """CanfdBlinkerHoldChange / CanfdBlinkerHoldWait: 3 (left), 4 (right) or 0.
 
     DesireHelper decides (desire_lib/blinker_hold.py) and sends the side in modelV2.meta.laneChangeBlinkerHold: only for
-    the driver's own request, released as laneChangeFinishing starts or at its time caps, and it masks the lamp tail itself.
+    the driver's own request, released once the car is 70 % into the new lane, as laneChangeFinishing starts or at its time
+    caps (whichever comes first), and it masks the lamp tail itself.
     Here it is followed only in the phase its setting covers (Wait: preLaneChange, Change: Starting/Finishing), in D,
     without hazard lamps, and not right after a kick (that lamp may be ours: refused until the request clears)."""
     if not (self.blinker_hold_change or self.blinker_hold_wait):
