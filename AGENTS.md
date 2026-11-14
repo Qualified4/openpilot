@@ -1,5 +1,12 @@
 # Repository memory
 
+- On 2026-11-14, merged ajouatom/carrot-wip 9c79e9bc (3 commits: B1 tap echo ownership + manual/model
+  indicator replay, slow-queue follow of a persistent close radar/vision match, compact model selection
+  dialog) into ccnc-hda1 on 155f5c75. Conflicts: AGENTS.md (both blocks kept) and the generated tools
+  bundle (tools.js, tools.css, asset-manifest.json: rebuilt with webbuild.py, CCNC blinker/camera test
+  section kept). boundary_indicator.py auto-merged with the CanfdBlinkerHold own() isolate argument.
+  No vehicle validation.
+
 - On 2026-11-09 (second), merged ajouatom/carrot-wip 0436c7f0 (7 commits: CAN-FD signal-stop
   object + cone trial, vehicle-fault reporting, manual lane-change indicator from 5 km/h,
   controlsd plan-age crash fix, Bluetooth import paths, GC/private-memory tracing) into
@@ -91,6 +98,26 @@
 - On 2026-10-23, merged origin/carrot-wip dfab65d0 (9 commits: Jetlink PR560-562 USB recovery/DHCP/ADB handoff,
   NAV shared input/native image/N16 projection records, Hyundai CAN-FD no-lead stop object state 2 trial) into
   ccnc-hda1 on 895c130b. Only AGENTS.md conflicted; both branches' log entries are kept.
+- 2026-11-14: I5PE Nov13/14 six drives,60 hash-matched full rlogs on162da468cc,
+  show31/33 manual turns with physical onset all2.48..2.50s and60/63 B1 requests
+  reporting driver_override. Release4 rejects its persistent0x413 tap echo during
+  dark flashes. Release5 remembers confirmed same-side echo first seen during tap,
+  closes allowance on post-tap neutral, preserves raw0x3C1/lease/opposite guards.
+  Isolated native predicate replay62 captured taps/1820frames rejects62 before,
+  zero after; confirmed delivery assumed, running historical ELF/subreason unknown.
+  Diagnostic read before STOP logs one b1TapDiagnostic per failed request.
+  Manual boundary transient retreat150ms and paired bounded shift tolerance recover
+  11d9/2+44.458 and4+21.688. Manual-to-turn promotion preserves request identity
+  in11d4/9 and11d5/0. Model-turn requires same-side15deg and3deg/s, blocking false
+  left11d9/5+30.346(frame6609). Fixed-input68873frames yields61->62 requests,
+  other60 exact starts/sides retained. Below5kmh intent experiment reverted after
+  adding a parking indication suppressed the following left turn. Local878pass,
+  2platform skips; native MSVC and ESP32 core3.3.5 build pass. B1 release5 app651488B,
+  SHA256bf60f950cf3f1334fd9e4fe932a55b45a1e2cf2a2d521207196a6884b79a3b4b.
+  Normal GitPull/restart plus existing authenticated idle B1 OTA. No live writes
+  or physical hold proof. Details docs/indicator_replay_20261114.md and private
+  .analysis/archive/2026-11-14/indicators.
+
 - 2026-11-12: Owner requests SD-only automatic Super firmware provisioning.
   Official NVIDIA capsule path is available. R2 excluded /opt/ota_package and
   mounted EFI read-only; restore official36.4.7 Super capsule from pinned deb
