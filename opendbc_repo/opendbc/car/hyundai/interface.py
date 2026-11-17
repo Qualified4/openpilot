@@ -148,9 +148,12 @@ class CarInterface(CarInterfaceBase):
       ret.safetyConfigs = cfgs
       from opendbc.car.hyundai.spas import compatible
       # joongyu01: our CanfdBlinkerKick (carcontroller) and this path both pause APRK and send 0x16A; Kick wins and
-      # switches this one off at boot so the menu shows what is actually running
+      # switches this one off at boot so the menu shows what is actually running (any CAN-FD car, Sonata 2024 included)
       if not docs and params.get_bool("CanfdBlinkerKick") and params.get_bool("CanfdBlinkerControl"):
         params.put_bool("CanfdBlinkerControl", False)
+      # carrot-wip's KICK_CARS / CANFD_BLINKER_KICK (card's KickOutput, common indicator policy) is not set here, as on
+      # joongyu01: our CanfdBlinkerKick path (carcontroller.aprk_blinkers) runs on every CAN-FD car, so KickOutput stays
+      # inert and cannot strip that path's 0x165/0x16A frames (hyundai_kick.isolate).
       if params.get_bool("CanfdBlinkerControl") and compatible(fingerprint, CAN.ECAN) and not ret.flags & HyundaiFlags.ENABLE_BLINKERS:
         ret.flags |= HyundaiFlags.CANFD_SPAS_BLINKERS.value
         ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.CANFD_SPAS_BLINKERS.value

@@ -41,6 +41,8 @@ PRE_OVERRIDE_FILTERED_MIN_RATIO = 0.65
 PRE_OVERRIDE_MIN_RATE_RATIO = 0.50
 PRE_OVERRIDE_CONFIRM_FRAMES = 2
 PRE_OVERRIDE_MAX_TORQUE_DELTA = -10.0
+# Hand-resting torque blips shorter than this must not stretch recovery_time.
+OVERRIDE_COUNT_MIN_FRAMES = int(0.3 / DT_CTRL)
 LOW_SPEED_ANGLE_RATE_RAMP_SPEED = 15.0 * CV.KPH_TO_MS
 MID_SPEED_ANGLE_RATE_LIMIT_SPEED = 40.0 * CV.KPH_TO_MS
 LARGE_ANGLE_UNWIND_RATE = 1.5  # deg/tick: allow a quicker return from the EPS fault-angle region
@@ -277,6 +279,11 @@ class CarController(CarControllerBase):
     self.lane_crossing, self.blinker_side, self.blinker_pulse_end = LaneCrossing(), 0, 0
     self.lane_change_prev, self.model_pulse = "off", False  # last modelV2 laneChangeState; pulse from the model trigger
     self.yellow_until = [0, 0]  # left, right
+    # set by card's KickOutput (carrot-wip's common indicator policy) only on its KICK_CARS harness; this path does not
+    # read them: CanfdBlinkerKick here follows kick_pulse / hold_side (Sonata 2024 and others), as on joongyu01
+    self.kick_output_ready = False
+    self.kick_direction = 0
+    self.kick_request_id = None
 
     self.activateCruise = 0
     self.button_wait = 12
@@ -296,6 +303,7 @@ class CarController(CarControllerBase):
     self.recovering_from_override = False
     self.full_recovery_frames = 0
     self.repeated_override_count = 0
+    self.steering_pressed_frames = 0
     self.override_latched = False
     self.override_release_frames = 0
     self.driver_torque_filtered = 0.0
@@ -332,8 +340,8 @@ class CarController(CarControllerBase):
       measurements 31: a kick lamp started a change). Not in a cruise CANCEL latch; cut when the change is cancelled."""
     drive = CS.out.gearShifter == structs.CarState.GearShifter.drive
     lamp = CS.out.leftBlinker or CS.out.rightBlinker
-    # lane changes are banned in a tunnel announced as no-lane-change, and for 20 s after a roundabout sign. This fork
-    # has no naviTunnel / naviRoundabout fields: both read False here.
+    # lane changes are banned in a tunnel announced as no-lane-change, and for 20 s after a roundabout sign. CarState has
+    # naviTunnel / naviRoundabout (car.capnp) but nothing on this branch sets them yet: both read False.
     tunnel = _out_flag(CS.out, "naviTunnel") or _out_flag(CS.out, "naviRoundabout")
     md = getattr(CS, "modelV2", None)
     lane_change = _lane_change_meta(md)
@@ -572,10 +580,12 @@ class CarController(CarControllerBase):
 
     steering_pressed_rising = CS.out.steeringPressed and not self.steering_pressed_prev
     if steering_pressed_rising:
+      self.recovering_from_override = True
+    self.steering_pressed_frames = self.steering_pressed_frames + 1 if CS.out.steeringPressed and CC.latActive else 0
+    if self.steering_pressed_frames == OVERRIDE_COUNT_MIN_FRAMES:
       if 0 < self.full_recovery_frames < int(5.0 / DT_CTRL):
         self.repeated_override_count = min(self.repeated_override_count + 1, 3)
       self.full_recovery_frames = 0
-      self.recovering_from_override = True
 
     torque_threshold = max(self.params.STEER_THRESHOLD, 1.0)
     # Filter signed torque so alternating sensor noise cancels out before its
@@ -829,10 +839,16 @@ class CarController(CarControllerBase):
             can_sends.extend(hyundaicanfd.create_fca_warning_light(self.CP, self.packer, self.CAN, self.frame))
         if self.frame % 2 == 0:
           if self.CP.flags & HyundaiFlags.CAMERA_SCC.value:
-            msg, self.accel_value_last = hyundaicanfd.create_acc_control_scc2(
-              self.packer, self.CAN, CC.enabled, self.accel_value_last, accel, stopping, CC.cruiseControl.override,
-              set_speed_in_units, hud_control, self.hyundai_jerk, CS, self.canfd_stopping, hud_lateral=hud_lateral,
-            )
+            if CC.enabled:
+              CS.stock_adopt_pending = False
+            msg = None
+            # stock cruise hand-over (carstate._update_stock_adopt): send nothing, so panda keeps forwarding the camera's
+            # cruising SCC until openpilot engages
+            if not getattr(CS, "stock_adopt_pending", False):
+              msg, self.accel_value_last = hyundaicanfd.create_acc_control_scc2(
+                self.packer, self.CAN, CC.enabled, self.accel_value_last, accel, stopping, CC.cruiseControl.override,
+                set_speed_in_units, hud_control, self.hyundai_jerk, CS, self.canfd_stopping, hud_lateral=hud_lateral,
+              )
             if msg is not None:
               can_sends.append(msg)
             can_sends.extend(hyundaicanfd.create_tcs_messages(self.packer, self.CAN, CS)) # for sorento SCC radar...

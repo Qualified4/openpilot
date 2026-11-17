@@ -571,10 +571,12 @@ def test_a_new_modelv2_is_followed_on_its_own_frame():
 
 
 def test_a_capnp_carstate_without_navi_fields_reads_them_as_false():
-  # this fork's CarState has no naviTunnel / naviRoundabout: a real CarState kicks as a stand-in without them does
-  assert "naviTunnel" not in carcontroller._CAR_STATE_FIELDS and "leftLaneLine" in carcontroller._CAR_STATE_FIELDS
+  # carrot-wip 2b202df1 added naviTunnel / naviRoundabout to CarState but nothing sets them here: a real CarState kicks
+  # as a stand-in without them does, and a field the schema lacks still reads False instead of raising in pycapnp
+  assert "noSuchCarStateField" not in carcontroller._CAR_STATE_FIELDS and "leftLaneLine" in carcontroller._CAR_STATE_FIELDS
   out = structs.CarState(gearShifter=D, leftLaneLine=20)
   assert carcontroller._out_flag(out, "naviTunnel") is False and carcontroller._out_flag(out, "naviRoundabout") is False
+  assert carcontroller._out_flag(out, "noSuchCarStateField") is False
   assert carcontroller._out_flag(SimpleNamespace(naviTunnel=True), "naviTunnel") is True
   cc = make_cc()
   cc.lane_crossing.side = 4

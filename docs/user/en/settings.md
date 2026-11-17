@@ -117,18 +117,18 @@ Ignoring `x0.01`, `x0.001`, `cm`, `km/h`, or `%` can make a value appear one hun
 
 ## Settings map
 
-The current `carrot_settings.json` contains **222 parameters** (distinct names in its `params` list). The driver-monitoring exception and `NNFF` are search only. Counts below include detail and search-only parameters in each catalog category:
+The current `carrot_settings.json` contains **229 parameters** (distinct names in its `params` list). The driver-monitoring exception and `NNFF` are search only. Counts below include detail and search-only parameters in each catalog category:
 
 | Category | Count | Groups |
 |---|---:|---|
-| Driving control | 150 | Startup and auto, Tesla, buttons and presets, steering, speed and deceleration, cruise and following gap |
-| Vehicle and hardware | 29 | Hyundai/Kia, CAN FD/HDA, radar, driver monitoring, vehicle assistance, device hardware |
+| Driving control | 143 | Startup and auto, Tesla, buttons and presets, steering, speed and deceleration, cruise and following gap |
+| Vehicle and hardware | 43 | Hyundai/Kia, indicator control, CAN FD/HDA, radar, driver monitoring, vehicle assistance, device hardware |
 | Display | 34 | Information, path, brightness/on-road view, external HUD |
 | System | 9 | Recording/power, network/map, sound, software |
 
 ## Driving control
 
-These 150 settings can affect driving behavior. Change one item at a time.
+These 143 settings can affect driving behavior. Change one item at a time.
 
 <a id="start-auto"></a>
 ### Startup and auto — 9 settings; Tesla — 6 settings
@@ -166,14 +166,14 @@ The result depends heavily on whether the car uses stock SCC and which button me
 Volkswagen's separate `SET` button sets current speed and `RES` restores the previous set speed, while `+`/`-` follow the button mode, speed units, and long-press setting. Manual engagement with openpilot longitudinal control remains tied to the physical `SET`/`RES` buttons.
 
 <a id="vehicle-steering"></a>
-### Vehicle steering — 43 top-level + 6 ONNX detail + 1 search-only setting
+### Vehicle steering — 36 top-level + 6 ONNX detail + 1 search-only setting
 
 | Section | Parameters | Purpose |
 |---|---|---|
 | ONNX Lane and BSD | `ShareData`, `OnnxBsdEnabled`, `OnnxLaneThreshold`, `OnnxLaneIntervalMs`, `OnnxBsdThreshold`, `OnnxBsdSmoothingMs`, `OnnxBsdIntervalMs` | Lane-type detection plus separately controlled camera BSD and tuning |
 | Centering | `PathOffset`, `CameraYawTrimDeg` | Path position and camera-yaw trim |
 | Steering feel | `SteerActuatorDelay`, `CenterToFrontRatio`, `LatSmoothSec`, `LatSuspendAngleDeg`, `CustomSR`, `SteerRatioRate` | Timing, smoothing, suspension angle, and steering ratio |
-| [Lane change](lane-change.md) and automatic turn | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneChangeYellowSolid`, `LaneLineCheck`, `BlinkerLatchedTurn`, `LaneChangeLeverWait`, `AutoTurnControl`, `AutoTurnControlRightLaneChange`, `ManualLaneChangeIndicator`, `ManualTurnIndicator`, `ModelDesireIndicator`, `ModelPathIndicator`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | Lane-change entry conditions and ATC behavior |
+| [Lane change](lane-change.md) and automatic turn | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneChangeYellowSolid`, `LaneLineCheck`, `AutoTurnControl`, `AutoTurnControlRightLaneChange`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | Lane-change entry conditions and ATC behavior |
 | Lane mode | `LatMpcPathCost`, `LatMpcMotionCost`, `LatMpcAccelCost`, `LatMpcJerkCost`, `LatMpcSteeringRateCost`, `LatMpcInputOffset`, `UseLaneLineSpeed`, `UseLaneLineCurveSpeed`, `AdjustLaneOffset` | Lane-mode MPC weights and lane-line conditions |
 | Advanced torque | `LateralTorqueCustom`, `LateralTorqueAccelFactor`, `LateralTorqueFriction`, `LateralTorqueKpV`, `LateralTorqueKiV`, `LateralTorqueKf`, `LateralTorqueKd` | Custom torque-control gains |
 | Advanced torque, search only | `NNFF` | Neural-network feedforward for torque steering |
@@ -231,7 +231,7 @@ While external navigation is connected, deceleration, countdowns, and navigation
 
 `TrafficLightDetectMode` is `0` off, `1` stop detection, or `2` stop and go detection. This is model-based assistance; the driver must always verify the signal.
 
-### Cruise and following gap — 29 settings overall, 26 on Hyundai/Kia/Genesis
+### Cruise and following gap — 30 settings overall, 27 on Hyundai/Kia/Genesis
 
 | Section | Parameters | Purpose |
 |---|---|---|
@@ -266,17 +266,16 @@ Deceleration preview operates independently of the response level. During active
 
 For Hyundai/Kia CANFD openpilot longitudinal control, aReqRaw and aReqValue become zero in the first StopReq frame, so this setting does not change transmitted acceleration while StopReq remains active. Automatic release/retry is removed.
 
-On supported Tesla vehicles, [automatic cruise set-speed adjustment](tesla.md#automatic-cruise-speed) requires the additional vehicle bus, **alpha longitudinal** (`AlphaLongitudinalEnabled`) and Carrot Web's `TeslaAutoSpeedLimit`. The new switch defaults to OFF and requires a full restart after changes. Navigation/Carrot speed control still takes precedence and pauses DAS-based adjustment until it ends and the limit is stable again; any manual pause remains in effect. Turning the right speed wheel pauses it; an opposite-direction wheel gesture within one second or disengaging and re-engaging resumes it. OFF stops automatic wheel output without disabling manual scrolling.
-
-<a id="vehicle-hardware"></a>
 ## Vehicle and hardware
 
-This category contains 24 menu settings, two sub-options on the **CCNC HDA1 radar vehicles** detail screen, and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. CCNC display settings, including lane type and color display, are described below.
+This category contains 43 settings, including two sub-options on the **CCNC HDA1 radar vehicles** detail screen and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. Indicator control and the CCNC display settings, including lane type and color display, are described below.
 
 | Group | Parameters | Purpose |
 |---|---|---|
 | Hyundai/Kia | `HyundaiCameraSCC`, `IsLdwsCar`, `HapticFeedbackWhenSpeedCamera` | SCC connection, LDWS behavior, and speed-event haptics |
+| Indicator control | `AutoBlinkerControl`, `ManualLaneChangeIndicator`, `ManualTurnIndicator`, `ModelDesireIndicator`, `ModelPathIndicator`, `CanfdBlinkerKick`, `CanfdBlinkerKickMode`, `CanfdBlinkerKickModel`, `CanfdBlinkerHoldChange`, `CanfdBlinkerHoldWait`, `CanfdBlinkerMenuTest`, `CanfdBlinkerControl`, `CanfdBlinkerTest`, `BlinkerLatchedTurn`, `LaneChangeLeverWait` | [Automatic indication, output device and lever behavior](#indicator-control) |
 | CAN FD/HDA | `CanfdHDA2`, `HyundaiCanfdClusterDirectTx`, `CanfdDebug`, `HDPuse` | HDA2 selection, cluster direct send, CAN FD diagnostics, and HDP |
+| [CCNC display](#ccnc-display) | `CcncClusterDisplay` | CCNC cluster stock-style display · Lane hiding, dashed lines, lane highlight, lead ring, popups, alert texts and HDP icon; default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes · Off (0) / Standard (1) / Refined (2), default 0 |
 | [CCNC display](#ccnc-display) | `CcncLaneCurvatureSource` | CCNC lane curvature display · Off (0) / Steering angle (1) / Model with lateral (2) / Always model (3), default 2 |
@@ -302,6 +301,17 @@ Regardless of gear or speed, including at standstill, three distinct physical CA
 See [Radar tracks and corner radar](radar.md) before changing radar modes.
 
 **Cluster CAN Direct Send** (`HyundaiCanfdClusterDirectTx`) compares the original direct-send method on Hyundai/Kia/Genesis CAN-FD CameraSCC vehicles with intermittent cluster warnings. It defaults to OFF for every vehicle; enable it manually on an affected vehicle. Reboot the device after changing it. Updated Panda firmware supporting this setting is required. Resolution of vehicle warnings has not been validated.
+
+<a id="indicator-control"></a>
+### Indicator Control
+
+Manual lane-change detection retains an established approach when valid width returns within 0.15s of the last valid observation. The output stage uses the detector’s lane-admission decision. [Detailed behavior](lane-change.md)
+
+Settings > Vehicle & Hardware > Indicator Control contains Automatic Indication, Output Device and Lever Behavior. Automatic Indication contains `AutoBlinkerControl`, `ManualLaneChangeIndicator`, `ManualTurnIndicator`, `ModelDesireIndicator` and `ModelPathIndicator`. Output Device contains `CanfdBlinkerKick`, `CanfdBlinkerKickMode`, `CanfdBlinkerKickModel`, `CanfdBlinkerHoldChange`, `CanfdBlinkerHoldWait`, `CanfdBlinkerMenuTest`, `CanfdBlinkerControl` and `CanfdBlinkerTest`. Lever Behavior contains `BlinkerLatchedTurn` and `LaneChangeLeverWait`.
+
+In this firmware `CanfdBlinkerKick` and `CanfdBlinkerKickMode` are the [Lane Change Auto Blinker](#canfd-blinker-kick) below. It runs on CAN-FD cars including the Sonata 2024. The common-policy **Panda/SPAS Indicator Output** for the IONIQ 5 PE, IONIQ 9 and Azera / Grandeur GN7 (common automatic indication requests sent through Panda/SPAS, held at least 2 s from the first transmission, suspending USB2CAN/BT2CAN output while on) is not used in this firmware. Automatic indication uses the existing USB2CAN/B1 profiles for external output.
+
+`CcncClusterDisplay` (default `0`) changes the CCNC cluster frames that openpilot re-sends; see [CCNC cluster stock-style display](#ccnc-display). The [always-on changes](#always-on-changes) apply regardless of it.
 
 With CAN-FD CameraSCC, openpilot longitudinal control and corner radar enabled, valid CAN, Drive, released brakes and speed above 10.8 km/h allow periodic requests to switch on stock SCC MAIN. This applies independently of AutoEngage and Carrot cruise engagement, and these requests stop once MAIN is on. SET and standstill-resume requests retain the existing Carrot cruise engagement requirement. With CAN-FD CameraSCC and openpilot longitudinal control, the OEM SCC MAIN state used for cluster display is tracked separately from Carrot engagement intent. Steering activation follows AutoEngage initialization and the existing driver-button settings.
 
@@ -385,6 +395,16 @@ Shows what the car is about to do as the cluster background. While openpilot own
 It does not follow the model's per-frame traffic prediction, so it does not flicker. A colour changes only after its condition lasts 0.5 s, stays at least 1.5 s, and red clears 1 s after its condition ends. Green shows once, when pulling away from a stop. On by default; off keeps the normal background.
 
 Values 5 and 8 were confirmed on an Ioniq 5 PE cluster and are not verified on the Sonata. Turn this off if the background does not show or looks wrong. Display only; stopping and starting behavior is unchanged.
+
+#### CCNC cluster stock-style display
+
+`CcncClusterDisplay` (default off) shows more of the openpilot state on the CCNC cluster, like the stock HDA2 display. It applies to CAN-FD cars on camera SCC with openpilot longitudinal control (`HyundaiCameraSCC` 1 or 2) once the camera's 0x161 frame (0x162 for the HDP icon) has been received.
+
+- Lane lines: a line whose model probability stays under 0.08 for over 1 s and that the camera does not see either is not drawn (drawn again from 0.12; an orange line stays). This applies on top of the CCNC lane display above. IONIQ 9 / EV9 keep the previous display.
+- Dashed: a line the camera reports as dashed is drawn dashed (IONIQ 5 PE, Azera / Grandeur GN7 and EV4).
+- Lane highlight, lead ring, popups, alert texts and HDP icon: lane colour by steering state, the lead ring at the gap openpilot keeps, a 2 s popup on engage and release, stock texts for some alerts (the steering-limit text with a 1 s double chime), and the HDP icon while cruise or steering is active (IONIQ 5 PE, Azera / Grandeur GN7 and EV4).
+
+Cluster fixes that apply regardless of this setting are listed under [always-on changes](#always-on-changes). The stop/go background stays with `CcncTrafficBackground` above.
 
 #### CCNC HDA1 radar vehicles
 
@@ -526,6 +546,32 @@ Check storage use for recording and network use, heat, and privacy before enabli
 
 Experimental DM switches to standard monitoring for 20 seconds only when moving traffic first appears after an absence. Additional vehicles do not extend it; experimental monitoring then resumes, with no empty-road bonus while traffic remains.
 
+<a id="always-on-changes"></a>
+## Always-on changes (no setting)
+
+These fixes apply without any setting.
+
+CCNC cluster, on the cars described for `CcncClusterDisplay`:
+
+- HDP gap: while HDP is active, the cluster shows the real gap bars (previously always 4). Gaps 1–3 use the HDP spacing style, and a gap change shows the stock "distance N" popup for 2 s.
+- Side objects: a corner box that the stock frame shows with distance 0 is drawn as the grey car.
+- Standstill icons: while engaged with steering enabled, the steering and lane-change icons stay on at standstill, where steering pauses.
+
+Hyundai/Kia CAN-FD with camera SCC and openpilot longitudinal control:
+
+- Set speed and gap sync: while engaged, with the stock SCC in normal cruise above about 11 km/h, short +/−/GAP presses on the camera bus keep the camera's set speed and gap equal to openpilot's. A device drop-out then leaves the car at the same speed and gap. Not on cars using the 0x10B `CRUISE_BUTTONS_ALT2` message, and it waits 1 s after any driver button press.
+- Restart hand-over: if the stock SCC is cruising when the device (re)starts, the car keeps cruising and openpilot engages at the stock set speed. It is checked only in the first 30 s, and any cancel or MAIN press ends the wait.
+- Paddle stop: openpilot's SCC output stays off for 0.3 s after the paddle reads released, so a held paddle's brief release readings do not re-engage it.
+
+Other:
+
+- Signal stop: while slowing to a signal stop (`e2eStop`) below 3 m/s, a green or off frame no longer ends the stop. Once stopped, green starts the car as before.
+- Carrot Radar: for 3 frames after the camera lead jumps, a new stationary radar track 3–40 m short of a moving central front track is not taken as the lead at once. It must pass the stationary confirmation.
+- Hyundai/Kia steering: driver torque shorter than 0.3 s while steering no longer counts as a repeated override, so it does not lengthen the steering recovery.
+- CAN error alert: the second line names up to two timed-out messages.
+- Build: a power cut during a build requests Rebuild All at the next boot. On comma four, empty object files from a failed build are removed and the build retries once without the cache.
+- panda: rejected-send debug prints are limited to once per second, and pandad reads at most one debug buffer per call, so a print flood no longer makes the panda go SILENT.
+
 ## Signal Assistance Mode (Trial)
 
 `SignalAssistMode` defaults to `0`. Mode `0` disables auxiliary signals; `1` enables recognition, display, alerts and the stopped-red departure veto; `2` also enables moving-red preparation.
@@ -569,7 +615,9 @@ camera supplies 20fps. Reduced processing overhead does not establish sustained
 
 ## Automatic turn signals (supported vehicles)
 
-`AutoBlinkerControl` — Settings > Driving > Steering > Lane Change (Auto Turn). Default: 0. Currently limited to the Ioniq 5 PE, Jetson and PEAK USB-CAN/B1 profile on carrot-wip. Cruise CANCEL stops automatic indicator requests and releases an automatic hold. Parking maneuvers no longer trigger an indication until SET/RES or +/− clears the cruise cancel state. The stock lever and explicit Bluetooth indicator buttons remain available.
+`AutoBlinkerControl` — Settings > Vehicle & Hardware > Indicator Control > Automatic Indication. Default: 0. External output uses the existing supported USB2CAN/B1 profiles (the common Panda/SPAS output is not used in this firmware, see [Indicator Control](#indicator-control)). Cruise CANCEL stops automatic indicator requests and releases an automatic hold. Parking maneuvers no longer trigger an indication until SET/RES or +/− clears the cruise cancel state. The stock lever and explicit Bluetooth indicator buttons remain available.
+
+Confirmed USB2CAN/BT2CAN TBT holds retain the existing receiver driver_override handling.
 
 ATC indication starts at audioTurn and persists through stops. A fresh cue can start at a full stop in Drive when lateral permission remains valid and steering is fault-free. After the receiver confirms send completion, both lamps staying off for 1.5 seconds permits one recovery attempt per turn, including an initially unlit request. Driver cancellation, communication failure or an unconfirmed send forbids retry. A fresh opposite-turn cue waits at most three seconds for physical completion of the preceding turn.
 
@@ -601,6 +649,8 @@ A hold-start request without confirmed lamp activation expires after four second
 
 `ManualTurnIndicator` requests an indicator when driver steering and vehicle rotation agree. The wheel must reach 42 degrees and move at least 22 degrees from the start of steering. Detection resumes two seconds after the previous indication last renewed its hold, once both lamps have also been off for one continuous second. The setting defaults to off and can detect parking turns. [Manual turn conditions](lane-change.md)
 
+Junction lane-position changes preserve manual turn detection, and confirmed standstill permits small negative speed-estimator noise during a hold. Current model lane-change probability also requires measured approach of both boundaries.
+
 Manual boundary tracking checks brief boundary retreat for 0.15s. If manual-turn conditions are also met, the same indication continues through turn completion. Model-turn indication additionally requires at least 15 degrees of same-direction steering and 3 degrees/s of measured rotation.
 
 `AutoTurnControlRightLaneChange` remains the separate ATC distance add-on. `ManualLaneChangeIndicator` detects manual lane changes from 5 km/h and retains recent driver intent for up to 1.5s. The left side excludes centre lines using fresh white-line classification; the right requires at least 2.5m from the target boundary to the road edge. Outer-line probability is not required. It never requests automatic steering. See [lane changes](lane-change.md).
@@ -618,9 +668,10 @@ After confirmed turn entry, the TBT indicator ends its hold as the wheel returns
 
 The ATC right lane-change distance uses 0m for off and 50m steps up to 500m. The former ON setting migrates to 250m at restart.
 
+<a id="canfd-blinker-kick"></a>
 ### Lane Change Auto Blinker (CAN-FD, trial)
 
-Settings > Vehicle and hardware > CAN FD/HDA. All six are off by default (send mode 1); while off, no parking-ECU (0x7B1) or SPAS (0x165/0x16A) frame is sent.
+Settings > Vehicle & Hardware > Indicator Control > Output Device. All six are off by default (send mode 1); while off, no parking-ECU (0x7B1) or SPAS (0x165/0x16A) frame is sent.
 
 - `CanfdBlinkerKick` (Lane Change Auto Blinker): flashes the blinker for about 1 s toward the side the driver starts crossing a lane line without signalling. Uses the model lane lines; any speed in D; paused while a model lane change runs. Turning it on switches `CanfdBlinkerControl` off at the next boot.
 - `CanfdBlinkerKickMode` (send mode): 0 only after the ECU answers, 1 panda piggyback (default, sent right behind each stock SPAS frame), 2 direct 25 Hz, 3 direct 100 Hz. Modes 2/3 can cause CAN errors; switching between 1 and 2/3 applies at the next onroad start.

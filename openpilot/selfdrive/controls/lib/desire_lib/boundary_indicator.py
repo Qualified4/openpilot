@@ -99,9 +99,14 @@ class BoundaryIndicator:
       left, right = md.laneLines[1].y[0], md.laneLines[2].y[0]
       probs = (md.laneLineProbs[1], md.laneLineProbs[2])
       if (
-        not all(math.isfinite(x) for x in (left, right, *probs, cs.steeringTorque)) or not left < 0 < right or not 2.5 < right - left < 4.8
+        not all(math.isfinite(x) for x in (left, right, *probs, cs.steeringTorque)) or not left < 0 < right
       ):
         self._reset_geometry()
+        return
+      if not 2.5 < right - left < 4.8:
+        # Invalid width cannot establish a new approach. An existing episode
+        # retains its last sample, still bounded by the 150 ms continuity check.
+        self.lane_since = [None, None]
         return
       for i, probability in enumerate(probs):
         if probability >= 0.10:
@@ -120,6 +125,13 @@ class BoundaryIndicator:
         # together as markings reappear beyond an intersection.
         episode = self.episode
         side = episode['direction'] - 1 if episode else 0
+        # Ignore a brief jump of only the far boundary. Keep the last accepted
+        # sample so its 150 ms age still bounds recovery, and do not emit here.
+        if (episode is not None and now - episode['intent'] <= .5 and
+            self.lane_admission(cs, md, side + 1, now) and
+            abs(prev_y[side] - y[side]) <= .1 and abs(prev_y[1-side] - y[1-side]) > .4):
+          self.previous = old
+          return
         paired_approach = (episode is not None and now - episode['intent'] <= .5 and
                            self.lane_admission(cs, md, side + 1, now) and
                            0 < prev_y[side] - y[side] <= .8 and

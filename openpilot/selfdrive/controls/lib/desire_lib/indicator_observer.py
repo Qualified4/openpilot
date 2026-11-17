@@ -56,13 +56,13 @@ def path_direction(md, curvature):
 def following_road_curve(md, speed, yaw_rate):
   """Recognized curved lane geometry agreeing with the vehicle's current arc."""
   try:
-    if yaw_rate is None or speed < 1 or min(md.laneLineProbs[1:3]) < .5:
+    if yaw_rate is None or speed < 1 or not all(.5 <= md.laneLineProbs[i] <= 1 for i in (1, 2)):
       return False
     curvature = yaw_rate / speed
     if abs(curvature) < .002:
       return False
     curves = []
-    for line in md.laneLines[1:3]:
+    for line in (md.laneLines[1], md.laneLines[2]):
       near = [interpolate(x, line.x, line.y) for x in (5., 10., 15.)]
       slope = (near[2] - near[0]) / 10.
       curves.append((near[2] - 2 * near[1] + near[0]) / 25. / (1 + slope * slope)**1.5)
@@ -71,19 +71,25 @@ def following_road_curve(md, speed, yaw_rate):
     return False
 
 
+def boundary_approach(samples, direction, minimum):
+  """Require both measured boundaries to move toward the indicated crossing."""
+  if len(samples) < 2:
+    return False
+  old_t, old_l, old_r, _, _ = samples[0]
+  t, left, right, _, _ = samples[-1]
+  sign = -1 if direction == 1 else 1
+  return (.30 <= t-old_t <= .55 and 0 < (-left if direction == 1 else right) <= 1.5 and
+          min(sign*(old_l-left), sign*(old_r-right)) >= minimum and
+          any(sample[2+direction] >= LINE_CONFIDENCE for sample in samples))
+
+
 def anticipated_lane(md, samples):
   """Confirm the two nearest forecast rows against measured motion of both lane boundaries."""
   forecast = getattr(md.meta, 'desirePrediction', ())
-  if len(forecast) != 32 or len(samples) < 2:
+  if len(forecast) != 32:
     return 0
-  old_t, old_l, old_r, _, _ = samples[0]
-  t, left, right, _, _ = samples[-1]
-  if not .30 <= t-old_t <= .55:
-    return 0
-  for side, index, sign in ((1, 3, -1), (2, 4, 1)):
-    if (0 < (-left if side == 1 else right) <= 1.5 and
-        min(sign*(old_l-left), sign*(old_r-right)) >= .06 and
-        any(sample[2+side] >= LINE_CONFIDENCE for sample in samples)):
+  for side, index in ((1, 3), (2, 4)):
+    if boundary_approach(samples, side, .06):
       # Two 8-class softmax rows; check the cheap geometric gates first.
       rows = ([forecast[j+i] for i in range(8)] for j in (0, 8))
       if all(all(math.isfinite(x) and 0 <= x <= 1 for x in row) and
@@ -219,7 +225,7 @@ class ModelIndicator:
     self.manual_turn = ManualTurnIndicator()
 
   def update(self, now, cs, md, *, valid, lateral_active, desire_enabled, path_enabled, busy, isolation, manual_edge=0, command_curvature=None,
-             feedback=None, manual_turn_enabled=False, yaw_rate=None):
+             feedback=None, manual_turn_enabled=False, yaw_rate=None, manual_minimum=0.):
     self.reason = 'idle'
     if self.active is None and not manual_edge and not (desire_enabled or path_enabled or manual_turn_enabled):
       self.manual_turn.reset('disabled')
@@ -248,8 +254,21 @@ class ModelIndicator:
         allowed = (manual_turn_enabled if a.source == 'manual_turn' else a.source == 'manual' or lateral_active and
                    (path_enabled if a.source == 'model_path' else desire_enabled))
         opposite_lamp = cs.rightBlinker if a.direction == 1 else cs.leftBlinker
+        moving = promoted or a.update(now, cs, yaw_rate if a.source == 'manual_turn' else md)
+        # Native SPAS has no OEM one-touch tail. Delay normal completion only;
+        # all input, driver and geometry cancellations still end this request.
+        minimum = False
+        if manual_minimum and a.source in ('manual', 'manual_turn') and a.reason == 'completed':
+          started = self.request_time
+          native = feedback.get('native_start', {}) if isinstance(feedback, dict) else {}
+          if (isinstance(native.get('request'), (int, float)) and abs(native['request']-self.request_time) < 1e-6 and
+              native.get('direction') == ('left' if a.direction == 1 else 'right') and
+              isinstance(native.get('time'), (int, float)) and math.isfinite(native['time']) and
+              self.request_time <= native['time'] <= now and 0 <= now-feedback.get('stamp', -1.) < .15):
+            started = native['time']
+          minimum = 0 <= now-started < manual_minimum
         if (not common or busy or not allowed or opposite_lamp or
-            not promoted and not a.update(now, cs, yaw_rate if a.source == 'manual_turn' else md)):
+            not moving and not minimum):
           self.reason = a.reason if common and allowed and not busy and not opposite_lamp else 'cancelled'
           self.active = None
         else:
@@ -269,12 +288,11 @@ class ModelIndicator:
       # A new driver turn may be observed before other automatic sources rearm.
       # Lamp masking and the uninterrupted dark interval still apply.
       manual_turn_after = isolation.block_until - QUIET_SEC + MANUAL_TURN_QUIET_SEC
-      # At low speeds a lane-boundary relabel is common in parking areas. A
-      # manual turn uses measured steering and yaw independently of those lines.
-      lane_labels_ready = cs.vEgo < 30 / 3.6 or now >= isolation.relabel_until
+      # Junction lane relabels must not erase the steering onset. Manual turns
+      # have independent torque, angle-growth, yaw and road-curve checks.
       turn = self.manual_turn.update(now, cs, md.frameId, yaw_rate,
         allowed=(manual_turn_enabled and common and not busy and not cs.leftBlinker and not cs.rightBlinker and
-                 now >= manual_turn_after and lane_labels_ready and
+                 now >= manual_turn_after and
                  isolation.dark_since is not None and now - isolation.dark_since >= 1.),
         following_curve=manual_turn_enabled and following_road_curve(md, cs.vEgo, yaw_rate))
       if turn is not None:
@@ -318,7 +336,7 @@ class ModelIndicator:
                          cs.steeringAngleDeg * (1 if direction == 1 else -1) >= 15 and
                          yaw_rate * (-1 if direction == 1 else 1) >= math.radians(3))
           if probs[index] >= .5 and probs[index] >= probs[0] and probs[index]-opposite >= .3 and (index >= 3 or turn_motion):
-            if index < 3 or cs.vEgo >= 30/3.6:
+            if index < 3 or cs.vEgo >= 30/3.6 and boundary_approach(self.approach, direction, .15):
               candidate = (direction, 'model_turn' if index < 3 else 'model_desire')
           if candidate is None and probs[0] == max(probs) and cs.vEgo >= 30/3.6:
             direction = anticipated_lane(md, self.approach)

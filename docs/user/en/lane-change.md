@@ -25,9 +25,13 @@ Manual/model indication distinguishes its short one-touch echo only with matchin
 
 Boundary retreat must persist for 0.15s to cancel tracking, and new indications pause during retreat. Recent steering intent and paired boundary movement with consistent lane width permit bounded position changes during approach.
 
+With a continuous target boundary and recent driver intent, a brief jump of the opposite boundary can wait up to 0.15s for valid samples. New indication pauses during the gap and requires consistent movement of both boundaries afterward.
+
+An invalid lane width pauses new approach admission. An established approach can continue when valid geometry returns within 0.15s of its last valid sample. Lane admission for a manual crossing is decided by the detector. The output stage checks request freshness, vehicle state and driver cancellation.
+
 ## Manual turn indicator (trial)
 
-`ManualTurnIndicator` is a separate option in the Lane Change (Auto Turn) settings group, OFF by default. It supports Ioniq 5 PE with a supported indicator adapter and `AutoBlinkerControl=1·2`. Driver observation operates independently of ATC, navigation and lateral-control activation. Its lamp feedback receives automatic-steering request isolation.
+`ManualTurnIndicator` is a separate option in Settings > Vehicle & Hardware > Indicator Control > Automatic Indication, OFF by default. It supports Ioniq 5 PE with a supported indicator adapter and `AutoBlinkerControl=1·2`. Driver observation operates independently of ATC, navigation and lateral-control activation. Its lamp feedback receives automatic-steering request isolation.
 
 Admission uses 5–60km/h, 0.15s of same-direction driver torque and up to 0.8s of remembered intent. The wheel must reach 42 degrees and increase by at least 22 degrees from intent onset. Same-direction vehicle rotation must reach 3 degrees/s and accumulate 1.5 degrees, followed by 0.10s confirmation. Each intent is tracked for at most four seconds. Recognized curved lane geometry agreeing with measured rotation suppresses admission.
 
@@ -36,6 +40,8 @@ After a request, moving wheel return within ±15 degrees and rotation at most 3 
 The comma display labels the source as a manual driver turn. Existing USB HUD bundles receive the compatible driver-boundary category with the turning reason. Parking aisles, ramps and parking entry can also trigger. Unmarked bends and evasive movements can produce false indications. Recorded-input replay and physical lamp validation require separate evaluation. Apply with Git Pull and a full comma restart. Physical vehicle validation remains pending.
 
 When same-direction manual-turn conditions are met during a manual lane indication, the existing request continues under turn completion tracking.
+
+Lane-position jumps at junctions do not reset manual turns established through driver torque, increasing steering angle and measured rotation. An owned indication survives small negative speed-estimator noise around zero while standstill is confirmed in Drive.
 
 ## Model indication (trial)
 
@@ -47,6 +53,8 @@ When same-direction manual-turn conditions are met during a manual lane indicati
 Same-direction origins share a continuing signal. Alignment after crossing, return before crossing, driver intervention, invalid inputs or a bounded timeout ends the hold request. Ending a request does not guarantee immediate extinction of OEM one-touch flashing. Recorded-input replay is not physical lamp or road validation.
 
 Model-turn indication also requires at least 15 degrees of same-direction steering and 3 degrees/s of measured rotation. While moving, a turn probability below 30% and wheel return within ±10 degrees for 0.4s end the hold.
+
+Initiation from current lane-change probability also requires both measured boundaries to move at least 0.15m toward that crossing over 0.30–0.55s, with the target boundary within 1.5m. This suppresses indications from small line fluctuations and lingering model probability.
 
 ## TBT turn indication
 

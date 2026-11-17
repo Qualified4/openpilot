@@ -215,6 +215,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ClusterHudRadarSourceColor", {PERSISTENT, INT, "0"}},
     {"RecordRoadCam", {PERSISTENT, INT, "0"}},
     {"HDPuse", {PERSISTENT, INT, "0"}},
+    {"CcncClusterDisplay", {PERSISTENT, INT, "0"}},
     {"CcncLaneColor", {PERSISTENT, BOOL, "0"}},
     {"CcncModelLanes", {PERSISTENT, INT, "0"}},
     {"CcncLaneTypeDetection", {PERSISTENT, INT, "0"}},
