@@ -260,7 +260,9 @@ def test_real_multi_segment_response_loss_and_retry(server, monkeypatch):
     assert job['status'] == 'failed', job['result']
     checkpoint = job['_road_viewer']
     assert checkpoint['batches'][0]['received'][0] == checkpoint['batches'][0]['files'][0]['size']
-    assert len(list(server[0].UPLOADS.iterdir())) == 1
+    # The failed segment's session, and the following segment's when it was already admitted (sent ahead): a
+    # retry continues both.
+    assert 1 <= len(list(server[0].UPLOADS.iterdir())) <= 2
     first_puts = len(puts)
     retry_job = jobs.create_job(segments)
     retry_job['_road_viewer'] = copy.deepcopy(checkpoint)
@@ -861,13 +863,100 @@ def test_next_segment_is_sent_while_the_previous_one_registers(server, monkeypat
     await jobs.start_job(job, runner=uploader.run_job)
     assert job['status'] == 'done', job['result']
     first_put = next(i for i, e in enumerate(events) if e.startswith('put 1'))
-    assert events.index('finish 0 start') < first_put < events.index('/finish 0'), events
+    # The second segment's data may start even earlier, on a connection the first segment no longer needs.
+    assert first_put < events.index('/finish 0'), events
     assert events.index('/finish 0') < events.index('/finish 1'), 'registrations stay in order'
     assert events.index('begin 1') < events.index('finish 0 start'), 'next admission must precede the registration lock'
     assert len(server[0].recording_paths()) == 2
     counts = [current for _, current, _ in samples]
     assert counts == sorted(counts), 'acknowledged bytes must include the previous, still-registering segment'
     assert all(current == total for phase, current, total in samples if phase == 'notifying')
+  asyncio.run(run())
+
+
+def test_following_segments_use_the_connections_a_segment_leaves_free(server, monkeypatch):
+  # A segment's small files end long before its camera file. The following segments' files take the free
+  # connections (never more than PARALLEL_FILES requests at once), and registrations stay in segment order.
+  async def run():
+    await connect(server)
+    segments = [recording(i) for i in range(4)]
+    for segment in segments:
+      (Path(paths.segment_dir(segment)) / 'fcamera.hevc').write_bytes(b'\x00\x00\x01\x40\x01' + segment.encode() * 60000)
+    original = client.session_request
+    sessions, events = [], []
+    flying = peak = 0
+
+    async def observe(http, url, session, method='GET', suffix='', data=None):
+      nonlocal flying, peak
+      if session['id'] not in sessions:
+        sessions.append(session['id'])
+      number = sessions.index(session['id'])
+      if method != 'PUT':
+        result = await original(http, url, session, method, suffix, data)
+        if suffix == '/finish':
+          events.append(f'finish {number}')
+        return result
+      flying += 1
+      peak = max(peak, flying)
+      try:
+        if suffix.startswith('/files/2?'):
+          await asyncio.sleep(.05)  # The camera file is the slow one.
+        result = await original(http, url, session, method, suffix, data)
+        events.append(f'put {number} {suffix.split("?")[0]}')
+        return result
+      finally:
+        flying -= 1
+
+    monkeypatch.setattr(client, 'session_request', observe)
+    job = jobs.create_job(segments)
+    job['road_viewer_options'] = {'include_front': True}
+    await jobs.start_job(job, runner=uploader.run_job)
+    assert job['status'] == 'done', repr(job.get('result'))
+    assert job['result']['uploaded'] == 4
+    assert peak <= uploader.PARALLEL_FILES, peak
+    last_camera = {n: max(i for i, e in enumerate(events) if e == f'put {n} /files/2') for n in range(4)}
+    first_put = {n: min(i for i, e in enumerate(events) if e.startswith(f'put {n} ')) for n in range(4)}
+    assert first_put[1] < last_camera[0] and peak > 1, events  # The second segment starts under the first one's camera file.
+    assert [e for e in events if e.startswith('finish')] == [f'finish {n}' for n in range(4)], 'registrations stay in order'
+    stored = list(server[0].recording_paths())
+    assert len(stored) == 4
+    for directory in stored:
+      metadata = server[0].read_meta(directory)
+      source = Path(paths.DASHCAM_ROOT) / metadata['files']['rlog.zst'].removesuffix('--rlog.zst')
+      for name in ('rlog.zst', 'qcamera.ts', 'fcamera.hevc'):
+        assert (directory / name).read_bytes() == (source / name).read_bytes()
+    assert not list(server[0].UPLOADS.iterdir()) and server[0].storage_policy.reserved() == 0
+  asyncio.run(run())
+
+
+def test_cancel_releases_the_segments_sent_ahead(server, monkeypatch):
+  async def run():
+    await connect(server)
+    segments = [recording(i) for i in range(3)]
+    for segment in segments:
+      (Path(paths.segment_dir(segment)) / 'fcamera.hevc').write_bytes(b'\x00\x00\x01\x40\x01' + segment.encode() * 60000)
+    original = client.session_request
+    sessions = []
+    job = jobs.create_job(segments)
+    job['road_viewer_options'] = {'include_front': True}
+
+    async def cancel_late(http, url, session, method='GET', suffix='', data=None):
+      if session['id'] not in sessions:
+        sessions.append(session['id'])
+      if method == 'PUT' and suffix.startswith('/files/2?') and sessions.index(session['id']) == 0:
+        for _ in range(300):  # Hold the first camera file until the next segment has a session and data.
+          if len(sessions) > 1:
+            break
+          await asyncio.sleep(.01)
+        jobs.cancel_job(job['id'])
+      return await original(http, url, session, method, suffix, data)
+
+    monkeypatch.setattr(client, 'session_request', cancel_late)
+    await jobs.start_job(job, runner=uploader.run_job)
+    assert job['status'] == 'canceled', repr(job.get('result'))
+    assert len(sessions) > 1, 'a following segment was sent ahead'
+    assert not list(server[0].UPLOADS.iterdir()) and server[0].storage_policy.reserved() == 0
+    assert not server[0].recording_paths()
   asyncio.run(run())
 
 

@@ -18,6 +18,10 @@ from . import client, config
 
 BLOCK_SIZE = 256 * 1024  # Local read size for hashing.
 PARALLEL_FILES = 3  # Different files only: the server appends each file strictly in order.
+# Segments sent ahead of the one being completed. A segment's small files end long before its camera file, and one
+# connection alone is slow on a far route (a phone hotspot through a distant proxy: 1.6-6.5 MB/s per connection), so
+# the following segments' files take the free connections. PARALLEL_FILES stays the limit for the whole job.
+SEGMENTS_AHEAD = 2
 ROUTE = re.compile(r'(?:[0-9a-fA-F]{8}--[0-9a-fA-F]{10}|\d{4}-\d{2}-\d{2}--\d{2}-\d{2}-\d{2})')
 
 
@@ -194,9 +198,10 @@ async def retry(job, operation):
   raise AssertionError('unreachable')
 
 
-async def transfer(job, http, credentials, checkpoint, defer_finish=False):
+async def transfer(job, http, credentials, checkpoint, defer_finish=False, slots=None, rate=None):
   """Send the segment's files. With defer_finish the registration is returned as a coroutine function, so the
-  caller can start the next segment while the server registers this one."""
+  caller can start the next segment while the server registers this one. slots: the job's connections, shared with
+  the segments sent at the same time. rate: bytes per second of the whole job (this segment's own without it)."""
   files = checkpoint['files']
   # Re-check every source before reattaching: stale files must never silently
   # replace a manifest whose earlier chunks already exist on the server.
@@ -226,7 +231,7 @@ async def transfer(job, http, credentials, checkpoint, defer_finish=False):
     current = sum(received)
     progress(job, phase='uploading', message=f"{item['segment']} / {item['name']}",
              phase_current=len(finished), phase_total=len(files),
-             bytes_per_second=int((current - original) / max(0.01, time.monotonic() - started)))
+             bytes_per_second=rate() if rate else int((current - original) / max(0.01, time.monotonic() - started)))
 
   async def send(index):
     item = files[index]
@@ -303,7 +308,11 @@ async def transfer(job, http, credentials, checkpoint, defer_finish=False):
 
   async def worker():
     for index in queue:  # Shared iterator: each file is taken by exactly one worker.
-      await send(index)
+      if slots is None:
+        await send(index)
+      else:
+        async with slots:
+          await send(index)
 
   tasks = [asyncio.create_task(worker()) for _ in range(min(PARALLEL_FILES, len(files)))]
   try:
@@ -353,9 +362,9 @@ async def run_job(job):
   code, canceled, success = '', False, False
   credentials = None
   active = None
-  # Checksums one segment ahead: while segment N is sent, segment N+1 is hashed in the background, so its
-  # manifest already carries checksums and the transfer loop only reads and sends. Only the first segment
-  # (nothing to overlap with) is hashed while it is sent.
+  # Segments ahead: while segment N is sent, the following ones are hashed, admitted and sent on the connections
+  # N leaves free (send_ahead), so their manifests carry checksums. Only the first segment (nothing to overlap
+  # with) is hashed while it is sent.
   ahead = {}
   # The previous segment's registration (index, batch, task) runs while the next segment is sent. A segment
   # is marked complete only when its registration succeeded, and before the next one is registered.
@@ -375,10 +384,50 @@ async def run_job(job):
     job['partial_results'], _ = segment_results(checkpoint)
     jobs.append(job, 'Road Viewer: completed ' + ', '.join(s['segment'] for s in batch['summaries']))
 
-  def look_ahead(index):
-    following = index + 1
-    if following < len(checkpoint['batches']) and checkpoint['batches'][following] is None and following not in ahead:
-      ahead[following] = asyncio.create_task(prepare(job, [job['segments'][following]], report=False))
+  # Segments ahead (index -> task) are prepared, admitted and sent while the current one is still going. admitted
+  # is set once a segment's session is open (or left to the ordinary admission): the segment after it starts only
+  # then, and the current segment's registration waits for it (admission shares the server's registration lock).
+  admitted = {}
+  slots = asyncio.Semaphore(PARALLEL_FILES)
+  meter = None
+  TIGHT = client.TRANSIENT | {'storage_limit_exceeded', 'insufficient_disk_space', 'no_deletable_logs', 'session_limit_reached'}
+
+  def sent():
+    return sum(sum(batch.get('received', [])) for batch in checkpoint['batches'] if batch)
+
+  def rate():
+    return int((sent() - meter[1]) / max(0.01, time.monotonic() - meter[0]))
+
+  async def send_ahead(index):
+    """-> (True, finish) once the segment's files are sent, or (False, None) when its admission has to wait for
+    the registration of an earlier segment (tight storage, a dropped request): the job loop then admits it."""
+    try:
+      batch = checkpoint['batches'][index]
+      if batch is None:
+        batch = await prepare(job, [job['segments'][index]], report=False)
+        checkpoint['batches'][index] = batch
+        checkpoint['summaries'][index] = batch['summaries'][0]
+      try:
+        batch['_ready_session'] = await client.begin(http, credentials, batch['manifest'])
+      except client.Error as exc:
+        if exc.code not in TIGHT:
+          raise
+        return False, None
+    finally:
+      admitted[index].set()
+      look_ahead()
+    return True, await transfer(job, http, credentials, batch, defer_finish=True, slots=slots, rate=rate)
+
+  def look_ahead():
+    for index in range(active + 1, min(len(checkpoint['batches']), active + 1 + SEGMENTS_AHEAD)):
+      batch = checkpoint['batches'][index]
+      if batch and batch.get('complete'):
+        continue
+      if index not in admitted:
+        admitted[index] = asyncio.Event()
+        ahead[index] = asyncio.create_task(send_ahead(index))
+      if not admitted[index].is_set():
+        return  # Sessions open in segment order.
 
   async with aiohttp.ClientSession() as http:
     try:
@@ -396,52 +445,44 @@ async def run_job(job):
         checkpoint = {'device_id': credentials['device_id'], 'summaries': checkpoint['summaries'],
                       'batches': [checkpoint], 'streaming': False}
       job['_road_viewer'] = checkpoint
-      for index, batch in enumerate(checkpoint['batches']):
+      meter = (time.monotonic(), sent())
+      for index in range(len(checkpoint['batches'])):
         jobs.ensure_not_canceled(job)
+        batch = checkpoint['batches'][index]
         if batch and batch.get('complete'):
           continue
         active = index
-        if batch is None:
-          if index in ahead:
-            batch = await ahead.pop(index)
-          else:
+        started, finish = await ahead.pop(index) if index in ahead else (False, None)
+        batch = checkpoint['batches'][index]
+        if not started:
+          if batch is None:
             progress(job, phase='preparing', message=job['segments'][index], bytes_per_second=0)
             batch = await prepare(job, [job['segments'][index]], hash_files=not checkpoint['streaming'])
-          checkpoint['batches'][index] = batch
-          checkpoint['summaries'][index] = batch['summaries'][0]
-        look_ahead(index)
-        try:
-          finish = await transfer(job, http, credentials, batch, defer_finish=True)
-        except client.Error as exc:
-          if exc.code not in ('invalid_file', 'invalid_batch') or not batch.get('streaming') or batch.get('session'):
-            raise
-          # Older servers require hashes in the initial manifest. Probe only once,
-          # then retain their existing protocol for the rest of this selection.
-          checkpoint['streaming'] = False
-          batch = await prepare(job, [job['segments'][index]])
-          checkpoint['batches'][index] = batch
-          checkpoint['summaries'][index] = batch['summaries'][0]
-          finish = await transfer(job, http, credentials, batch, defer_finish=True)
+            checkpoint['batches'][index] = batch
+            checkpoint['summaries'][index] = batch['summaries'][0]
+          look_ahead()
+          try:
+            finish = await transfer(job, http, credentials, batch, defer_finish=True, slots=slots, rate=rate)
+          except client.Error as exc:
+            if exc.code not in ('invalid_file', 'invalid_batch') or not batch.get('streaming') or batch.get('session'):
+              raise
+            # Older servers require hashes in the initial manifest. Probe only once,
+            # then retain their existing protocol for the rest of this selection.
+            checkpoint['streaming'] = False
+            batch = await prepare(job, [job['segments'][index]])
+            checkpoint['batches'][index] = batch
+            checkpoint['summaries'][index] = batch['summaries'][0]
+            finish = await transfer(job, http, credentials, batch, defer_finish=True, slots=slots, rate=rate)
+        look_ahead()
         await settle()  # Registrations stay in order: the previous segment first.
         if finish is None:
           complete(index, batch)  # The server already had it (receipt of a lost response).
         else:
           try:
-            following = index + 1
-            if following in ahead:
-              following_batch = await ahead.pop(following)
-              checkpoint['batches'][following] = following_batch
-              checkpoint['summaries'][following] = following_batch['summaries'][0]
-              try:
-                # Admission shares the server's registration lock. Open the next
-                # session before finish takes it, so the next transfer can overlap.
-                following_batch['_ready_session'] = await client.begin(http, credentials, following_batch['manifest'])
-              except client.Error as exc:
-                if exc.code not in client.TRANSIENT | {'storage_limit_exceeded', 'insufficient_disk_space',
-                                                      'no_deletable_logs', 'session_limit_reached'}:
-                  raise
-                # Tight storage or a dropped preflight: register this segment,
-                # then use ordinary admission/retry for the next one.
+            # Admission shares the server's registration lock. The next session opens (or is left to the
+            # ordinary admission after this registration) before finish takes it, so the next transfer can overlap.
+            if index + 1 in admitted:
+              await admitted[index + 1].wait()
           finally:
             # A preparation/admission failure must still register the sent segment.
             finishing = (index, batch, asyncio.create_task(finish()))
@@ -471,9 +512,12 @@ async def run_job(job):
       for task in background:
         task.cancel()
       await asyncio.gather(*background, return_exceptions=True)
-      # Cancellation/failure can leave an admitted, never-started next segment.
-      for batch in checkpoint.get('batches', []) if checkpoint else []:
+      # Cancellation/failure can leave an admitted, never-started next segment; cancellation also drops the
+      # segments that were being sent ahead (a failure keeps theirs: a retry continues from their offsets).
+      for index, batch in enumerate(checkpoint.get('batches', []) if checkpoint else []):
         session = batch.pop('_ready_session', None) if batch else None
+        if canceled and not session and batch and not batch.get('complete') and index != active:
+          session = batch.get('session')
         if session and session.get('id') and credentials:
           try:
             await client.session_request(http, credentials['url'], session, 'DELETE')
