@@ -1,14 +1,21 @@
 name: CCNC Rust core
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - 'opendbc_repo/opendbc/car/hyundai/ccnc_core/**'
       - 'opendbc_repo/opendbc/car/hyundai/ccnc_core_loader.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py'
+      - '.gitattributes'
+      - '.github/workflows/ccnc-core.yaml'
   pull_request:
     paths:
       - 'opendbc_repo/opendbc/car/hyundai/ccnc_core/**'
       - 'opendbc_repo/opendbc/car/hyundai/ccnc_core_loader.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py'
+      - '.gitattributes'
+      - '.github/workflows/ccnc-core.yaml'
 
 permissions:
   contents: read
