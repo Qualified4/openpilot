@@ -1,0 +1,53 @@
+name: CCNC Rust core
+
+on:
+  push:
+    paths:
+      - 'opendbc_repo/opendbc/car/hyundai/ccnc_core/**'
+      - 'opendbc_repo/opendbc/car/hyundai/ccnc_core_loader.py'
+  pull_request:
+    paths:
+      - 'opendbc_repo/opendbc/car/hyundai/ccnc_core/**'
+      - 'opendbc_repo/opendbc/car/hyundai/ccnc_core_loader.py'
+
+permissions:
+  contents: read
+
+jobs:
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      CCNC_CORE: opendbc_repo/opendbc/car/hyundai/ccnc_core
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install build and test tools
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          python -m pip install pytest numpy pycapnp cargo-zigbuild==0.24.1 ziglang==0.15.2
+      - name: Build the aarch64 extension
+        run: |
+          PYO3_PYTHON="$(command -v python)" cargo zigbuild --locked --release \
+            --manifest-path "$CCNC_CORE/Cargo.toml" --target aarch64-unknown-linux-gnu.2.31
+      - name: Check the committed extension before staging the new build
+        run: |
+          binary="$CCNC_CORE/prebuilt/linux-aarch64/ccnc_core.abi3.so"
+          if git ls-files --error-unmatch -- "$binary" >/dev/null 2>&1; then
+            python - <<'PY'
+          from opendbc.car.hyundai.ccnc_core_loader import load
+
+          if load() is None:
+            raise SystemExit("Committed CCNC Rust core failed validation")
+          PY
+          fi
+      - name: Test the freshly built extension
+        run: |
+          install -Dm755 "$CCNC_CORE/target/aarch64-unknown-linux-gnu/release/libccnc_core.so" \
+            "$CCNC_CORE/prebuilt/linux-aarch64/ccnc_core.abi3.so"
+          python -m pytest -q -c /dev/null --confcutdir=opendbc_repo -p no:cacheprovider \
+            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py
