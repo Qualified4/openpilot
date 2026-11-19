@@ -22,3 +22,8 @@ openpilot/system/hardware/tici/updater -diff -merge -text
 
 # Pinned PEAK source hashes must be identical on Windows and Linux.
 tools/jetlink/peak_usb/* text eol=lf
+
+# ccnc_core_loader hashes these crate sources, so they must be identical on Windows and Linux.
+# The prebuilt module keeps its exact bytes.
+opendbc_repo/opendbc/car/hyundai/ccnc_core/** text eol=lf
+opendbc_repo/opendbc/car/hyundai/ccnc_core/prebuilt/** -diff -merge -text
