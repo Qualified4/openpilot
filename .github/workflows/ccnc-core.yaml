@@ -40,7 +40,11 @@ jobs:
       - name: Install build and test tools
         run: |
           rustup target add aarch64-unknown-linux-gnu
-          python -m pip install pytest numpy pycapnp cargo-zigbuild==0.24.1 ziglang==0.15.2
+          python -m pip install pytest pytest-xdist numpy pycapnp cargo-zigbuild==0.24.1 ziglang==0.15.2
+      # Dependencies (pyo3) and unchanged build outputs are reused between runs.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.CCNC_CORE }} -> target
       - name: Build the aarch64 extension
         run: |
           PYO3_PYTHON="$(command -v python)" cargo zigbuild --locked --release \
@@ -60,6 +64,7 @@ jobs:
         run: |
           install -Dm755 "$CCNC_CORE/target/aarch64-unknown-linux-gnu/release/libccnc_core.so" \
             "$CCNC_CORE/prebuilt/linux-aarch64/ccnc_core.abi3.so"
-          python -m pytest -q -c /dev/null --confcutdir=opendbc_repo -p no:cacheprovider \
+          # One worker per runner core; the parity seeds are separate tests of uneven length (crowded ones are slow).
+          python -m pytest -q -n auto --dist worksteal -c /dev/null --confcutdir=opendbc_repo -p no:cacheprovider \
             opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py \
             opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_radar_map.py

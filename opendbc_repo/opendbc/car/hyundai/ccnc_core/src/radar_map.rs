@@ -14,9 +14,19 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
 use crate::guard;
+use crate::lanes::LaneCache;
+use crate::map_object::MapObject;
+use crate::observe::Frame;
 use crate::pymath::{hypot, py_max, py_min};
 
 static DEQUE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+/// `collections.deque`.
+pub(crate) fn deque(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    Ok(DEQUE
+        .get_or_try_init(py, || -> PyResult<_> { Ok(py.import("collections")?.getattr("deque")?.unbind()) })?
+        .bind(py))
+}
 
 fn attr_f64(obj: &Bound<'_, PyAny>, name: &Bound<'_, pyo3::types::PyString>) -> PyResult<f64> {
     obj.getattr(name)?.extract()
@@ -152,9 +162,7 @@ fn measurements_inner<'py>(
     let evidence = m.getattr(intern!(py, "evidence"))?;
     let evidence_dict = evidence.cast::<PyDict>().ok();
     let mut leads: Option<Vec<(f64, f64)>> = None;
-    let deque = DEQUE.get_or_try_init(py, || -> PyResult<_> {
-        Ok(py.import("collections")?.getattr("deque")?.unbind())
-    })?;
+    let deque = deque(py)?;
     let stamp_f: f64 = stamp.extract()?;
     let two = 2i32.into_pyobject(py)?;
     let out = PyList::empty(py);
@@ -167,7 +175,7 @@ fn measurements_inner<'py>(
             None => {
                 let kwargs = PyDict::new(py);
                 kwargs.set_item(intern!(py, "maxlen"), 4)?;
-                let recent = deque.bind(py).call((), Some(&kwargs))?;
+                let recent = deque.call((), Some(&kwargs))?;
                 reports.set_item(track, &recent)?;
                 recent
             }
@@ -253,7 +261,9 @@ fn measurements_inner<'py>(
 struct Object {
     key: i64,
     key_obj: Py<PyAny>,
-    obj: Py<PyAny>,
+    has_report: bool,
+    interior: bool,
+    slot: Option<i64>,
     x: f64,
     y: f64,
     vx: f64,
@@ -308,26 +318,26 @@ fn associate_input_inner(
     let objects_dict = objects_dict.cast::<PyDict>()?;
     let mut objects = Vec::with_capacity(objects_dict.len());
     for (key, obj) in objects_dict.iter() {
-        let confirmed = obj.getattr(intern!(py, "motion_confirmed"))?.is_truthy()?;
-        let offset = if confirmed { 0. } else { attr_f64(&obj, intern!(py, "drift"))? };
-        let x = attr_f64(&obj, intern!(py, "x"))?;
-        let y = attr_f64(&obj, intern!(py, "y"))?;
-        let vx = attr_f64(&obj, intern!(py, "vx"))?;
-        let vy = attr_f64(&obj, intern!(py, "vy"))?;
+        let o = obj.cast::<MapObject>()?.try_borrow()?;
+        let confirmed = o.motion_confirmed;
+        let offset = if confirmed { 0. } else { o.drift };
+        let (x, y, vx, vy) = (o.x, o.y, o.vx, o.vy);
         objects.push(Object {
             key: key.extract()?,
-            key_obj: key.unbind(),
+            key_obj: key.clone().unbind(),
+            has_report: o.report.is_some(),
+            interior: o.interior,
+            slot: o.slot,
             x,
             y,
             vx,
             vy,
             confirmed,
-            source: obj.getattr(intern!(py, "source"))?.extract()?,
-            seen: attr_f64(&obj, intern!(py, "seen"))?,
-            uncertainty: attr_f64(&obj, intern!(py, "uncertainty"))?,
+            source: o.source,
+            seen: o.seen,
+            uncertainty: o.uncertainty,
             gx: x - vx * age + offset * cos,
             gy: y - vy * age + offset * sin,
-            obj: obj.unbind(),
         });
     }
     let mut parsed = Vec::new();
@@ -391,7 +401,7 @@ fn associate_inner<'py>(
         let dt = stamp - o.seen;
         if 0. < dt
             && dt <= id_cycle
-            && !o.obj.bind(py).getattr(intern!(py, "report"))?.is_none()
+            && o.has_report
             && local_x(&local, o)?.abs() <= 15.
         {
             // `source not in recent or seen > objects[recent[source]].seen`
@@ -412,29 +422,26 @@ fn associate_inner<'py>(
         let selected = m.getattr(intern!(py, "selected"))?;
         let side_selected = selected.get_item(pyo3::types::PySlice::new(py, 1, isize::MAX, 1))?;
         let lane_change = m.getattr(intern!(py, "lane_change"))?.is_truthy()?;
-        let sides = PyTuple::new(py, [1, 2])?;
+        let frame = Frame::read(m)?;
+        let mut lanes = LaneCache::new(m);
         for (i, ms) in input.measurements.iter().enumerate() {
             let Some(&index) = recent.get(&ms.source) else { continue };
             let o = &objects[index];
-            let obj = o.obj.bind(py);
             let (dx, dy) = (ms.x - (o.x - o.vx * age), ms.y - (o.y - o.vy * age));
             let (forward, lateral) = (dx * cos + dy * sin, dy * cos - dx * sin);
             if side_selected.contains(o.key_obj.bind(py))?
                 && cos * ms.vx + sin * ms.vy > resting_speed
                 && o.confirmed
-                && obj.getattr(intern!(py, "interior"))?.is_truthy()?
-                && sides.contains(obj.getattr(intern!(py, "slot"))?)?
+                && o.interior
+                && matches!(o.slot, Some(1 | 2))
                 && !lane_change
                 && !continuations.iter().any(|&(_, k)| objects[k].key == o.key)
                 && forward.abs() <= 2.
                 && lateral.abs() <= 0.35
                 && hypot(ms.vx - o.vx, ms.vy - o.vy) <= 6.
             {
-                let ego = m.call_method1(intern!(py, "to_ego"), (ms.x, ms.y))?;
-                let kwargs = PyDict::new(py);
-                kwargs.set_item(intern!(py, "moving"), true)?;
-                let lane = m.call_method(intern!(py, "_lane"), ego.cast::<PyTuple>()?.clone(), Some(&kwargs))?;
-                if lane.get_item(1)?.is_truthy()? {
+                let (ex, ey) = frame.to_ego(ms.x, ms.y);
+                if lanes.get()?.lane(ex, ey, true, false, &[])?.1 {
                     continuations.push((i, index));
                 }
             }

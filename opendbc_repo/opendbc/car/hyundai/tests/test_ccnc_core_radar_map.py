@@ -1,7 +1,11 @@
-"""The Rust _measurements/_associate loops give the same bits as the Python reference, on the real map class."""
+"""The Rust radar map loops (_measurements, _associate, _observe, _advance's objects) give the same bits as the
+Python reference, on the real map class. The Rust path keeps its objects in the Rust MapObject class, the Python
+path in the dataclass; both are compared as their fields (dataclass vars(), Rust __getstate__())."""
 from collections import deque
+import functools
 import importlib.util
 import math
+import operator
 import pickle
 import random
 import struct
@@ -37,6 +41,8 @@ def bits(value):
     return 's', frozenset(bits(v) for v in value)
   if hasattr(value, '__dict__'):
     return 'o', bits({k: v for k, v in vars(value).items() if k not in ('generation', 'raw', 'model', 'log')})
+  if type(value).__name__ == 'MapObject':  # The Rust class: its fields in the dataclass's order and form.
+    return 'o', bits(value.__getstate__())
   raise TypeError(type(value))
 
 
@@ -45,13 +51,22 @@ def same(a, b):
   try:
     if pickle.dumps(a) == pickle.dumps(b):
       return True
-  except pickle.PicklingError:  # Classes of a module loaded from its file only.
+  except (pickle.PicklingError, TypeError):  # Classes of a module loaded from its file only.
     pass
   return bits(a) == bits(b)
 
 
+def fields(obj):
+  """A map object's fields: dataclass vars() or the Rust class's __getstate__(), the same dict either way."""
+  return vars(obj) if hasattr(obj, '__dict__') else obj.__getstate__()
+
+
 def state(m):
-  return {k: v for k, v in vars(m).items() if k not in ('generation', 'raw', 'model', 'log')}
+  # The recorder's counts of Python calls, which the Rust path partly makes in Rust.
+  out = {k: v for k, v in vars(m).items() if k not in ('generation', 'raw', 'model', 'log', 'lane_checks', 'reconnects',
+                                                       'meta_checks', 'meta_changing')}
+  out['objects'] = {k: fields(o) for k, o in m.objects.items()}
+  return out
 
 
 class Recorder:
@@ -61,12 +76,12 @@ class Recorder:
     super().__init__()
     self.log = []
     self.associating = False
-    self.lane_checks = 0
+    self.lane_checks = self.reconnects = self.meta_checks = self.meta_changing = 0
 
   def reset(self):
-    log, lane_checks = self.log, self.lane_checks
+    counts = self.log, self.lane_checks, self.reconnects, self.meta_checks, self.meta_changing
     super().reset()
-    self.log, self.lane_checks = log, lane_checks
+    self.log, self.lane_checks, self.reconnects, self.meta_checks, self.meta_changing = counts
 
   def _measurements(self, live, stamp):
     out = super()._measurements(live, stamp)
@@ -82,8 +97,19 @@ class Recorder:
     self.log.append(('associate', out))
     return out
 
+  def _reconnect(self, measurements, assignments):  # Python path only.
+    before = len(assignments)
+    super()._reconnect(measurements, assignments)
+    self.reconnects += len(assignments) > before
+
+  def _model_changing(self):
+    changing = super()._model_changing()
+    self.meta_checks += 1
+    self.meta_changing += changing
+    return changing
+
   def _lane(self, *args, **kwargs):
-    self.lane_checks += self.associating  # Continuation candidates: the lane check left in Python.
+    self.lane_checks += self.associating  # Continuation candidates (Python path only: Rust checks the lane itself).
     return super()._lane(*args, **kwargs)
 
 
@@ -99,24 +125,26 @@ class PythonMap(Recorder, CcncRadarMap):
 def rust_core():
   core = ccnc_core_loader.load()
   assert core is not None, 'the x86_64 test build must be in prebuilt/linux-x86_64'
-  assert CcncRadarMap.RUST is core and core.abi_version() == 2
+  assert CcncRadarMap.RUST is core and core.abi_version() == 3
   return core
 
 
-def model(rng, frame, *, desire='none', lead=None, bend=0.):
+def model(rng, frame, *, desire='none', state='off', lead=None, bend=0., shift=0., weak=False):
   xs = [-8., 0., 10., 20., 30., 50., 80., 120., 210.]
   wobble = .03 * math.sin(frame * .07)
-  lines = [N(x=xs, y=[-(y + bend * x * x + wobble) for x in xs]) for y in LANES]
+  lines = [N(x=xs, y=[-(y - shift + bend * x * x + wobble) for x in xs]) for y in LANES]
   probs = [.9, .95, .95, .9]
   if frame % 37 == 0:
     probs[0] = .05
+  if weak:  # Ego's own lines unusable: _lane's corridor fallback, which reads the model's lane change state.
+    probs[1] = probs[2] = .05
   leads = []
   if lead is not None:
     leads.append(N(x=[lead[0] + 1.52], y=[-lead[1]], v=[lead[2]], prob=.95))
   if frame % 29 == 0:
     leads.append(N(x=[rng.uniform(25., 120.)], y=[rng.uniform(-6., 6.)], v=[], prob=.85))
   return N(laneLines=lines, laneLineProbs=probs, roadEdges=[N(x=xs, y=[-8.75] * len(xs)), N(x=xs, y=[8.75] * len(xs))],
-           leadsV3=leads, meta=N(desire=desire, laneChangeState='off'), orientationRate=N(z=[0.]))
+           leadsV3=leads, meta=N(desire=desire, laneChangeState=state), orientationRate=N(z=[0.]))
 
 
 def speed_profile(kind, frame):
@@ -151,10 +179,56 @@ class Scenario:
     self.targets.append(dict(id=900 + seed, x=4., y=3.5, v=1.6, moving=True, creep=True))
     self.posts = [(2. * rng.randint(-2, 9) + rng.choice((0., -0., 1e-12, -1e-12)), rng.choice((-1., 1.)) * (2. * rng.randint(0, 5)))
                   for _ in range(rng.randint(0, 6))]
+    # Cases added for the Rust _observe; their own generator keeps the cases above as they were.
+    self.extra = random.Random(seed + 5000)
+    # A lead in ego's lane, lost (frames 102-108), back under a new id .9m off the bridged position (reconnect),
+    # then reported 2.2m sideways (a jump, 250-254), lost and back under a third id (257-). A loss shows .3s
+    # later; a frame whose radar is too old (every 7th) clears the selection and ends a bridge, so each loss
+    # and return fall between two of them.
+    self.lead = self.kind in ('cruise', 'slow') and seed % 8 in (2, 3)
+    if self.lead:
+      for t in self.targets:  # No nearer vehicle in ego's lane takes FF from it.
+        if abs(t['y']) < 1.:
+          t['y'] += 3.5
+      self.targets.append(dict(id=950 + seed, x=9., y=.1, v=0., moving=True, lead=True))
+    self.vision = None
+    self.lane_shift = seed % 3 == 0  # Ego crosses its left line during the lane change (lane_offset).
+    self.weak_lines = seed % 3 == 1  # Frames 420-499: lines 1 and 2 below .1, with a model lane change state.
+
+  def shift(self, frame):
+    """Lateral move of the model's lines: ego crossing to the left lane, then the model renumbering them."""
+    if not self.lane_shift or not 300 <= frame < 370:
+      return 0.
+    return 2.5 * min(1., (frame - 300) / 20) if frame < 340 else -1. * (370 - frame) / 30
+
+  def meta(self, frame):
+    if 300 <= frame < 330:
+      return 'laneChangeLeft', 'off'
+    if self.weak_lines and 460 <= frame < 480:
+      return 'laneChangeRight', 'off'
+    if self.weak_lines and 485 <= frame < 490:
+      return 'none', 'laneChangeStarting'
+    return 'none', 'off'
 
   def frame(self, frame, v_ego):
     rng, points = self.rng, []
     for t in self.targets:
+      if t.get('lead'):
+        t['v'] = v_ego + .3 * math.sin(frame * .05)
+        t['x'] += (t['v'] - v_ego) * DT
+        self.vision = (t['x'], t['y'], t['v'])
+        if 102 <= frame < 109 or 255 <= frame < 257:
+          continue
+        track, x, y = t['id'], t['x'], t['y']
+        if frame >= 109:
+          track, x = track + 10, x + .9
+        if 250 <= frame < 255:
+          y += 2.2
+        if frame >= 257:
+          track, x = track + 10, x + .9
+        points.append(dict(trackId=track, dRel=x, yRel=y + rng.gauss(0., .03), vRel=t['v'] - v_ego, vLead=t['v'],
+                           measured=True, radarSource='frontRadar', motionState=2, trackState=2))
+        continue
       if t.get('creep') and not (180 <= frame < 420 and v_ego < .5):
         continue
       t['x'] += (t['v'] - v_ego) * DT
@@ -176,6 +250,9 @@ class Scenario:
         points.append(dict(trackId=10000 + frame * 32 + j, dRel=rng.uniform(-4., 21.), yRel=rng.uniform(-12., 12.),
                            vRel=-v_ego, vLead=rng.uniform(-1., 1.), measured=True, radarSource='frontRadar',
                            motionState=rng.choice((0, 1, 2)), trackState=2))
+    if self.extra.random() < .05:  # Exactly -0.0 ahead, or beside on ego's axis.
+      points.append(dict(trackId=5100, dRel=-0., yRel=self.extra.choice((-0., 3.5, -2.)), vRel=-v_ego, vLead=0.,
+                         measured=True, radarSource='frontRadar', motionState=1, trackState=2))
     if points and rng.random() < .3:  # Duplicated return under a second id: equal association scores.
       twin = dict(points[rng.randrange(len(points))])
       twin['trackId'] = 7000 + rng.randrange(4)
@@ -223,15 +300,18 @@ def namespace_live(points):
 def run(seed, maps, frames=FRAMES):
   scenario = Scenario(seed)
   rng = random.Random(seed + 1000)
-  stats = dict(calls=0, measurements=0, assignments=0, jumps=0, max_objects=0, evicted=0, holding=0)
+  stats = dict(calls=0, measurements=0, assignments=0, jumps=0, max_objects=0, evicted=0, holding=0, bridge=0, stable_y=0,
+               bridge_stable_y=0, ahead_of=0, departed=0, settled=0, lane_offset=0, negative_zero=0)
   for frame in range(frames):
     now = 1000. + frame * DT
     v_ego = speed_profile(scenario.kind, frame)
     points = scenario.frame(frame, v_ego)
     live = capnp_live(points) if frame % 2 == 0 else namespace_live(points)
-    lead = next(((p['dRel'], p['yRel'], p['vLead']) for p in points if abs(p['yRel']) < 1.5 and 0. < p['dRel'] < 80.
-                 and all(math.isfinite(p[k]) for k in ('dRel', 'yRel', 'vLead'))), None)
-    md = model(rng, frame, desire='laneChangeLeft' if 300 <= frame < 330 else 'none', lead=lead, bend=.001 if seed % 2 else 0.)
+    lead = scenario.vision or next(((p['dRel'], p['yRel'], p['vLead']) for p in points if abs(p['yRel']) < 1.5 and 0. < p['dRel'] < 80.
+                                    and all(math.isfinite(p[k]) for k in ('dRel', 'yRel', 'vLead'))), None)
+    desire, change_state = scenario.meta(frame)
+    md = model(rng, frame, desire=desire, state=change_state, lead=lead, bend=.001 if seed % 2 else 0., shift=scenario.shift(frame),
+               weak=scenario.weak_lines and 420 <= frame < 500)
     evidence = scenario.evidence_for(points)
     radar_time = now - (.02 if frame % 7 else .2)  # Some frames are too old to observe.
     for m in maps:
@@ -252,10 +332,18 @@ def run(seed, maps, frames=FRAMES):
       m.log.clear()
     stats['max_objects'] = max(stats['max_objects'], len(first.objects))
     stats['holding'] += first.holding
+    stats['bridge'] += first.bridge is not None
+    stats['bridge_stable_y'] += first.bridge is not None and first.objects[first.bridge['key']].stable_y is not None
+    stats['lane_offset'] += first.lane_offset != 0
+    stats['negative_zero'] += sum(math.copysign(1., p[k]) < 0. and p[k] == 0. for p in points for k in ('dRel', 'yRel'))
+    for name, test in (('stable_y', lambda o: o.stable_y is not None), ('ahead_of', lambda o: o.ahead_of),
+                       ('departed', lambda o: o.departed), ('settled', lambda o: o.settled)):
+      stats[name] += any(test(o) for o in first.objects.values())
   stats['jumps'] = len(first.jumps)
   stats['evicted'] = first.evicted
-  stats['lane_checks'] = first.lane_checks
-  assert all(m.lane_checks == first.lane_checks for m in maps)
+  for name in ('lane_checks', 'reconnects', 'meta_checks', 'meta_changing'):
+    stats[name] = sum(getattr(m, name) for m in maps if m.RUST is None)
+  assert all(m.lane_checks == 0 for m in maps if m.RUST is not None)
   return stats
 
 
@@ -269,13 +357,23 @@ def test_rust_and_python_paths_give_the_same_bits(seed):
 
 
 def test_scenarios_reach_the_corner_cases():
-  if len(TOTALS) < SCENARIOS:
-    pytest.skip('needs the scenario runs first')
+  # The counts come from the Python path. Seeds whose parity run happened elsewhere (another pytest-xdist
+  # worker) are run here again on that path alone.
+  for seed in range(SCENARIOS):
+    if seed not in TOTALS:
+      TOTALS[seed] = run(seed, [PythonMap()])
   total = {k: sum(s[k] for s in TOTALS.values()) for k in next(iter(TOTALS.values()))}
   print('\nparity totals', SCENARIOS, 'scenarios x', FRAMES, 'frames:', total)
   assert max(s['max_objects'] for s in TOTALS.values()) == CcncRadarMap.MAX_OBJECTS
   assert total['evicted'] > 0 and total['jumps'] > 0 and total['holding'] > 0
-  assert total['lane_checks'] > 0  # The stop-continuation lane check ran from the Rust loop.
+  assert total['lane_checks'] > 0  # The stop-continuation lane check ran (counted on the Python path).
+  # Bridged FF objects, drawn at their stable report y, continued by a report under a new id.
+  assert total['bridge'] > 0 and total['bridge_stable_y'] > 0
+  # Crowded scenes keep 32 of their points, so there the lead may be missing on the frame it returns.
+  assert all(TOTALS[seed]['reconnects'] > 0 for seed in range(SCENARIOS) if Scenario(seed).lead and not Scenario(seed).crowded)
+  assert total['ahead_of'] > 0 and total['departed'] > 0  # Remembered vehicles that drove off.
+  assert total['settled'] > 0 and total['lane_offset'] > 0 and total['negative_zero'] > 0
+  assert total['meta_checks'] > 0 and 0 < total['meta_changing'] < total['meta_checks']  # _lane's model fallback.
 
 
 def test_missing_module_runs_the_python_loops(monkeypatch):
@@ -294,8 +392,9 @@ def test_missing_module_runs_the_python_loops(monkeypatch):
 
 def objects_at(m, positions):
   m.now, m.cos, m.sin = 10., 1., 0.
+  cls = MapObject if m.RUST is None else m.RUST.MapObject
   for key, (x, y, source) in enumerate(positions, 1):
-    m.objects[key] = MapObject(key, source, x, y, 0., 0., 9., 9.95, report=(9.95, x, y), motion_confirmed=key % 2 == 0,
+    m.objects[key] = cls(key, source, x, y, 0., 0., 9., 9.95, report=(9.95, x, y), motion_confirmed=key % 2 == 0,
                                drift=.01 * (key % 3))
     m.local[key] = (x, y)
 
@@ -316,3 +415,63 @@ def test_grid_edges_and_equal_scores(sign):
   for stamp in (10., 9.99, 9.9):
     results = [m._associate(measurements, stamp) for m in maps]
     assert bits(results[0]) == bits(results[1]) and results[0], stamp
+
+
+def float_lists(rng, count):
+  """Float lists that stress sum(): cancellation, mixed magnitudes, -0.0, infinities and NaN."""
+  special = (0., -0., 1e308, -1e308, 1e-308, 5e-324, math.inf, -math.inf, math.nan, .1, .7, 1e16, -1e16, 1.)
+  for _ in range(count):
+    values = []
+    for _ in range(rng.randint(0, 17)):
+      kind = rng.random()
+      if kind < .05:
+        values.append(rng.choice(special))
+      elif kind < .25 and values:
+        values.append(-rng.choice(values) * rng.choice((1., 1. + 2 ** -52, 1. - 2 ** -53)))
+      elif kind < .6:
+        values.append(math.hypot(rng.gauss(0., .3), rng.gauss(0., .3)))  # Step lengths, as in _observe.
+      else:
+        values.append(rng.uniform(-1., 1.) * 10. ** rng.randint(-20, 20))
+    yield values
+
+
+def test_sum_is_python_3_12_sum():
+  core = ccnc_core_loader.load()
+  lists = list(float_lists(random.Random(3), 20000))
+  for values, got in zip(lists, core._sum_for_test(lists), strict=True):
+    want = sum(values)
+    assert (None if values == [] else bits(want)) == (got if got is None else bits(got)), values
+  # A plain left-to-right sum differs on these lists, so the comparison above can tell the two apart.
+  assert sum(bits(sum(v)) != bits(functools.reduce(operator.add, v, 0)) for v in lists if v) > 1000
+
+
+class LaneMap(PythonMap):
+  """Compares the Rust _lane with the Python one on the lanes of every fifth frame."""
+
+  def __init__(self):
+    super().__init__()
+    self.checked = self.corridor = 0
+
+  def _walls(self, measured):
+    super()._walls(measured)
+    core = ccnc_core_loader.load()
+    if int(self.now * 20 + .5) % 5:
+      return
+    for x in (-6., -0., 0., 3., 10., 25.5, 49.9, 80., 80.5, 150., 205.):
+      bounds = [radar_map.interpolate(self.geometry.get(i, []), x) for i in range(6)]
+      ys = [b + d for b in bounds if b is not None for d in (-.35, -1e-9, 0., 1e-9, .35, 1.8, -1.8)]
+      for y in ys + [-0., 0., 1.2, -1.2, 4.2, -4.2, 9.]:
+        for moving in (False, True):
+          for settled in (False, True):
+            want = self._lane(x, y, moving=moving, settled=settled)
+            got = core._lane_for_test(self, x, y, moving, settled)
+            assert bits(got) == bits(want), (self.now, x, y, moving, settled, got, want)
+            self.checked += 1
+            self.corridor += want[0] == 0 and not ({1, 2} & self._lane_view(x)[1])
+
+
+@pytest.mark.parametrize('seed', (0, 1, 2))  # Ego's lane change, ego's lines below .1 with a lane change state, a lead.
+def test_rust_lane_is_python_lane(seed):
+  m = LaneMap()
+  run(seed, [m])
+  assert m.checked > 50000 and (m.corridor > 0 or seed != 1)

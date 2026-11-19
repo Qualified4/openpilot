@@ -1,6 +1,9 @@
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
+mod lanes;
+mod map_object;
+mod observe;
 mod pymath;
 mod radar_map;
 
@@ -11,7 +14,7 @@ fn source_hash() -> &'static str {
 
 #[pyfunction]
 fn abi_version() -> u32 {
-    2
+    3
 }
 
 /// A Rust panic reaches Python as PanicException, a BaseException that the display's `except Exception`
@@ -27,6 +30,19 @@ fn _panic_for_test() -> PyResult<()> {
     guard(|| panic!("requested by test"))
 }
 
+/// For the parity test only: Python 3.12 `sum()` of each list of floats (None for an empty one, where Python
+/// returns the int 0).
+#[pyfunction]
+fn _sum_for_test(lists: Vec<Vec<f64>>) -> PyResult<Vec<Option<f64>>> {
+    guard(|| Ok(lists.into_iter().map(pymath::py_sum).collect()))
+}
+
+/// For the parity test only: `_lane(x, y, moving=moving, settled=settled)` of the map as it is now.
+#[pyfunction]
+fn _lane_for_test(radar_map: &Bound<'_, PyAny>, x: f64, y: f64, moving: bool, settled: bool) -> PyResult<(Option<i64>, bool, f64)> {
+    guard(|| lanes::LaneCache::new(radar_map).get()?.lane(x, y, moving, settled, &[]))
+}
+
 #[pymodule]
 fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(source_hash, module)?)?;
@@ -38,5 +54,11 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(radar_map::measurements, module)?)?;
     module.add_function(wrap_pyfunction!(radar_map::associate_input, module)?)?;
     module.add_function(wrap_pyfunction!(radar_map::associate, module)?)?;
+    module.add_class::<map_object::MapObject>()?;
+    module.add_function(wrap_pyfunction!(observe::observe, module)?)?;
+    module.add_function(wrap_pyfunction!(observe::advance, module)?)?;
+    module.add_function(wrap_pyfunction!(observe::forget_lateral, module)?)?;
+    module.add_function(wrap_pyfunction!(_sum_for_test, module)?)?;
+    module.add_function(wrap_pyfunction!(_lane_for_test, module)?)?;
     Ok(())
 }

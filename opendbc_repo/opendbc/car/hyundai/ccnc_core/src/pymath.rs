@@ -98,3 +98,25 @@ pub fn py_min(a: f64, b: f64) -> f64 {
         a
     }
 }
+
+/// `sum(values)` of floats in CPython 3.12 (Python/bltinmodule.c `builtin_sum_impl`): the int start 0 is added to
+/// the first value (so -0.0 becomes 0.0), the rest are added with Neumaier's compensation, and the compensation
+/// is added at the end only when it is nonzero and finite. None for no values (Python returns the int 0).
+pub fn py_sum(values: impl IntoIterator<Item = f64>) -> Option<f64> {
+    let mut values = values.into_iter();
+    let mut total = 0.0 + values.next()?;
+    let mut c = 0.0;
+    for x in values {
+        let t = total + x;
+        if total.abs() >= x.abs() {
+            c += (total - t) + x;
+        } else {
+            c += (x - t) + total;
+        }
+        total = t;
+    }
+    if c != 0.0 && c.is_finite() {
+        total += c;
+    }
+    Some(total)
+}

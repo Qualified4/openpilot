@@ -212,8 +212,9 @@ class CcncRadarMap:
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
                  ('RF_DETECT_DISTANCE', 'RF_DETECT_LATERAL', 'RF_DETECT'))
 
-  # The Rust core runs the _measurements/_associate loops when it loads; None runs the Python loops below
-  # (kept as the reference; a subclass or test sets None to force them).
+  # The Rust core runs the _measurements/_associate/_observe loops and the object part of _advance when it loads,
+  # on its own MapObject class (same fields). None runs the Python loops below on the dataclass above (kept as the
+  # reference; a subclass or test sets None to force them).
   RUST = ccnc_core_loader.load()
 
   def __init__(self):
@@ -295,6 +296,9 @@ class CcncRadarMap:
     self.now, self.speed = now, speed
     self.odometer += abs(distance)
     self.poses.append((now, self.pose))
+    if self.RUST is not None:
+      self.RUST.advance(self, dt, distance)
+      return
     for obj in self.objects.values():
       if not self.holding:
         obj.admitted = False
@@ -464,9 +468,7 @@ class CcncRadarMap:
       if 1.8 <= a - b <= 5. and b <= y <= a:
         return 0, {1, 2} <= strong and min(a - y, y - b) >= .35, abs(y - .5 * (a + b))
     elif not usable.intersection((1, 2)):
-      meta = getattr(self.model, 'meta', None)
-      changing = (str(getattr(meta, 'desire', '')) in ('laneChangeLeft', 'laneChangeRight')
-                  or str(getattr(meta, 'laneChangeState', 'off')) in ('laneChangeStarting', 'laneChangeFinishing'))
+      changing = self._model_changing()
       # A distant interpolation gap alone must not enable the no-line distance cap.
       limited = (self.model_stamp is not None and 0. <= self.now - self.model_stamp <= .25 and changing
                  and not any(i in self.lanes and self.lanes[i].probability >= .1 for i in (1, 2)))
@@ -492,6 +494,12 @@ class CcncRadarMap:
         width = min(widths)
         return slot, {inner, line} <= strong and min(offset, width - offset) >= .35, abs(offset - .5 * width)
     return None, False, math.inf
+
+  def _model_changing(self):
+    """Whether the current model reports a lane change (also asked by the Rust _lane, at most once per call)."""
+    meta = getattr(self.model, 'meta', None)
+    return (str(getattr(meta, 'desire', '')) in ('laneChangeLeft', 'laneChangeRight')
+            or str(getattr(meta, 'laneChangeState', 'off')) in ('laneChangeStarting', 'laneChangeFinishing'))
 
   def _settle(self, obj, x, y, stamp):
     """Whether a moving vehicle has come to stay outside the outer lane line of its side. It stays so until
@@ -717,6 +725,9 @@ class CcncRadarMap:
 
   def _forget_lateral(self, obj):
     """Drop the reports and sideways speed a bridged object took from the vehicle its track merged with."""
+    if self.RUST is not None:
+      self.RUST.forget_lateral(obj, self.cos, self.sin)
+      return
     obj.history.clear()
     forward = self.cos * obj.vx + self.sin * obj.vy
     obj.vx, obj.vy = forward * self.cos, forward * self.sin
@@ -724,6 +735,8 @@ class CcncRadarMap:
   def _observe(self, live, stamp):
     measurements = self._measurements(live, stamp)
     assignments = self._associate(measurements, stamp)
+    if self.RUST is not None:
+      return self.RUST.observe(self, measurements, assignments, stamp)
     self._reconnect(measurements, assignments)
     reserved = set(assignments.values())
     measured_keys = set()
