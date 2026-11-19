@@ -172,6 +172,7 @@ jobs:
           opendbc_repo/opendbc/car/hyundai/tests/test_navi_speedcam.py
           opendbc_repo/opendbc/car/hyundai/tests/test_section_average.py
           opendbc_repo/opendbc/car/hyundai/tests/test_speed_camera.py
+          opendbc_repo/opendbc/car/hyundai/tests/test_ev4_navi.py
           opendbc_repo/opendbc/car/hyundai/tests/test_blink_hold.py
           opendbc_repo/opendbc/car/hyundai/tests/test_blinker_stalks.py
           opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_cluster.py
@@ -242,6 +243,7 @@ jobs:
             openpilot/selfdrive/carrot/bluetooth/tests \
             tools/carrot_b1 \
             openpilot/selfdrive/car/tests/test_carrot_cruise_buttons.py \
+            openpilot/selfdrive/car/tests/test_cruise_timing.py \
             opendbc_repo/opendbc/car/volkswagen/tests/test_carstate_buttons.py \
             opendbc_repo/opendbc/car/volkswagen/tests/test_volkswagen.py::test_golf_mk7_wheel_speed_update \
             opendbc_repo/opendbc/car/hyundai/tests/test_stopping.py \

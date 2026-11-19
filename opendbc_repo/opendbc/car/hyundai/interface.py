@@ -149,6 +149,10 @@ class CarInterface(CarInterfaceBase):
       from opendbc.car.hyundai.spas import compatible
       # joongyu01: our CanfdBlinkerKick (carcontroller) and this path both pause APRK and send 0x16A; Kick wins and
       # switches this one off at boot so the menu shows what is actually running (any CAN-FD car, Sonata 2024 included)
+      # ccnc-hda1: keep the Bluetooth physical hold on the IONIQ 5 PE only, as before carrot-wip 6af3073e, so controlsd
+      # does not poll the hold file on the Sonata
+      if candidate == CAR.HYUNDAI_IONIQ_5_PE and ret.flags & HyundaiFlags.CAMERA_SCC and fingerprint[CAN.CAM].get(0x1EA) == 32:
+        ret.extFlags |= HyundaiExtFlags.CANFD_INDICATOR_HOLD.value
       if not docs and params.get_bool("CanfdBlinkerKick") and params.get_bool("CanfdBlinkerControl"):
         params.put_bool("CanfdBlinkerControl", False)
       # carrot-wip's KICK_CARS / CANFD_BLINKER_KICK (card's KickOutput, common indicator policy) is not set here, as on
