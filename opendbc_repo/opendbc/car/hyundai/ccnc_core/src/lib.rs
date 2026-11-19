@@ -6,6 +6,7 @@ mod map_object;
 mod observe;
 mod pymath;
 mod radar_map;
+mod walls;
 
 #[pyfunction]
 fn source_hash() -> &'static str {
@@ -14,7 +15,7 @@ fn source_hash() -> &'static str {
 
 #[pyfunction]
 fn abi_version() -> u32 {
-    3
+    4
 }
 
 /// A Rust panic reaches Python as PanicException, a BaseException that the display's `except Exception`
@@ -35,6 +36,21 @@ fn _panic_for_test() -> PyResult<()> {
 #[pyfunction]
 fn _sum_for_test(lists: Vec<Vec<f64>>) -> PyResult<Vec<Option<f64>>> {
     guard(|| Ok(lists.into_iter().map(pymath::py_sum).collect()))
+}
+
+/// For the parity test only: `math.<name>` of each value, as the Rust map computes it.
+#[pyfunction]
+fn _math_for_test(name: &str, values: Vec<f64>) -> PyResult<Vec<f64>> {
+    guard(|| {
+        let f: fn(f64) -> PyResult<f64> = match name {
+            "degrees" => |x| Ok(pymath::degrees(x)),
+            "radians" => |x| Ok(pymath::radians(x)),
+            "acos" => pymath::acos,
+            "cos" => pymath::cos,
+            _ => return Err(pyo3::exceptions::PyValueError::new_err(name.to_owned())),
+        };
+        values.into_iter().map(f).collect()
+    })
 }
 
 /// For the parity test only: `_lane(x, y, moving=moving, settled=settled)` of the map as it is now.
@@ -58,7 +74,11 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(observe::observe, module)?)?;
     module.add_function(wrap_pyfunction!(observe::advance, module)?)?;
     module.add_function(wrap_pyfunction!(observe::forget_lateral, module)?)?;
+    module.add_class::<walls::WallRows>()?;
+    module.add_function(wrap_pyfunction!(walls::walls, module)?)?;
+    module.add_function(wrap_pyfunction!(walls::bands, module)?)?;
     module.add_function(wrap_pyfunction!(_sum_for_test, module)?)?;
+    module.add_function(wrap_pyfunction!(_math_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_lane_for_test, module)?)?;
     Ok(())
 }

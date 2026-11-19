@@ -212,7 +212,7 @@ class CcncRadarMap:
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
                  ('RF_DETECT_DISTANCE', 'RF_DETECT_LATERAL', 'RF_DETECT'))
 
-  # The Rust core runs the _measurements/_associate/_observe loops and the object part of _advance when it loads,
+  # The Rust core runs the _measurements/_associate/_observe/_walls/_bands loops and the object part of _advance when it loads,
   # on its own MapObject class (same fields). None runs the Python loops below on the dataclass above (kept as the
   # reference; a subclass or test sets None to force them).
   RUST = ccnc_core_loader.load()
@@ -892,6 +892,12 @@ class CcncRadarMap:
         obj.vision_seen = True
 
   def _walls(self, measured):
+    if self.RUST is not None:
+      # The rows for _bands stay in Rust; the bends come back unrounded, and round() stays Python's.
+      rows, bends = self.RUST.walls(self, measured, Wall)
+      self.bends = [(key, round(angle, 1), round(gap, 2)) for key, angle, gap in bends]
+      self._bands(rows, measured, None)
+      return
     self.bends = []  # (key, degrees, gap) joined this cycle through a bend, for inspection.
     for obj in self.objects.values():
       obj.structure = False
@@ -1024,6 +1030,9 @@ class CcncRadarMap:
     return sorted(points)
 
   def _bands(self, candidates, measured, inside):
+    if self.RUST is not None:
+      self.RUST.bands(self, candidates, measured, Band)  # candidates: the Rust _walls rows, with their inside set.
+      return
     lines = {}
     for sign, order in ((1, (1, 0)), (-1, (2, 3))):
       for i in order:

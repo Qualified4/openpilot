@@ -120,3 +120,31 @@ pub fn py_sum(values: impl IntoIterator<Item = f64>) -> Option<f64> {
     }
     Some(total)
 }
+
+/// `math.degrees(x)`: CPython multiplies by its `radToDeg = 180.0 / Py_MATH_PI`, not by Rust's rounded constant.
+pub fn degrees(x: f64) -> f64 {
+    x * (180.0 / std::f64::consts::PI)
+}
+
+/// `math.radians(x)`: CPython's `x * degToRad`, `degToRad = Py_MATH_PI / 180.0`.
+pub fn radians(x: f64) -> f64 {
+    x * (std::f64::consts::PI / 180.0)
+}
+
+/// CPython `math_1`: a NaN result from a non-NaN argument is "math domain error".
+fn math_1(x: f64, r: f64) -> pyo3::PyResult<f64> {
+    if r.is_nan() && !x.is_nan() {
+        return Err(pyo3::exceptions::PyValueError::new_err("math domain error"));
+    }
+    Ok(r)
+}
+
+/// `math.acos(x)`: the same libm acos() CPython calls.
+pub fn acos(x: f64) -> pyo3::PyResult<f64> {
+    math_1(x, x.acos())
+}
+
+/// `math.cos(x)`: the same libm cos() CPython calls.
+pub fn cos(x: f64) -> pyo3::PyResult<f64> {
+    math_1(x, x.cos())
+}

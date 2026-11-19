@@ -33,7 +33,7 @@ fn attr_f64(obj: &Bound<'_, PyAny>, name: &Bound<'_, pyo3::types::PyString>) -> 
 }
 
 /// `math.floor(v)` for the grid cell of a finite coordinate.
-fn floor(v: f64) -> PyResult<i64> {
+pub(crate) fn floor(v: f64) -> PyResult<i64> {
     if v.is_nan() {
         return Err(PyValueError::new_err("cannot convert float NaN to integer"));
     }

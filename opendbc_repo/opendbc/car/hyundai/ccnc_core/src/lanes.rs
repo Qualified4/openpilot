@@ -133,6 +133,16 @@ impl<'py> Lanes<'py> {
         self.lines[i].geometry.as_deref().unwrap_or(&[])
     }
 
+    /// `self.lanes[i].probability`, or None without that line.
+    pub fn probability(&self, i: usize) -> Option<f64> {
+        self.lines.get(i).and_then(|line| line.lane).map(|(probability, _)| probability)
+    }
+
+    /// `self.geometry.get(i)`.
+    pub fn geometry(&self, i: usize) -> Option<&[(f64, f64)]> {
+        self.lines.get(i).and_then(|line| line.geometry.as_deref())
+    }
+
     /// `_lane_view(x)`: bounds by role, and the usable/strong roles as bit masks.
     fn view(&self, x: f64) -> ([Option<f64>; 6], u8, u8) {
         let mut bounds = [None; 6];

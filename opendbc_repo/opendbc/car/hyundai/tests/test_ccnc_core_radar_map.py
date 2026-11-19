@@ -1,4 +1,4 @@
-"""The Rust radar map loops (_measurements, _associate, _observe, _advance's objects) give the same bits as the
+"""The Rust radar map loops (_measurements, _associate, _observe, _advance's objects, _walls, _bands) give the same bits as the
 Python reference, on the real map class. The Rust path keeps its objects in the Rust MapObject class, the Python
 path in the dataclass; both are compared as their fields (dataclass vars(), Rust __getstate__())."""
 from collections import deque
@@ -64,7 +64,7 @@ def fields(obj):
 def state(m):
   # The recorder's counts of Python calls, which the Rust path partly makes in Rust.
   out = {k: v for k, v in vars(m).items() if k not in ('generation', 'raw', 'model', 'log', 'lane_checks', 'reconnects',
-                                                       'meta_checks', 'meta_changing')}
+                                                       'meta_checks', 'meta_changing', 'bridged_walls')}
   out['objects'] = {k: fields(o) for k, o in m.objects.items()}
   return out
 
@@ -76,12 +76,17 @@ class Recorder:
     super().__init__()
     self.log = []
     self.associating = False
-    self.lane_checks = self.reconnects = self.meta_checks = self.meta_changing = 0
+    self.lane_checks = self.reconnects = self.meta_checks = self.meta_changing = self.bridged_walls = 0
 
   def reset(self):
-    counts = self.log, self.lane_checks, self.reconnects, self.meta_checks, self.meta_changing
+    counts = self.log, self.lane_checks, self.reconnects, self.meta_checks, self.meta_changing, self.bridged_walls
     super().reset()
-    self.log, self.lane_checks, self.reconnects, self.meta_checks, self.meta_changing = counts
+    self.log, self.lane_checks, self.reconnects, self.meta_checks, self.meta_changing, self.bridged_walls = counts
+
+  def _bridge_walls(self, candidates, measured):  # Python path only.
+    before = len(self.walls)
+    super()._bridge_walls(candidates, measured)
+    self.bridged_walls += before - len(self.walls)
 
   def _measurements(self, live, stamp):
     out = super()._measurements(live, stamp)
@@ -125,7 +130,7 @@ class PythonMap(Recorder, CcncRadarMap):
 def rust_core():
   core = ccnc_core_loader.load()
   assert core is not None, 'the x86_64 test build must be in prebuilt/linux-x86_64'
-  assert CcncRadarMap.RUST is core and core.abi_version() == 3
+  assert CcncRadarMap.RUST is core and core.abi_version() == 4
   return core
 
 
@@ -284,6 +289,53 @@ class Scenario:
     return out
 
 
+class Structures:
+  """Fixed posts for _walls/_bands, from their own generator (the scenario's draws stay as they were): rows 1-3m apart
+  beside the road, gaps a later post fills (_bridge_walls), a row bending outwards (_bend), twins at one position
+  (equal sort keys), posts reported first far ahead (band_early), dense rows inside a lane, and on some seeds enough
+  short rows for MAX_WALLS. Positions are fixed in the map's frame, reported from the map's pose of the last frame."""
+
+  def __init__(self, seed):
+    self.rng = random.Random(seed + 7000)
+    spacing = (2., 2.5, 3., 1.)[(seed // 2) % 4]
+    self.posts = []  # (track id, world x, world y, reported only nearer than this)
+    for k in range(int(420. / spacing)):
+      x = -10. + k * spacing
+      # Right row: five posts, a gap of four spacings, the next five posts .6m further out, and so on. A post in the
+      # middle of each gap, on the line between the two rows (.3m off both), joins them only through _bridge_walls.
+      j, i = divmod(k, 8)
+      if i < 5:
+        self.posts.append((20000 + k, x, -6.5 - .6 * (j % 2), 20.))
+      elif i == 6:
+        self.posts.append((20000 + k, x, -6.8, 20.))
+      u = x % 80.  # Left row, bending 20 degrees outwards after 40m of each 80m.
+      y = 6. + (math.tan(math.radians(20.)) * (u - 40.) if u > 40. else 0.)
+      if y <= 11.:
+        self.posts.append((30000 + k, x, y, 20.))
+      if spacing == 1. and x % 60. < 15.:  # Dense row inside the left lane.
+        self.posts.append((40000 + k, x, 3.1, 20.))
+    if seed >= 16:  # Short rows (three posts, then a gap): more walls and bands than MAX_WALLS allows.
+      for r, y in enumerate((-7.6, -8.7, -9.8, -10.9, 7.4, 8.5, 9.6, 10.7)):
+        for k in range(int(420. / 2.)):
+          if k % 5 < 3:
+            self.posts.append((50000 + 1000 * r + k, -10. + 2. * k + .3 * r, y, 20.))
+    self.twins = {track for track, *_ in self.posts if track % 7 == 3}
+
+  def points(self, pose):
+    px, py, angle = pose
+    c, s = math.cos(angle), math.sin(angle)
+    out = []
+    for track, wx, wy, near in self.posts:
+      x, y = c * (wx - px) + s * (wy - py), -s * (wx - px) + c * (wy - py)
+      if not -3. <= x <= near or self.rng.random() < .08:
+        continue
+      x, y = x + self.rng.gauss(0., .02), y + self.rng.gauss(0., .02)
+      for twin in ((track, track ^ 1 << 17) if track in self.twins else (track,)):
+        out.append(dict(trackId=twin, dRel=x, yRel=y, vRel=0., vLead=0., measured=True, radarSource='frontRadar',
+                        motionState=1, trackState=2))
+    return out
+
+
 def capnp_live(points):
   msg = structs.RadarData.new_message()
   out = msg.init('points', len(points))
@@ -297,16 +349,25 @@ def namespace_live(points):
   return N(points=[N(**p) for p in points])
 
 
+def wall_keys(m):
+  return [frozenset(w.members) for w in m.walls]
+
+
 def run(seed, maps, frames=FRAMES):
   scenario = Scenario(seed)
+  structures = Structures(seed)
   rng = random.Random(seed + 1000)
   stats = dict(calls=0, measurements=0, assignments=0, jumps=0, max_objects=0, evicted=0, holding=0, bridge=0, stable_y=0,
-               bridge_stable_y=0, ahead_of=0, departed=0, settled=0, lane_offset=0, negative_zero=0)
+               bridge_stable_y=0, ahead_of=0, departed=0, settled=0, lane_offset=0, negative_zero=0,
+               walls=0, wall_created=0, wall_kept=0, wall_cancelled=0, wall_16=0, wall_cap=0, structure_cap=0, bends=0,
+               band_created=0, band_extended=0, band_vanished=0, band_early=0, early_twins=0)
+  walls, bands, early, sizes = [], [], set(), {}
   for frame in range(frames):
     now = 1000. + frame * DT
     v_ego = speed_profile(scenario.kind, frame)
     points = scenario.frame(frame, v_ego)
-    live = capnp_live(points) if frame % 2 == 0 else namespace_live(points)
+    posts = structures.points(maps[0].pose)
+    live = capnp_live(points + posts) if frame % 2 == 0 else namespace_live(points + posts)
     lead = scenario.vision or next(((p['dRel'], p['yRel'], p['vLead']) for p in points if abs(p['yRel']) < 1.5 and 0. < p['dRel'] < 80.
                                     and all(math.isfinite(p[k]) for k in ('dRel', 'yRel', 'vLead'))), None)
     desire, change_state = scenario.meta(frame)
@@ -339,9 +400,31 @@ def run(seed, maps, frames=FRAMES):
     for name, test in (('stable_y', lambda o: o.stable_y is not None), ('ahead_of', lambda o: o.ahead_of),
                        ('departed', lambda o: o.departed), ('settled', lambda o: o.settled)):
       stats[name] += any(test(o) for o in first.objects.values())
+    # Walls made, kept as they were, or cancelled (no successor shares two members); bands by identity.
+    now_walls = wall_keys(first)
+    stats['walls'] += bool(now_walls)
+    stats['wall_created'] += sum(w not in walls for w in now_walls)
+    stats['wall_kept'] += sum(w in walls for w in now_walls)
+    stats['wall_cancelled'] += sum(all(len(w & v) < 2 for v in now_walls) for w in walls)
+    stats['wall_16'] += any(len(w.members) == 16 for w in first.walls)
+    stats['wall_cap'] += len(first.walls) == first.MAX_WALLS
+    stats['structure_cap'] += len(first.walls) + len(first.bands) >= first.MAX_WALLS
+    stats['bends'] += len(first.bends)
+    stats['band_created'] += sum(all(b is not old for old in bands) for b in first.bands)
+    stats['band_extended'] += sum(len(b.members) > sizes[id(b)] for b in first.bands if id(b) in sizes)
+    stats['band_vanished'] += sum(all(b is not new for new in first.bands) for b in bands)
+    added = first.band_early - early
+    stats['band_early'] += len(added)
+    # A twin joining by prediction while its twin, at the same x, did not (one joins, then the other is no longer
+    # a spacing ahead): the stable sort of measured.difference(...) kept the set's order between the two.
+    by_source = {o.source: o.key for o in first.objects.values()}
+    stats['early_twins'] += sum(first.local[k] == first.local.get(by_source.get(first.objects[k].source ^ 1 << 17), ())
+                                for k in added if k in first.objects)
+    walls, bands, early = now_walls, list(first.bands), set(first.band_early)
+    sizes = {id(b): len(b.members) for b in bands}
   stats['jumps'] = len(first.jumps)
   stats['evicted'] = first.evicted
-  for name in ('lane_checks', 'reconnects', 'meta_checks', 'meta_changing'):
+  for name in ('lane_checks', 'reconnects', 'meta_checks', 'meta_changing', 'bridged_walls'):
     stats[name] = sum(getattr(m, name) for m in maps if m.RUST is None)
   assert all(m.lane_checks == 0 for m in maps if m.RUST is not None)
   return stats
@@ -374,6 +457,9 @@ def test_scenarios_reach_the_corner_cases():
   assert total['ahead_of'] > 0 and total['departed'] > 0  # Remembered vehicles that drove off.
   assert total['settled'] > 0 and total['lane_offset'] > 0 and total['negative_zero'] > 0
   assert total['meta_checks'] > 0 and 0 < total['meta_changing'] < total['meta_checks']  # _lane's model fallback.
+  for name in ('walls', 'wall_created', 'wall_kept', 'wall_cancelled', 'wall_16', 'wall_cap', 'structure_cap', 'bends',
+               'bridged_walls', 'band_created', 'band_extended', 'band_vanished', 'band_early', 'early_twins'):
+    assert total[name] > 0, name
 
 
 def test_missing_module_runs_the_python_loops(monkeypatch):
@@ -440,9 +526,39 @@ def test_sum_is_python_3_12_sum():
   lists = list(float_lists(random.Random(3), 20000))
   for values, got in zip(lists, core._sum_for_test(lists), strict=True):
     want = sum(values)
+    if got is not None and math.isnan(got) and math.isnan(want):
+      continue  # A NaN's sign differs by platform (aarch64 CPython gave -nan where Rust gave nan); NaN is NaN to the map.
     assert (None if values == [] else bits(want)) == (got if got is None else bits(got)), values
   # A plain left-to-right sum differs on these lists, so the comparison above can tell the two apart.
   assert sum(bits(sum(v)) != bits(functools.reduce(operator.add, v, 0)) for v in lists if v) > 1000
+
+
+def same_floats(got, want):
+  """Bit-equal, except that any two NaNs count as equal (their sign differs by platform, as for sum())."""
+  got, want = np.array(got, dtype=np.float64), np.array(want, dtype=np.float64)
+  return (got.view(np.uint64) == want.view(np.uint64)) | (np.isnan(got) & np.isnan(want))
+
+
+def test_math_is_cpython_math():
+  # A million values each: the ranges the map uses, wide ranges, and special values.
+  core = ccnc_core_loader.load()
+  rng = np.random.default_rng(4)
+  special = [0., -0., 1., -1., 180., -180., 30., math.pi, 1e-300, 5e-324, 1e308, math.inf, -math.inf, math.nan]
+  wide = np.concatenate([rng.uniform(-400., 400., 500000), rng.standard_normal(486000) * 10. ** rng.integers(-30, 30, 486000),
+                         special * 1000])
+  unit = np.concatenate([rng.uniform(-1., 1., 600000), 1. - rng.uniform(0., 1e-6, 200000), np.cos(rng.uniform(0., .6, 199986)),
+                         [0., -0., 1., -1., math.nan] * 2, [1. - 2 ** -53, -1. + 2 ** -53, 2 ** -1074, -2 ** -1074]])
+  assert len(wide) == len(unit) == 1000000
+  for name, values in (('degrees', wide), ('radians', wide), ('acos', unit),
+                       ('cos', np.radians(rng.uniform(-360., 360., 1000000)))):
+    values = values.tolist()
+    want = [getattr(math, name)(v) for v in values]
+    assert same_floats(core._math_for_test(name, values), want).all(), name
+  for name, value in (('acos', 1. + 2 ** -52), ('acos', -1.5), ('cos', math.inf)):  # "math domain error", as in Python
+    with pytest.raises(ValueError):
+      getattr(math, name)(value)
+    with pytest.raises(ValueError):
+      core._math_for_test(name, [value])
 
 
 class LaneMap(PythonMap):
