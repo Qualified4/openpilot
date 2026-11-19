@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from opendbc.car.carlog import carlog
+from opendbc.car.hyundai import ccnc_core_loader
 from opendbc.car.hyundai.ccnc_map_native import loops as _native
 
 
@@ -210,6 +211,10 @@ class CcncRadarMap:
   SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
                  ('RF_DETECT_DISTANCE', 'RF_DETECT_LATERAL', 'RF_DETECT'))
+
+  # The Rust core runs the _measurements/_associate loops when it loads; None runs the Python loops below
+  # (kept as the reference; a subclass or test sets None to force them).
+  RUST = ccnc_core_loader.load()
 
   def __init__(self):
     self.objects = {}
@@ -552,6 +557,9 @@ class CcncRadarMap:
     pose = self.pose_at(stamp)
     if pose is None:
       return []
+    if self.RUST is not None:
+      return self.RUST.measurements(self, self.RUST.radar_points(live.points), stamp, pose[0], pose[1],
+                                    math.cos(pose[2]), math.sin(pose[2]))
     measurements = []
     c, s = math.cos(pose[2]), math.sin(pose[2])
     for p in live.points:
@@ -600,6 +608,8 @@ class CcncRadarMap:
     return measurements
 
   def _associate(self, measurements, stamp):
+    if self.RUST is not None:
+      return self.RUST.associate(self, self.RUST.associate_input(self, measurements, stamp), stamp)
     # Bounded sparse neighborhood search; do not compare every remembered point.
     grid = {}
     age = self.now - stamp

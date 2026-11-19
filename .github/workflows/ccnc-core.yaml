@@ -7,6 +7,8 @@ on:
       - 'opendbc_repo/opendbc/car/hyundai/ccnc_core/**'
       - 'opendbc_repo/opendbc/car/hyundai/ccnc_core_loader.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_radar_map.py'
+      - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_radar_map.py'
       - '.gitattributes'
       - '.github/workflows/ccnc-core.yaml'
   pull_request:
@@ -14,6 +16,8 @@ on:
       - 'opendbc_repo/opendbc/car/hyundai/ccnc_core/**'
       - 'opendbc_repo/opendbc/car/hyundai/ccnc_core_loader.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_radar_map.py'
+      - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_radar_map.py'
       - '.gitattributes'
       - '.github/workflows/ccnc-core.yaml'
 
@@ -57,4 +61,5 @@ jobs:
           install -Dm755 "$CCNC_CORE/target/aarch64-unknown-linux-gnu/release/libccnc_core.so" \
             "$CCNC_CORE/prebuilt/linux-aarch64/ccnc_core.abi3.so"
           python -m pytest -q -c /dev/null --confcutdir=opendbc_repo -p no:cacheprovider \
-            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py
+            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py \
+            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_radar_map.py

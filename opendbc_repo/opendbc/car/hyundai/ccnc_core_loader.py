@@ -11,6 +11,7 @@ from threading import Lock
 from types import ModuleType
 
 _CORE_DIR = Path(__file__).with_name("ccnc_core")
+ABI_VERSION = 2  # Keep in sync with abi_version in src/lib.rs.
 _LOAD_LOCK = Lock()
 
 
@@ -44,8 +45,8 @@ def _load_once() -> ModuleType | None:
     spec.loader.exec_module(module)
     if module.source_hash() != _source_hash(_CORE_DIR):
       raise ImportError("source hash mismatch")
-    if (version := module.abi_version()) != 1:
-      raise ImportError(f"ABI version {version}, expected 1")
+    if (version := module.abi_version()) != ABI_VERSION:
+      raise ImportError(f"ABI version {version}, expected {ABI_VERSION}")
     return module
   except Exception as exc:
     logging.getLogger(__name__).warning("CCNC Rust core unavailable: %s", exc)

@@ -34,7 +34,13 @@ def test_loads_built_extension():
   assert module is not None
   assert Path(module.__file__).resolve() == (CORE_DIR / BINARY_PATH).resolve()
   assert module.source_hash() == ccnc_core_loader._source_hash(CORE_DIR)
-  assert module.abi_version() == 1
+  assert module.abi_version() == ccnc_core_loader.ABI_VERSION == 2
+
+
+def test_rust_panic_is_an_ordinary_exception():
+  # The display catches Exception; PyO3's PanicException is a BaseException and would end card.
+  with pytest.raises(RuntimeError, match="panicked"):
+    ccnc_core_loader.load()._panic_for_test()
 
 
 def test_rejects_changed_source(copied_loader, tmp_path, caplog):
