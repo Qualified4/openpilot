@@ -12,6 +12,7 @@ import pytest
 
 from openpilot.selfdrive.carrot.server.services.settings import (
   build_menu_categories,
+  current_ccnc_hda1,
   current_vehicle_brand,
   current_vehicle_settings_context,
   filter_settings_catalog_for_brand,
@@ -42,6 +43,79 @@ def params(settings):
 def test_the_catalogue_is_readable_and_populated(params):
   assert len(params) > 100
   assert all(isinstance(p.get("name"), str) and p["name"] for p in params)
+
+
+@pytest.mark.parametrize("case", ("unknown", "hda2", "no_templates", "hda1"))
+def test_ccnc_catalog_and_param_writes_require_confirmed_hda1(settings, tmp_path, case):
+  from opendbc.car import structs
+  from opendbc.car.hyundai.values import HyundaiExtFlags, HyundaiFlags
+  from openpilot.common.params import Params
+  from openpilot.selfdrive.carrot.server.services.params import put_typed
+
+  params = Params(str(tmp_path))
+  if case != "unknown":
+    cp = structs.CarParams(brand="hyundai", openpilotLongitudinalControl=True,
+                           flags=int(HyundaiFlags.CANFD | HyundaiFlags.CAMERA_SCC),
+                           extFlags=int(HyundaiExtFlags.CCNC_CLUSTER_RX))
+    if case == "hda2":
+      cp.flags |= int(HyundaiFlags.CANFD_HDA2)
+    if case == "no_templates":
+      cp.extFlags = 0
+    params.put("CarParams", cp.to_bytes())
+
+  supported = current_ccnc_hda1(params)
+  assert supported == (case == "hda1")
+  groups, by_name, group_list = group_index(settings)
+  categories = build_menu_categories(settings, by_name)
+  visible, _, menu, hidden = filter_settings_catalog_for_brand(groups, group_list, categories, "hyundai", ccnc_hda1=supported)
+  key = "CcncExtendedDisplay"
+  assert (key not in hidden) == supported
+  assert any(item["name"] == key for group in visible.values() for item in group) == supported
+  assert any(key in section["items"] for category in menu for group in category["groups"] for section in group["sections"]) == supported
+  put_typed(params, key, False, by_name[key])
+  if supported:
+    put_typed(params, key, True, by_name[key])
+  else:
+    with pytest.raises(ValueError, match="confirmed HDA1"):
+      put_typed(params, key, True, by_name[key])
+  assert params.get_bool(key) == supported
+
+
+@pytest.mark.parametrize("old_lane_kind,eligible,manual,enabled", [
+  (b"1", True, None, True),
+  (b"2", True, None, True),
+  (b"0", True, None, False),
+  (b"1", False, None, False),
+  (b"2", True, False, False),
+])
+def test_ccnc_migration_survives_param_cleanup(tmp_path, old_lane_kind, eligible, manual, enabled):
+  from opendbc.car import structs
+  from opendbc.car.hyundai.values import HyundaiExtFlags, HyundaiFlags
+  from openpilot.common.ccnc_display_migration import LEGACY_VALUES, OPTION, PENDING, finish_migration, prepare_migration
+  from openpilot.common.params import Params, ParamKeyFlag
+
+  params = Params(str(tmp_path))
+  for key, expected in LEGACY_VALUES.items():
+    old = old_lane_kind if len(expected) > 1 else expected[0]
+    Path(params.get_param_path(key)).write_bytes(old)
+  if manual is not None:
+    params.put_bool(OPTION, manual)
+  params.put_int("CcncClusterDisplay", 1)
+  params.put_bool("CcncTrafficBackground", True)
+  params.put_bool("LaneChangeYellowSolid", True)
+  assert prepare_migration(params) == (old_lane_kind != b"0" and manual is None)
+  params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
+  assert all(not Path(params.get_param_path(key)).exists() for key in LEGACY_VALUES)
+  assert not params.get_bool(OPTION)
+  assert prepare_migration(params) == params.get_bool(PENDING)
+
+  cp = structs.CarParams(brand="hyundai", openpilotLongitudinalControl=eligible,
+                         flags=int(HyundaiFlags.CANFD | HyundaiFlags.CAMERA_SCC),
+                         extFlags=int(HyundaiExtFlags.CCNC_CLUSTER_RX))
+  finish_migration(params, cp)
+  assert params.get_bool(OPTION) == enabled
+  assert params.get(PENDING) is None
+  assert all(params.get_int(key) == 1 for key in ("CcncClusterDisplay", "CcncTrafficBackground", "LaneChangeYellowSolid"))
 
 
 def test_tesla_switches_have_a_dedicated_browser_group(settings):
@@ -231,7 +305,7 @@ def test_fixed_tuning_catalog_hides_longitudinal_pid_settings(settings, brand):
     for name in section["items"]
   }
 
-  assert hidden_names == hidden
+  assert hidden_names == hidden | {"CcncExtendedDisplay"}
   assert hidden.isdisjoint(visible_names)
   assert hidden.isdisjoint(menu_names)
   assert all(
@@ -249,7 +323,7 @@ def test_other_brands_keep_longitudinal_pid_settings(settings):
   )
   visible_names = {item["name"] for items in filtered_groups.values() for item in items}
 
-  assert hidden_names == set()
+  assert hidden_names == {"CcncExtendedDisplay"}
   assert {"LongTuningKpV", "LongTuningKiV", "LongTuningKf"} <= visible_names
 
 
@@ -305,7 +379,7 @@ def test_ray_pedal_catalog_uses_identified_capability(settings, fingerprint, ped
   assert tuning <= {item["name"] for items in groups.values() for item in items}
   assert all(group["count"] == sum(not item.get("detail_parent") and not item.get("search_only")
                                   for item in filtered[group["group"]]) for group in counts)
-  assert hidden == (set() if expected else tuning)
+  assert hidden == {"CcncExtendedDisplay"} | (set() if expected else tuning)
 
 
 @pytest.mark.parametrize("car_params", [None, b"invalid"])

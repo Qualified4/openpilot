@@ -344,6 +344,10 @@ def put_typed(params: "Params", key: str, value: Any, p: Optional[Dict[str, Any]
   caller (e.g. /api/param_set) reports it — previously every error here was
   swallowed, so a failed save still returned ok and the UI showed a false
   success ("toggle not saved")."""
+  if key == "CcncExtendedDisplay" and _coerce_bool(value):
+    from .settings import current_ccnc_hda1
+    if not current_ccnc_hda1(params):
+      raise ValueError("CCNC extended display requires a confirmed HDA1 vehicle")
   t = None
   if ParamKeyType is not None:
     try:
@@ -373,7 +377,7 @@ def put_typed(params: "Params", key: str, value: Any, p: Optional[Dict[str, Any]
     params.put(key, str(value))
 
 
-INTERNAL_SESSION_PARAMS = frozenset({"DriverMonitoringSessionDisabled", "JetsonLegacyUpdatePending"})
+INTERNAL_SESSION_PARAMS = frozenset({"DriverMonitoringSessionDisabled", "JetsonLegacyUpdatePending", "CcncExtendedDisplayMigrationPending"})
 BACKUP_EXCLUDED_PARAMS = frozenset({"DriverMonitoringEnabled"})
 
 
@@ -397,6 +401,8 @@ def set_param_value(name: str, value: Any, p: Optional[Dict[str, Any]] = None) -
   if name in INTERNAL_SESSION_PARAMS:
     raise ValueError(f"{name} is controlled internally")
   if not HAS_PARAMS:
+    if name == "CcncExtendedDisplay" and _coerce_bool(value):
+      raise ValueError("CCNC extended display requires a confirmed HDA1 vehicle")
     _mem_store[name] = str(value)
     return
   params = Params()

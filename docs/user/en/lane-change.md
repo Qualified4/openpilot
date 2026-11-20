@@ -128,7 +128,7 @@ Vehicle BSD is an assistive signal. It cannot cover every fast-closing vehicle, 
 
 ### `LaneChangeYellowSolid` — block lane change at yellow solid
 
-On by default. While [CCNC lane type & color display](settings.md#ccnc-display) (`CcncLaneTypeDetection`) is on and shows that side's line as a yellow solid line, a lane change toward that side waits just as it does for the stock camera's yellow line (the same path as the BSD wait). The other side is unaffected. Held, white, dashed or expired results never block, and the stock camera yellow-line block works as before regardless of this setting. Recognition can miss a yellow solid line, so the driver remains responsible for checking the lane line.
+On by default. While [CCNC extended display (HDA1)](settings.md#ccnc-display) (`CcncExtendedDisplay`) is on and shows that side's line as a yellow solid line, a lane change toward that side waits just as it does for the stock camera's yellow line (the same path as the BSD wait). The other side is unaffected. Held, white, dashed or expired results never block, and the stock camera yellow-line block works as before regardless of this setting. Recognition can miss a yellow solid line, so the driver remains responsible for checking the lane line.
 
 ### `ShareData` — ONNX lane and BSD detection
 

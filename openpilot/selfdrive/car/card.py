@@ -8,6 +8,7 @@ import openpilot.cereal.messaging as messaging
 
 from openpilot.cereal import car, log
 
+from openpilot.common.ccnc_display_migration import finish_migration
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process, Priority, Ratekeeper
 from openpilot.common.runtime_diagnostics import RuntimeDiagnostics
@@ -232,6 +233,7 @@ class Car:
       self.params.put("CarParamsPrevRoute", prev_cp)
 
     # Write CarParams for controls and radard
+    finish_migration(self.params, self.CP)
     cp_bytes = self.CP.to_bytes()
     self.params.put("CarParams", cp_bytes)
     self.params.put_nonblocking("CarParamsCache", cp_bytes)

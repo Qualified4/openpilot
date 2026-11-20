@@ -62,6 +62,16 @@ def current_vehicle_brand(params=None) -> str:
   return current_vehicle_settings_context(params)[0]
 
 
+def current_ccnc_hda1(params=None) -> bool:
+  if params is None:
+    from .params import HAS_PARAMS, Params
+    if not HAS_PARAMS or Params is None:
+      return False
+    params = Params()
+  from opendbc.car.hyundai.ccnc_capability import read_hda1_cluster_support
+  return read_hda1_cluster_support(params)
+
+
 def read_settings_file(path: str) -> Dict[str, Any]:
   with open(path, "r", encoding="utf-8") as f:
     return json.load(f)
@@ -182,6 +192,7 @@ def filter_settings_catalog_for_brand(
   brand: str,
   *,
   ray_pedal_control: bool = False,
+  ccnc_hda1: bool = False,
 ) -> tuple[Dict[str, list], List[Dict[str, Any]], List[Dict[str, Any]] | None, set[str]]:
   """Return a catalog view with brand-restricted settings removed.
 
@@ -194,7 +205,7 @@ def filter_settings_catalog_for_brand(
     str(item.get("name"))
     for items in groups.values()
     for item in items
-    if normalized_brand and normalized_brand in {
+    if (item.get("requires_ccnc_hda1") and not ccnc_hda1) or normalized_brand and normalized_brand in {
       str(hidden_brand).strip().lower()
       for hidden_brand in item.get("hidden_brands", [])
     }

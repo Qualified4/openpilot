@@ -89,6 +89,8 @@ The vehicle must report zero raw speed, standstill and Park together; only a tin
 
 `CarrotVisionEnabled` independently controls web road video. Only the video function of old `DisableDM=2` is migrated once; monitoring starts in standard mode. Carrot Vision is unavailable while the USB cluster is enabled.
 
+When [CCNC extended display (HDA1)](settings.md#ccnc-display) is enabled, driver-monitoring warnings appear on the factory cluster. Factory warnings and chimes take priority when they overlap.
+
 ## Onroad DM display and warning sounds
 
 C4 displays an 84×84 DM inset immediately to the right of the D gear indicator, clear of the right status strip. VISION information sits above it; C3/C3X retain their existing position below the clock.

@@ -193,7 +193,7 @@ def main():
                         'blindSpot': bool(getattr(sm['carState'], side+'Blindspot', False)),
                         'laneLineWarning': line_warning, 'unknown': not warning_context_valid}
     packet['displayPreview'] = display.update({}, packet, enabled=bool(mode_of(params)),
-      model_lanes=params.get_int('CcncModelLanes'), now_ns=time.monotonic_ns(), warnings=warnings)
+      model_lanes=True, now_ns=time.monotonic_ns(), warnings=warnings)
     packet['ccncPreview'] = packet['displayPreview']['values']
     packet['displayMs'] = (time.monotonic_ns()-display_start)/1e6
     packet['processingMs'] = (time.monotonic_ns()-started_ns)/1e6

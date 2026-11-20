@@ -37,6 +37,7 @@
 /* A little more room between lines, without adding blank paragraphs. */
 .page--setting :is(#settingScreenItems, #settingInlineSearchResults) .descr {
   line-height: 1.7;
+  white-space: pre-line;
 }
 
 /* Safety net: never let a single item bleed past its box and drag the control

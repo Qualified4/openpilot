@@ -217,6 +217,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"HDPuse", {PERSISTENT, INT, "0"}},
     {"CcncClusterDisplay", {PERSISTENT, INT, "0"}},
     {"CcncExtendedDisplay", {PERSISTENT, BOOL, "0"}},
+    {"CcncExtendedDisplayMigrationPending", {PERSISTENT, BOOL}},
     {"CcncTrafficBackground", {PERSISTENT, BOOL, "1"}},
 
     {"AutoCruiseControl", {PERSISTENT, INT, "0"}},

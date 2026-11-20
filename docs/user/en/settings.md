@@ -268,7 +268,7 @@ For Hyundai/Kia CANFD openpilot longitudinal control, aReqRaw and aReqValue beco
 
 ## Vehicle and hardware
 
-This category contains 43 settings, including two sub-options on the **CCNC HDA1 radar vehicles** detail screen and one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. Indicator control and the CCNC display settings, including lane type and color display, are described below.
+This category contains 37 settings, including one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. Indicator control and the CCNC display settings, including lane type and color display, are described below.
 
 | Group | Parameters | Purpose |
 |---|---|---|
@@ -276,14 +276,8 @@ This category contains 43 settings, including two sub-options on the **CCNC HDA1
 | Indicator control | `AutoBlinkerControl`, `ManualLaneChangeIndicator`, `ManualTurnIndicator`, `ModelDesireIndicator`, `ModelPathIndicator`, `CanfdBlinkerKick`, `CanfdBlinkerKickMode`, `CanfdBlinkerKickModel`, `CanfdBlinkerHoldChange`, `CanfdBlinkerHoldWait`, `CanfdBlinkerMenuTest`, `CanfdBlinkerControl`, `CanfdBlinkerTest`, `BlinkerLatchedTurn`, `LaneChangeLeverWait` | [Automatic indication, output device and lever behavior](#indicator-control) |
 | CAN FD/HDA | `CanfdHDA2`, `HyundaiCanfdClusterDirectTx`, `CanfdDebug`, `HDPuse` | HDA2 selection, cluster direct send, CAN FD diagnostics, and HDP |
 | [CCNC display](#ccnc-display) | `CcncClusterDisplay` | CCNC cluster stock-style display · Lane hiding, dashed lines, lane highlight, lead ring, popups, alert texts and HDP icon; default OFF (0) |
-| [CCNC display](#ccnc-display) | `CcncLaneColor` | CCNC acceleration/mode lane color · Default OFF (0) |
-| [CCNC display](#ccnc-display) | `CcncModelLanes` | CCNC model lanes · Off (0) / Standard (1) / Refined (2), default 0 |
-| [CCNC display](#ccnc-display) | `CcncLaneCurvatureSource` | CCNC lane curvature display · Off (0) / Steering angle (1) / Model with lateral (2) / Always model (3), default 2 |
-| [CCNC display](#ccnc-display) | `CcncLaneTypeDetection` | CCNC lane type & color display · Off(0) / On(1), default 0 |
+| [CCNC display](#ccnc-display) | `CcncExtendedDisplay` | CCNC extended display (HDA1) · Combined setting · default off |
 | [CCNC display](#ccnc-display) | `CcncTrafficBackground` | CCNC stop/go background · Red (5) while stopping or stopped, green (8) for 2.5 s when pulling away from a stop; default ON (1). Unverified on the Sonata; turn off if not shown |
-| [CCNC display](#ccnc-display) | `CcncRadarVehicles` | CCNC HDA1 radar vehicles · Includes virtual rear handover; default OFF (0) |
-| [CCNC display](#ccnc-display) | `CcncVehiclePositionCorrection` | Vehicle position correction · Sub-option of radar vehicles, default OFF (0) |
-| [CCNC display](#ccnc-display) | `CcncRadarMap` | Radar map · Sub-option of radar vehicles, default OFF (0) |
 | Radar | `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC radar, front-track orientation, corner radar, and Carrot Radar processing and cut-in sensitivity |
 | Driver monitoring | `DriverMonitoringEnabled` (search only), `DriverMonitoringMode`, `CarrotVisionEnabled`, `MuteDoor`, `MuteSeatbelt` | Driver monitoring and selected vehicle alerts |
 | Vehicle assistance | `MaxAngleFrames`, `SpeedFromPCM` | Steering-angle frames and stock-SCC speed control |
@@ -341,52 +335,24 @@ A saved change takes effect at the **next vehicle-parameter initialization**; it
 <a id="ccnc-display"></a>
 ### CCNC instrument cluster display
 
-Under **Vehicle and hardware → CAN FD/HDA**, configure the CCNC display options. **Vehicle position correction** and **Radar map** are on the detail screen opened from **CCNC HDA1 radar vehicles**; they have no effect while radar vehicles is off (the screen does not grey them out). All except lane curvature display (default Model with lateral) and stop/go background (default on) are off by default, and changes appear within about one second.
+Go to **Vehicle and hardware → CAN FD/HDA**. Extended display appears after frames 0x161 and 0x162 are confirmed on an HDA1 vehicle with CAN FD, camera SCC and openpilot longitudinal control.
 
-#### CCNC acceleration/mode lane color
+#### CCNC extended display (HDA1)
 
-Uses the highlighted lane color to show acceleration, deceleration and driving mode. Operates in Drive, with a longer highlight at higher speeds. Turn off to use the default color and length.
+Off by default. Turning it on enables these features together.
 
-A driving-mode change may take about one second to appear in the lane color. Lane-change direction highlighting is controlled by the next option.
+- Radar vehicles and virtual rear vehicles after passing
+- Vehicle position correction
+- Radar map
+- Refined model lanes
+- Always use model curvature
+- Lane colors for acceleration, deceleration and driving mode
+- Lane line type and color
+- Integration with the yellow solid lane-change block
 
-#### CCNC model lanes
+Upgrading carries the setting forward after the vehicle is confirmed if all seven previous values match this combination.
 
-Choose Off (0), Standard (1), or Refined (2). Standard uses the original lightweight path-displacement curvature calculation. Refined uses path shape over an interval and nearby inner lanes to reduce lane-change translation and heading artifacts; it does not guarantee higher accuracy on every road. Existing ON (1) becomes Standard; select Refined to use the current improved curvature. Defaults to Off, with changes applied within about one second.
-
-Both enabled modes display lane positions and lane-change direction with highlights and transition animation. During lane reassignment, briefly continue movement estimated from the preceding lane heading; otherwise hold position. Both also adjust set-speed and speed-limit indications and steering-assistance icons, and show lanes in white when steering assistance is inactive (green only while it is active).
-
-Refined does not discard curvature solely because of low lane confidence during a lane change. When the driving path is stale or unusable, it briefly retains the last curvature and then gradually returns the curve display toward straight. A longer lane reassignment can still pause the position display in both modes.
-
-Device compute: added time per CCNC display call, measured by replaying recorded logs on comma big core 5 (1.69 GHz while offroad) on 2026-10-24 after native optimization, with the other options off. Standard +0.16 ms and Refined +0.33 ms over a 0.88 ms all-off baseline. On the same basis, radar vehicles add 2.9 ms, position correction 0.54 ms (radar vehicles on, map off), radar map 1.2 ms and acceleration/mode lane color 0.05 ms. Shared work and tracked state depend on the combination, so these values cannot be added; the tested user combination took 6.27 ms. These times include CAN message generation and packing and are not whole-device CPU usage.
-
-Turn off to use the default lane and icon display. Trailer-related lane-change restrictions take priority. Nearby vehicle display is controlled separately by the next option.
-
-#### CCNC lane curvature display
-
-Chooses what bends the cluster lanes. Applies while **CCNC model lanes** is on (Standard or Refined).
-
-- **Off (0)**: sends zero curvature, so lanes are drawn straight.
-- **Steering angle (1)**: always uses the steering wheel angle, regardless of steering assistance.
-- **Model with lateral (2)**: uses the model's lane curvature while steering assistance is on, otherwise the steering angle. This is the previous behavior and the default.
-- **Always model (3)**: uses the model's lane curvature even when steering assistance is off. Falls back to the steering angle when there are no model lanes or no usable curvature for more than 0.35 s.
-
-Changes apply within about one second. Display only; no effect on steering control.
-
-#### CCNC lane type & color display
-
-Recognizes whether each lane line is solid or dashed and white or yellow, and shows it on the CCNC cluster. Choose **Off** (existing lane display, nothing runs) or **On** (light learned model StripNet). The former Scanner (1-D lane profile scanner) choice is gone; a previously stored value (1 or 2) runs StripNet. The recognizer runs in its own background process that reuses the existing camera frames and model lane positions.
-
-StripNet uses one model, the v4 model (SHA `23ff1bc74942`), retrained with corrected double-line labels plus the 2026-10-23 drives and the 2026-10-24 rain drive and bookmarks, with fewer single lines taken for double lines. Blue lines are treated as white. It outputs dashed, solid, two double-line types and an abstention output; a frame whose abstention output is the highest is skipped. It can still show solid lines as dashed, yellow as white, or white as yellow. If the model files are missing or cannot be read, no lane type is shown (the existing display stays) and a warning is logged; there is no fallback model. The former lane type model setting has been removed.
-
-Lane priority for each side separately: a recognized **yellow** line shows **orange solid**, even when a lane change is otherwise shown as available; otherwise, when the existing lane-change-available condition is met, the line is **green** (solid or dashed as recognized); otherwise it is **white** solid or dashed. A result must be seen twice within 0.4 s and expires 0.5 s after the last evidence; unknown or expired results keep the existing display. Existing lane-departure blinking, lane-line warnings, lane position, curvature and lane-change animation are unchanged. Blind-spot detection no longer turns the lane line orange; the blind-spot warning is shown by the rear-side icons.
-
-The solid/dashed decision averages the recent recognition results over the distance driven and is confirmed when the average probability reaches 0.95 or more (twice its distance from 0.5 is at least 0.9); a confirmed type changes as soon as the other type is confirmed by the same rule. A side whose openpilot lane probability is below 0.25 pauses recognition (from 0.15 and for up to 1 s the previous decision is kept; lower or longer, it starts over), so a fading line, such as a yellow solid line widening into a white dashed one, keeps being recognized within that range.
-
-Recognition continues through lane changes. At 30 km/h or more, while the blinker is on or a lane change is in progress, only results with model confidence of at least 0.9 are used even when the openpilot lane probability is low (with the blinker alone and no lane-change state, the lane probability must be at least 0.3). Crossing a line restarts that side, and a decision made during the blinker is cleared, with its cluster display, below 30 km/h.
-
-Strip extraction plus inference in its separate process, measured on the device for the shipped model (little cores 0–3, nice 10, two OpenCV threads, both sides): median about 14.7 ms/frame (p95 15.6 ms). Recognition gates and onroad load change the actual timing.
-
-This option changes only the cluster display. It does not change the lane-change logic, steering or the driving model; whether a lane change is allowed changes only while `LaneChangeYellowSolid` (Block lane change at yellow solid, default on) is on: while that side shows a yellow solid line, the lane change waits as it does for BSD, and held, white, dashed or expired results never block. Onroad device load and recognition accuracy on the road are not yet measured.
+Device compute: off TBD ms, on TBD ms (mean per cluster update). Lane type recognition runs in a separate process at about 14.7 ms per frame.
 
 #### CCNC stop/go background
 
@@ -405,38 +371,6 @@ Values 5 and 8 were confirmed on an Ioniq 5 PE cluster and are not verified on t
 - Lane highlight, lead ring, popups, alert texts and HDP icon: lane colour by steering state, the lead ring at the gap openpilot keeps, a 2 s popup on engage and release, stock texts for some alerts (the steering-limit text with a 1 s double chime), and the HDP icon while cruise or steering is active (IONIQ 5 PE, Azera / Grandeur GN7 and EV4).
 
 Cluster fixes that apply regardless of this setting are listed under [always-on changes](#always-on-changes). The stop/go background stays with `CcncTrafficBackground` above.
-
-#### CCNC HDA1 radar vehicles
-
-Displays up to one front-radar vehicle ahead and one in each adjacent lane. Adjusts displayed positions for curves and retains nearby vehicle displays while stopped. Applies to HDA1 CCNC vehicles, but not HDA2. Turn off to use the default vehicle display.
-
-Memory that retains side vehicles after detection is lost while stopped or approaching a stop is saved only within a radar longitudinal distance of 15 m. More distant vehicles remain displayed under the existing conditions while detected, but this stop memory does not extend their display.
-
-If lane markings briefly disappear, previously detected side vehicles that remain continuously detected may stay displayed for up to two seconds or 30 m of ego travel, whichever comes first. This continuation ends if detection is interrupted or the target changes. Switching this option on or off reassesses retained vehicle displays.
-
-Enabling this option also hands a confirmed adjacent vehicle to the rear slot on the same side when it passes the display origin and moves behind ego. The virtual display follows the last relative speed, retires faster as observations age, and is removed within six seconds of handover.
-
-A newly appearing front-side vehicle does not erase the current virtual rear vehicle; it replaces that rear slot only when its own handover qualifies. Blind-spot detection discards virtual tracking and takes priority, and clearing the alert never restores an old virtual vehicle. Lane changes or loss of tracking confidence also discard virtual memory.
-
-Rear-side icons represent blind-spot alerts or brief virtual tracking, not measured rear distance or precise position. Do not use icon spacing to judge following distance or whether a lane change is safe. Physical-cluster display quality and the added processing cost of virtual handover have not yet been validated in a vehicle.
-
-#### Vehicle position correction
-
-Applies when **CCNC HDA1 radar vehicles** is enabled. Smoothly centers lane-keeping vehicles ahead and in adjacent lanes, suppressing small lateral fluctuations and isolated coordinate jumps. Changes in adjacent-lane centers are followed gradually.
-
-Sustained lateral motion in one direction releases the center lock to follow the measured position. Once the vehicle settles inside a lane, its icon returns smoothly to that lane's center; isolated coordinate spikes no longer erase all settling evidence. An existing center lock can use lower lane confidence than a new lock while valid boundaries still place the vehicle inside its lane, with up to 0.5 seconds of tolerance for a further confidence drop. Boundary crossings or missing geometry use measured tracking. Once temporary uncertainty ends, the previous center lock can resume; confirmed sustained motion still requires settling first. During ordinary driving, brief changes in display slots at a boundary receive at least 0.2 seconds of confirmation while current measured position and distance continue to update. A different vehicle occupying the previous slot causes an immediate transition. Stopped and stopping-approach displays retain their existing handling, and uncertain information cannot start a new center lock.
-
-Distance, lateral position and speed of confirmed vehicles are checked separately for continuity. Brief detection gaps or position errors use predicted positions for up to 0.3 seconds after the last accepted position; predictions do not extend confirmation or stopped-vehicle memory. New vehicles require repeated observations. A briefly missing vehicle resumes its previous display only when position and speed fit a unique candidate in two consecutive observations. Fast, consistent lateral motion is followed sooner. This can also change the selected display vehicle, displayed distance and detection state.
-
-Turn off to use the existing position display. Does not apply to HDA2 or rear-side blind-spot icons, and does not change lead selection, steering or acceleration control. Corrected icons do not represent precise lateral positions within a lane. Display quality on the physical instrument cluster has not yet been validated in a vehicle.
-
-#### Radar map
-
-Applies when **CCNC HDA1 radar vehicles** is enabled. Switches the selection of the vehicles ahead and in adjacent lanes to the radar-map method. Radar detections within 20 m are accumulated in a map that follows ego motion, and objects that actually moved are treated as vehicles. Closely spaced stationary detections are linked into walls such as bollards, dividers and fences; the wall and detections beyond it are excluded from the display. Beyond 20 m only vehicles that have moved are shown.
-
-While stopped, or slowing below 10 km/h, vehicles waiting in adjacent lanes are shown, and a vehicle beside or slightly behind that left radar coverage (up to 4 m behind) can remain displayed at distance 0. A waiting vehicle that never moved is remembered this way only after two seconds of steady detection; pedestrians and cyclists crossing in front are not remembered. No remembered display is used while driving.
-
-With **Vehicle position correction** also enabled, its lane-center lock, sustained lateral following and display-slot confirmation apply to the vehicles selected by the map. The map handles new-vehicle confirmation and brief detection gaps itself, and a vehicle shown from memory while stopped keeps its last displayed position. Turn off to use the existing vehicle selection. Does not apply to HDA2, and does not change lead selection, steering or acceleration control. Checked only by replaying recorded drives; display on the physical instrument cluster has not yet been validated in a vehicle. Stationary real vehicles and structures cannot always be told apart, so do not rely on the icons to judge whether vehicles are nearby.
 
 ## Display
 
@@ -680,4 +614,4 @@ Settings > Vehicle & Hardware > Indicator Control > Output Device. All six are o
 - `CanfdBlinkerHoldChange` (Hold the Lane Change Blinker): keeps the blinker of a lane change the driver started with a light tap of the lever (one-touch) on until the change is done. Off once the car is 70 % into the new lane, in the finishing phase or 10 s after the start (whichever comes first), and at once on a cancel, the hazard lights or out of D. That side's blinker is then ignored until it has been off for 1 s (at most 5 s).
 - `CanfdBlinkerHoldWait` (Hold the Blinker While a Lane Change Waits): keeps the blinker on for up to 15 s while a lane change the driver asked for with a one-touch tap waits (car in the blind spot...). When the change starts the setting above takes over, or the blinker stops if it is off. Both can be turned on without `CanfdBlinkerKick` and use the same send mode.
 
-Changes the panda firmware. The lamp has been verified on the Ioniq 5 PE, and on the Sonata 2024 in the 11-14 drive. The tunnel and roundabout guards only work where the car provides that information. The yellow (centre) line guard uses the stock camera colour or the CCNC lane marking result (`CcncLaneTypeDetection`): no flash toward a side where a yellow line was seen in the last 2 s.
+Changes the panda firmware. The lamp has been verified on the Ioniq 5 PE, and on the Sonata 2024 in the 11-14 drive. The tunnel and roundabout guards only work where the car provides that information. The yellow (centre) line guard uses the stock camera colour or the CCNC lane marking result (`CcncExtendedDisplay`): no flash toward a side where a yellow line was seen in the last 2 s.

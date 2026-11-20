@@ -14,6 +14,7 @@ from openpilot.common.utils import atomic_write
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params, ParamKeyFlag
 from openpilot.common.atc_params import migrate_atc_params
+from openpilot.common.ccnc_display_migration import OPTION as CCNC_DISPLAY_OPTION, prepare_migration
 from openpilot.common.lateral_geometry_params import migrate_lateral_geometry_params
 from openpilot.common.stopping_params import get_stopping_speed
 from openpilot.common.repo_update import release_boot_lock
@@ -74,6 +75,7 @@ def manager_init() -> UpdateStatus:
   update_status = UpdateStatus(BASEDIR)
 
   params = Params()
+  ccnc_migration_pending = prepare_migration(params)
   params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
   params.clear_all(ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION)
   params.clear_all(ParamKeyFlag.CLEAR_ON_OFFROAD_TRANSITION)
@@ -91,6 +93,8 @@ def manager_init() -> UpdateStatus:
 
   # set unset params to their default value
   for k in params.all_keys():
+    if k == CCNC_DISPLAY_OPTION and ccnc_migration_pending:
+      continue
     default_value = params.get_default_value(k)
     if default_value is not None and params.get(k) is None:
       params.put(k, default_value)
