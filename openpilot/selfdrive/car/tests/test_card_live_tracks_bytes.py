@@ -75,7 +75,15 @@ def rust_model_lines(parsed):
   return lines(parsed[0]), list(map(bits, parsed[1])), lines(parsed[2])
 
 
-def test_kept_bytes_are_the_message_the_submaster_holds():
+def test_kept_bytes_are_the_message_the_submaster_holds(monkeypatch):
+  update_msgs = messaging.SubMaster.update_msgs
+
+  def update_msgs_at_frame_time(submaster, _now, msgs):
+    # Use the same time for both receivers so scheduling cannot change their liveness or frequency comparison.
+    update_msgs(submaster, 1.0 + (submaster.frame + 1) * 0.02, msgs)
+
+  monkeypatch.setattr(messaging.SubMaster, 'update_msgs', update_msgs_at_frame_time)
+
   core = ccnc_core_loader.load()
   assert core is not None
   rng = random.Random(3)
