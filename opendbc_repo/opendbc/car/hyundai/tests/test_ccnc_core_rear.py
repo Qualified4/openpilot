@@ -297,18 +297,24 @@ def test_display_entry_returns_every_slot_in_one_call(display, monkeypatch, capl
     if native:
       entered = core.update_display
 
-      def counted(values, *args):
-        calls.append((args[2], values is not None))
-        rendered = entered(values, *args)
-        if values is not None:
-          assert set(rendered) == set(VEHICLE_FIELDS)
+      def counted(cs, md, frame, inputs, *args):
+        calls.append((frame, inputs is not None))
+        rendered = entered(cs, md, frame, inputs, *args)
+        if inputs is not None:
+          assert set(VEHICLE_FIELDS) <= set(rendered[1])
         return rendered
 
       def unexpected(*args, **kwargs):
         pytest.fail('production display called a Python drawing or state method')
 
       patch.setattr(core, 'update_display', counted)
-      patch.setattr(ext, 'update_lanes', unexpected)
+      for name in ('update_lanes', 'update_speed_limit', 'update_lfa_icon'):
+        patch.setattr(ext, name, unexpected)
+      for name in ('_display_lead', '_apply_driver_monitoring_alert', '_hide_replaced_adas_service_warning',
+                   '_select_cluster_background', '_normalize_cluster_corner_objects', '_apply_cluster_lane_lines'):
+        patch.setattr(main, name, unexpected)
+      patch.setattr(main.ccnc_lane_marking.SideDisplay, 'update', unexpected)
+      patch.setattr(main.ccnc_parking.ParkingLaneHide, 'update', unexpected)
       for owner, names in (
           (rear.SmoothHandover, ('update',)), (rear.SideFlow, ('update',)),
           (radar_map.CcncRadarMap, ('update', 'display_values')),
@@ -380,7 +386,12 @@ def test_display_entry_returns_every_slot_in_one_call(display, monkeypatch, capl
   with monkeypatch.context() as patch:
     actual, actual_lanes, rendered, rust_time = replay(True, patch)
 
-  assert len(actual_lanes) == 130 and actual_lanes == expected_lanes
+  assert len(actual_lanes) == len(expected_lanes) == 130
+  for tick, (actual_fields, expected_fields) in enumerate(zip(actual_lanes, expected_lanes, strict=True)):
+    assert actual_fields == expected_fields, (tick, {
+      field: (actual_fields.get(field), expected_fields.get(field))
+      for field in actual_fields.keys() | expected_fields.keys() if actual_fields.get(field) != expected_fields.get(field)
+    })
   for frame, (a, b) in enumerate(zip(actual, expected, strict=True)):
     assert a == b, (mode, frame, a, b, caplog.text)
   for (frame, got), (_, want) in zip(rendered, values, strict=True):

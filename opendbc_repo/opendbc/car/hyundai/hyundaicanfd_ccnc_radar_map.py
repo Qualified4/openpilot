@@ -1735,12 +1735,12 @@ EGO_ALIGN_TIME = .5  # s, ego's change and the path reference
 EGO_HANDOVER_TIME = .3  # s, one vehicle moving to another slot
 
 
-def _correct_positions(tracker, correction, values, frame, md, ext):
+def _correct_positions(tracker, correction, values, frame, md, ext, *, rust=True):
   """CcncVehiclePositionCorrection on the map's selection: the existing centre lock, lateral
   following and slot debounce, keyed by map object instead of radar ID. The map already
   confirms and predicts objects itself, so the existing temporal track checks are not used."""
   centers = [ext._ccnc_side_lane_center(md, side, None, correction.MIN_LANE_PROBABILITY) for side in (0, 1)]
-  if CORRECT_RUST is not None and type(frame) is int and _rust_correctable(correction, ext):
+  if rust and CORRECT_RUST is not None and type(frame) is int and _rust_correctable(correction, ext):
     # The model is read here (capnp names stay in Python), and only while the blend may be above zero.
     model = _live.model if 0. <= frame * .01 - _live.model_time <= .25 else None
     inputs = _model_inputs(model) if model is not None and (correction.ego_follow_active or _live.ego_blend[1] > 0.) else None
@@ -1837,7 +1837,7 @@ def _rust_correctable(correction, ext):
 _CORRECT_ORIGINALS = (_road_alignment, _model_alignment, _bend, interpolate)
 
 
-def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ext):
+def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ext, *, rust=True):
   """Live FF/LF/RF display from the map alone (CcncRadarMap option); ``ext`` is the existing
   extension module, used for its display conventions and the rear blind-spot icons. Any
   failure returns to the existing selector for that send."""
@@ -1845,6 +1845,8 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
     if _live.tracker is None:
       reset_live()
     tracker, state, out = _live.tracker, ext.state, CS.out
+    if not rust:
+      tracker.RUST = None
     now = frame * .01
     # The controller receives each message only while fresh, without its timestamp: a new
     # reader is stamped on arrival (replay: display differences of a few sends per segment).
@@ -1887,7 +1889,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
       old_change = correction.lane_change
       correction.lane_change = old_change or tracker.lane_offset != 0
       try:
-        _correct_positions(tracker, correction, values, frame, md, ext)
+        _correct_positions(tracker, correction, values, frame, md, ext, rust=rust)
       finally:
         correction.lane_change = old_change
     update_rear_display(values, CS, md, frame, model_lanes, state, tracker, radar_map=True)
@@ -1898,6 +1900,9 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
       carlog.exception('CCNC radar map display failed; using the existing selector')
     _live.tracker = None
     return ext.update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes)
+  finally:
+    if not rust:
+      _live.tracker = None
 
 _UPDATE_VEHICLES_REFERENCE = update_vehicles
 DISPLAY_RUST = ccnc_core_loader.load()

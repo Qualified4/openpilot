@@ -25,6 +25,7 @@ def display(monkeypatch):
   params[POSITION_KEY] = params[MAP_KEY] = False
   params[CURVATURE_KEY] = ccnc_extension.CURVATURE_SOURCE_DEFAULT  # Params default "2"
   params[TRAFFIC_KEY] = False
+  params["MyDrivingMode"] = 3
   monkeypatch.setattr(main, "Params", lambda: N(get_bool=lambda key: bool(params[key]), get_int=lambda key: int(params.get(key, 0)), get=lambda key: "0"))
   monkeypatch.setattr(ccnc_extension, "Params", lambda: N(get_int=lambda key: 3))
   production_options = main._ccnc_display_options

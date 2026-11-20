@@ -3,7 +3,7 @@ import copy
 import time
 import numpy as np
 from opendbc.car.hyundai.scalar import clip_float
-from opendbc.car import CanBusBase, DT_CTRL
+from opendbc.car import CanBusBase, DT_CTRL, structs
 from opendbc.car.carlog import carlog
 from opendbc.car.crc import CRC16_XMODEM
 from opendbc.car.hyundai.values import CAR, HyundaiFlags, HyundaiExtFlags
@@ -1079,18 +1079,61 @@ def _convert_ccnc_front_box_to_car(values):
 _CCNC_DISPLAY_RUST = ccnc_core_loader.load()
 
 
-def _render_ccnc_vehicles(values, CS, md, frame, lane_panel, lead_filter):
-  try:
-    return _CCNC_DISPLAY_RUST.update_display(values, CS, md, frame, lane_panel, ccnc_extension.state,
-                                            ccnc_extension._CcncRadarPositionFilter, ccnc_radar_map.display_inputs(),
-                                            lead_filter)
-  except Exception:
-    ccnc_radar_map.display_failed()
-    if lane_panel is not None and getattr(ccnc_extension.state, 'rust_lane_frame', None) != frame:
-      display, desire, lat_enabled, _ = lane_panel
-      ccnc_extension.update_lanes(display, CS, md, CS.out.vEgo * CV.MS_TO_KPH, CS.out.aEgo * CV.MS_TO_KPH,
-                                  desire, lat_enabled, True, True, frame, curvature_source=3)
-    return None
+def _ccnc_stock_alerts(values, hud_control, car, frame, cruise_enabled):
+  # ALERTS_5 19/21 are DBC values: every CCNC cluster (IONIQ 9's 6 = trailer is the same DBC value, not another table)
+  if cruise_enabled != getattr(create_ccnc_messages, '_was_enabled', cruise_enabled):
+    create_ccnc_messages._engage_popup = (ENGAGE_POPUP if cruise_enabled else DISENGAGE_POPUP, frame + ENGAGE_POPUP_FRAMES)
+  create_ccnc_messages._was_enabled = cruise_enabled
+  popup, popup_until = getattr(create_ccnc_messages, '_engage_popup', (0, 0))
+  if frame < popup_until and values["ALERTS_5"] == 0:
+    values["ALERTS_5"] = popup
+  # the alert's own text beats the generic disengage popup; a stock text still wins
+  text = _cluster_alert_text(getattr(hud_control, "alertType", "") or "")
+  if text and not (car in NON_DBC_CLUSTER_VALUE_CARS or _dbc_listed(*text)):
+    text = None
+  shown = None
+  if text and (values[text[0]] == 0 or (text[0] == "ALERTS_5" and values["ALERTS_5"] == popup and frame < popup_until)):
+    values[text[0]] = text[1]
+    shown = text
+  if shown == CHIME_TEXT and getattr(create_ccnc_messages, '_chime_shown', None) != shown:
+    create_ccnc_messages._chime_until = frame + CHIME_FRAMES
+  create_ccnc_messages._chime_shown = shown
+  # after the stock-sound filter; a stock sound or emergency (ALERTS_1) wins
+  if (shown == CHIME_TEXT and frame < getattr(create_ccnc_messages, '_chime_until', 0)
+      and values["SOUNDS_4"] == 0 and values["ALERTS_1"] == 0):
+    values["SOUNDS_4"] = 2  # DOUBLE CHIME
+
+
+def _apply_ccnc_stock_overlay(values, meta, CS, hud, car, frame, cruise, md):
+  colors, parking_hidden, lead_visible, alerts, oem_sound, dm_chime = meta
+
+  # The stock popup uses the filtered template before the extended gap/HDP/DM overlays.
+  before = alerts.copy()
+  _ccnc_stock_alerts(alerts, hud, car, frame, cruise)
+  for key in ("ALERTS_3", "ALERTS_4", "ALERTS_5"):
+    if alerts[key] != before[key]:
+      values[key] = alerts[key]
+  if not oem_sound and alerts["SOUNDS_4"] != before["SOUNDS_4"]:
+    values["SOUNDS_4"] = alerts["SOUNDS_4"]
+    if dm_chime:
+      values["SOUNDS_2"] = 0
+
+  values["DISTANCE_LEAD"] = (2 if cruise else 1) if lead_visible else 0
+  values["TARGET"] = (1 if cruise else 3) if lead_visible else 0
+  desired = getattr(hud, "desiredDistance", 0.)
+  values["TARGET_DISTANCE"] = clip_float(desired, 0.1, 204.5) if cruise and desired > 0 else CS.adrv_0x161["TARGET_DISTANCE"]
+
+  if car not in LANE_UNSEEN_WIP_CARS:
+    probs = getattr(md, "laneLineProbs", ())
+    unseen = create_ccnc_messages.__dict__.setdefault('_lane_unseen', {})
+    for index, (side, lane, depart, visible, camera) in enumerate((
+      ("L", "LANELINE_LEFT", hud.leftLaneDepart, hud.leftLaneVisible, CS.out.leftLaneLine),
+      ("R", "LANELINE_RIGHT", hud.rightLaneDepart, hud.rightLaneVisible, CS.out.rightLaneLine),
+    )):
+      seen = visible and (len(probs) < 3 or not _lane_unseen(unseen, side, probs[index + 1], frame) or camera // 10 > 0)
+      color = colors[index]
+      if not CS.trailer_connected and not parking_hidden and not depart:
+        values[lane] = _dashed_lane_line(color, camera, car) if seen or color == 4 else LANE_LINE_UNSEEN
 
 
 def _apply_ccnc_lead(values, radar_state, enabled, model_v2=None, hud_lateral=None):
@@ -1321,11 +1364,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   (lane_color_enabled, model_lane_mode, radar_vehicles, position_correction, radar_map, lane_marking_mode,
    curvature_source, traffic_background) = _ccnc_display_options(CP, CS, frame, extended_ccnc)
   model_lanes = model_lane_mode != 0
-  # Display-only lane marking recogniser result (card keeps the latest packet; never waited for here).
-  lane_marking = getattr(CS, 'ccnc_lane_marking', None) if lane_marking_mode in (1, 2) else None
   radar_vehicles = radar_vehicles and not (CP.flags & HyundaiFlags.CANFD_HDA2.value)
   radar_map = radar_map and radar_vehicles
-  native_display = _CCNC_DISPLAY_RUST if radar_map and position_correction and rear_handover else None
+  native_display = (_CCNC_DISPLAY_RUST if radar_map and position_correction and rear_handover
+                    and ccnc_radar_map.can_render_vehicles() else None)
   if radar_map != getattr(create_ccnc_messages, '_radar_map', False):
     # Either selector starts from empty display state when the other one hands over.
     create_ccnc_messages._radar_map = radar_map
@@ -1334,9 +1376,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   ccnc_extension.configure(lane_color_enabled, model_lanes, radar_vehicles, position_correction, model_lane_mode,
                            rear_handover=rear_handover)
   interlock_active = longitudinal_interlock_active(CS)
-  display_lead = _display_lead(getattr(CS, "radarState", None))
-  lead_visible = display_lead is not None
-  lead_distance = clip_float(display_lead.dRel, 0.1, 204.5) if lead_visible else 0.0
 
   md = CS.modelV2
   if not hasattr(create_ccnc_messages, '_lane_line_check') or frame % 100 == 0:
@@ -1349,13 +1388,30 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   lane_line_check = create_ccnc_messages._lane_line_check
   cluster_display = create_ccnc_messages._cluster_display
   car = getattr(CP, "carFingerprint", None)
-  desire, _ = _get_desire_and_lane_changing(md)
+  desire = md.meta.desire.raw if md is not None else 0
 
-  if lead_filter is not None and native_display is None:
-    hud_lateral = lead_filter.update(getattr(CS, "radarState", None), md)
+  native_ok = False
+  built = None
+  if native_display is not None:
+    try:
+      inputs = map_inputs = None
+      if frame % 5 == 0:
+        params = Params()
+        drive_mode = params.get_int("MyDrivingMode") if CS.out.gearShifter == structs.CarState.GearShifter.drive else None
+        inputs = (CC, hud_control, time.monotonic_ns(), lane_line_check, params.get_int("HDPuse"), drive_mode,
+                  paddle_mode, traffic_background, (bool(left_lane_warning), bool(right_lane_warning), canfd_debug > 0))
+        map_inputs = ccnc_radar_map.display_inputs()
+      built = native_display.update_display(CS, md, frame, inputs, ccnc_extension.state,
+                                            ccnc_extension._CcncRadarPositionFilter, map_inputs, lead_filter)
+      native_ok = True
+    except Exception:
+      ccnc_radar_map.display_failed()
+
+  if lead_filter is not None:
+    hud_lateral = lead_filter.value if native_ok else lead_filter.update(getattr(CS, "radarState", None), md)
 
   if CP.flags & HyundaiFlags.CAMERA_SCC.value:
-    if lane_color_enabled or model_lanes or radar_vehicles:
+    if not native_ok and (lane_color_enabled or model_lanes or radar_vehicles):
       v_ego_kph = CS.out.vEgo * CV.MS_TO_KPH
       a_ego_kph = CS.out.aEgo * CV.MS_TO_KPH
     # The camera's SCC output is replaced only with openpilot longitudinal control.
@@ -1431,12 +1487,13 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                              if key.startswith(("ALERTS_", "SOUNDS_")) or key in ("VIBRATE", "BCA_LEFT", "BCA_RIGHT"))
       debug_values = ccnc_debug.live.poll(CP, CC, CS, warning=debug_warning)
       lat_active = CC.latActive
-      native_vehicles = (native_display is not None and CS.ccnc_0x162 is not None
-                         and ccnc_radar_map.can_render_vehicles())
-      lane_panel = None
-      adrv_values = None
+      adrv_values, ccnc_values, corner_values, overlay = built if native_ok else (None, None, None, None)
 
-      if CS.adrv_0x161 is not None:
+      if not native_ok and CS.adrv_0x161 is not None:
+        display_lead = _display_lead(getattr(CS, "radarState", None))
+        lead_visible = display_lead is not None
+        lead_distance = clip_float(display_lead.dRel, 0.1, 204.5) if lead_visible else 0.0
+        lane_marking = getattr(CS, 'ccnc_lane_marking', None) if lane_marking_mode else None
         main_enabled = CS.out.cruiseState.available
         cruise_enabled = CC.enabled
         lat_enabled = CS.out.latEnabled
@@ -1456,7 +1513,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         # hdpuse carrot
 
         values = copy.copy(CS.adrv_0x161)
-        rx_counter = values.pop("COUNTER", None)
         values["SETSPEED"] = (6 if hdp_active else 3 if cruise_enabled else 1) if main_enabled else 0
         values["SETSPEED_HUD"] = (5 if hdp_active else 3 if cruise_enabled else 1) if main_enabled else 0
 
@@ -1525,28 +1581,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           values["ALERTS_5"] = 0
 
         if cluster_display:
-          # ALERTS_5 19/21 are DBC values: every CCNC cluster (IONIQ 9's 6 = trailer is the same DBC value, not another table)
-          if cruise_enabled != getattr(create_ccnc_messages, '_was_enabled', cruise_enabled):
-            create_ccnc_messages._engage_popup = (ENGAGE_POPUP if cruise_enabled else DISENGAGE_POPUP, frame + ENGAGE_POPUP_FRAMES)
-          create_ccnc_messages._was_enabled = cruise_enabled
-          popup, popup_until = getattr(create_ccnc_messages, '_engage_popup', (0, 0))
-          if frame < popup_until and values["ALERTS_5"] == 0:
-            values["ALERTS_5"] = popup
-          # the alert's own text beats the generic disengage popup; a stock text still wins
-          text = _cluster_alert_text(getattr(hud_control, "alertType", "") or "")
-          if text and not (car in NON_DBC_CLUSTER_VALUE_CARS or _dbc_listed(*text)):
-            text = None
-          shown = None
-          if text and (values[text[0]] == 0 or (text[0] == "ALERTS_5" and values["ALERTS_5"] == popup and frame < popup_until)):
-            values[text[0]] = text[1]
-            shown = text
-          if shown == CHIME_TEXT and getattr(create_ccnc_messages, '_chime_shown', None) != shown:
-            create_ccnc_messages._chime_until = frame + CHIME_FRAMES
-          create_ccnc_messages._chime_shown = shown
-          # after the stock-sound filter; a stock sound or emergency (ALERTS_1) wins
-          if (shown == CHIME_TEXT and frame < getattr(create_ccnc_messages, '_chime_until', 0)
-              and values["SOUNDS_4"] == 0 and values["ALERTS_1"] == 0):
-            values["SOUNDS_4"] = 2  # DOUBLE CHIME
+          _ccnc_stock_alerts(values, hud_control, car, frame, cruise_enabled)
 
         # carrot: with HDP on, a gap change shows the stock "distance N" popup (ALERTS_3 7~10) for 2 s; an alert text beats it
         gap_bars = hud_control.leadDistanceBars
@@ -1659,23 +1694,17 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LANE_RIGHT"] = 1 if desire in (2, 4) else 0
 
           if lane_color_enabled or model_lanes:
-            if native_display is None:
-              ccnc_extension.update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled,
-                                          lane_color_enabled, model_lanes, frame, curvature_source=curvature_source)
-            else:
-              drive_mode = ccnc_extension.lane_drive_mode(CS) if lane_color_enabled else None
-              lane_panel = values, desire, lat_enabled, drive_mode
+            ccnc_extension.update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled,
+                                        lane_color_enabled, model_lanes, frame, curvature_source=curvature_source)
         adrv_values = values
-
-      rendered = None
-      if native_display is not None and (native_vehicles or lane_panel is not None or lead_filter is not None):
-        rendered = _render_ccnc_vehicles(CS.ccnc_0x162 if native_vehicles else None, CS, md, frame, lane_panel, lead_filter)
-      if lead_filter is not None:
-        hud_lateral = lead_filter.value
 
       if adrv_values is not None:
         values = adrv_values
-        _apply_driver_monitoring_alert(values, hud_control, CS.adrv_0x161)
+        rx_counter = values.pop("COUNTER", None)
+        if not native_ok:
+          _apply_driver_monitoring_alert(values, hud_control, CS.adrv_0x161)
+        elif cluster_display:
+          _apply_ccnc_stock_overlay(values, overlay, CS, hud_control, car, frame, CC.enabled, md)
         if cluster_display:
           lat_hud = getattr(hud_control, "latHudState", 0)
           if lat_hud and desire in (3, 4):
@@ -1695,7 +1724,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         ret.append(packer.make_can_msg("ADRV_0x200", CAN.ECAN, values, rx_counter = rx_counter))
 
       if CS.adrv_0x1ea is not None:
-        values = copy.copy(CS.adrv_0x1ea)
+        values = corner_values if native_ok else copy.copy(CS.adrv_0x1ea)
         rx_counter = values.pop("COUNTER", None)
         # blinker hold: the confirmed lane change until the body is across (see _blink_hold_side)
         hold_desire = 0 if getattr(CS.out, "cruiseCancelState", False) else desire
@@ -1708,26 +1737,28 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         values['LEFT_BLINK_HOLD'] = 1 if hold == 3 else 0
         values['RIGHT_BLINK_HOLD'] = 1 if hold == 4 else 0
 
-        _apply_cluster_lane_lines(values, CS, lat_active, desire)
-        _normalize_cluster_corner_objects(values)
+        if not native_ok:
+          _apply_cluster_lane_lines(values, CS, lat_active, desire)
+          _normalize_cluster_corner_objects(values)
 
         ret.append(packer.make_can_msg("ADRV_0x1ea", CAN.ECAN, values, rx_counter = rx_counter))
 
       if CS.ccnc_0x162 is not None:
-        values = copy.copy(CS.ccnc_0x162)
+        values = ccnc_values if native_ok else copy.copy(CS.ccnc_0x162)
         # Seed once from RX; the packer owns the per-message TX counter after that.
         # RX-paced Panda forwarding replaces it with the original RX counter.
         rx_counter = values.pop("COUNTER", None)
 
-        if rendered is not None:
-          values.update(rendered)
-        else:
+        if not native_ok:
           if radar_vehicles:
             # These display paths read the copied radar points through CS.
             if hasattr(CS, 'live_tracks'):
-              CS.live_tracks = ccnc_points.snapshot(CS.live_tracks, getattr(CS, 'live_tracks_bytes', None))
+              raw_tracks = getattr(CS, 'live_tracks_bytes', None) if native_display is None else None
+              CS.live_tracks = ccnc_points.snapshot(CS.live_tracks, raw_tracks)
             if radar_map:
-              values = ccnc_radar_map.update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ccnc_extension)
+              args = values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ccnc_extension
+              values = (ccnc_radar_map.update_vehicles(*args, rust=False) if native_display is not None
+                        else ccnc_radar_map.update_vehicles(*args))
             else:
               values = ccnc_extension.update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes)
             # HDA1 extension corner slots use box enums 1/2 for gray/white cars 3/4.
@@ -1739,14 +1770,14 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             _apply_ccnc_lead(values, getattr(CS, "radarState", None), CC.enabled, getattr(CS, "modelV2", None), hud_lateral)
           _convert_ccnc_front_box_to_car(values)
 
-        if (left_lane_warning and not CS.out.leftBlinker) or (right_lane_warning and not CS.out.rightBlinker):
-          values["VIBRATE"] = 1
+          if (left_lane_warning and not CS.out.leftBlinker) or (right_lane_warning and not CS.out.rightBlinker):
+            values["VIBRATE"] = 1
 
-        _hide_replaced_adas_service_warning(values)
+          _hide_replaced_adas_service_warning(values)
 
-        if canfd_debug > 0:
-          values["FAULT_LSS"] = 0
-          values["FAULT_DAS"] = 0
+          if canfd_debug > 0:
+            values["FAULT_LSS"] = 0
+            values["FAULT_DAS"] = 0
 
         values.update(debug_values.get("CCNC_0x162", {}))
         msg = packer.make_can_msg("CCNC_0x162", CAN.ECAN, values, rx_counter=rx_counter)
@@ -1754,9 +1785,6 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         if cluster_display and car in NON_DBC_CLUSTER_VALUE_CARS and (CC.enabled or lat_active):
           msg = _set_raw_bits(msg, (HDP_ICON_BIT,), 1)
         ret.append(msg)
-
-    elif lead_filter is not None and native_display is not None:
-      _render_ccnc_vehicles(None, CS, md, frame, None, lead_filter)
 
     # --- NEW_MSG_4B9 (corner radar keep-alive?) ---
     if enable_corner_radar > 0:

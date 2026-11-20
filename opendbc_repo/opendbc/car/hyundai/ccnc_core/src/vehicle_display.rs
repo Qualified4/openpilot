@@ -30,6 +30,7 @@ macro_rules! put {
 
 mod lane_curvature;
 mod lane_positions;
+mod panel;
 
 fn enum_name<'py>(
     item: &Bound<'py, PyAny>,
@@ -759,13 +760,13 @@ fn filter_stock_lead<'py>(
         .map_or_else(|| (-1_i32).into_pyobject(py).map(|i| i.into_any()), Ok)?;
     let target = (source, identity).into_pyobject(py)?;
     let last: Option<f64> = get!(owner, "distance").extract()?;
+    let lateral = lead.path_lateral(md)?;
     if target.ne(get!(owner, "target"))?
         || last.is_some_and(|last| (lead.distance - last).abs() > 5.)
     {
         put!(filter, "initialized" => false);
     }
     put!(owner, "target" => target, "distance" => lead.distance);
-    let lateral = lead.path_lateral(md)?;
     let value = if get!(filter, "initialized").is_truthy()? {
         let alpha: f64 = get!(filter, "alpha").extract()?;
         let previous: f64 = get!(filter, "x").extract()?;
@@ -785,36 +786,45 @@ type MapConfiguration<'py> = (
     Bound<'py, PyAny>,
 );
 
-/// Draw the 0x161 lane panel when due, then complete and return the fifteen CCNC vehicle fields.
-/// The rear offsets use the updated lane positions, even when the Python vehicle fallback runs.
-/// The shared SCC lead filter advances at control cadence, with or without an 0x162 send.
+type Template<'py> = Option<Bound<'py, PyDict>>;
+type Display<'py> = (
+    Template<'py>,
+    Template<'py>,
+    Template<'py>,
+    Option<panel::StockOverlay<'py>>,
+);
+
+fn template<'py>(cs: &Bound<'py, PyAny>, name: &str) -> PyResult<Template<'py>> {
+    cs.getattr_opt(name)?
+        .filter(|value| !value.is_none())
+        .map(|value| value.cast_into::<PyDict>()?.copy())
+        .transpose()
+}
+
+/// The lead filter advances at 100 Hz. Only ticks with display inputs build CCNC fields.
 #[pyfunction]
-#[pyo3(signature = (values, cs, md, frame, panel, state, position_filter, map, lead_filter))]
+#[pyo3(signature = (cs, md, frame, inputs, state, position_filter, map, lead_filter))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_display<'py>(
-    values: Option<&Bound<'py, PyDict>>,
     cs: &Bound<'py, PyAny>,
     md: &Bound<'py, PyAny>,
     frame: i64,
-    panel: Option<lane_positions::LanePanel<'py>>,
+    inputs: Option<panel::Inputs<'py>>,
     state: &Bound<'py, PyAny>,
     position_filter: &Bound<'py, PyAny>,
-    map: MapConfiguration<'py>,
+    map: Option<MapConfiguration<'py>>,
     lead_filter: Option<&Bound<'py, PyAny>>,
-) -> PyResult<Option<Bound<'py, PyDict>>> {
+) -> PyResult<Option<Display<'py>>> {
     guard(|| {
-        if let Some(filter) = lead_filter {
-            let lead = stock_lead(cs)?;
-            filter_stock_lead(filter, lead.as_ref(), md)?;
-        }
+        let lead = stock_lead(cs)?;
+        let Some(inputs) = inputs else {
+            if let Some(filter) = lead_filter {
+                filter_stock_lead(filter, lead.as_ref(), md)?;
+            }
+            return Ok(None);
+        };
         let py = cs.py();
-        let read_lines = panel.is_some() || values.is_some();
-        let raw_model = if read_lines
-            && !md.is_none()
-            && cs
-                .getattr_opt(intern!(py, "modelV2"))?
-                .is_some_and(|model| model.is(md))
-        {
+        let raw_model = if !md.is_none() {
             cs.getattr_opt(intern!(py, "model_v2_bytes"))?
                 .filter(|v| !v.is_none())
         } else {
@@ -824,45 +834,84 @@ pub(crate) fn update_display<'py>(
             .as_ref()
             .map(|v| v.extract::<&[u8]>())
             .transpose()?;
-        let lines = if read_lines {
-            GeometryInput::read(md, raw)?
-        } else {
-            GeometryInput::default()
-        };
-        if let Some(panel) = &panel {
-            let correction = get!(get!(state, "radar_display_tracker"), "position_correction");
-            let out = get!(cs, "out");
-            let speed: f64 = get!(out, "vEgo").extract()?;
-            let left = get!(out, "leftBlinker").is_truthy()?;
-            let right = get!(out, "rightBlinker").is_truthy()?;
-            update_ego_follow(
-                &correction,
+        let lines = GeometryInput::read(md, raw)?;
+        let meta = optional_model_meta(md)?;
+        let desire = meta
+            .getattr_opt(intern!(py, "desire"))?
+            .map_or(Ok(0), |value| get!(value, "raw").extract::<i64>())?;
+
+        let values_161 = template(cs, "adrv_0x161")?;
+        let values_162 = template(cs, "ccnc_0x162")?;
+        let values_1ea = template(cs, "adrv_0x1ea")?;
+        let panel_attr = intern!(py, "_rust_panel");
+        let mut display_state = state.getattr_opt(panel_attr)?.map_or(
+            Ok(panel::DisplayState::default()),
+            |value| -> PyResult<_> {
+                Ok(value
+                    .cast_into::<panel::DisplayState>()?
+                    .try_borrow()?
+                    .clone())
+            },
+        )?;
+        let mut overlay = None;
+        if let Some(values) = &values_161 {
+            overlay = Some(display_state.draw_161(
+                values,
+                cs,
                 md,
                 &lines,
-                frame as f64 * 0.01,
-                (speed * 3.6) / 3.6,
-                panel.1,
-                (left, right),
-            )?;
-            lane_positions::draw(state, cs, md, raw, frame, &lines, panel)?;
-            put!(state, "rust_lane_frame" => frame);
+                &inputs,
+                frame,
+                desire,
+                lead.as_ref(),
+            )?);
+            if !get!(cs, "trailer_connected").is_truthy()? {
+                let correction = get!(get!(state, "radar_display_tracker"), "position_correction");
+                let out = get!(cs, "out");
+                let speed: f64 = get!(out, "vEgo").extract()?;
+                let left = get!(out, "leftBlinker").is_truthy()?;
+                let right = get!(out, "rightBlinker").is_truthy()?;
+                let lat_enabled = get!(out, "latEnabled").is_truthy()?;
+                update_ego_follow(
+                    &correction,
+                    md,
+                    &lines,
+                    frame as f64 * 0.01,
+                    (speed * 3.6) / 3.6,
+                    desire,
+                    (left, right),
+                )?;
+                let lane_panel = (values.clone(), desire, lat_enabled, inputs.5);
+                lane_positions::draw(state, cs, md, raw, frame, &lines, &lane_panel)?;
+            }
         }
-        let Some(values) = values else {
-            return Ok(None);
-        };
-        let (live, lanes, walls, bands) = map;
-        Ok(Some(update_map_display(
-            values,
-            cs,
-            md,
-            frame,
-            &lines,
-            &live,
-            state,
-            &lanes,
-            &walls,
-            &bands,
-            position_filter,
-        )?))
+        if let Some(values) = &values_162 {
+            let (live, lanes, walls, bands) = map.ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("missing CCNC radar map state")
+            })?;
+            let fields = update_map_display(
+                values,
+                cs,
+                md,
+                frame,
+                &lines,
+                &live,
+                state,
+                &lanes,
+                &walls,
+                &bands,
+                position_filter,
+            )?;
+            values.update(fields.as_mapping())?;
+            panel::draw_162(values, cs, inputs.8)?;
+        }
+        if let Some(values) = &values_1ea {
+            panel::draw_1ea(values, cs, get!(inputs.0, "latActive").is_truthy()?, desire)?;
+        }
+        state.setattr(panel_attr, Bound::new(py, display_state)?)?;
+        if let Some(filter) = lead_filter {
+            filter_stock_lead(filter, lead.as_ref(), md)?;
+        }
+        Ok(Some((values_161, values_162, values_1ea, overlay)))
     })
 }
