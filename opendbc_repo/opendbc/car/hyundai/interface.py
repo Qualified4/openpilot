@@ -57,6 +57,8 @@ class CarInterface(CarInterfaceBase):
         ret.extFlags |= HyundaiExtFlags.BOSCH_RADAR_BUS1.value
 
     if ret.flags & HyundaiFlags.CANFD:
+      if all(fingerprint[CAN.CAM].get(addr) == 32 for addr in (0x161, 0x162)):
+        ret.extFlags |= HyundaiExtFlags.CCNC_CLUSTER_RX.value
       # Shared configuration for CAN-FD cars
       ret.alphaLongitudinalAvailable = True #candidate not in (CANFD_UNSUPPORTED_LONGITUDINAL_CAR | CANFD_RADAR_SCC_CAR)
       #ret.enableBsm = 0x1e5 in fingerprint[CAN.ECAN]

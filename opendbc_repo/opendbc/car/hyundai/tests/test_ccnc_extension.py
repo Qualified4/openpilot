@@ -10,7 +10,7 @@ from opendbc.can.parser import get_raw_value
 from opendbc.car import structs
 from opendbc.car.hyundai import hyundaicanfd as main, hyundaicanfd_ccnc_extension as ccnc_extension
 from opendbc.car.hyundai import hyundaicanfd_ccnc_radar_map as ccnc_radar_map
-from opendbc.car.hyundai.values import HyundaiFlags
+from opendbc.car.hyundai.values import HyundaiExtFlags, HyundaiFlags
 
 KEYS = ("CcncLaneColor", "CcncModelLanes", "CcncRadarVehicles")
 POSITION_KEY = "CcncVehiclePositionCorrection"
@@ -27,7 +27,20 @@ def display(monkeypatch):
   params[TRAFFIC_KEY] = False
   monkeypatch.setattr(main, "Params", lambda: N(get_bool=lambda key: bool(params[key]), get_int=lambda key: int(params.get(key, 0)), get=lambda key: "0"))
   monkeypatch.setattr(ccnc_extension, "Params", lambda: N(get_int=lambda key: 3))
+  production_options = main._ccnc_display_options
+
+  def options(cp, cs, frame, override):
+    if override is not None or "CcncExtendedDisplay" in params:
+      return production_options(cp, cs, frame, override)
+    if frame % 100 == 0 or not hasattr(main.create_ccnc_messages, "_test_display_options"):
+      main.create_ccnc_messages._test_display_options = (
+        params[KEYS[0]], params[KEYS[1]], params[KEYS[2]], params[POSITION_KEY], params[MAP_KEY],
+        params.get("CcncLaneTypeDetection", 0), params[CURVATURE_KEY], params[TRAFFIC_KEY])
+    return main.create_ccnc_messages._test_display_options
+
+  monkeypatch.setattr(main, "_ccnc_display_options", options)
   monkeypatch.delattr(main.create_ccnc_messages, "_display_options", raising=False)
+  monkeypatch.delattr(main.create_ccnc_messages, "_test_display_options", raising=False)
   monkeypatch.delattr(main.create_ccnc_messages, "_radar_map", raising=False)
   monkeypatch.delattr(main.create_ccnc_messages, "_lane_display", raising=False)
   monkeypatch.setattr(ccnc_extension, "state", N())
@@ -36,7 +49,7 @@ def display(monkeypatch):
   md = N(meta=N(desire=N(raw=0), desireState=[], laneChangeAvailableLeft=True, laneChangeAvailableRight=True),
          position=N(x=[0., 10., 30.], y=[0., 0.5, 2.], yStd=[0., 0., 0.]),
          laneLineProbs=[.9]*4, laneLines=[N(y=[y]) for y in (-5., -1., 2., 6.)])
-  out = N(brakeHoldActive=False, parkingBrake=False, vEgo=10., aEgo=.3, steeringAngleDeg=6.,
+  out = N(brakeHoldActive=False, parkingBrake=False, standstill=False, vEgo=10., aEgo=.3, steeringAngleDeg=6.,
           latEnabled=True, steeringPressed=False, vehicleNaviAvailable=False, vCruiseCluster=0.,
           cruiseState=N(available=True), gearShifter=structs.CarState.GearShifter.drive,
           leftLaneLine=0, rightLaneLine=0, leftBlindspot=False, rightBlindspot=False,
@@ -51,8 +64,9 @@ def display(monkeypatch):
   hud.leftLaneVisible = hud.rightLaneVisible = True
   packer = N(make_can_msg=lambda name, bus, values, **kwargs: (name, dict(values)))
 
-  def send(frame=0, flags=HyundaiFlags.CAMERA_SCC.value, lat_active=True, extended_ccnc=None):
-    return main.create_ccnc_messages(N(flags=flags), packer, N(ECAN=0, CAM=2), frame,
+  def send(frame=0, flags=HyundaiFlags.CANFD | HyundaiFlags.CAMERA_SCC, lat_active=True, extended_ccnc=None):
+    cp = N(brand="hyundai", flags=flags, openpilotLongitudinalControl=True, extFlags=HyundaiExtFlags.CCNC_CLUSTER_RX)
+    return main.create_ccnc_messages(cp, packer, N(ECAN=0, CAM=2), frame,
                                     N(enabled=True, latActive=lat_active), cs, hud, 0, False, False, 0, False, 0, 0,
                                     extended_ccnc=extended_ccnc)
   send.hud = hud

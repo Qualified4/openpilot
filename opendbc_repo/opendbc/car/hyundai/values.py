@@ -168,6 +168,7 @@ class HyundaiExtFlags(IntFlag):
   BOSCH_RADAR = 2 ** 17  # passive Bosch MRRevo14F 0x601-0x612 receive provider (see BOSCH_MRREVO14F_CAR)
   BOSCH_RADAR_BUS1 = 2 ** 18  # Observed receive src=1; otherwise use LKAS camera CAN (src=2)
   CANFD_INDICATOR_HOLD = 2 ** 19  # Observed camera ADRV_0x1EA/DLC32 for an external indicator hold
+  CCNC_CLUSTER_RX = 2 ** 20  # Camera bus carries the 0x161 and 0x162 CCNC display templates
 
 class Footnote(Enum):
   CANFD = CarFootnote(

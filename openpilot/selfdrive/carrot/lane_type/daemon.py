@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import time
 
+from openpilot.selfdrive.carrot.lane_type.marking import mode_of
 from openpilot.selfdrive.carrot.lane_type.result import classify, unknown
 from openpilot.selfdrive.carrot.lane_type.display import DisplayPolicy
 
@@ -15,7 +16,7 @@ MAX_INFERENCE_NS = 200_000_000
 
 
 def requested(started, params, CP=None):
-  return started and params.get_bool('CcncLaneTypeDetection')
+  return started and bool(mode_of(params, CP))
 
 
 class Classifier:
@@ -59,7 +60,7 @@ def main():
   # when launched manually rather than by the manager predicate.
   from openpilot.common.params import Params
   params = Params()
-  if not params.get_bool('CcncLaneTypeDetection'):
+  if not bool(mode_of(params)):
     return
   import cv2
   cv2.setNumThreads(1)
@@ -89,7 +90,7 @@ def main():
   last_frame = None
   next_run = 0.0
   engine = os.getenv('CCNC_LANE_TYPE_ENGINE', 'onnx')
-  while params.get_bool('CcncLaneTypeDetection'):
+  while bool(mode_of(params)):
     sm.update(0)
     if time.monotonic() < next_run:
       time.sleep(.01)
@@ -191,13 +192,13 @@ def main():
       warnings[side] = {'laneDeparture': bool(getattr(sm['carControl'].hudControl, side+'LaneDepart', False)) if warning_context_valid else False,
                         'blindSpot': bool(getattr(sm['carState'], side+'Blindspot', False)),
                         'laneLineWarning': line_warning, 'unknown': not warning_context_valid}
-    packet['displayPreview'] = display.update({}, packet, enabled=params.get_bool('CcncLaneTypeDetection'),
+    packet['displayPreview'] = display.update({}, packet, enabled=bool(mode_of(params)),
       model_lanes=params.get_int('CcncModelLanes'), now_ns=time.monotonic_ns(), warnings=warnings)
     packet['ccncPreview'] = packet['displayPreview']['values']
     packet['displayMs'] = (time.monotonic_ns()-display_start)/1e6
     packet['processingMs'] = (time.monotonic_ns()-started_ns)/1e6
     packet['threadCpuMs'] = (time.thread_time_ns()-cpu_start)/1e6
-    if not params.get_bool('CcncLaneTypeDetection'):
+    if not bool(mode_of(params)):
       break
     payload = json.dumps(packet, separators=(',', ':'), allow_nan=False).encode()
     msg = messaging.new_message('customReservedRawData2', size=len(payload), valid=True)

@@ -96,11 +96,8 @@ def enable_xiaoge_data(started, params, CP: car.CarParams) -> bool:
 
 
 def enable_ccnc_lane_type(started, params, CP: car.CarParams) -> bool:
-  # 0 off (process not started), 1 StripNet (2: the former selector's StripNet, same): one display-only recogniser process.
-  try:
-    return started and params.get_int("CcncLaneTypeDetection") in (1, 2)
-  except (TypeError, ValueError):
-    return False
+  from openpilot.selfdrive.carrot.lane_type.marking import mode_of
+  return started and bool(mode_of(params, CP))
 
 def cluster_hud_active(params: Params) -> bool:
   try:

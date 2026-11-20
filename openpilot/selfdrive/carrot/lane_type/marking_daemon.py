@@ -2,7 +2,7 @@
 
 The model (strip_model.load: assets/lane_strip_v4.*, the only one; DaBin 10-26 removed the model choice setting) is loaded at
 start. When it is missing or invalid a warning is logged and nothing is published, so the existing lane display stays; the
-process waits until CcncLaneTypeDetection is turned off. CcncLaneTypeDetection is polled every PARAM_CHECK_S. The active model
+process waits until CcncExtendedDisplay is turned off. CcncExtendedDisplay is polled every PARAM_CHECK_S. The active model
 (manifest version, sha256 prefix) is logged and carried in every packet's 'model' entry. The profile Scanner (Recogniser mode 1)
 is kept for offline replays only and never runs here.
 
@@ -81,7 +81,7 @@ def lanechange_of():
 
 
 def requested(started, params, CP=None):
-  return started and mode_of(params) in MODES
+  return started and mode_of(params, CP) in MODES
 
 
 def lead_d_rel(radar_state, log_mono_ns, stamp_ns, max_age_ns=LEAD_MAX_AGE_NS):

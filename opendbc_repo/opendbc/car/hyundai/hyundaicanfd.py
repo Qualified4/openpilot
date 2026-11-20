@@ -11,6 +11,7 @@ from opendbc.car.hyundai.stopping import MOVING_SPEED, STOP_LOWER_BAND
 from opendbc.car.hyundai.stop_object import apply_signal_stop_object
 from openpilot.common.params import Params
 from openpilot.common.filter_simple import FirstOrderFilter
+from opendbc.car.hyundai.ccnc_capability import hda1_cluster_supported
 from opendbc.car.hyundai import ccnc_debug
 from opendbc.car.hyundai import ccnc_lane_marking
 from opendbc.car.hyundai import ccnc_parking
@@ -1307,34 +1308,27 @@ def create_alt2_adas_button_request(packer, CAN, frame, CC, CS, stopping, *, kee
   return address, bytes(data), bus
 
 
+def _ccnc_display_options(CP, CS, frame, override):
+  if not hasattr(create_ccnc_messages, '_display_options') or frame % 100 == 0:
+    params = Params()
+    create_ccnc_messages._display_options = (bool(params.get_int("CcncExtendedDisplay")),
+                                             bool(params.get_int("CcncTrafficBackground")))
+  requested, traffic_background = create_ccnc_messages._display_options
+  enabled = (requested if override is None else override) and hda1_cluster_supported(CP) and (
+    CS.adrv_0x161 is not None and CS.ccnc_0x162 is not None)
+  return (True, 2, True, True, True, 1, 3, traffic_background) if enabled else (
+    False, 0, False, False, False, 0, ccnc_extension.CURVATURE_SOURCE_DEFAULT, traffic_background)
+
+
 def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                          disp_angle, left_lane_warning, right_lane_warning,
                          enable_corner_radar, stopping, canfd_debug, paddle_mode, hud_lateral=None, *, extended_ccnc=None,
                          rear_handover=True, lead_filter=None):
   ret = []
-  if extended_ccnc is None:
-    if not hasattr(create_ccnc_messages, '_display_options') or frame % 100 == 0:
-      params = Params()
-      create_ccnc_messages._display_options = (
-        params.get_bool("CcncLaneColor"), params.get_int("CcncModelLanes"),
-        params.get_bool("CcncRadarVehicles"),
-        params.get_bool("CcncVehiclePositionCorrection"),
-        params.get_bool("CcncRadarMap"),
-        params.get_int("CcncLaneTypeDetection"),
-        params.get_int("CcncLaneCurvatureSource"),
-        params.get_bool("CcncTrafficBackground"),
-      )
-    (lane_color_enabled, model_lane_mode, radar_vehicles, position_correction, radar_map, lane_marking_mode,
-     curvature_source, traffic_background) = create_ccnc_messages._display_options
-    model_lane_mode = model_lane_mode if model_lane_mode in (0, 1, 2) else 0
-    model_lanes = model_lane_mode != 0
-  else:
-    lane_color_enabled = model_lanes = radar_vehicles = extended_ccnc
-    model_lane_mode = 2 if model_lanes else 0
-    position_correction = radar_map = False
-    lane_marking_mode = 0
-    curvature_source = ccnc_extension.CURVATURE_SOURCE_DEFAULT
-    traffic_background = False
+  (lane_color_enabled, model_lane_mode, radar_vehicles, position_correction, radar_map, lane_marking_mode,
+   curvature_source, traffic_background) = _ccnc_display_options(CP, CS, frame, extended_ccnc)
+  model_lanes = model_lane_mode != 0
+  native_display = _CCNC_DISPLAY_RUST if lane_color_enabled or model_lanes or radar_vehicles else None
   # Display-only lane marking recogniser result (card keeps the latest packet; never waited for here).
   lane_marking = getattr(CS, 'ccnc_lane_marking', None) if lane_marking_mode in (1, 2) else None
   radar_vehicles = radar_vehicles and not (CP.flags & HyundaiFlags.CANFD_HDA2.value)
@@ -1364,7 +1358,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   car = getattr(CP, "carFingerprint", None)
   desire, _ = _get_desire_and_lane_changing(md)
 
-  if lead_filter is not None and _CCNC_DISPLAY_RUST is None:
+  if lead_filter is not None and native_display is None:
     hud_lateral = lead_filter.update(getattr(CS, "radarState", None), md)
 
   if CP.flags & HyundaiFlags.CAMERA_SCC.value:
@@ -1444,7 +1438,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                              if key.startswith(("ALERTS_", "SOUNDS_")) or key in ("VIBRATE", "BCA_LEFT", "BCA_RIGHT"))
       debug_values = ccnc_debug.live.poll(CP, CC, CS, warning=debug_warning)
       lat_active = CC.latActive
-      native_vehicles = (_CCNC_DISPLAY_RUST is not None and CS.ccnc_0x162 is not None
+      native_vehicles = (native_display is not None and CS.ccnc_0x162 is not None
                          and (not radar_vehicles or (ccnc_radar_map.can_render_vehicles() if radar_map
                                                      else ccnc_extension.can_render_vehicles())))
       lane_panel = None
@@ -1455,7 +1449,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         cruise_enabled = CC.enabled
         lat_enabled = CS.out.latEnabled
         # steering pauses at standstill; keep the cluster's steering/lane-change icons as if it were active
-        lat_icon = lat_active or (cruise_enabled and lat_enabled and CS.out.standstill)
+        lat_icon = lat_active or (cruise_enabled and lat_enabled and getattr(CS.out, "standstill", False))
         nav_active = hud_control.activeCarrot > 1
         vehicle_navi_available = CS.out.vehicleNaviAvailable
         nav_icon_available = nav_active or vehicle_navi_available
@@ -1673,7 +1667,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LANE_RIGHT"] = 1 if desire in (2, 4) else 0
 
           if lane_color_enabled or model_lanes:
-            if _CCNC_DISPLAY_RUST is None:
+            if native_display is None:
               ccnc_extension.update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled,
                                           lane_color_enabled, model_lanes, frame, curvature_source=curvature_source)
             else:
@@ -1682,7 +1676,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         adrv_values = values
 
       rendered = None
-      if _CCNC_DISPLAY_RUST is not None and (native_vehicles or lane_panel is not None or lead_filter is not None):
+      if native_display is not None and (native_vehicles or lane_panel is not None or lead_filter is not None):
         rendered = _render_ccnc_vehicles(CS.ccnc_0x162 if native_vehicles else None, CS, md, frame, model_lanes, lane_panel,
                                          radar_vehicles, native_vehicles and radar_map, CC.enabled, hud_lateral, lead_filter)
       if lead_filter is not None:
@@ -1770,7 +1764,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           msg = _set_raw_bits(msg, (HDP_ICON_BIT,), 1)
         ret.append(msg)
 
-    elif lead_filter is not None and _CCNC_DISPLAY_RUST is not None:
+    elif lead_filter is not None and native_display is not None:
       _render_ccnc_vehicles(None, CS, md, frame, False, None, False, False, CC.enabled, None, lead_filter)
 
     # --- NEW_MSG_4B9 (corner radar keep-alive?) ---

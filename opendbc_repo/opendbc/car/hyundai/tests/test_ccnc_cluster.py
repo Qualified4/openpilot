@@ -28,7 +28,7 @@ def fresh_cluster_state():
 
 def cluster_params(display=0, traffic=0, hdp='0'):
   # Params stand-in: CcncClusterDisplay / CcncTrafficBackground (0 = that key's items off) and HDPuse
-  keys = {'CcncClusterDisplay': display, 'CcncTrafficBackground': traffic}
+  keys = {'CcncClusterDisplay': display, 'CcncTrafficBackground': traffic, 'HDPuse': int(hdp)}
   return lambda: SimpleNamespace(get_int=lambda key: keys.get(key, 0), get=lambda key: hdp if key == 'HDPuse' else '0')
 
 
@@ -207,7 +207,7 @@ def test_stop_go_ignores_parked_departure_without_red():
 def test_hdp_gap_bars_and_popup(monkeypatch):
   from openpilot.cereal import log
   monkeypatch.setattr(hyundaicanfd, 'Params', lambda: SimpleNamespace(
-    get_int=lambda key: 0, get=lambda key: '2' if key == 'HDPuse' else '0'))
+    get_int=lambda key: 2 if key == 'HDPuse' else 0, get=lambda key: '2' if key == 'HDPuse' else '0'))
   for attr in ('_gap_bars', '_gap_popup_until'):
     monkeypatch.delattr(hyundaicanfd.create_ccnc_messages, attr, raising=False)
   packer = CANPacker('hyundai_canfd_generated')
@@ -275,7 +275,8 @@ def test_unseen_lane_lines_send_14(monkeypatch, blindspot, left, display, car):
   packer = CANPacker('hyundai_canfd_generated')
   definition = packer.dbc.name_to_msg['ADRV_0x161']
   state = SimpleNamespace(
-    adrv_0x161={key: 0 for key in definition.sigs}, out=structs.CarState(leftBlindspot=blindspot), modelV2=log.ModelDataV2.new_message(),
+      adrv_0x161={key: 0 for key in definition.sigs},
+      out=structs.CarState(leftBlindspot=blindspot, leftLaneLine=20 if blindspot else 0), modelV2=log.ModelDataV2.new_message(),
     lfahda_cluster=None, cruise_buttons_msg=None, adrv_0x200=None, adrv_0x1ea=None, ccnc_0x162=None,
     is_metric=True, paddle_button_prev=0, softHoldActive=0, trailer_connected=False,
   )

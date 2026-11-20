@@ -148,6 +148,9 @@ def test_bytes_reach_the_display_copy(monkeypatch):
   them to the display: the same points, values and types as the copy made from the objects."""
   monkeypatch.setattr(hyundaicanfd, "Params", lambda: SimpleNamespace(get_int=lambda key: 0, get=lambda key: "0",
                                                                       get_bool=lambda key: False))
+  # This test forces the Python selector to observe the IPC copy.
+  monkeypatch.setattr(hyundaicanfd, "_CCNC_DISPLAY_RUST", None)
+  monkeypatch.setattr(hyundaicanfd, "_ccnc_display_options", lambda *args: (True, 2, True, False, False, 0, 3, False))
   packer = CANPacker("hyundai_canfd_generated")
   rng = random.Random(9)
   seen = []

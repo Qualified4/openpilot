@@ -127,7 +127,7 @@ class DesireHelper:
     self.laneChangeDelay = 0.0
     self.blinkerLatchedTurn = 0.0  # m/s, 0 = off
     self.laneChangeLeverWait = False
-    self.laneChangeYellowSolid = False  # LaneChangeYellowSolid on and CCNC lane type detection on
+    self.laneChangeYellowSolid = False  # LaneChangeYellowSolid on with CCNC extended display
     self.kick_model = False  # CanfdBlinkerKick + CanfdBlinkerKickModel: carcontroller kicks the lamp on a model start
     # CanfdBlinkerHoldChange / CanfdBlinkerHoldWait: keep the driver's own lane change request lit (blinker_hold.py)
     self.hold_change = False
@@ -183,7 +183,7 @@ class DesireHelper:
       self.kick_model = self.params.get_bool("CanfdBlinkerKick") and self.params.get_bool("CanfdBlinkerKickModel")
       self.hold_change = self.params.get_bool("CanfdBlinkerHoldChange")
       self.hold_wait = self.params.get_bool("CanfdBlinkerHoldWait")
-      self.laneChangeYellowSolid = self.params.get_bool("LaneChangeYellowSolid") and                                    lane_marking_lib.mode_of(self.params) != 0
+      self.laneChangeYellowSolid = self.params.get_bool("LaneChangeYellowSolid") and lane_marking_lib.mode_of(self.params) != 0
 
   def _update_yellow_solid(self):
     # Only a confirmed, unexpired (solid, yellow) blocks; held/white/dashed/stale values never do.
