@@ -15,6 +15,7 @@ from opendbc.car.hyundai import ccnc_debug
 from opendbc.car.hyundai import ccnc_lane_marking
 from opendbc.car.hyundai import ccnc_parking
 from opendbc.car.hyundai import hyundaicanfd_ccnc_extension as ccnc_extension
+from opendbc.car.hyundai import hyundaicanfd_ccnc_points as ccnc_points
 from opendbc.car.hyundai import hyundaicanfd_ccnc_radar_map as ccnc_radar_map
 from opendbc.car.common.conversions import Conversions as CV
 from openpilot.cereal import log
@@ -1683,6 +1684,9 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         rx_counter = values.pop("COUNTER", None)
 
         if radar_vehicles:
+          # Everything below reads the radar points through CS; interfaces.apply sets the message again each frame.
+          if hasattr(CS, 'live_tracks'):
+            CS.live_tracks = ccnc_points.snapshot(CS.live_tracks, getattr(CS, 'live_tracks_bytes', None))
           if radar_map:
             values = ccnc_radar_map.update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ccnc_extension)
           else:

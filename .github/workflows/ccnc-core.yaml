@@ -1,0 +1,81 @@
+name: CCNC Rust core
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'opendbc_repo/opendbc/car/hyundai/ccnc_core/**'
+      - 'opendbc_repo/opendbc/car/hyundai/ccnc_core_loader.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_radar_map.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_live_tracks.py'
+      - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_points.py'
+      # The Rust liveTracks reader's constants are checked against these schemas.
+      - 'opendbc_repo/opendbc/car/car.capnp'
+      - 'openpilot/cereal/log.capnp'
+      - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_radar_map.py'
+      - '.gitattributes'
+      - '.github/workflows/ccnc-core.yaml'
+  pull_request:
+    paths:
+      - 'opendbc_repo/opendbc/car/hyundai/ccnc_core/**'
+      - 'opendbc_repo/opendbc/car/hyundai/ccnc_core_loader.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_radar_map.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_live_tracks.py'
+      - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_points.py'
+      # The Rust liveTracks reader's constants are checked against these schemas.
+      - 'opendbc_repo/opendbc/car/car.capnp'
+      - 'openpilot/cereal/log.capnp'
+      - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_radar_map.py'
+      - '.gitattributes'
+      - '.github/workflows/ccnc-core.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      CCNC_CORE: opendbc_repo/opendbc/car/hyundai/ccnc_core
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install build and test tools
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          python -m pip install pytest pytest-xdist numpy pycapnp cargo-zigbuild==0.24.1 ziglang==0.15.2
+      # Dependencies (pyo3) and unchanged build outputs are reused between runs.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.CCNC_CORE }} -> target
+      - name: Build the aarch64 extension
+        run: |
+          PYO3_PYTHON="$(command -v python)" cargo zigbuild --locked --release \
+            --manifest-path "$CCNC_CORE/Cargo.toml" --target aarch64-unknown-linux-gnu.2.31
+      - name: Check the committed extension before staging the new build
+        run: |
+          binary="$CCNC_CORE/prebuilt/linux-aarch64/ccnc_core.abi3.so"
+          if git ls-files --error-unmatch -- "$binary" >/dev/null 2>&1; then
+            python - <<'PY'
+          from opendbc.car.hyundai.ccnc_core_loader import load
+
+          if load() is None:
+            raise SystemExit("Committed CCNC Rust core failed validation")
+          PY
+          fi
+      - name: Test the freshly built extension
+        run: |
+          install -Dm755 "$CCNC_CORE/target/aarch64-unknown-linux-gnu/release/libccnc_core.so" \
+            "$CCNC_CORE/prebuilt/linux-aarch64/ccnc_core.abi3.so"
+          # One worker per runner core; the parity seeds are separate tests of uneven length (crowded ones are slow).
+          python -m pytest -q -n auto --dist worksteal -c /dev/null --confcutdir=opendbc_repo -p no:cacheprovider \
+            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py \
+            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_radar_map.py \
+            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_live_tracks.py

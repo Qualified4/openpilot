@@ -9,11 +9,13 @@ from bisect import bisect_left
 from collections import deque
 from dataclasses import dataclass, field
 import math
+import operator
 from types import SimpleNamespace
 
 import numpy as np
 
 from opendbc.car.carlog import carlog
+from opendbc.car.hyundai import ccnc_core_loader
 from opendbc.car.hyundai.ccnc_map_native import loops as _native
 
 
@@ -211,6 +213,13 @@ class CcncRadarMap:
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
                  ('RF_DETECT_DISTANCE', 'RF_DETECT_LATERAL', 'RF_DETECT'))
 
+  # The Rust core runs the map update when it loads, on its own MapObject class (same fields): _advance's objects in one
+  # call, and the rest of the map (_update_lane_reference, _observe, _vision, _walls, _bands, _select) in another. A
+  # subclass or instance that replaces one of those methods (_FUSED below) gets the stages one by one instead, as their
+  # own methods. None runs the Python loops below on the dataclass above (kept as the reference; a subclass or test
+  # sets None to force them).
+  RUST = ccnc_core_loader.load()
+
   def __init__(self):
     self.objects = {}
     self.walls = []
@@ -290,6 +299,9 @@ class CcncRadarMap:
     self.now, self.speed = now, speed
     self.odometer += abs(distance)
     self.poses.append((now, self.pose))
+    if self.RUST is not None:
+      self.RUST.advance(self, dt, distance)
+      return
     for obj in self.objects.values():
       if not self.holding:
         obj.admitted = False
@@ -459,9 +471,7 @@ class CcncRadarMap:
       if 1.8 <= a - b <= 5. and b <= y <= a:
         return 0, {1, 2} <= strong and min(a - y, y - b) >= .35, abs(y - .5 * (a + b))
     elif not usable.intersection((1, 2)):
-      meta = getattr(self.model, 'meta', None)
-      changing = (str(getattr(meta, 'desire', '')) in ('laneChangeLeft', 'laneChangeRight')
-                  or str(getattr(meta, 'laneChangeState', 'off')) in ('laneChangeStarting', 'laneChangeFinishing'))
+      changing = self._model_changing()
       # A distant interpolation gap alone must not enable the no-line distance cap.
       limited = (self.model_stamp is not None and 0. <= self.now - self.model_stamp <= .25 and changing
                  and not any(i in self.lanes and self.lanes[i].probability >= .1 for i in (1, 2)))
@@ -487,6 +497,12 @@ class CcncRadarMap:
         width = min(widths)
         return slot, {inner, line} <= strong and min(offset, width - offset) >= .35, abs(offset - .5 * width)
     return None, False, math.inf
+
+  def _model_changing(self):
+    """Whether the current model reports a lane change (also asked by the Rust _lane, at most once per call)."""
+    meta = getattr(self.model, 'meta', None)
+    return (str(getattr(meta, 'desire', '')) in ('laneChangeLeft', 'laneChangeRight')
+            or str(getattr(meta, 'laneChangeState', 'off')) in ('laneChangeStarting', 'laneChangeFinishing'))
 
   def _settle(self, obj, x, y, stamp):
     """Whether a moving vehicle has come to stay outside the outer lane line of its side. It stays so until
@@ -552,6 +568,9 @@ class CcncRadarMap:
     pose = self.pose_at(stamp)
     if pose is None:
       return []
+    if self.RUST is not None:
+      return self.RUST.measurements(self, self.RUST.radar_points(live.points), stamp, pose[0], pose[1],
+                                    math.cos(pose[2]), math.sin(pose[2]))
     measurements = []
     c, s = math.cos(pose[2]), math.sin(pose[2])
     for p in live.points:
@@ -600,6 +619,8 @@ class CcncRadarMap:
     return measurements
 
   def _associate(self, measurements, stamp):
+    if self.RUST is not None:
+      return self.RUST.associate(self, self.RUST.associate_input(self, measurements, stamp), stamp)
     # Bounded sparse neighborhood search; do not compare every remembered point.
     grid = {}
     age = self.now - stamp
@@ -707,6 +728,9 @@ class CcncRadarMap:
 
   def _forget_lateral(self, obj):
     """Drop the reports and sideways speed a bridged object took from the vehicle its track merged with."""
+    if self.RUST is not None:
+      self.RUST.forget_lateral(obj, self.cos, self.sin)
+      return
     obj.history.clear()
     forward = self.cos * obj.vx + self.sin * obj.vy
     obj.vx, obj.vy = forward * self.cos, forward * self.sin
@@ -714,6 +738,8 @@ class CcncRadarMap:
   def _observe(self, live, stamp):
     measurements = self._measurements(live, stamp)
     assignments = self._associate(measurements, stamp)
+    if self.RUST is not None:
+      return self.RUST.observe(self, measurements, assignments, stamp)
     self._reconnect(measurements, assignments)
     reserved = set(assignments.values())
     measured_keys = set()
@@ -869,6 +895,12 @@ class CcncRadarMap:
         obj.vision_seen = True
 
   def _walls(self, measured):
+    if self.RUST is not None:
+      # The rows for _bands stay in Rust; the bends come back unrounded, and round() stays Python's.
+      rows, bends = self.RUST.walls(self, measured, Wall)
+      self.bends = [(key, round(angle, 1), round(gap, 2)) for key, angle, gap in bends]
+      self._bands(rows, measured, None)
+      return
     self.bends = []  # (key, degrees, gap) joined this cycle through a bend, for inspection.
     for obj in self.objects.values():
       obj.structure = False
@@ -1001,6 +1033,9 @@ class CcncRadarMap:
     return sorted(points)
 
   def _bands(self, candidates, measured, inside):
+    if self.RUST is not None:
+      self.RUST.bands(self, candidates, measured, Band)  # candidates: the Rust _walls rows, with their inside set.
+      return
     lines = {}
     for sign, order in ((1, (1, 0)), (-1, (2, 3))):
       for i in order:
@@ -1429,13 +1464,21 @@ class CcncRadarMap:
       candidates.append((obj.key != self.selected[slot], abs(x), obj.key))
     return min(candidates)[2] if candidates else None
 
+  def _fusable(self):
+    """Whether no subclass or instance replaced a method the one-call Rust update runs in its place."""
+    return _fused_methods(type(self)) == _FUSED_ORIGINALS and _FUSED_NAMES.isdisjoint(vars(self))
+
   def update(self, live, model, now, v_ego, *, radar_time=None, model_time=None, yaw_rate=None, reverse=False,
-             select=True, lane_curves=None, a_ego=None, blindspot=(False, False), evidence=None, lane_change=False, ego_change=None):
+             select=True, lane_curves=None, a_ego=None, blindspot=(False, False), evidence=None, lane_change=False, ego_change=None,
+             live_bytes=None):
     """Return FF/LF/RF objects; retained state is never fed back to raw radar.
 
     ``yaw_rate`` is left-positive in rad/s. If omitted, use the current model's
     opposite-sign orientationRate. Missing/stale pose or stream discontinuities
     invalidate the local frame; ordinary point loss only grows uncertainty.
+
+    ``live_bytes`` are the bytes of the liveTracks Event message ``live`` is (or is a copy of): the one-call Rust
+    update reads the points from them where it can, and from ``live.points`` otherwise.
     """
     if yaw_rate is None:
       rates = getattr(getattr(model, 'orientationRate', None), 'z', ())
@@ -1471,24 +1514,42 @@ class CcncRadarMap:
       self._update_lanes(model, model_time, lane_curves, previous_placed)
       self.model, self.model_stamp = model, model_time
     self.usable = live is not None and 0. <= now - radar_time <= .15
-    self._update_lane_reference()
+    fused = self.RUST is not None and self._fusable()
+    if not fused:
+      self._update_lane_reference()
     self.leads = [(lead.x[0] - 1.52, -lead.y[0]) for lead in getattr(model, 'leadsV3', ())
                   if lead.prob >= .8 and len(lead.x) and len(lead.y)] if model is not None and 0. <= now - model_time <= .25 else []
     self.vision_leads = [(lead.x[0] - 1.52, -lead.y[0], float(lead.v[0]) if len(getattr(lead, 'v', ())) and math.isfinite(lead.v[0]) else None)
                          for lead in getattr(model, 'leadsV3', ())
                          if lead.prob >= self.BRIDGE_PROB and len(lead.x) and len(lead.y) and math.isfinite(lead.x[0]) and math.isfinite(lead.y[0])
                          ] if model is not None and 0. <= now - model_time <= .25 else []
-    measured = set()
-    if self.usable and live is not self.raw and (self.radar_stamp is None or radar_time > self.radar_stamp):
-      measured = self._observe(live, radar_time)
-      self.raw, self.radar_stamp = live, radar_time
-    if model is not None and 0. <= now - model_time <= .25:
-      self._vision(model)
-    self._walls(measured)
-    if select:
-      self._select()
+    observe = self.usable and live is not self.raw and (self.radar_stamp is None or radar_time > self.radar_stamp)
+    if fused:
+      # The model's values as _vision and _lane read them; the stages themselves run in one Rust call.
+      vision = [(lead.x[0] - 1.52, -lead.y[0]) for lead in model.leadsV3 if not lead.prob < .8 and len(lead.x) and len(lead.y)
+                ] if model is not None and 0. <= now - model_time <= .25 else []
+      radar = None
+      if observe:
+        pose = self.pose_at(radar_time)
+        if pose is not None:
+          radar = live.points, (pose[0], pose[1], math.cos(pose[2]), math.sin(pose[2]))
+        self.raw, self.radar_stamp = live, radar_time
+      self.RUST.update(self, observe, radar, radar_time, self.leads, self.vision_leads, vision, self._model_changing(), select, Wall, Band,
+                       live_bytes)
+      if not select:
+        self.selected = (None, None, None)
     else:
-      self.selected = (None, None, None)
+      measured = set()
+      if observe:
+        measured = self._observe(live, radar_time)
+        self.raw, self.radar_stamp = live, radar_time
+      if model is not None and 0. <= now - model_time <= .25:
+        self._vision(model)
+      self._walls(measured)
+      if select:
+        self._select()
+      else:
+        self.selected = (None, None, None)
     if not self.usable:
       self.selected = (None, None, None)
     return tuple(self.objects.get(k) for k in self.selected)
@@ -1583,6 +1644,15 @@ if _native is not None:
   CcncRadarMap.to_ego = _native.to_ego
   CcncRadarMap._geometry = _native.geometry
   CcncRadarMap._lane_view = _native.lane_view
+
+# The methods the one-call Rust update runs in Rust (and those they call), as this module defines them.
+_FUSED_NAMES = frozenset((
+  '_update_lane_reference', '_observe', '_measurements', '_associate', '_reconnect', '_stable', '_forget_lateral', '_settle',
+  '_lane', '_lane_view', '_model_changing', '_band_line', '_body_clear', '_crossing', '_vision', '_walls', '_bend',
+  '_bridge_walls', '_band_row', '_bands', '_in_range', '_radar_vehicle', '_approach_only', '_wall_outside', '_select',
+  '_trail', '_behind_lead', '_ego_lines', '_centre', '_far_hold', '_bridge', '_bridged', '_stop_memory', 'to_ego', 'to_world'))
+_fused_methods = operator.attrgetter(*sorted(_FUSED_NAMES))
+_FUSED_ORIGINALS = _fused_methods(CcncRadarMap)
 
 
 _live = SimpleNamespace(tracker=None, raw=None, radar_time=0., model=None, model_time=0., failed=False, filters={}, ego_blend=(None, 0., 0.), aligned={}, handover={}, generation=None)
@@ -1743,7 +1813,8 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
                    reverse=str(out.gearShifter) == 'reverse', a_ego=out.aEgo,
                    blindspot=(out.leftBlindspot, out.rightBlindspot),
                    lane_change=desire in ('laneChangeLeft', 'laneChangeRight') or signal,
-                   ego_change=desire in ('laneChangeLeft', 'laneChangeRight') or signal)
+                   ego_change=desire in ('laneChangeLeft', 'laneChangeRight') or signal,
+                   live_bytes=getattr(CS, 'live_tracks_bytes', None))
     for side, center in enumerate((state.lf_center, state.rf_center)):
       lane_center = ext._ccnc_side_lane_center(md, side)
       if lane_center is not None:
