@@ -3295,4 +3295,13 @@ if _native_options is not None:
   _CcncVehiclePositionCorrection.update_ego_follow = _native_options.update_ego_follow
 
 
+# The map replaces these methods together. A tool that overrides one keeps the Python path.
+_CCNC_POSITION_ORIGINALS = (
+  _CcncVehiclePositionCorrection,
+  tuple((name, vars(_CcncVehiclePositionCorrection)[name])
+        for name in ('__init__', 'update_centers', 'update_ego_follow', 'apply', '_median', '_ongoing_motion', '_slow_outward', 'stabilize_slots',
+                     '_stabilize_slots', 'inherit_ff_display', 'inherit_side_display')),
+)
+
+
 reset()
