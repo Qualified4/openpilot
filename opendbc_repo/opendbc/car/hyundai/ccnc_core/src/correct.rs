@@ -3,7 +3,7 @@
 //!
 //! The state stays where it is: `correction` (the extension's `_CcncVehiclePositionCorrection`) and
 //! `_live.filters/aligned/handover/ego_blend` are read and written as the Python objects they are, and the
-//! extension's methods (`update_centers`, `apply`, `stabilize_slots`, the filters' `apply`) are called as Python
+//! extension's methods (`update_centers` and the filters' `apply`) are called as Python
 //! methods. The model is read in Python: the caller passes the side lane centres and, while a blend may run, the
 //! model's inner lines, planned path and line probabilities as plain lists.
 
@@ -14,6 +14,7 @@ use pyo3::types::{PyDict, PyFloat, PySet, PyTuple};
 
 use crate::lanes::interpolate;
 use crate::map_object::MapObject;
+use crate::position_correction::{apply, stabilize_slots, ApplyInput};
 use crate::pymath::{py_max, py_min, py_sum};
 
 type Curve = (Vec<f64>, Vec<f64>);
@@ -170,7 +171,7 @@ fn item<'py>(obj: &Bound<'py, PyAny>, index: usize) -> PyResult<Bound<'py, PyAny
 /// of `_live.model` while it is fresh (given whenever the blend may be above zero).
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (tracker, correction, values, frame, centers, model, live, position_filter, namespace, align_time, handover_time))]
+#[pyo3(signature = (tracker, correction, values, frame, centers, model, live, position_filter, align_time, handover_time))]
 pub fn correct_positions<'py>(
     py: Python<'py>,
     tracker: &Bound<'py, PyAny>,
@@ -181,13 +182,38 @@ pub fn correct_positions<'py>(
     model: Option<(Vec<Curve>, Option<Curve>, Vec<f64>)>,
     live: &Bound<'py, PyAny>,
     position_filter: &Bound<'py, PyAny>,
-    namespace: &Bound<'py, PyAny>,
     align_time: f64,
     handover_time: f64,
 ) -> PyResult<()> {
     crate::guard(|| {
         let model = model.map(|(lines, path, probs)| Model { lines, path, probs });
-        correct(py, tracker, correction, values, frame, centers, model.as_ref(), live, position_filter, namespace, align_time, handover_time)
+        correct(py, tracker, correction, values, frame, centers, model.as_ref(), live, position_filter, align_time, handover_time)
+    })
+}
+
+/// Exercise apply with and without a filter: measured map slots always supply one.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn _position_apply_for_test<'py>(
+    correction: &Bound<'py, PyAny>,
+    key: &Bound<'py, PyAny>,
+    position: (f64, f64, bool),
+    aligned: f64,
+    filtered: f64,
+    slot: usize,
+    reference: &Bound<'py, PyTuple>,
+    bounds: Option<(f64, f64)>,
+    observation: &Bound<'py, PyAny>,
+    frame: i64,
+    reliable: bool,
+    lateral_filter: Option<&Bound<'py, PyAny>>,
+) -> PyResult<f64> {
+    crate::guard(|| {
+        let (x, y, fresh) = position;
+        apply(correction, ApplyInput {
+            key, x, y, fresh, aligned, filtered, slot, reference, bounds, observation, frame,
+            reliable, lateral_filter,
+        })
     })
 }
 
@@ -202,7 +228,6 @@ fn correct<'py>(
     model: Option<&Model>,
     live: &Bound<'py, PyAny>,
     position_filter: &Bound<'py, PyAny>,
-    namespace: &Bound<'py, PyAny>,
     align_time: f64,
     handover_time: f64,
 ) -> PyResult<()> {
@@ -326,28 +351,18 @@ fn correct<'py>(
             filters.set_item(&key, (&born, frame, &far, &side))?;
             let far_x: f64 = far.call_method1(intern!(py, "apply"), (x,))?.extract()?;
             values.set_item(&distance, py_min(204.7, py_max(0., far_x * 0.8)))?;
-            let kwargs = PyDict::new(py);
-            kwargs.set_item(intern!(py, "trackId"), &key)?;
-            kwargs.set_item(intern!(py, "dRel"), x)?;
-            kwargs.set_item(intern!(py, "yRel"), y)?;
-            kwargs.set_item(intern!(py, "ccnc_fresh"), seen.eq(tracker.getattr(intern!(py, "radar_stamp"))?)?)?;
-            let point = namespace.call((), Some(&kwargs))?;
+            let fresh = seen.eq(tracker.getattr(intern!(py, "radar_stamp"))?)?;
             let reliable = match bounds {
-                None => pyo3::types::PyBool::new(py, false).to_owned().into_any(),
-                Some(_) if slot == 0 => pyo3::types::PyBool::new(py, true).to_owned().into_any(),
-                Some(_) => item(&correction.getattr(intern!(py, "center_valid"))?, slot - 1)?,
+                None => false,
+                Some(_) if slot == 0 => true,
+                Some(_) => item(&correction.getattr(intern!(py, "center_valid"))?, slot - 1)?.is_truthy()?,
             };
-            let filtered = side.call_method1(intern!(py, "apply"), (aligned,))?;
+            let filtered = side.call_method1(intern!(py, "apply"), (aligned,))?.extract()?;
             let observation = observations.get_item(&key)?.ok_or_else(|| PyKeyError::new_err(key.clone().unbind()))?;
-            let kwargs = PyDict::new(py);
-            kwargs.set_item(intern!(py, "lateral_filter"), &side)?;
-            output = correction
-                .call_method(
-                    intern!(py, "apply"),
-                    (&point, aligned, filtered, slot, reference, bounds, observation, frame, reliable),
-                    Some(&kwargs),
-                )?
-                .extract()?;
+            output = apply(correction, ApplyInput {
+                key: &key, x, y, fresh, aligned, filtered, slot, reference: &reference, bounds,
+                observation: &observation, frame, reliable, lateral_filter: Some(&side),
+            })?;
         }
         if slot == 0 {
             values.set_item(&lateral, py_min(12.7, py_max(-12.8, -output)))?;
@@ -359,8 +374,6 @@ fn correct<'py>(
     live.setattr(intern!(py, "filters"), filters)?;
     live.setattr(intern!(py, "aligned"), drawn)?;
     live.setattr(intern!(py, "handover"), &handover)?;
-    let kwargs = PyDict::new(py);
-    kwargs.set_item(intern!(py, "bypass"), tracker.getattr(intern!(py, "holding"))?)?;
-    correction.call_method(intern!(py, "stabilize_slots"), (values, &selected, &observations, frame), Some(&kwargs))?;
-    Ok(())
+    let bypass = tracker.getattr(intern!(py, "holding"))?;
+    stabilize_slots(correction, values, &selected, &observations, frame, &bypass)
 }

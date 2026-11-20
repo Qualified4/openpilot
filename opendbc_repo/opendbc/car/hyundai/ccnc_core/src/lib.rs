@@ -8,6 +8,7 @@ mod live_tracks;
 mod map_object;
 mod model_v2;
 mod observe;
+mod position_correction;
 mod pymath;
 mod radar_map;
 mod select;
@@ -21,7 +22,7 @@ fn source_hash() -> &'static str {
 
 #[pyfunction]
 fn abi_version() -> u32 {
-    7
+    8
 }
 
 /// A Rust panic reaches Python as PanicException, a BaseException that the display's `except Exception`
@@ -96,5 +97,6 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_math_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_lane_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(correct::correct_positions, module)?)?;
+    module.add_function(wrap_pyfunction!(correct::_position_apply_for_test, module)?)?;
     Ok(())
 }

@@ -141,6 +141,16 @@ def drive(seed, rust, frames=FRAMES, check=None):
       return out
     radar_map._road_alignment, radar_map._model_alignment = road, model_alignment
   previous_filters, previous_blend = {}, 0.
+  cls = ext._CcncVehiclePositionCorrection
+  apply = cls.apply
+  if not rust:
+    def count_apply(self, point, aligned, filtered, slot, reference, bounds, observation,
+                    frame, reliable=True, lateral_filter=None):
+      counts['apply'] += 1
+      counts['apply_unreliable'] += not reliable
+      counts['apply_filter'] += lateral_filter is not None
+      return apply(self, point, aligned, filtered, slot, reference, bounds, observation, frame, reliable, lateral_filter)
+    cls.apply = count_apply
   try:
     for frame in range(frames):
       control = control_frame(frame)
@@ -180,12 +190,19 @@ def drive(seed, rust, frames=FRAMES, check=None):
       counts['holding'] += tracker.holding and any(values[f[2]] for f in tracker.SLOT_FIELDS)
       counts['drawn'] += sum(bool(values[f[2]]) for f in tracker.SLOT_FIELDS)
       counts['ego_follow'] += correction.ego_follow_active
+      counts['slot_debounce'] += sum(saved['pending'] is not None for saved in correction.display_slots.values())
+      counts['center_lock'] += sum(saved['frame'] == control and saved['locked'] and not saved['following']
+                                   for saved in correction.tracks.values())
+      counts['side_follow'] += sum(saved['frame'] == control and saved['slot'] != 0 and saved['following']
+                                   for saved in correction.tracks.values())
       if frame % 50 == 25:
         # Another birth under a kept key: the map never draws a new object under an old key within 15 frames
         # (keys are unique per map; filters are kept for drawn keys only), so the stored birth is changed instead.
         live_state.filters = {key: (born + 1., *rest) for key, (born, *rest) in live_state.filters.items()}
       previous_filters, previous_blend = dict(live_state.filters), blend
   finally:
+    if not rust:
+      cls.apply = apply
     radar_map.CORRECT_RUST, radar_map._road_alignment, radar_map._model_alignment, radar_map._correct_positions = saved
   counts['rust_calls'] = core.calls if rust else 0
   return counts
@@ -194,14 +211,14 @@ def drive(seed, rust, frames=FRAMES, check=None):
 @pytest.fixture(scope='module', autouse=True)
 def rust_core():
   core = ccnc_core_loader.load()
-  assert core is not None and core.abi_version() == 7
+  assert core is not None and core.abi_version() == 8
   assert radar_map.CORRECT_RUST is core
   return core
 
 
 TOTALS = {}
 SHARED = ('blend_in', 'blend_out', 'blend', 'handover', 'new_filter_born', 'new_filter_gap', 'remembered', 'holding',
-          'drawn', 'ego_follow')
+          'drawn', 'ego_follow', 'slot_debounce', 'center_lock', 'side_follow')
 
 
 @pytest.mark.parametrize('seed', range(SEEDS))
@@ -226,17 +243,142 @@ def test_scenarios_reach_the_corner_cases():
     if seed not in TOTALS:  # Run by another pytest-xdist worker.
       TOTALS[seed] = drive(seed, rust=False)
   total = sum(TOTALS.values(), Counter())
-  print(dict(total))
+  print({name: count for name, count in total.items() if name != 'rust_calls'})
   for name in ('blend_in', 'blend_out', 'handover', 'new_filter_born', 'new_filter_gap', 'remembered', 'holding',
-               'bounds_none', 'bounds', 'model_target', 'path_target'):
+               'bounds_none', 'bounds', 'model_target', 'path_target', 'slot_debounce', 'center_lock', 'side_follow',
+               'apply_unreliable', 'apply_filter'):
     assert total[name] > 0, name
 
 
 def test_replaced_alignment_keeps_the_python_correction(monkeypatch):
-  assert radar_map._rust_correctable()
+  correction = ext._CcncVehiclePositionCorrection()
+  assert radar_map._rust_correctable(correction, ext)
   monkeypatch.setattr(radar_map, '_road_alignment', lambda *args: radar_map._CORRECT_ORIGINALS[0](*args))
-  assert not radar_map._rust_correctable()
+  assert not radar_map._rust_correctable(correction, ext)
 
+
+@pytest.mark.parametrize('name', ('apply', 'stabilize_slots', '_median', '_stabilize_slots', 'inherit_side_display'))
+def test_replaced_correction_methods_keep_python(monkeypatch, name):
+  cls = ext._CcncVehiclePositionCorrection
+  correction = cls()
+  assert not radar_map._rust_correctable(type('CustomCorrection', (cls,), {})(), ext)
+  assert radar_map._rust_correctable(correction, ext)
+  with monkeypatch.context() as patch:
+    patch.setattr(correction, name, getattr(correction, name))
+    assert not radar_map._rust_correctable(correction, ext)
+  monkeypatch.setattr(cls, name, lambda *_args, **_kwargs: None)
+  assert not radar_map._rust_correctable(correction, ext)
+
+
+class ApplyPair:
+  """Compare return values, mutable state and optional-filter state at every observation."""
+
+  def __init__(self, core, with_filter):
+    self.core = core
+    self.corrections = [ext._CcncVehiclePositionCorrection() for _ in range(2)]
+    self.filters = [ext._CcncRadarPositionFilter(0., False) if with_filter else None for _ in range(2)]
+    self.counts = Counter()
+
+  def apply(self, frame, y, *, slot=0, x=20., bounds=(2.4, -2.4), reliable=True, fresh=True, model=None,
+            resume=None, missing_observation=False):
+    key = 10
+    if resume is not None:
+      for correction in self.corrections:
+        correction.ego_resume[key] = (1., frame - 1, resume)
+      self.counts['resume_filter' if self.filters[0] is not None else 'resume_without_filter'] += 1
+    for correction in self.corrections:
+      correction.vision_model = model
+    observation = None if missing_observation else (1., frame)
+    reference = ('lane', 'center')
+    filtered = y - 0.025
+    point = N(trackId=key, dRel=x, yRel=y, ccnc_fresh=fresh)
+    python = self.corrections[0].apply(point, y, filtered, slot, reference, bounds, observation,
+                                       frame, reliable, self.filters[0])
+    rust = self.core._position_apply_for_test(self.corrections[1], key, (x, y, fresh), y, filtered,
+                                               slot, reference, bounds, observation, frame, reliable, self.filters[1])
+    states = [vars(correction).copy() for correction in self.corrections]
+    assert all(state.pop('vision_model') is model for state in states)
+    assert bits((python, states[0], self.filters[0])) == bits((rust, states[1], self.filters[1])), frame
+    saved = self.corrections[0].tracks.get(key)
+    if saved is not None:
+      self.counts['reflection_hold'] += saved['hold'] is not None
+      self.counts['center_lock'] += saved['locked'] and not saved['following']
+      self.counts['side_follow'] += slot != 0 and saved['following']
+      departure = saved.get('ff_departure')
+      if departure is not None and departure['vision_reason']:
+        self.counts[departure['vision_reason']] += 1
+
+
+@pytest.mark.parametrize('with_filter', (True, False))
+def test_apply_side_motion_and_resume(rust_core, with_filter):
+  pair = ApplyPair(rust_core, with_filter)
+  pair.apply(0, -0., missing_observation=True)
+  for frame in range(0, 150, 5):
+    pair.apply(frame, 3.1 + max(0, frame - 45) * 0.009, slot=1, bounds=(5.4, 1.8))
+  pair.apply(150, 3.16, slot=1, bounds=(5.4, 1.8), resume=3.77)
+  pair.apply(155, 3.1, slot=1, bounds=(5.4, 1.8))
+  pair.apply(160, 2.8, slot=1, bounds=(5.4, 1.8))
+  pair.apply(165, 2.8, slot=1, bounds=None, reliable=False, fresh=False)
+  for name in ('reflection_hold', 'center_lock', 'side_follow',
+               'resume_filter' if with_filter else 'resume_without_filter'):
+    assert pair.counts[name] > 0, (name, pair.counts)
+  print(dict(pair.counts))
+
+
+def test_apply_vision_backed_ff_departure(rust_core):
+  pair = ApplyPair(rust_core, True)
+  for frame in range(0, 245, 5):
+    y = 0.1 if frame < 80 else min(1.12, 0.8 + (frame - 80) * 0.004)
+    vision_y = 0.1 if frame < 115 else 0.9
+    model = log.ModelDataV2.new_message(timestampEof=frame + 1)
+    lead = model.init('leadsV3', 1)[0]
+    lead.prob, lead.x, lead.y = 0.95, [21.52], [-vision_y]
+    pair.apply(frame, y, model=model.as_reader())
+  assert pair.counts['moved'] > 0, pair.counts
+  print(dict(pair.counts))
+
+
+def test_positions_inherit_both_front_display_values(rust_core, monkeypatch):
+  xs = [0., 30.]
+  edges = (5.4, 1.8, -1.8, -5.4)
+  md = N(laneLines=[N(x=xs, y=[-y, -y]) for y in edges], laneLineProbs=[0.9] * 4)
+  runs = []
+  native = Counted(rust_core)
+  for core in (None, native):
+    monkeypatch.setattr(radar_map, 'CORRECT_RUST', core)
+    radar_map.reset_live()
+    correction = ext._CcncVehiclePositionCorrection()
+    tracker = N(SLOT_FIELDS=radar_map.CcncRadarMap.SLOT_FIELDS, generation=object(), lane_offset=0,
+                lanes={i: N(probability=0.9) for i in range(4)},
+                geometry={i: list(zip(xs, [y, y], strict=True)) for i, y in enumerate(edges)},
+                weak=set(), remembered=(False, False, False), holding=False)
+    for frame, first_key, ys in ((0, 100, (0.25, 3.25)), (5, 200, (0.1, 3.36))):
+      selected = (first_key, first_key + 1)
+      tracker.selected = (*selected, None)
+      tracker.radar_stamp = frame * 0.01
+      tracker.objects = {key: N(key=key, born=tracker.radar_stamp, seen=tracker.radar_stamp) for key in selected}
+      tracker.local = {key: (11. + tracker.radar_stamp, y) for key, y in zip(selected, ys, strict=True)}
+      values = dict.fromkeys(SIGNALS, 0) | {'FF_DETECT': 2, 'LF_DETECT': 2}
+      radar_map._correct_positions(tracker, correction, values, frame, md, ext)
+      assert values['FF_LATERAL'] == -0.25 and values['LF_DETECT_LATERAL'] == 3.25
+    runs.append(bits((values, correction)))
+  assert native.calls == 2
+  assert runs[0] == runs[1]
+
+
+def test_apply_missing_state_field_raises_at_the_same_write(rust_core):
+  point = N(trackId=10, dRel=20., yRel=0.25, ccnc_fresh=True)
+  states = [ext._CcncVehiclePositionCorrection() for _ in range(2)]
+  reference, bounds, observation = ('lane', 'center'), (2., -2.), (1., 0)
+  for correction in states:
+    correction.apply(point, 0.25, 0.25, 0, reference, bounds, observation, 0)
+    del correction.tracks[10]['samples']
+  with pytest.raises(KeyError, match='samples'):
+    states[0].apply(point, 0.5, 0.5, 0, reference, bounds, observation, 1)
+  with pytest.raises(KeyError, match='samples'):
+    rust_core._position_apply_for_test(states[1], 10, (20., 0.25, True), 0.5, 0.5, 0, reference,
+                                       bounds, observation, 1, True, None)
+  assert bits(states[0]) == bits(states[1])
 
 def test_rust_error_returns_to_the_existing_selector(monkeypatch):
   # A Rust failure (here a filter class that cannot be made) takes update_vehicles' fallback, as a Python one does.

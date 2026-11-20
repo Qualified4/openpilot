@@ -1739,12 +1739,12 @@ def _correct_positions(tracker, correction, values, frame, md, ext):
   following and slot debounce, keyed by map object instead of radar ID. The map already
   confirms and predicts objects itself, so the existing temporal track checks are not used."""
   centers = [ext._ccnc_side_lane_center(md, side, None, correction.MIN_LANE_PROBABILITY) for side in (0, 1)]
-  if CORRECT_RUST is not None and type(frame) is int and _rust_correctable():
+  if CORRECT_RUST is not None and type(frame) is int and _rust_correctable(correction, ext):
     # The model is read here (capnp names stay in Python), and only while the blend may be above zero.
     model = _live.model if 0. <= frame * .01 - _live.model_time <= .25 else None
     inputs = _model_inputs(model) if model is not None and (correction.ego_follow_active or _live.ego_blend[1] > 0.) else None
     CORRECT_RUST.correct_positions(tracker, correction, values, frame, tuple(centers), inputs, _live, ext._CcncRadarPositionFilter,
-                                   SimpleNamespace, EGO_ALIGN_TIME, EGO_HANDOVER_TIME)
+                                   EGO_ALIGN_TIME, EGO_HANDOVER_TIME)
     return
   observations = {o.key: (o.born, round(o.seen * 100.)) for o in tracker.objects.values()}
   correction.update_centers(centers[0], centers[1], frame, observations)
@@ -1821,9 +1821,16 @@ def _model_inputs(md):
           list(getattr(md, 'laneLineProbs', ()))[1:3])
 
 
-def _rust_correctable():
-  """The Rust _correct_positions does what this module's functions do; one replaced (a tool, a test) keeps Python."""
-  return (_road_alignment, _model_alignment, _bend, interpolate) == _CORRECT_ORIGINALS
+def _rust_correctable(correction, ext):
+  """Use the Python implementation when a tool, test or subclass supplies its own correction."""
+  if (_road_alignment, _model_alignment, _bend, interpolate) != _CORRECT_ORIGINALS:
+    return False
+  originals = getattr(ext, '_CCNC_POSITION_ORIGINALS', None)
+  cls = type(correction)
+  if originals is None or cls is not originals[0]:
+    return False
+  methods, overrides = vars(cls), vars(correction)
+  return all(name not in overrides and methods.get(name) is method for name, method in originals[1])
 
 
 _CORRECT_ORIGINALS = (_road_alignment, _model_alignment, _bend, interpolate)
