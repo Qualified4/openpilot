@@ -64,16 +64,22 @@ pub struct Lanes<'py> {
 pub struct LaneCache<'a, 'py> {
     radar_map: &'a Bound<'py, PyAny>,
     lanes: Option<Lanes<'py>>,
+    preset: Option<(f64, f64, bool)>, // (OUTER_NARROW, OUTER_FAR, _model_changing()) read by the caller
 }
 
 impl<'a, 'py> LaneCache<'a, 'py> {
     pub fn new(radar_map: &'a Bound<'py, PyAny>) -> Self {
-        Self { radar_map, lanes: None }
+        Self { radar_map, lanes: None, preset: None }
+    }
+
+    /// The one-call update's snapshot: its constants and the model's lane change state come from the caller.
+    pub fn preset(radar_map: &'a Bound<'py, PyAny>, outer_narrow: f64, outer_far: f64, changing: bool) -> Self {
+        Self { radar_map, lanes: None, preset: Some((outer_narrow, outer_far, changing)) }
     }
 
     pub fn get(&mut self) -> PyResult<&mut Lanes<'py>> {
         if self.lanes.is_none() {
-            self.lanes = Some(Lanes::read(self.radar_map)?);
+            self.lanes = Some(Lanes::read(self.radar_map, self.preset)?);
         }
         Ok(self.lanes.as_mut().unwrap())
     }
@@ -84,7 +90,7 @@ fn attr_f64(obj: &Bound<'_, PyAny>, name: &Bound<'_, pyo3::types::PyString>) -> 
 }
 
 impl<'py> Lanes<'py> {
-    fn read(m: &Bound<'py, PyAny>) -> PyResult<Self> {
+    fn read(m: &Bound<'py, PyAny>, preset: Option<(f64, f64, bool)>) -> PyResult<Self> {
         let py = m.py();
         let lanes = m.getattr(intern!(py, "lanes"))?;
         let lanes = lanes.cast::<PyDict>()?;
@@ -112,15 +118,19 @@ impl<'py> Lanes<'py> {
             let age = attr_f64(m, intern!(py, "now"))? - model_stamp.extract::<f64>()?;
             (0. ..=0.25).contains(&age)
         };
+        let (outer_narrow, outer_far, changing) = match preset {
+            Some((narrow, far, changing)) => (narrow, far, Some(changing)),
+            None => (attr_f64(m, intern!(py, "OUTER_NARROW"))?, attr_f64(m, intern!(py, "OUTER_FAR"))?, None),
+        };
         Ok(Self {
             radar_map: m.clone(),
             lines,
             lane_offset: m.getattr(intern!(py, "lane_offset"))?.extract()?,
             model_fresh,
             has_geometry: !geometry.is_empty(),
-            outer_narrow: attr_f64(m, intern!(py, "OUTER_NARROW"))?,
-            outer_far: attr_f64(m, intern!(py, "OUTER_FAR"))?,
-            changing: None,
+            outer_narrow,
+            outer_far,
+            changing,
             bands: None,
         })
     }
@@ -141,6 +151,33 @@ impl<'py> Lanes<'py> {
     /// `self.geometry.get(i)`.
     pub fn geometry(&self, i: usize) -> Option<&[(f64, f64)]> {
         self.lines.get(i).and_then(|line| line.geometry.as_deref())
+    }
+
+    /// `interpolate(self.geometry.get(i, []), x)`.
+    pub fn at(&self, i: i64, x: f64) -> Option<f64> {
+        interpolate(self.line(i).and_then(|line| line.geometry.as_deref()).unwrap_or(&[]), x)
+    }
+
+    /// `interpolate(self.geometry.get(i, []), x)` of a line in `self.lanes` with probability .1 or more, else None.
+    pub fn boundary(&self, i: i64, x: f64) -> Option<f64> {
+        match self.line(i)?.lane {
+            Some((probability, _)) if probability >= 0.1 => self.at(i, x),
+            _ => None,
+        }
+    }
+
+    /// Whether line i is in `self.lanes` with probability .1 or more.
+    pub fn usable(&self, i: i64) -> bool {
+        self.line(i).and_then(|line| line.lane).is_some_and(|(probability, _)| probability >= 0.1)
+    }
+
+    pub fn lane_offset(&self) -> i64 {
+        self.lane_offset
+    }
+
+    /// After `_update_lane_reference` has set the map's lane offset.
+    pub fn set_lane_offset(&mut self, offset: i64) {
+        self.lane_offset = offset;
     }
 
     /// `_lane_view(x)`: bounds by role, and the usable/strong roles as bit masks.
@@ -263,8 +300,8 @@ impl<'py> Lanes<'py> {
         Ok((None, false, f64::INFINITY))
     }
 
-    /// `_ego_lines(x)` and `_centre(x)`: the middle of ego's lane lines, or None.
-    pub fn centre(&self, x: f64) -> Option<f64> {
+    /// `_ego_lines(x)`: ego's left and right lane lines at x (None where unusable).
+    pub fn ego_lines(&self, x: f64) -> (Option<f64>, Option<f64>) {
         let line = |i: i64| -> Option<f64> {
             if !(0..4).contains(&i) {
                 return None;
@@ -274,7 +311,12 @@ impl<'py> Lanes<'py> {
                 _ => None,
             }
         };
-        let (left, right) = (line(1 + self.lane_offset), line(2 + self.lane_offset));
+        (line(1 + self.lane_offset), line(2 + self.lane_offset))
+    }
+
+    /// `_centre(x)`: the middle of ego's lane lines, or None.
+    pub fn centre(&self, x: f64) -> Option<f64> {
+        let (left, right) = self.ego_lines(x);
         Some(0.5 * (left? + right?))
     }
 

@@ -1,11 +1,14 @@
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
+mod consts;
 mod lanes;
 mod map_object;
 mod observe;
 mod pymath;
 mod radar_map;
+mod select;
+mod update;
 mod walls;
 
 #[pyfunction]
@@ -15,7 +18,7 @@ fn source_hash() -> &'static str {
 
 #[pyfunction]
 fn abi_version() -> u32 {
-    4
+    5
 }
 
 /// A Rust panic reaches Python as PanicException, a BaseException that the display's `except Exception`
@@ -77,6 +80,8 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<walls::WallRows>()?;
     module.add_function(wrap_pyfunction!(walls::walls, module)?)?;
     module.add_function(wrap_pyfunction!(walls::bands, module)?)?;
+    module.add_function(wrap_pyfunction!(update::update, module)?)?;
+    module.add_function(wrap_pyfunction!(update::_update_calls_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_sum_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_math_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_lane_for_test, module)?)?;

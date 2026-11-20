@@ -1,6 +1,9 @@
-"""The Rust radar map loops (_measurements, _associate, _observe, _advance's objects, _walls, _bands) give the same bits as the
-Python reference, on the real map class. The Rust path keeps its objects in the Rust MapObject class, the Python
-path in the dataclass; both are compared as their fields (dataclass vars(), Rust __getstate__())."""
+"""The Rust radar map update gives the same bits as the Python reference, on the real map class: the one-call update
+(_update_lane_reference, _observe, _vision, _walls, _bands, _select in one Rust call, _advance's objects in another), and
+the stage-by-stage Rust path a subclass that replaces one of those methods gets. The Rust path keeps its objects in the
+Rust MapObject class, the Python path in the dataclass; both are compared as their fields (dataclass vars(), Rust
+__getstate__())."""
+from collections import Counter
 from collections import deque
 import functools
 import importlib.util
@@ -61,32 +64,36 @@ def fields(obj):
   return vars(obj) if hasattr(obj, '__dict__') else obj.__getstate__()
 
 
+RECORDER = ('log', 'counts', 'associating', 'selecting')
+
+
 def state(m):
-  # The recorder's counts of Python calls, which the Rust path partly makes in Rust.
-  out = {k: v for k, v in vars(m).items() if k not in ('generation', 'raw', 'model', 'log', 'lane_checks', 'reconnects',
-                                                       'meta_checks', 'meta_changing', 'bridged_walls')}
+  # Not the recorder's own attributes: only the Python path and the stage-by-stage Rust path record.
+  out = {k: v for k, v in vars(m).items() if k not in ('generation', 'raw', 'model') + RECORDER}
   out['objects'] = {k: fields(o) for k, o in m.objects.items()}
   return out
 
 
 class Recorder:
-  """Records each _measurements/_associate result and the id state they leave; the computation is the real class's."""
+  """Records each _measurements/_associate result and the id state they leave, and counts the corner cases the other
+  methods reach; the computation is the real class's. Its methods replace the map's, so a Rust map with them runs
+  stage by stage: the one-call Rust map records nothing."""
 
   def __init__(self):
     super().__init__()
     self.log = []
-    self.associating = False
-    self.lane_checks = self.reconnects = self.meta_checks = self.meta_changing = self.bridged_walls = 0
+    self.counts = Counter()
+    self.associating = self.selecting = False
 
   def reset(self):
-    counts = self.log, self.lane_checks, self.reconnects, self.meta_checks, self.meta_changing, self.bridged_walls
+    log, counts = self.log, self.counts
     super().reset()
-    self.log, self.lane_checks, self.reconnects, self.meta_checks, self.meta_changing, self.bridged_walls = counts
+    self.log, self.counts = log, counts
 
   def _bridge_walls(self, candidates, measured):  # Python path only.
     before = len(self.walls)
     super()._bridge_walls(candidates, measured)
-    self.bridged_walls += before - len(self.walls)
+    self.counts['bridged_walls'] += before - len(self.walls)
 
   def _measurements(self, live, stamp):
     out = super()._measurements(live, stamp)
@@ -105,21 +112,71 @@ class Recorder:
   def _reconnect(self, measurements, assignments):  # Python path only.
     before = len(assignments)
     super()._reconnect(measurements, assignments)
-    self.reconnects += len(assignments) > before
+    self.counts['reconnects'] += len(assignments) > before
 
   def _model_changing(self):
     changing = super()._model_changing()
-    self.meta_checks += 1
-    self.meta_changing += changing
+    self.counts['meta_checks'] += 1
+    self.counts['meta_changing'] += changing
     return changing
 
   def _lane(self, *args, **kwargs):
-    self.lane_checks += self.associating  # Continuation candidates (Python path only: Rust checks the lane itself).
+    self.counts['lane_checks'] += self.associating  # Continuation candidates (Python path only: Rust checks the lane itself).
     return super()._lane(*args, **kwargs)
 
+  def _vision(self, model):
+    before = {k: (o.vision, o.vehicle, o.vision_seen) for k, o in self.objects.items()}
+    super()._vision(model)
+    self.counts['vision_changed'] += sum(before[k] != (o.vision, o.vehicle, o.vision_seen) for k, o in self.objects.items())
 
-class RustMap(Recorder, CcncRadarMap):
-  pass
+  def _select(self):
+    self.selecting = True
+    try:
+      super()._select()
+    finally:
+      self.selecting = False
+
+  def _wall_outside(self, x, y):
+    out = super()._wall_outside(x, y)
+    self.counts['wall_outside'] += self.selecting and out
+    return out
+
+  def _approach_only(self, obj):
+    out = super()._approach_only(obj)
+    self.counts['approach_only'] += self.selecting and out
+    return out
+
+  def _behind_lead(self, key, slot, lead_x):
+    out = super()._behind_lead(key, slot, lead_x)
+    self.counts['behind_lead'] += out
+    return out
+
+  def _stop_memory(self, slot):
+    out = super()._stop_memory(slot)
+    self.counts['stop_memory'] += out is not None
+    return out
+
+  def _far_hold(self, normal, far):
+    out = super()._far_hold(normal, far)
+    self.counts['far_hold'] += out != normal
+    return out
+
+  def _bridged(self, normal):
+    before = self.bridge
+    out = super()._bridged(normal)
+    after = self.bridge
+    self.counts['bridge_start'] += before is None and after is not None
+    self.counts['bridge_kept'] += before is not None and after is not None
+    self.counts['bridge_expired'] += before is not None and after is None and self.now - before['start'] > self.BRIDGE_HOLD
+    return out
+
+
+class RustMap(CcncRadarMap):
+  """The one-call Rust update: no method replaced."""
+
+
+class StepRustMap(Recorder, CcncRadarMap):
+  """The stage-by-stage Rust path, which the recorder's methods select."""
 
 
 class PythonMap(Recorder, CcncRadarMap):
@@ -130,8 +187,22 @@ class PythonMap(Recorder, CcncRadarMap):
 def rust_core():
   core = ccnc_core_loader.load()
   assert core is not None, 'the x86_64 test build must be in prebuilt/linux-x86_64'
-  assert CcncRadarMap.RUST is core and core.abi_version() == 4
+  assert CcncRadarMap.RUST is core and core.abi_version() == 5
   return core
+
+
+def test_replaced_methods_select_the_stage_by_stage_path():
+  assert RustMap()._fusable() and CcncRadarMap()._fusable()
+  assert not StepRustMap()._fusable() and not PythonMap()._fusable()
+
+  class Lane(CcncRadarMap):
+    def _lane(self, *args, **kwargs):
+      return super()._lane(*args, **kwargs)
+
+  assert not Lane()._fusable()
+  m = RustMap()
+  m._stop_memory = lambda slot: None
+  assert not m._fusable()
 
 
 def model(rng, frame, *, desire='none', state='off', lead=None, bend=0., shift=0., weak=False):
@@ -200,6 +271,15 @@ class Scenario:
     self.lane_shift = seed % 3 == 0  # Ego crosses its left line during the lane change (lane_offset).
     self.weak_lines = seed % 3 == 1  # Frames 420-499: lines 1 and 2 below .1, with a model lane change state.
 
+  def held(self, frame):
+    """Frames 460-509 of a lead scenario: the lead lost for 2.5s with fresh radar throughout (no stale frame ends the
+    bridge), so that the bridge runs out while vision still sees the lead."""
+    return self.lead and 460 <= frame < 510
+
+  def fresh(self, frame):
+    """Whether this frame's radar is fresh: every 7th is too old, except around a lead's long loss."""
+    return frame % 7 != 0 or (self.lead and 450 <= frame < 520)
+
   def shift(self, frame):
     """Lateral move of the model's lines: ego crossing to the left lane, then the model renumbering them."""
     if not self.lane_shift or not 300 <= frame < 370:
@@ -231,8 +311,10 @@ class Scenario:
           y += 2.2
         if frame >= 257:
           track, x = track + 10, x + .9
-        points.append(dict(trackId=track, dRel=x, yRel=y + rng.gauss(0., .03), vRel=t['v'] - v_ego, vLead=t['v'],
-                           measured=True, radarSource='frontRadar', motionState=2, trackState=2))
+        lead = dict(trackId=track, dRel=x, yRel=y + rng.gauss(0., .03), vRel=t['v'] - v_ego, vLead=t['v'],
+                    measured=True, radarSource='frontRadar', motionState=2, trackState=2)
+        if not self.held(frame):  # Lost for longer than BRIDGE_HOLD (the draw above keeps the generator's sequence).
+          points.append(lead)
         continue
       if t.get('creep') and not (180 <= frame < 420 and v_ego < .5):
         continue
@@ -336,6 +418,24 @@ class Structures:
     return out
 
 
+def approaching(seed, pose):
+  """On even seeds, fixed returns in the left lane every 50m that report .97m/s towards ego: unexplained speed (Doppler
+  evidence, all towards ego) below RESTING_SPEED, so the map keeps them at rest. A vehicle confirmed by approach speed
+  alone is never a side vehicle (_approach_only). No random draws: the scenario's generators stay as they were."""
+  if seed % 2:
+    return []
+  px, py, angle = pose
+  c, s = math.cos(angle), math.sin(angle)
+  out = []
+  for j in range(20):
+    wx, wy = 10. + 50. * j, 3.5
+    x, y = c * (wx - px) + s * (wy - py), -s * (wx - px) + c * (wy - py)
+    if 3.5 <= x <= 20.:
+      out.append(dict(trackId=60000 + j, dRel=x, yRel=y, vRel=-.97, vLead=-.97, measured=True, radarSource='frontRadar',
+                      motionState=1, trackState=2))
+  return out
+
+
 def capnp_live(points):
   msg = structs.RadarData.new_message()
   out = msg.init('points', len(points))
@@ -353,6 +453,10 @@ def wall_keys(m):
   return [frozenset(w.members) for w in m.walls]
 
 
+COUNTS = ('lane_checks', 'reconnects', 'meta_checks', 'meta_changing', 'bridged_walls', 'vision_changed', 'wall_outside',
+          'approach_only', 'behind_lead', 'stop_memory', 'far_hold', 'bridge_start', 'bridge_kept', 'bridge_expired')
+
+
 def run(seed, maps, frames=FRAMES):
   scenario = Scenario(seed)
   structures = Structures(seed)
@@ -360,13 +464,18 @@ def run(seed, maps, frames=FRAMES):
   stats = dict(calls=0, measurements=0, assignments=0, jumps=0, max_objects=0, evicted=0, holding=0, bridge=0, stable_y=0,
                bridge_stable_y=0, ahead_of=0, departed=0, settled=0, lane_offset=0, negative_zero=0,
                walls=0, wall_created=0, wall_kept=0, wall_cancelled=0, wall_16=0, wall_cap=0, structure_cap=0, bends=0,
-               band_created=0, band_extended=0, band_vanished=0, band_early=0, early_twins=0)
+               band_created=0, band_extended=0, band_vanished=0, band_early=0, early_twins=0,
+               selected_ff=0, selected_lf=0, selected_rf=0, selection_changed=0, remembered=0, one_call=0)
   walls, bands, early, sizes = [], [], set(), {}
+  previous = (None, None, None)
+  core = CcncRadarMap.RUST
+  calls = core._update_calls_for_test()
+  one_call = sum(m.RUST is not None and m._fusable() for m in maps)
   for frame in range(frames):
     now = 1000. + frame * DT
     v_ego = speed_profile(scenario.kind, frame)
     points = scenario.frame(frame, v_ego)
-    posts = structures.points(maps[0].pose)
+    posts = structures.points(maps[0].pose) + approaching(seed, maps[0].pose)
     live = capnp_live(points + posts) if frame % 2 == 0 else namespace_live(points + posts)
     lead = scenario.vision or next(((p['dRel'], p['yRel'], p['vLead']) for p in points if abs(p['yRel']) < 1.5 and 0. < p['dRel'] < 80.
                                     and all(math.isfinite(p[k]) for k in ('dRel', 'yRel', 'vLead'))), None)
@@ -374,23 +483,30 @@ def run(seed, maps, frames=FRAMES):
     md = model(rng, frame, desire=desire, state=change_state, lead=lead, bend=.001 if seed % 2 else 0., shift=scenario.shift(frame),
                weak=scenario.weak_lines and 420 <= frame < 500)
     evidence = scenario.evidence_for(points)
-    radar_time = now - (.02 if frame % 7 else .2)  # Some frames are too old to observe.
+    radar_time = now - (.02 if scenario.fresh(frame) else .2)  # Some frames are too old to observe.
     for m in maps:
       m.update(live, md, now, v_ego, radar_time=radar_time, yaw_rate=scenario.yaw, evidence=evidence,
                lane_change=300 <= frame < 330)
     first = maps[0]
     for other in maps[1:]:
-      assert len(other.log) == len(first.log), (seed, frame)
-      for mine, theirs in zip(other.log, first.log, strict=True):
-        assert mine[0] == theirs[0] and same(mine[1], theirs[1]), (seed, frame, mine[0])
-        assert mine[2:] == theirs[2:] or same(other.reports, first.reports) and same(other.jumps, first.jumps), (seed, frame)
+      if hasattr(other, 'log'):  # Both record their stages' results.
+        assert len(other.log) == len(first.log), (seed, frame)
+        for mine, theirs in zip(other.log, first.log, strict=True):
+          assert mine[0] == theirs[0] and same(mine[1], theirs[1]), (seed, frame, mine[0])
+          assert mine[2:] == theirs[2:] or same(other.reports, first.reports) and same(other.jumps, first.jumps), (seed, frame)
       assert same(other.snapshot(), first.snapshot()), (seed, frame)
       assert same(state(other), state(first)), (seed, frame)
     stats['calls'] += len(first.log)
     stats['measurements'] += sum(len(entry[1]) for entry in first.log if entry[0] == 'measurements')
     stats['assignments'] += sum(len(entry[1]) for entry in first.log if entry[0] == 'associate')
     for m in maps:
-      m.log.clear()
+      if hasattr(m, 'log'):
+        m.log.clear()
+    for slot, name in enumerate(('selected_ff', 'selected_lf', 'selected_rf')):
+      stats[name] += first.selected[slot] is not None
+    stats['selection_changed'] += sum(a is not None and b is not None and a != b for a, b in zip(previous, first.selected, strict=True))
+    stats['remembered'] += sum(first.remembered)
+    previous = first.selected
     stats['max_objects'] = max(stats['max_objects'], len(first.objects))
     stats['holding'] += first.holding
     stats['bridge'] += first.bridge is not None
@@ -424,9 +540,12 @@ def run(seed, maps, frames=FRAMES):
     sizes = {id(b): len(b.members) for b in bands}
   stats['jumps'] = len(first.jumps)
   stats['evicted'] = first.evicted
-  for name in ('lane_checks', 'reconnects', 'meta_checks', 'meta_changing', 'bridged_walls'):
-    stats[name] = sum(getattr(m, name) for m in maps if m.RUST is None)
-  assert all(m.lane_checks == 0 for m in maps if m.RUST is not None)
+  for name in COUNTS:
+    stats[name] = sum(m.counts[name] for m in maps if m.RUST is None)
+  assert all(m.counts['lane_checks'] == 0 for m in maps if m.RUST is not None and hasattr(m, 'counts'))
+  # Every update of a map without replaced methods ran as one Rust call (the scenarios never reset the map).
+  stats['one_call'] = core._update_calls_for_test() - calls
+  assert stats['one_call'] == one_call * frames, (seed, stats['one_call'])
   return stats
 
 
@@ -436,7 +555,13 @@ TOTALS = {}
 @pytest.mark.parametrize('seed', range(SCENARIOS))
 def test_rust_and_python_paths_give_the_same_bits(seed):
   TOTALS[seed] = run(seed, [PythonMap(), RustMap()])
-  assert TOTALS[seed]['calls'] > 0
+  assert TOTALS[seed]['calls'] > 0 and TOTALS[seed]['one_call'] == FRAMES
+
+
+@pytest.mark.parametrize('seed', (1, 2, 11, 19))  # Stopping (stop memory), a lead (bridge), crowded, many short rows.
+def test_stage_by_stage_rust_path_gives_the_same_bits(seed):
+  stats = run(seed, [PythonMap(), StepRustMap()])
+  assert stats['calls'] > 0 and stats['one_call'] == 0
 
 
 def test_scenarios_reach_the_corner_cases():
@@ -459,6 +584,11 @@ def test_scenarios_reach_the_corner_cases():
   assert total['meta_checks'] > 0 and 0 < total['meta_changing'] < total['meta_checks']  # _lane's model fallback.
   for name in ('walls', 'wall_created', 'wall_kept', 'wall_cancelled', 'wall_16', 'wall_cap', 'structure_cap', 'bends',
                'bridged_walls', 'band_created', 'band_extended', 'band_vanished', 'band_early', 'early_twins'):
+    assert total[name] > 0, name
+  # Selection: each slot shown and replaced, stop memory, a side vehicle behind the lead, wall-outside and approach-only
+  # candidates, the FF bridge started, kept and expired, the far FF hold, vision matches.
+  for name in ('selected_ff', 'selected_lf', 'selected_rf', 'selection_changed', 'remembered', 'stop_memory', 'behind_lead',
+               'wall_outside', 'approach_only', 'bridge_start', 'bridge_kept', 'bridge_expired', 'far_hold', 'vision_changed'):
     assert total[name] > 0, name
 
 

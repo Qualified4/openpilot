@@ -9,6 +9,7 @@ from bisect import bisect_left
 from collections import deque
 from dataclasses import dataclass, field
 import math
+import operator
 from types import SimpleNamespace
 
 import numpy as np
@@ -212,9 +213,11 @@ class CcncRadarMap:
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
                  ('RF_DETECT_DISTANCE', 'RF_DETECT_LATERAL', 'RF_DETECT'))
 
-  # The Rust core runs the _measurements/_associate/_observe/_walls/_bands loops and the object part of _advance when it loads,
-  # on its own MapObject class (same fields). None runs the Python loops below on the dataclass above (kept as the
-  # reference; a subclass or test sets None to force them).
+  # The Rust core runs the map update when it loads, on its own MapObject class (same fields): _advance's objects in one
+  # call, and the rest of the map (_update_lane_reference, _observe, _vision, _walls, _bands, _select) in another. A
+  # subclass or instance that replaces one of those methods (_FUSED below) gets the stages one by one instead, as their
+  # own methods. None runs the Python loops below on the dataclass above (kept as the reference; a subclass or test
+  # sets None to force them).
   RUST = ccnc_core_loader.load()
 
   def __init__(self):
@@ -1461,6 +1464,10 @@ class CcncRadarMap:
       candidates.append((obj.key != self.selected[slot], abs(x), obj.key))
     return min(candidates)[2] if candidates else None
 
+  def _fusable(self):
+    """Whether no subclass or instance replaced a method the one-call Rust update runs in its place."""
+    return _fused_methods(type(self)) == _FUSED_ORIGINALS and _FUSED_NAMES.isdisjoint(vars(self))
+
   def update(self, live, model, now, v_ego, *, radar_time=None, model_time=None, yaw_rate=None, reverse=False,
              select=True, lane_curves=None, a_ego=None, blindspot=(False, False), evidence=None, lane_change=False, ego_change=None):
     """Return FF/LF/RF objects; retained state is never fed back to raw radar.
@@ -1503,24 +1510,41 @@ class CcncRadarMap:
       self._update_lanes(model, model_time, lane_curves, previous_placed)
       self.model, self.model_stamp = model, model_time
     self.usable = live is not None and 0. <= now - radar_time <= .15
-    self._update_lane_reference()
+    fused = self.RUST is not None and self._fusable()
+    if not fused:
+      self._update_lane_reference()
     self.leads = [(lead.x[0] - 1.52, -lead.y[0]) for lead in getattr(model, 'leadsV3', ())
                   if lead.prob >= .8 and len(lead.x) and len(lead.y)] if model is not None and 0. <= now - model_time <= .25 else []
     self.vision_leads = [(lead.x[0] - 1.52, -lead.y[0], float(lead.v[0]) if len(getattr(lead, 'v', ())) and math.isfinite(lead.v[0]) else None)
                          for lead in getattr(model, 'leadsV3', ())
                          if lead.prob >= self.BRIDGE_PROB and len(lead.x) and len(lead.y) and math.isfinite(lead.x[0]) and math.isfinite(lead.y[0])
                          ] if model is not None and 0. <= now - model_time <= .25 else []
-    measured = set()
-    if self.usable and live is not self.raw and (self.radar_stamp is None or radar_time > self.radar_stamp):
-      measured = self._observe(live, radar_time)
-      self.raw, self.radar_stamp = live, radar_time
-    if model is not None and 0. <= now - model_time <= .25:
-      self._vision(model)
-    self._walls(measured)
-    if select:
-      self._select()
+    observe = self.usable and live is not self.raw and (self.radar_stamp is None or radar_time > self.radar_stamp)
+    if fused:
+      # The model's values as _vision and _lane read them; the stages themselves run in one Rust call.
+      vision = [(lead.x[0] - 1.52, -lead.y[0]) for lead in model.leadsV3 if not lead.prob < .8 and len(lead.x) and len(lead.y)
+                ] if model is not None and 0. <= now - model_time <= .25 else []
+      radar = None
+      if observe:
+        pose = self.pose_at(radar_time)
+        if pose is not None:
+          radar = live.points, (pose[0], pose[1], math.cos(pose[2]), math.sin(pose[2]))
+        self.raw, self.radar_stamp = live, radar_time
+      self.RUST.update(self, observe, radar, radar_time, self.leads, self.vision_leads, vision, self._model_changing(), select, Wall, Band)
+      if not select:
+        self.selected = (None, None, None)
     else:
-      self.selected = (None, None, None)
+      measured = set()
+      if observe:
+        measured = self._observe(live, radar_time)
+        self.raw, self.radar_stamp = live, radar_time
+      if model is not None and 0. <= now - model_time <= .25:
+        self._vision(model)
+      self._walls(measured)
+      if select:
+        self._select()
+      else:
+        self.selected = (None, None, None)
     if not self.usable:
       self.selected = (None, None, None)
     return tuple(self.objects.get(k) for k in self.selected)
@@ -1615,6 +1639,15 @@ if _native is not None:
   CcncRadarMap.to_ego = _native.to_ego
   CcncRadarMap._geometry = _native.geometry
   CcncRadarMap._lane_view = _native.lane_view
+
+# The methods the one-call Rust update runs in Rust (and those they call), as this module defines them.
+_FUSED_NAMES = frozenset((
+  '_update_lane_reference', '_observe', '_measurements', '_associate', '_reconnect', '_stable', '_forget_lateral', '_settle',
+  '_lane', '_lane_view', '_model_changing', '_band_line', '_body_clear', '_crossing', '_vision', '_walls', '_bend',
+  '_bridge_walls', '_band_row', '_bands', '_in_range', '_radar_vehicle', '_approach_only', '_wall_outside', '_select',
+  '_trail', '_behind_lead', '_ego_lines', '_centre', '_far_hold', '_bridge', '_bridged', '_stop_memory', 'to_ego', 'to_world'))
+_fused_methods = operator.attrgetter(*sorted(_FUSED_NAMES))
+_FUSED_ORIGINALS = _fused_methods(CcncRadarMap)
 
 
 _live = SimpleNamespace(tracker=None, raw=None, radar_time=0., model=None, model_time=0., failed=False, filters={}, ego_blend=(None, 0., 0.), aligned={}, handover={}, generation=None)

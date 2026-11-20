@@ -11,8 +11,10 @@ use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PySet, PyString};
 
+use crate::consts::Consts;
 use crate::guard;
 use crate::lanes::{LaneCache, Lanes};
+use crate::radar_map::Row;
 use crate::map_object::MapObject;
 use crate::pymath::{hypot, py_max, py_min, py_sum};
 
@@ -56,7 +58,7 @@ fn object<'py>(objects: &Bound<'py, PyDict>, key: i64) -> PyResult<Bound<'py, Ma
 }
 
 /// `_forget_lateral(obj)`.
-fn forget(o: &mut MapObject, c: f64, s: f64) {
+pub(crate) fn forget(o: &mut MapObject, c: f64, s: f64) {
     o.history.clear();
     let forward = c * o.vx + s * o.vy;
     o.vx = forward * c;
@@ -72,7 +74,7 @@ pub fn forget_lateral(obj: &Bound<'_, MapObject>, cos: f64, sin: f64) -> PyResul
 }
 
 /// `_crossing(obj)`.
-fn crossing(o: &MapObject, frame: Frame, travel: f64) -> bool {
+pub(crate) fn crossing(o: &MapObject, frame: Frame, travel: f64) -> bool {
     let Some((ox, oy)) = o.origin else { return false };
     let (dx, dy) = (o.x - ox, o.y - oy);
     let lateral = (frame.c * dy - frame.s * dx).abs();
@@ -87,84 +89,8 @@ fn mean(values: &[f64]) -> PyResult<f64> {
     }
 }
 
-struct Consts {
-    max_objects: f64,
-    id_cycle: f64,
-    doppler_samples: f64,
-    doppler_window: f64,
-    doppler_tracked: f64,
-    displacement_evidence: bool,
-    report_delay_bound: f64,
-    resting_travel: f64,
-    resting_net: f64,
-    resting_speed: f64,
-    release_speed: f64,
-    release_gap: (f64, f64),
-    release_lateral: f64,
-    release_advance: f64,
-    prediction_hold: f64,
-    memory_min_x: f64,
-    memory_max_x: f64,
-    waiting_admission: bool,
-    waiting_tracked: f64,
-    trail_step: f64,
-    bridge_reconnect: f64,
-    stable_window: f64,
-    stable_speed: f64,
-    stable_time: f64,
-    report_step: f64,
-    outer_time: f64,
-    outer_lateral: f64,
-    body_clearance: f64,
-    body_far_side: f64,
-    crossing_travel: f64,
-    band_bin: f64,
-    band_memory: f64,
-}
-
-impl Consts {
-    fn read(m: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let py = m.py();
-        let k = |name: &Bound<'_, PyString>| attr_f64(m, name);
-        Ok(Self {
-            max_objects: k(intern!(py, "MAX_OBJECTS"))?,
-            id_cycle: k(intern!(py, "ID_CYCLE"))?,
-            doppler_samples: k(intern!(py, "DOPPLER_SAMPLES"))?,
-            doppler_window: k(intern!(py, "DOPPLER_WINDOW"))?,
-            doppler_tracked: k(intern!(py, "DOPPLER_TRACKED"))?,
-            displacement_evidence: attr_bool(m, intern!(py, "DISPLACEMENT_EVIDENCE"))?,
-            report_delay_bound: k(intern!(py, "REPORT_DELAY_BOUND"))?,
-            resting_travel: k(intern!(py, "RESTING_TRAVEL"))?,
-            resting_net: k(intern!(py, "RESTING_NET"))?,
-            resting_speed: k(intern!(py, "RESTING_SPEED"))?,
-            release_speed: k(intern!(py, "RELEASE_SPEED"))?,
-            release_gap: m.getattr(intern!(py, "RELEASE_GAP"))?.extract()?,
-            release_lateral: k(intern!(py, "RELEASE_LATERAL"))?,
-            release_advance: k(intern!(py, "RELEASE_ADVANCE"))?,
-            prediction_hold: k(intern!(py, "PREDICTION_HOLD"))?,
-            memory_min_x: k(intern!(py, "MEMORY_MIN_X"))?,
-            memory_max_x: k(intern!(py, "MEMORY_MAX_X"))?,
-            waiting_admission: attr_bool(m, intern!(py, "WAITING_ADMISSION"))?,
-            waiting_tracked: k(intern!(py, "WAITING_TRACKED"))?,
-            trail_step: k(intern!(py, "TRAIL_STEP"))?,
-            bridge_reconnect: k(intern!(py, "BRIDGE_RECONNECT"))?,
-            stable_window: k(intern!(py, "STABLE_WINDOW"))?,
-            stable_speed: k(intern!(py, "STABLE_SPEED"))?,
-            stable_time: k(intern!(py, "STABLE_TIME"))?,
-            report_step: k(intern!(py, "REPORT_STEP"))?,
-            outer_time: k(intern!(py, "OUTER_TIME"))?,
-            outer_lateral: k(intern!(py, "OUTER_LATERAL"))?,
-            body_clearance: k(intern!(py, "BODY_CLEARANCE"))?,
-            body_far_side: k(intern!(py, "BODY_FAR_SIDE"))?,
-            crossing_travel: k(intern!(py, "CROSSING_TRAVEL"))?,
-            band_bin: k(intern!(py, "BAND_BIN"))?,
-            band_memory: k(intern!(py, "BAND_MEMORY"))?,
-        })
-    }
-}
-
 /// One `_measurements` tuple: (source, x, y, vx, vy, explained, hc, hs, radar_moving, doppler, tracked).
-struct Measurement {
+pub(crate) struct Measurement {
     source: i128,
     x: f64,
     y: f64,
@@ -193,6 +119,23 @@ impl Measurement {
             radar_moving: item.get_item(8)?.is_truthy()?,
             doppler: item.get_item(9)?.extract()?,
             tracked: item.get_item(10)?.is_truthy()? as i64,
+        })
+    }
+
+    /// The same values from a Rust measurement row.
+    pub(crate) fn from_row(row: &Row<'_>) -> PyResult<Self> {
+        Ok(Self {
+            source: row.track.extract()?,
+            x: row.wx,
+            y: row.wy,
+            vx: row.vx,
+            vy: row.vy,
+            explained: row.explained,
+            hc: row.c,
+            hs: row.s,
+            radar_moving: row.moving.is_truthy()?,
+            doppler: row.doppler as i64,
+            tracked: row.tracked.is_truthy()? as i64,
         })
     }
 }
@@ -302,18 +245,6 @@ fn observe_inner<'py>(
 ) -> PyResult<Bound<'py, PySet>> {
     let m = radar_map;
     let k = Consts::read(m)?;
-    let now = attr_f64(m, intern!(py, "now"))?;
-    let holding = attr_bool(m, intern!(py, "holding"))?;
-    let odometer = attr_f64(m, intern!(py, "odometer"))?;
-    let a_ego = attr_f64(m, intern!(py, "a_ego"))?;
-    let frame = Frame::read(m)?;
-    let objects = m.getattr(intern!(py, "objects"))?.cast_into::<PyDict>()?;
-    let local = m.getattr(intern!(py, "local"))?.cast_into::<PyDict>()?;
-    let bridge = m.getattr(intern!(py, "bridge"))?;
-    let bridge_key: Option<i64> =
-        if bridge.is_none() { None } else { Some(bridge.get_item(intern!(py, "key"))?.extract()?) };
-    let mut lanes = LaneCache::new(m);
-
     let mut ms = Vec::new();
     for item in measurements.try_iter()? {
         ms.push(Measurement::read(&item?)?);
@@ -327,6 +258,57 @@ fn observe_inner<'py>(
         }
         reserved.push(key);
     }
+    let state = State::read(m)?;
+    let mut lanes = LaneCache::new(m);
+    observe_core(py, m, &k, &state, &mut lanes, &ms, assigned, reserved, Some(assignments), stamp)
+}
+
+/// What `_observe` reads of the map's own state; it does not change during the update.
+#[derive(Clone, Copy)]
+pub(crate) struct State {
+    pub now: f64,
+    pub holding: bool,
+    pub odometer: f64,
+    pub a_ego: f64,
+    pub frame: Frame,
+}
+
+impl State {
+    pub fn read(m: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let py = m.py();
+        Ok(Self {
+            now: attr_f64(m, intern!(py, "now"))?,
+            holding: attr_bool(m, intern!(py, "holding"))?,
+            odometer: attr_f64(m, intern!(py, "odometer"))?,
+            a_ego: attr_f64(m, intern!(py, "a_ego"))?,
+            frame: Frame::read(m)?,
+        })
+    }
+}
+
+/// `_observe` after `_associate`: `_reconnect`, then the measurement loop. `assigned` holds the object key of each
+/// measurement, `reserved` the assigned keys; a reconnection is also written to the Python `assignments` if given.
+/// Returns `measured_keys`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn observe_core<'py>(
+    py: Python<'py>,
+    radar_map: &Bound<'py, PyAny>,
+    k: &Consts,
+    state: &State,
+    lanes: &mut LaneCache<'_, 'py>,
+    ms: &[Measurement],
+    mut assigned: Vec<Option<i64>>,
+    mut reserved: Vec<i64>,
+    assignments: Option<&Bound<'py, PyDict>>,
+    stamp: f64,
+) -> PyResult<Bound<'py, PySet>> {
+    let m = radar_map;
+    let State { now, holding, odometer, a_ego, frame } = *state;
+    let objects = m.getattr(intern!(py, "objects"))?.cast_into::<PyDict>()?;
+    let local = m.getattr(intern!(py, "local"))?.cast_into::<PyDict>()?;
+    let bridge = m.getattr(intern!(py, "bridge"))?;
+    let bridge_key: Option<i64> =
+        if bridge.is_none() { None } else { Some(bridge.get_item(intern!(py, "key"))?.extract()?) };
 
     // _reconnect: a bridged FF object continues with a new report near its bridged position in ego's lane.
     if let Some(key) = bridge_key.filter(|key| !reserved.contains(key)) {
@@ -359,7 +341,9 @@ fn observe_inner<'py>(
             forget(&mut o, frame.c, frame.s);
             o.vx = ms[i].vx;
             o.vy = ms[i].vy;
-            assignments.set_item(i, key)?;
+            if let Some(assignments) = assignments {
+                assignments.set_item(i, key)?;
+            }
             assigned[i] = Some(key);
             reserved.push(key);
         }
@@ -438,7 +422,7 @@ fn observe_inner<'py>(
         o.explained = me.explained;
         let (rx, ry) = frame.to_ego(me.x, me.y);
         o.report = Some((stamp, rx, ry));
-        stable(&mut o, lanes.get()?, bridge_key, &k)?;
+        stable(&mut o, lanes.get()?, bridge_key, k)?;
         o.tracked += me.tracked;
         o.radar_moving = o.radar_moving || me.radar_moving;
         if me.doppler != 0 {
@@ -513,7 +497,7 @@ fn observe_inner<'py>(
         local.set_item(key, (ex, ey))?;
         o.last_motion = (me.hc * o.vx + me.hs * o.vy, me.hc * o.vy - me.hs * o.vx);
         let view = lanes.get()?;
-        settle(&mut o, view, ex, ey, stamp, &k)?;
+        settle(&mut o, view, ex, ey, stamp, k)?;
         let (slot, interior, _) = view.lane(ex, ey, o.motion_confirmed, o.settled, &[])?;
         o.slot = slot;
         o.interior = interior;

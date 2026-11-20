@@ -13,6 +13,7 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
+use crate::consts::Consts;
 use crate::guard;
 use crate::lanes::LaneCache;
 use crate::map_object::MapObject;
@@ -66,7 +67,7 @@ pub fn radar_points(py: Python<'_>, points: &Bound<'_, PyAny>) -> PyResult<Radar
     guard(|| radar_points_inner(py, points))
 }
 
-fn radar_points_inner(py: Python<'_>, points: &Bound<'_, PyAny>) -> PyResult<RadarPoints> {
+pub(crate) fn radar_points_inner(py: Python<'_>, points: &Bound<'_, PyAny>) -> PyResult<RadarPoints> {
     let int_type = py.get_type::<pyo3::types::PyInt>();
     let mut out = Vec::new();
     for p in points.try_iter()? {
@@ -127,45 +128,85 @@ pub fn measurements<'py>(
     c: f64,
     s: f64,
 ) -> PyResult<Bound<'py, PyList>> {
-    guard(|| measurements_inner(py, radar_map, points, stamp, px, py_, c, s))
+    guard(|| {
+        let k = Consts::read(radar_map)?;
+        let ego = Ego::read(radar_map)?;
+        let rows = measure(py, radar_map, &k, ego, &mut None, points, stamp, (px, py_, c, s))?;
+        let out = PyList::empty(py);
+        for row in rows {
+            out.append(row.into_tuple(py)?)?;
+        }
+        Ok(out)
+    })
 }
 
+/// What `_measurements` reads of ego's motion.
+#[derive(Clone, Copy)]
+pub struct Ego {
+    pub a_ego: f64,
+    pub yaw_rate: f64,
+    pub speed: f64,
+}
+
+impl Ego {
+    pub fn read(m: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let py = m.py();
+        Ok(Self {
+            a_ego: attr_f64(m, intern!(py, "a_ego"))?,
+            yaw_rate: attr_f64(m, intern!(py, "yaw_rate"))?,
+            speed: attr_f64(m, intern!(py, "speed"))?,
+        })
+    }
+}
+
+/// One `_measurements` tuple, with its Python objects where the Python code keeps them.
+pub struct Row<'py> {
+    pub track: Bound<'py, PyAny>, // int(p.trackId)
+    pub wx: f64,
+    pub wy: f64,
+    pub vx: f64,
+    pub vy: f64,
+    pub explained: f64,
+    pub c: f64,
+    pub s: f64,
+    pub moving: Bound<'py, PyAny>, // motion == 2
+    pub doppler: i32,
+    pub tracked: Bound<'py, PyAny>, // track state == 2
+}
+
+impl<'py> Row<'py> {
+    fn into_tuple(self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        Ok((self.track, self.wx, self.wy, self.vx, self.vy, self.explained, self.c, self.s, self.moving, self.doppler, self.tracked)
+            .into_pyobject(py)?
+            .into_any())
+    }
+}
+
+/// The `_measurements` loop. `leads` is `self.leads`, read from the map when first needed if None.
 #[allow(clippy::too_many_arguments)]
-fn measurements_inner<'py>(
+pub(crate) fn measure<'py>(
     py: Python<'py>,
     radar_map: &Bound<'py, PyAny>,
+    k: &Consts,
+    ego: Ego,
+    leads: &mut Option<Vec<(f64, f64)>>,
     points: &RadarPoints,
     stamp: &Bound<'py, PyAny>,
-    px: f64,
-    py_: f64,
-    c: f64,
-    s: f64,
-) -> PyResult<Bound<'py, PyList>> {
+    (px, py_, c, s): (f64, f64, f64, f64),
+) -> PyResult<Vec<Row<'py>>> {
     let m = radar_map;
-    let k = |name: &Bound<'py, pyo3::types::PyString>| attr_f64(m, name);
-    let jump_time = k(intern!(py, "BRIDGE_JUMP_TIME"))? + 1e-6;
-    let reconnect = k(intern!(py, "BRIDGE_RECONNECT"))?;
-    let jump = k(intern!(py, "BRIDGE_JUMP"))?;
-    let far_x = k(intern!(py, "FAR_X"))?;
-    let max_x = k(intern!(py, "MAX_X"))?;
-    let max_y = k(intern!(py, "MAX_Y"))?;
-    let far_y = k(intern!(py, "FAR_Y"))?;
-    let doppler_min_x = k(intern!(py, "DOPPLER_MIN_X"))?;
-    let doppler_near_y = k(intern!(py, "DOPPLER_NEAR_Y"))?;
-    let doppler_band = k(intern!(py, "DOPPLER_SPEED"))?
-        + k(intern!(py, "REPORT_DELAY_BOUND"))? * k(intern!(py, "a_ego"))?.abs();
-    let doppler_yaw = k(intern!(py, "yaw_rate"))?.abs() <= k(intern!(py, "DOPPLER_YAW"))?;
-    let ego_speed = k(intern!(py, "speed"))?;
+    let jump_time = k.bridge_jump_time + 1e-6;
+    let doppler_band = k.doppler_speed + k.report_delay_bound * ego.a_ego.abs();
+    let doppler_yaw = ego.yaw_rate.abs() <= k.doppler_yaw;
     let reports = m.getattr(intern!(py, "reports"))?;
     let reports = reports.cast::<PyDict>()?;
     let jumps = m.getattr(intern!(py, "jumps"))?;
     let evidence = m.getattr(intern!(py, "evidence"))?;
     let evidence_dict = evidence.cast::<PyDict>().ok();
-    let mut leads: Option<Vec<(f64, f64)>> = None;
     let deque = deque(py)?;
     let stamp_f: f64 = stamp.extract()?;
     let two = 2i32.into_pyobject(py)?;
-    let out = PyList::empty(py);
+    let mut out = Vec::with_capacity(points.points.len());
 
     for p in &points.points {
         let track = p.track.bind(py);
@@ -185,7 +226,7 @@ fn measurements_inner<'py>(
             let report = report?;
             let (t, rx, ry): (f64, f64, f64) = report.extract()?;
             let dt = stamp_f - t;
-            if 0. < dt && dt <= jump_time && (x - rx).abs() <= reconnect && (y - ry).abs() >= jump {
+            if 0. < dt && dt <= jump_time && (x - rx).abs() <= k.bridge_reconnect && (y - ry).abs() >= k.bridge_jump {
                 jumped = true;
                 break;
             }
@@ -195,13 +236,13 @@ fn measurements_inner<'py>(
         }
         let entry = PyTuple::new(py, [stamp.clone(), p.x_obj.bind(py).clone(), p.y_obj.bind(py).clone()])?;
         recent.call_method1(intern!(py, "append"), (entry,))?;
-        if !(0. <= x && x <= far_x) || y.abs() > (if x <= max_x { max_y } else { far_y }) || speed.abs() > 100. {
+        if !(0. <= x && x <= k.far_x) || y.abs() > (if x <= k.max_x { k.max_y } else { k.far_y }) || speed.abs() > 100. {
             continue;
         }
         let (wx, wy) = (px + c * x - s * y, py_ + s * x + c * y);
         let distance = hypot(x, y);
         let cosine = if distance > 0. { x / distance } else { 1. };
-        let explained = py_min(py_max(speed, 0.), ego_speed * (1. - cosine));
+        let explained = py_min(py_max(speed, 0.), ego.speed * (1. - cosine));
         let report = match evidence_dict {
             Some(d) => d.get_item(track)?,
             None => Some(evidence.call_method1(intern!(py, "get"), (track,))?),
@@ -224,13 +265,13 @@ fn measurements_inner<'py>(
         .rich_compare(&two, CompareOp::Eq)?;
         let residual = speed - explained;
         let doppler = cosine >= 0.707
-            && (x >= doppler_min_x || y.abs() >= doppler_near_y)
+            && (x >= k.doppler_min_x || y.abs() >= k.doppler_near_y)
             && residual.abs() > doppler_band
             && doppler_yaw;
         let doppler: i32 = if doppler { if residual > 0. { 1 } else { -1 } } else { 0 };
-        if x > max_x && !moving.is_truthy()? {
+        if x > k.max_x && !moving.is_truthy()? {
             if leads.is_none() {
-                leads = Some(m.getattr(intern!(py, "leads"))?.extract()?);
+                *leads = Some(m.getattr(intern!(py, "leads"))?.extract()?);
             }
             let near_lead = leads.as_ref().unwrap().iter().any(|&(lx, ly)| {
                 (x - lx).abs() <= py_max(3., 0.2 * lx) && (y - ly).abs() <= 1.2
@@ -239,21 +280,19 @@ fn measurements_inner<'py>(
                 continue;
             }
         }
-        let item = (
-            track,
+        out.push(Row {
+            track: track.clone(),
             wx,
             wy,
-            speed * c,
-            speed * s,
+            vx: speed * c,
+            vy: speed * s,
             explained,
             c,
             s,
             moving,
             doppler,
             tracked,
-        )
-            .into_pyobject(py)?;
-        out.append(item)?;
+        });
     }
     Ok(out)
 }
@@ -301,19 +340,51 @@ pub fn associate_input(
     measurements: &Bound<'_, PyAny>,
     stamp: f64,
 ) -> PyResult<AssociateInput> {
-    guard(|| associate_input_inner(py, radar_map, measurements, stamp))
+    guard(|| {
+        let mut parsed = Vec::new();
+        for item in measurements.try_iter()? {
+            let item = item?;
+            parsed.push(Measurement {
+                source: item.get_item(0)?.extract()?,
+                x: item.get_item(1)?.extract()?,
+                y: item.get_item(2)?.extract()?,
+                vx: item.get_item(3)?.extract()?,
+                vy: item.get_item(4)?.extract()?,
+            });
+        }
+        let frame = Frame::read(radar_map)?;
+        let now = attr_f64(radar_map, intern!(py, "now"))?;
+        associate_objects(py, radar_map, parsed, stamp, now, frame.c, frame.s)
+    })
 }
 
-fn associate_input_inner(
+/// The `_associate` input of measurement rows already in Rust.
+pub(crate) fn associate_rows(
     py: Python<'_>,
     radar_map: &Bound<'_, PyAny>,
-    measurements: &Bound<'_, PyAny>,
+    rows: &[Row<'_>],
     stamp: f64,
+    now: f64,
+    frame: Frame,
+) -> PyResult<AssociateInput> {
+    let mut parsed = Vec::with_capacity(rows.len());
+    for row in rows {
+        parsed.push(Measurement { source: row.track.extract()?, x: row.wx, y: row.wy, vx: row.vx, vy: row.vy });
+    }
+    associate_objects(py, radar_map, parsed, stamp, now, frame.c, frame.s)
+}
+
+fn associate_objects(
+    py: Python<'_>,
+    radar_map: &Bound<'_, PyAny>,
+    measurements: Vec<Measurement>,
+    stamp: f64,
+    now: f64,
+    cos: f64,
+    sin: f64,
 ) -> PyResult<AssociateInput> {
     let m = radar_map;
-    let age = attr_f64(m, intern!(py, "now"))? - stamp;
-    let cos = attr_f64(m, intern!(py, "cos"))?;
-    let sin = attr_f64(m, intern!(py, "sin"))?;
+    let age = now - stamp;
     let objects_dict = m.getattr(intern!(py, "objects"))?;
     let objects_dict = objects_dict.cast::<PyDict>()?;
     let mut objects = Vec::with_capacity(objects_dict.len());
@@ -340,18 +411,7 @@ fn associate_input_inner(
             gy: y - vy * age + offset * sin,
         });
     }
-    let mut parsed = Vec::new();
-    for item in measurements.try_iter()? {
-        let item = item?;
-        parsed.push(Measurement {
-            source: item.get_item(0)?.extract()?,
-            x: item.get_item(1)?.extract()?,
-            y: item.get_item(2)?.extract()?,
-            vx: item.get_item(3)?.extract()?,
-            vy: item.get_item(4)?.extract()?,
-        });
-    }
-    Ok(AssociateInput { objects, measurements: parsed, age, cos, sin })
+    Ok(AssociateInput { objects, measurements, age, cos, sin })
 }
 
 /// `local[key][0]`, read only where the Python code reads it.
@@ -374,21 +434,44 @@ pub fn associate<'py>(
     input: &AssociateInput,
     stamp: f64,
 ) -> PyResult<Bound<'py, PyDict>> {
-    guard(|| associate_inner(py, radar_map, input, stamp))
+    guard(|| {
+        let k = Consts::read(radar_map)?;
+        let holding = radar_map.getattr(intern!(py, "holding"))?.is_truthy()?;
+        let mut lanes = LaneCache::new(radar_map);
+        let pairs = pair(py, radar_map, &k, &mut lanes, None, input, stamp, holding)?;
+        let assigned = PyDict::new(py);
+        for (i, index) in pairs {
+            assigned.set_item(i, input.objects[index].key_obj.bind(py))?;
+        }
+        Ok(assigned)
+    })
 }
 
-fn associate_inner<'py>(
-    py: Python<'py>,
-    radar_map: &Bound<'py, PyAny>,
+impl AssociateInput {
+    /// The object key of an index into the input's objects.
+    pub fn key(&self, index: usize) -> i64 {
+        self.objects[index].key
+    }
+}
+
+/// The `_associate` loops: (measurement index, object index) in the insertion order of the Python dict. `frame` is
+/// read from the map when None.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pair(
+    py: Python<'_>,
+    radar_map: &Bound<'_, PyAny>,
+    k: &Consts,
+    lanes: &mut LaneCache<'_, '_>,
+    frame: Option<Frame>,
     input: &AssociateInput,
     stamp: f64,
-) -> PyResult<Bound<'py, PyDict>> {
+    holding: bool,
+) -> PyResult<Vec<(usize, usize)>> {
     let m = radar_map;
     let objects = &input.objects;
     let (cos, sin, age) = (input.cos, input.sin, input.age);
     let local = m.getattr(intern!(py, "local"))?;
-    let id_cycle = attr_f64(m, intern!(py, "ID_CYCLE"))?;
-    let match_distance = attr_f64(m, intern!(py, "MATCH_DISTANCE"))?;
+    let (id_cycle, match_distance) = (k.id_cycle, k.match_distance);
 
     // Insertion-ordered grid cells, each listing objects in dict order.
     let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
@@ -416,14 +499,15 @@ fn associate_inner<'py>(
     }
 
     let mut continuations: Vec<(usize, usize)> = Vec::new();
-    let holding = m.getattr(intern!(py, "holding"))?.is_truthy()?;
     if holding {
-        let resting_speed = attr_f64(m, intern!(py, "RESTING_SPEED"))?;
+        let resting_speed = k.resting_speed;
         let selected = m.getattr(intern!(py, "selected"))?;
         let side_selected = selected.get_item(pyo3::types::PySlice::new(py, 1, isize::MAX, 1))?;
         let lane_change = m.getattr(intern!(py, "lane_change"))?.is_truthy()?;
-        let frame = Frame::read(m)?;
-        let mut lanes = LaneCache::new(m);
+        let frame = match frame {
+            Some(frame) => frame,
+            None => Frame::read(m)?,
+        };
         for (i, ms) in input.measurements.iter().enumerate() {
             let Some(&index) = recent.get(&ms.source) else { continue };
             let o = &objects[index];
@@ -483,17 +567,17 @@ fn associate_inner<'py>(
     }
     sort(&mut pairs);
 
-    let assigned = PyDict::new(py);
+    let mut assigned = Vec::with_capacity(input.measurements.len());
     let mut taken_measurements = vec![false; input.measurements.len()];
     let mut used = vec![false; objects.len()];
     for &(i, index) in &continuations {
-        assigned.set_item(i, objects[index].key_obj.bind(py))?;
+        assigned.push((i, index));
         taken_measurements[i] = true;
         used[index] = true;
     }
     for &(_, i, _, index) in &pairs {
         if !taken_measurements[i] && !used[index] {
-            assigned.set_item(i, objects[index].key_obj.bind(py))?;
+            assigned.push((i, index));
             taken_measurements[i] = true;
             used[index] = true;
         }

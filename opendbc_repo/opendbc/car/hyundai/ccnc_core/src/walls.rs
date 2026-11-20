@@ -15,8 +15,9 @@ use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PySet, PyString, PyTuple};
 
+use crate::consts::Consts;
 use crate::guard;
-use crate::lanes::{interpolate, LaneCache};
+use crate::lanes::{interpolate, LaneCache, Lanes};
 use crate::map_object::MapObject;
 use crate::observe::Frame;
 use crate::pymath::{acos, cos, degrees, hypot, py_max, py_min, py_sum, radians};
@@ -207,18 +208,6 @@ fn sort_keys(keys: impl Iterator<Item = i64>, mut f: impl FnMut(i64) -> PyResult
     Ok(keyed.into_iter().map(|(k, _)| k).collect())
 }
 
-struct WallConsts {
-    min_x: f64,
-    keep_x: f64,
-    max_y: f64,
-    max_gap: f64,
-    dense_points: f64,
-    dense_span: f64,
-    max_walls: f64,
-    wall_continue: f64,
-    wall_bend: f64,
-}
-
 /// `_walls(measured)` up to its `_bands` call: writes `walls`, `wall_geometry` and `structure`, and returns the rows
 /// for `bands` and the bends as (key, degrees, gap) before Python's `round`.
 #[pyfunction]
@@ -228,7 +217,13 @@ pub fn walls<'py>(
     measured: &Bound<'py, PyAny>,
     wall_type: &Bound<'py, PyAny>,
 ) -> PyResult<(WallRows, Vec<Bend>)> {
-    guard(|| walls_inner(py, radar_map, measured, wall_type))
+    guard(|| {
+        let k = Consts::read(radar_map)?;
+        let now = attr_f64(radar_map, intern!(py, "now"))?;
+        let frame = Frame::read(radar_map)?;
+        let (rows, bends, _) = walls_core(py, radar_map, &k, now, frame, measured, wall_type)?;
+        Ok((rows, bends))
+    })
 }
 
 /// `measured` as Rust keys, and whether it is truthy.
@@ -240,27 +235,18 @@ fn read_measured(measured: &Bound<'_, PyAny>) -> PyResult<HashSet<i64>> {
     Ok(out)
 }
 
-fn walls_inner<'py>(
+/// `_walls` up to its `_bands` call; also returns `wall_geometry` as written.
+#[allow(clippy::type_complexity)]
+pub(crate) fn walls_core<'py>(
     py: Python<'py>,
     radar_map: &Bound<'py, PyAny>,
+    k: &Consts,
+    now: f64,
+    frame: Frame,
     measured_obj: &Bound<'py, PyAny>,
     wall_type: &Bound<'py, PyAny>,
-) -> PyResult<(WallRows, Vec<Bend>)> {
+) -> PyResult<(WallRows, Vec<Bend>, Vec<Vec<Xy>>)> {
     let m = radar_map;
-    let kf = |name: &Bound<'_, PyString>| attr_f64(m, name);
-    let k = WallConsts {
-        min_x: kf(intern!(py, "MIN_X"))?,
-        keep_x: kf(intern!(py, "KEEP_X"))?,
-        max_y: kf(intern!(py, "MAX_Y"))?,
-        max_gap: kf(intern!(py, "WALL_MAX_GAP"))?,
-        dense_points: kf(intern!(py, "DENSE_ROW_POINTS"))?,
-        dense_span: kf(intern!(py, "DENSE_ROW_SPAN"))?,
-        max_walls: kf(intern!(py, "MAX_WALLS"))?,
-        wall_continue: kf(intern!(py, "WALL_CONTINUE"))?,
-        wall_bend: kf(intern!(py, "WALL_BEND"))?,
-    };
-    let now = kf(intern!(py, "now"))?;
-    let frame = Frame::read(m)?;
     let measured = read_measured(measured_obj)?;
     let any_measured = measured_obj.is_truthy()?;
 
@@ -346,7 +332,7 @@ fn walls_inner<'py>(
             let mut row = vec![points[start]];
             for &point in &points[start + 1..] {
                 let gap = point.0 - row[row.len() - 1].0;
-                if gap > k.max_gap {
+                if gap > k.wall_max_gap {
                     break;
                 }
                 if gap < 0.6 || used.contains(&point.2) {
@@ -360,7 +346,7 @@ fn walls_inner<'py>(
                 row.push(point);
             }
             if row.iter().any(|p| inside.contains(&p.2))
-                && ((row.len() as f64) < k.dense_points || row[row.len() - 1].0 - row[0].0 < k.dense_span)
+                && ((row.len() as f64) < k.dense_row_points || row[row.len() - 1].0 - row[0].0 < k.dense_row_span)
             {
                 row.retain(|p| !inside.contains(&p.2));
             }
@@ -431,7 +417,7 @@ fn walls_inner<'py>(
                 Some(limit) => limit,
                 None => *limit.insert(cos(radians(k.wall_bend))?),
             };
-            bend(wall, &candidates, &measured, &objs, frame, limit, k.max_gap, &mut bends)?;
+            bend(wall, &candidates, &measured, &objs, frame, limit, k.wall_max_gap, &mut bends)?;
         }
         if wall.members.len() > 16 {
             let mut keep: Vec<(usize, f64)> =
@@ -451,6 +437,7 @@ fn walls_inner<'py>(
 
     let wall_list = PyList::empty(py);
     let geometry = PyList::empty(py);
+    let mut lines = Vec::with_capacity(walls.len());
     for wall in &walls {
         for key in &wall.members {
             if let Some(o) = objs.get(key) {
@@ -458,11 +445,13 @@ fn walls_inner<'py>(
             }
         }
         wall_list.append(wall_type.call1((PyTuple::new(py, wall.members.iter().copied())?, PyList::new(py, wall.points.iter().copied())?))?)?;
-        geometry.append(PyList::new(py, ego_sorted(frame, &wall.points))?)?;
+        let line = ego_sorted(frame, &wall.points);
+        geometry.append(PyList::new(py, line.iter().copied())?)?;
+        lines.push(line);
     }
     m.setattr(intern!(py, "walls"), wall_list)?;
     m.setattr(intern!(py, "wall_geometry"), geometry)?;
-    Ok((WallRows { candidates, inside, objs }, bends))
+    Ok((WallRows { candidates, inside, objs }, bends, lines))
 }
 
 /// `_bend(wall, candidates, measured)`: continue a wall from either end through returns that follow its end
@@ -646,28 +635,34 @@ pub fn bands<'py>(
     measured: &Bound<'py, PyAny>,
     band_type: &Bound<'py, PyAny>,
 ) -> PyResult<()> {
-    guard(|| bands_inner(py, radar_map, rows, measured, band_type))
+    guard(|| {
+        let k = Consts::read(radar_map)?;
+        let odometer = attr_f64(radar_map, intern!(py, "odometer"))?;
+        let mut cache = LaneCache::new(radar_map);
+        bands_core(py, radar_map, &k, odometer, cache.get()?, rows, measured, band_type, None)
+    })
 }
 
-fn bands_inner<'py>(
+/// `_bands`; the band geometry it appends to `wall_geometry` is also appended to `geometry` if given.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bands_core<'py>(
     py: Python<'py>,
     radar_map: &Bound<'py, PyAny>,
+    k: &Consts,
+    odometer: f64,
+    lanes: &Lanes<'_>,
     rows: &WallRows,
     measured_obj: &Bound<'py, PyAny>,
     band_type: &Bound<'py, PyAny>,
+    mut geometry_out: Option<&mut Vec<Vec<Xy>>>,
 ) -> PyResult<()> {
     let m = radar_map;
-    let kf = |name: &Bound<'_, PyString>| attr_f64(m, name);
-    let (band_bin, band_memory) = (kf(intern!(py, "BAND_BIN"))?, kf(intern!(py, "BAND_MEMORY"))?);
-    let (band_prediction, band_gap) = (kf(intern!(py, "BAND_PREDICTION"))?, kf(intern!(py, "BAND_GAP"))?);
-    let (band_fold, wall_continue) = (kf(intern!(py, "BAND_FOLD"))?, kf(intern!(py, "WALL_CONTINUE"))?);
-    let (dense_points, dense_span) = (kf(intern!(py, "DENSE_ROW_POINTS"))?, kf(intern!(py, "DENSE_ROW_SPAN"))?);
-    let max_walls = kf(intern!(py, "MAX_WALLS"))?;
-    let odometer = kf(intern!(py, "odometer"))?;
+    let (band_bin, band_memory) = (k.band_bin, k.band_memory);
+    let (band_prediction, band_gap) = (k.band_prediction, k.band_gap);
+    let (band_fold, wall_continue) = (k.band_fold, k.wall_continue);
+    let (dense_points, dense_span) = (k.dense_row_points, k.dense_row_span);
+    let max_walls = k.max_walls;
     let objs = &rows.objs;
-
-    let mut cache = LaneCache::new(m);
-    let lanes = cache.get()?;
     // {sign: (reference, geometry)}, sign 1 first.
     let mut lines: Vec<(i64, i64, &[Xy])> = Vec::with_capacity(2);
     for (sign, order) in [(1, [1, 0]), (-1, [2, 3])] {
@@ -916,7 +911,10 @@ fn bands_inner<'py>(
         geometry.extend(line.iter().filter(|p| first < p.0 && p.0 < last).map(|&(x, y)| (x, y + band.offset)));
         geometry.sort_by(cmp_xy);
         if geometry.len() >= 2 && geometry[geometry.len() - 1].0 > geometry[0].0 {
-            wall_geometry.call_method1(intern!(py, "append"), (PyList::new(py, geometry)?,))?;
+            wall_geometry.call_method1(intern!(py, "append"), (PyList::new(py, geometry.iter().copied())?,))?;
+            if let Some(out) = geometry_out.as_deref_mut() {
+                out.push(geometry);
+            }
         }
         for key in band.members.keys() {
             if let Some(o) = objs.get(&key) {
