@@ -495,15 +495,6 @@ RUST = ccnc_core_loader.load()
 def update_rear_display(values, CS, md, frame, model_lanes, state, tracker, *, radar_map=False):
   """Apply the shared BSD and handover policy after either front selector."""
   policy = state.rear_handover
-  if RUST is not None and (policy is None or type(policy) is SmoothHandover and 'update' not in vars(policy)):
-    try:
-      RUST.finish_rear(values, CS, md, frame, model_lanes, state, tracker, radar_map)
-    except Exception:
-      if policy is None:
-        raise
-      _log_handover_failure(policy)
-    return
-
   offset = (state.r_lane_f.value - state.l_lane_f.value) / 2 if model_lanes else 0.
   laterals = (2.8 - offset, 2.8 + offset)
   filters = state.lr_distance, state.rr_distance

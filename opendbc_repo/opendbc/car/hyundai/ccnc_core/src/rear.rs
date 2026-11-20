@@ -1156,128 +1156,40 @@ fn map_selection<'py>(
     Ok((identity, proven))
 }
 
-fn selector_identity<'py>(
-    tracker: &Bound<'py, PyAny>,
-    key: &Bound<'py, PyAny>,
-) -> PyResult<Bound<'py, PyAny>> {
-    let py = tracker.py();
-    let tracks = attr!(tracker, "tracks").cast_into::<PyDict>()?;
-    let Some(entry) = tracks.get_item(key)? else {
-        return Ok(py.None().into_bound(py));
-    };
-    let source = entry
-        .get_item(3)?
-        .getattr_opt(intern!(py, "ccnc_source_id"))?
-        .unwrap_or_else(|| key.clone());
-    let source: i128 = source.extract()?;
-    Ok((source, entry.get_item(0)?).into_pyobject(py)?.into_any())
-}
-
-/// Display the BSD icons and run the optional rear handover for both sides.
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn finish_rear<'py>(
+pub(crate) fn finish_map<'py>(
     values: &Record<'py>,
     cs: &Bound<'py, PyAny>,
     md: &Bound<'py, PyAny>,
     frame: i64,
-    model_lanes: bool,
     state: &Bound<'py, PyAny>,
     tracker: &Bound<'py, PyAny>,
-    map: bool,
-) -> PyResult<()> {
-    guard(|| finish(values, cs, md, frame, model_lanes, state, tracker, map))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn finish<'py>(
-    values: &Record<'py>,
-    cs: &Bound<'py, PyAny>,
-    md: &Bound<'py, PyAny>,
-    frame: i64,
-    model_lanes: bool,
-    state: &Bound<'py, PyAny>,
-    tracker: &Bound<'py, PyAny>,
-    map: bool,
 ) -> PyResult<()> {
     let py = state.py();
-    let (filters, laterals) = bsd_inputs(state, model_lanes)?;
-    draw_bsd(values, &attr!(cs, "out"), &filters, laterals)?;
-    let policy = attr!(state, "rear_handover");
-    if policy.is_none() {
-        return Ok(());
-    }
-    let mut chosen = Vec::with_capacity(3);
-    let mut proven = [true; 2];
-    for (index, key) in attr!(tracker, "selected").try_iter()?.enumerate() {
-        let key = key?;
-        let identity = if map {
-            let (identity, proof) = map_selection(tracker, index, &key)?;
-            if index > 0 {
-                proven[index - 1] = proof;
-            }
-            identity
-        } else {
-            selector_identity(tracker, &key)?
-        };
-        chosen.push(identity);
-    }
-    let selected = PyTuple::new(py, chosen)?.into_any();
-    let context = if map {
-        ("map", attr!(tracker, "generation"))
-    } else {
-        ("selector", tracker.clone())
-    }
-    .into_pyobject(py)?
-    .into_any();
-    update(
-        &policy, values, cs, md, frame, &selected, &filters, &context, proven, laterals,
-    )
-}
-
-fn bsd_inputs<'py>(
-    state: &Bound<'py, PyAny>,
-    model_lanes: bool,
-) -> PyResult<(Bound<'py, PyAny>, [f64; 2])> {
-    let py = state.py();
-    let offset = if model_lanes {
-        let left = attr!(state, "l_lane_f");
-        let right = attr!(state, "r_lane_f");
-        (attr!(right, "_filtered_value").extract::<f64>()?
-            - attr!(left, "_filtered_value").extract::<f64>()?)
-            / 2.
-    } else {
-        0.
-    };
+    let left = attr!(state, "l_lane_f");
+    let right = attr!(state, "r_lane_f");
+    let offset = (attr!(right, "_filtered_value").extract::<f64>()?
+        - attr!(left, "_filtered_value").extract::<f64>()?)
+        / 2.;
     let laterals = [2.8 - offset, 2.8 + offset];
     let filters = (attr!(state, "lr_distance"), attr!(state, "rr_distance"))
         .into_pyobject(py)?
         .into_any();
-    Ok((filters, laterals))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn finish_selector<'py>(
-    values: &Record<'py>,
-    cs: &Bound<'py, PyAny>,
-    md: &Bound<'py, PyAny>,
-    frame: i64,
-    model_lanes: bool,
-    state: &Bound<'py, PyAny>,
-    tracker: &Bound<'py, PyAny>,
-    identities: [Option<(i128, i64)>; 3],
-) -> PyResult<()> {
-    let py = state.py();
-    let (filters, laterals) = bsd_inputs(state, model_lanes)?;
     draw_bsd(values, &attr!(cs, "out"), &filters, laterals)?;
     let policy = attr!(state, "rear_handover");
-    if policy.is_none() {
-        return Ok(());
+    let mut chosen = Vec::with_capacity(3);
+    let mut proven = [true; 2];
+    for (index, key) in attr!(tracker, "selected").try_iter()?.enumerate().take(3) {
+        let (identity, proof) = map_selection(tracker, index, &key?)?;
+        if index > 0 {
+            proven[index - 1] = proof;
+        }
+        chosen.push(identity);
     }
-    let [ff, lf, rf] = identities;
-    let selected = (ff, lf, rf).into_pyobject(py)?.into_any();
-    let context = ("selector", tracker).into_pyobject(py)?.into_any();
+    let selected = PyTuple::new(py, chosen)?.into_any();
+    let context = ("map", attr!(tracker, "generation"))
+        .into_pyobject(py)?
+        .into_any();
     update(
-        &policy, values, cs, md, frame, &selected, &filters, &context, [true; 2], laterals,
+        &policy, values, cs, md, frame, &selected, &filters, &context, proven, laterals,
     )
 }

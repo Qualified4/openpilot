@@ -65,8 +65,18 @@ fn _math_for_test(name: &str, values: Vec<f64>) -> PyResult<Vec<f64>> {
 
 /// For the parity test only: `_lane(x, y, moving=moving, settled=settled)` of the map as it is now.
 #[pyfunction]
-fn _lane_for_test(radar_map: &Bound<'_, PyAny>, x: f64, y: f64, moving: bool, settled: bool) -> PyResult<(Option<i64>, bool, f64)> {
-    guard(|| lanes::LaneCache::new(radar_map).get()?.lane(x, y, moving, settled, &[]))
+fn _lane_for_test(
+    radar_map: &Bound<'_, PyAny>,
+    x: f64,
+    y: f64,
+    moving: bool,
+    settled: bool,
+) -> PyResult<(Option<i64>, bool, f64)> {
+    guard(|| {
+        lanes::LaneCache::new(radar_map)
+            .get()?
+            .lane(x, y, moving, settled, &[])
+    })
 }
 
 #[pymodule]
@@ -93,7 +103,10 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(live_tracks::_parse_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(live_tracks::live_tracks_schema, module)?)?;
     module.add_function(wrap_pyfunction!(model_v2::update_lanes, module)?)?;
-    module.add_function(wrap_pyfunction!(model_v2::_update_lanes_calls_for_test, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        model_v2::_update_lanes_calls_for_test,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(model_v2::_parse_model_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(model_v2::model_v2_schema, module)?)?;
     module.add_function(wrap_pyfunction!(_sum_for_test, module)?)?;
@@ -101,7 +114,6 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_lane_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(correct::correct_positions, module)?)?;
     module.add_function(wrap_pyfunction!(correct::_position_apply_for_test, module)?)?;
-    module.add_function(wrap_pyfunction!(rear::finish_rear, module)?)?;
     module.add_function(wrap_pyfunction!(rear::_update_rear_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(vehicle_display::update_display, module)?)?;
     Ok(())

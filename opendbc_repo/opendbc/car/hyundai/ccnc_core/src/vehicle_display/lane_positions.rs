@@ -146,7 +146,6 @@ impl LanePositions {
         drive_speed: f64,
         desire: i64,
         lat_enabled: bool,
-        curvature_source: i64,
     ) -> PyResult<()> {
         let py = state.py();
         let left = get!(state, "l_lane_f");
@@ -193,24 +192,18 @@ impl LanePositions {
         let blinking = left_blinker != right_blinker;
         let changing = auto || (blinking && drive_speed > 20.);
         let absent = model_absent(lines);
-        let (curvature, steering_fallback) = self.curvature.update(
-            state,
+        let curvature = self.curvature.update(
             out,
             md,
             raw,
             lines,
-            curvature_source,
             drive_speed,
             now,
             dt,
             fresh,
             absent,
             changing,
-            lat_enabled,
         )?;
-        if steering_fallback {
-            display.set_item(intern!(py, "LFA_ICON"), 5)?;
-        }
         display.set_item(
             intern!(py, "LANELINE_CURVATURE"),
             py_min(curvature.abs(), 15.) as i64 - i64::from(curvature < 0.),
@@ -381,7 +374,7 @@ impl LanePositions {
     }
 }
 
-pub(super) type LanePanel<'py> = (Bound<'py, PyDict>, i64, bool, Option<i64>, i64);
+pub(super) type LanePanel<'py> = (Bound<'py, PyDict>, i64, bool, Option<i64>);
 
 fn model_absent(lines: &GeometryInput) -> bool {
     lines.probs.len() < 3
@@ -436,11 +429,10 @@ pub(super) fn draw<'py>(
     md: &Bound<'py, PyAny>,
     raw: Option<&[u8]>,
     frame: i64,
-    model_lanes: bool,
     lines: &GeometryInput,
     panel: &LanePanel<'py>,
 ) -> PyResult<()> {
-    let (_, desire, lat_enabled, drive_mode, curvature_source) = *panel;
+    let (_, desire, lat_enabled, drive_mode) = *panel;
     let display = &panel.0;
     let py = state.py();
     let out = get!(cs, "out");
@@ -456,9 +448,6 @@ pub(super) fn draw<'py>(
             (3. + 57. * scaled.powf(1.5)) as i64,
         )?;
         display.set_item(intern!(py, "LANE_HIGHLIGHT"), value)?;
-    }
-    if !model_lanes {
-        return Ok(());
     }
     hdp_alert(state, display, model_absent(lines))?;
     let geometry = get!(state, "lane_geometry");
@@ -481,7 +470,6 @@ pub(super) fn draw<'py>(
         speed,
         desire,
         lat_enabled,
-        curvature_source,
     );
     if result.is_err() {
         if !model_absent(lines) {

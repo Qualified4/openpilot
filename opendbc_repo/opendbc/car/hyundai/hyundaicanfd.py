@@ -1079,24 +1079,17 @@ def _convert_ccnc_front_box_to_car(values):
 _CCNC_DISPLAY_RUST = ccnc_core_loader.load()
 
 
-def _render_ccnc_vehicles(values, CS, md, frame, model_lanes, lane_panel, radar_vehicles, radar_map, enabled, hud_lateral, lead_filter):
+def _render_ccnc_vehicles(values, CS, md, frame, lane_panel, lead_filter):
   try:
-    map_input = ccnc_radar_map.display_inputs() if radar_map else None
-    stock = (enabled, hud_lateral) if values is not None and not radar_vehicles else None
-    return _CCNC_DISPLAY_RUST.update_display(values, CS, md, frame, model_lanes, lane_panel, ccnc_extension.state,
-                                            ccnc_extension._CcncRadarPositionFilter, map_input, stock, lead_filter)
+    return _CCNC_DISPLAY_RUST.update_display(values, CS, md, frame, lane_panel, ccnc_extension.state,
+                                            ccnc_extension._CcncRadarPositionFilter, ccnc_radar_map.display_inputs(),
+                                            lead_filter)
   except Exception:
-    if radar_map:
-      ccnc_radar_map.display_failed()
-    elif not getattr(ccnc_extension.state, 'vehicle_display_failed', False):
-      ccnc_extension.state.vehicle_display_failed = True
-      carlog.exception('CCNC Rust vehicle display failed; using the existing display')
-    # The lane panel runs first. Preserve its result if only vehicle rendering failed.
+    ccnc_radar_map.display_failed()
     if lane_panel is not None and getattr(ccnc_extension.state, 'rust_lane_frame', None) != frame:
-      display, desire, lat_enabled, drive_mode, curvature_source = lane_panel
+      display, desire, lat_enabled, _ = lane_panel
       ccnc_extension.update_lanes(display, CS, md, CS.out.vEgo * CV.MS_TO_KPH, CS.out.aEgo * CV.MS_TO_KPH,
-                                  desire, lat_enabled, drive_mode is not None, model_lanes, frame,
-                                  curvature_source=curvature_source)
+                                  desire, lat_enabled, True, True, frame, curvature_source=3)
     return None
 
 
@@ -1328,11 +1321,11 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
   (lane_color_enabled, model_lane_mode, radar_vehicles, position_correction, radar_map, lane_marking_mode,
    curvature_source, traffic_background) = _ccnc_display_options(CP, CS, frame, extended_ccnc)
   model_lanes = model_lane_mode != 0
-  native_display = _CCNC_DISPLAY_RUST if lane_color_enabled or model_lanes or radar_vehicles else None
   # Display-only lane marking recogniser result (card keeps the latest packet; never waited for here).
   lane_marking = getattr(CS, 'ccnc_lane_marking', None) if lane_marking_mode in (1, 2) else None
   radar_vehicles = radar_vehicles and not (CP.flags & HyundaiFlags.CANFD_HDA2.value)
   radar_map = radar_map and radar_vehicles
+  native_display = _CCNC_DISPLAY_RUST if radar_map and position_correction and rear_handover else None
   if radar_map != getattr(create_ccnc_messages, '_radar_map', False):
     # Either selector starts from empty display state when the other one hands over.
     create_ccnc_messages._radar_map = radar_map
@@ -1439,8 +1432,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
       debug_values = ccnc_debug.live.poll(CP, CC, CS, warning=debug_warning)
       lat_active = CC.latActive
       native_vehicles = (native_display is not None and CS.ccnc_0x162 is not None
-                         and (not radar_vehicles or (ccnc_radar_map.can_render_vehicles() if radar_map
-                                                     else ccnc_extension.can_render_vehicles())))
+                         and ccnc_radar_map.can_render_vehicles())
       lane_panel = None
       adrv_values = None
 
@@ -1672,13 +1664,12 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                                           lane_color_enabled, model_lanes, frame, curvature_source=curvature_source)
             else:
               drive_mode = ccnc_extension.lane_drive_mode(CS) if lane_color_enabled else None
-              lane_panel = values, desire, lat_enabled, drive_mode, curvature_source
+              lane_panel = values, desire, lat_enabled, drive_mode
         adrv_values = values
 
       rendered = None
       if native_display is not None and (native_vehicles or lane_panel is not None or lead_filter is not None):
-        rendered = _render_ccnc_vehicles(CS.ccnc_0x162 if native_vehicles else None, CS, md, frame, model_lanes, lane_panel,
-                                         radar_vehicles, native_vehicles and radar_map, CC.enabled, hud_lateral, lead_filter)
+        rendered = _render_ccnc_vehicles(CS.ccnc_0x162 if native_vehicles else None, CS, md, frame, lane_panel, lead_filter)
       if lead_filter is not None:
         hud_lateral = lead_filter.value
 
@@ -1735,7 +1726,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             # These display paths read the copied radar points through CS.
             if hasattr(CS, 'live_tracks'):
               CS.live_tracks = ccnc_points.snapshot(CS.live_tracks, getattr(CS, 'live_tracks_bytes', None))
-            if radar_map and not native_vehicles:
+            if radar_map:
               values = ccnc_radar_map.update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ccnc_extension)
             else:
               values = ccnc_extension.update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes)
@@ -1765,7 +1756,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         ret.append(msg)
 
     elif lead_filter is not None and native_display is not None:
-      _render_ccnc_vehicles(None, CS, md, frame, False, None, False, False, CC.enabled, None, lead_filter)
+      _render_ccnc_vehicles(None, CS, md, frame, None, lead_filter)
 
     # --- NEW_MSG_4B9 (corner radar keep-alive?) ---
     if enable_corner_radar > 0:

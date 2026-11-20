@@ -30,7 +30,6 @@ macro_rules! put {
 
 mod lane_curvature;
 mod lane_positions;
-pub(crate) mod legacy;
 
 fn enum_name<'py>(
     item: &Bound<'py, PyAny>,
@@ -592,7 +591,6 @@ fn update_map_display<'py>(
     cs: &Bound<'py, PyAny>,
     md: &Bound<'py, PyAny>,
     frame: i64,
-    model_lanes: bool,
     lines: &GeometryInput,
     live: &Bound<'py, PyAny>,
     state: &Bound<'py, PyAny>,
@@ -618,69 +616,67 @@ fn update_map_display<'py>(
         }
         draw_front(&map, state, &values)?;
 
-        if !correction.is_none() {
-            let model_time: f64 = get!(live, "model_time").extract()?;
-            let old_change = get!(correction, "lane_change");
-            let lane_change =
-                old_change.is_truthy()? || get!(map, "lane_offset").extract::<i64>()? != 0;
-            let min_probability: f64 = get!(correction, "MIN_LANE_PROBABILITY").extract()?;
-            let inputs = if (0. ..=0.25).contains(&(now - model_time)) {
-                let model = get!(live, "model");
-                let active = get!(correction, "ego_follow_active").is_truthy()?;
-                let blend: (Option<i64>, f64, f64) = get!(live, "ego_blend").extract()?;
-                if !model.is_none() && (active || blend.1 > 0.) {
-                    let model_lines = if model.is(md) {
-                        None
-                    } else {
-                        Some(GeometryInput::read(&model, None)?)
-                    };
-                    let m = model_lines.as_ref().unwrap_or(&lines);
-                    let inner = if m.lines.len() >= 3 {
-                        m.lines[1..3].to_vec()
-                    } else {
-                        Vec::new()
-                    };
-                    let probs = m.probs.iter().skip(1).take(2).copied().collect();
-                    let path = model
-                        .getattr_opt(intern!(py, "position"))?
-                        .filter(|x| !x.is_none())
-                        .map(|x| curve(&x))
-                        .transpose()?;
-                    Some((inner, path, probs))
-                } else {
+        let model_time: f64 = get!(live, "model_time").extract()?;
+        let old_change = get!(correction, "lane_change");
+        let lane_change =
+            old_change.is_truthy()? || get!(map, "lane_offset").extract::<i64>()? != 0;
+        let min_probability: f64 = get!(correction, "MIN_LANE_PROBABILITY").extract()?;
+        let inputs = if (0. ..=0.25).contains(&(now - model_time)) {
+            let model = get!(live, "model");
+            let active = get!(correction, "ego_follow_active").is_truthy()?;
+            let blend: (Option<i64>, f64, f64) = get!(live, "ego_blend").extract()?;
+            if !model.is_none() && (active || blend.1 > 0.) {
+                let model_lines = if model.is(md) {
                     None
-                }
+                } else {
+                    Some(GeometryInput::read(&model, None)?)
+                };
+                let m = model_lines.as_ref().unwrap_or(&lines);
+                let inner = if m.lines.len() >= 3 {
+                    m.lines[1..3].to_vec()
+                } else {
+                    Vec::new()
+                };
+                let probs = m.probs.iter().skip(1).take(2).copied().collect();
+                let path = model
+                    .getattr_opt(intern!(py, "position"))?
+                    .filter(|x| !x.is_none())
+                    .map(|x| curve(&x))
+                    .transpose()?;
+                Some((inner, path, probs))
             } else {
                 None
-            };
-            let centers = (
-                lines
-                    .side_center(0, min_probability)
-                    .into_pyobject(py)?
-                    .into_any(),
-                lines
-                    .side_center(1, min_probability)
-                    .into_pyobject(py)?
-                    .into_any(),
-            );
-            put!(correction, "lane_change" => lane_change);
-            let result = correct_positions(
-                py,
-                &map,
-                &correction,
-                values.as_any(),
-                frame,
-                centers,
-                inputs,
-                live,
-                position_filter,
-                0.5,
-                0.3,
-            );
-            put!(correction, "lane_change" => old_change);
-            result?;
-        }
-        rear::finish(&values, cs, md, frame, model_lanes, state, &map, true)?;
+            }
+        } else {
+            None
+        };
+        let centers = (
+            lines
+                .side_center(0, min_probability)
+                .into_pyobject(py)?
+                .into_any(),
+            lines
+                .side_center(1, min_probability)
+                .into_pyobject(py)?
+                .into_any(),
+        );
+        put!(correction, "lane_change" => lane_change);
+        let result = correct_positions(
+            py,
+            &map,
+            &correction,
+            values.as_any(),
+            frame,
+            centers,
+            inputs,
+            live,
+            position_filter,
+            0.5,
+            0.3,
+        );
+        put!(correction, "lane_change" => old_change);
+        result?;
+        rear::finish_map(&values, cs, md, frame, state, &map)?;
         finish_fields(&values)
     })
 }
@@ -782,50 +778,6 @@ fn filter_stock_lead<'py>(
     Ok(value)
 }
 
-fn update_stock_display<'py>(
-    existing: &Bound<'py, PyDict>,
-    lead: Option<&StockLead<'py>>,
-    md: &Bound<'py, PyAny>,
-    enabled: bool,
-    hud_lateral: Option<f64>,
-) -> PyResult<Bound<'py, PyDict>> {
-    guard(|| {
-        let values = existing.copy()?;
-        for [distance, _, detect] in FRONT_FIELDS.into_iter().skip(1).chain(REAR_FIELDS) {
-            let is_drawn = values.as_any().get_item(distance)?.ne(0)?;
-            let code: i64 = values.as_any().get_item(detect)?.extract()?;
-            if is_drawn || matches!(code, 1 | 2) {
-                values.set_item(detect, 3)?;
-            }
-        }
-        if let Some(lead) = lead {
-            let distance = lead.distance;
-            let lateral = lead.path_lateral(md)?;
-            let mut stock_y: f64 = values.as_any().get_item("FF_LATERAL")?.extract()?;
-            if stock_y >= 6.4 {
-                stock_y -= 12.8;
-            }
-            let stock_x: f64 = values.as_any().get_item("FF_DISTANCE")?.extract()?;
-            let same = values.as_any().get_item("FF_DETECT")?.is_truthy()?
-                && (stock_x - distance).abs() <= 3.
-                && (stock_y - lateral).abs() <= 1.;
-            if !same {
-                values.set_item("FF_DETECT", if enabled { 4 } else { 3 })?;
-            }
-            values.set_item("FF_DISTANCE", distance.clamp(0.1, 204.5))?;
-            values.set_item(
-                "FF_LATERAL",
-                hud_lateral.unwrap_or(lateral).clamp(-6.4, 6.3),
-            )?;
-        } else {
-            values.set_item("FF_DETECT", 0)?;
-            values.set_item("FF_DISTANCE", 204.6)?;
-            values.set_item("FF_LATERAL", 0.)?;
-        }
-        finish_fields(&values)
-    })
-}
-
 type MapConfiguration<'py> = (
     Bound<'py, PyAny>,
     Bound<'py, PyAny>,
@@ -837,43 +789,26 @@ type MapConfiguration<'py> = (
 /// The rear offsets use the updated lane positions, even when the Python vehicle fallback runs.
 /// The shared SCC lead filter advances at control cadence, with or without an 0x162 send.
 #[pyfunction]
-#[pyo3(signature = (values, cs, md, frame, model_lanes, panel, state, position_filter, map, stock, lead_filter))]
+#[pyo3(signature = (values, cs, md, frame, panel, state, position_filter, map, lead_filter))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_display<'py>(
     values: Option<&Bound<'py, PyDict>>,
     cs: &Bound<'py, PyAny>,
     md: &Bound<'py, PyAny>,
     frame: i64,
-    model_lanes: bool,
     panel: Option<lane_positions::LanePanel<'py>>,
     state: &Bound<'py, PyAny>,
     position_filter: &Bound<'py, PyAny>,
-    map: Option<MapConfiguration<'py>>,
-    stock: Option<(bool, Option<f64>)>,
+    map: MapConfiguration<'py>,
     lead_filter: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Option<Bound<'py, PyDict>>> {
     guard(|| {
-        let lead = if lead_filter.is_some() || stock.is_some() {
-            stock_lead(cs)?
-        } else {
-            None
-        };
-        let filtered = lead_filter
-            .map(|filter| filter_stock_lead(filter, lead.as_ref(), md))
-            .transpose()?;
+        if let Some(filter) = lead_filter {
+            let lead = stock_lead(cs)?;
+            filter_stock_lead(filter, lead.as_ref(), md)?;
+        }
         let py = cs.py();
-        let correction = if panel.is_some() {
-            Some(get!(
-                get!(state, "radar_display_tracker"),
-                "position_correction"
-            ))
-            .filter(|c| !c.is_none())
-        } else {
-            None
-        };
-        let read_lines = (panel.is_some() && model_lanes)
-            || correction.is_some()
-            || (values.is_some() && stock.is_none());
+        let read_lines = panel.is_some() || values.is_some();
         let raw_model = if read_lines
             && !md.is_none()
             && cs
@@ -895,56 +830,39 @@ pub(crate) fn update_display<'py>(
             GeometryInput::default()
         };
         if let Some(panel) = &panel {
-            if let Some(correction) = correction {
-                let out = get!(cs, "out");
-                let speed: f64 = get!(out, "vEgo").extract()?;
-                let left = get!(out, "leftBlinker").is_truthy()?;
-                let right = get!(out, "rightBlinker").is_truthy()?;
-                update_ego_follow(
-                    &correction,
-                    md,
-                    &lines,
-                    frame as f64 * 0.01,
-                    (speed * 3.6) / 3.6,
-                    panel.1,
-                    (left, right),
-                )?;
-            }
-            lane_positions::draw(state, cs, md, raw, frame, model_lanes, &lines, panel)?;
+            let correction = get!(get!(state, "radar_display_tracker"), "position_correction");
+            let out = get!(cs, "out");
+            let speed: f64 = get!(out, "vEgo").extract()?;
+            let left = get!(out, "leftBlinker").is_truthy()?;
+            let right = get!(out, "rightBlinker").is_truthy()?;
+            update_ego_follow(
+                &correction,
+                md,
+                &lines,
+                frame as f64 * 0.01,
+                (speed * 3.6) / 3.6,
+                panel.1,
+                (left, right),
+            )?;
+            lane_positions::draw(state, cs, md, raw, frame, &lines, panel)?;
             put!(state, "rust_lane_frame" => frame);
         }
         let Some(values) = values else {
             return Ok(None);
         };
-        let fields = if let Some((enabled, lateral)) = stock {
-            update_stock_display(values, lead.as_ref(), md, enabled, filtered.or(lateral))
-        } else if let Some((live, lanes, walls, bands)) = map {
-            update_map_display(
-                values,
-                cs,
-                md,
-                frame,
-                model_lanes,
-                &lines,
-                &live,
-                state,
-                &lanes,
-                &walls,
-                &bands,
-                position_filter,
-            )
-        } else {
-            legacy::update_selector_display(
-                values,
-                cs,
-                md,
-                frame,
-                model_lanes,
-                lines,
-                state,
-                position_filter,
-            )
-        }?;
-        Ok(Some(fields))
+        let (live, lanes, walls, bands) = map;
+        Ok(Some(update_map_display(
+            values,
+            cs,
+            md,
+            frame,
+            &lines,
+            &live,
+            state,
+            &lanes,
+            &walls,
+            &bands,
+            position_filter,
+        )?))
     })
 }

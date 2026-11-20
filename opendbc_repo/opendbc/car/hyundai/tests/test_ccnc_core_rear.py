@@ -24,7 +24,7 @@ from opendbc.car.hyundai import hyundaicanfd_ccnc_extension as ext
 from opendbc.car.hyundai import hyundaicanfd_ccnc_rear as rear
 from opendbc.car.hyundai import hyundaicanfd_ccnc_radar_map as radar_map
 from opendbc.car.hyundai.tests.test_ccnc_extension import display  # noqa: F401
-from opendbc.car.hyundai.values import HyundaiFlags
+from opendbc.car.hyundai.values import HyundaiExtFlags, HyundaiFlags
 from opendbc.car.interfaces import CarInterfaceBase
 from openpilot.cereal import log
 
@@ -271,18 +271,17 @@ def replay_inputs():
   return inputs
 
 
-@pytest.mark.parametrize('mode', ('stock', 'selector', 'selector_corrected', 'map', 'map_corrected'))
-def test_display_entry_returns_every_slot_in_one_call(mode, display, monkeypatch, caplog):  # noqa: F811
+def test_display_entry_returns_every_slot_in_one_call(display, monkeypatch, caplog):  # noqa: F811
   core = ccnc_core_loader.load()
   assert core is not None
   params, cs, send = display
-  use_map = mode.startswith('map')
-  params.update(CcncRadarVehicles=mode != 'stock', CcncLaneColor=True, CcncModelLanes=2,
-                CcncVehiclePositionCorrection=mode.endswith('corrected'), CcncRadarMap=use_map)
+  mode = 'extended'
+  params['CcncExtendedDisplay'] = True
   rows = replay_inputs()
   control = structs.CarControl()
   dims = SimpleNamespace(ECAN=0, CAM=2)
-  cp = SimpleNamespace(flags=HyundaiFlags.CAMERA_SCC.value)
+  cp = SimpleNamespace(brand="hyundai", flags=HyundaiFlags.CANFD | HyundaiFlags.CAMERA_SCC,
+                       openpilotLongitudinalControl=True, extFlags=HyundaiExtFlags.CCNC_CLUSTER_RX)
   car_fields = CANPacker('hyundai_canfd_generated').dbc.name_to_msg['CCNC_0x162'].sigs
 
   def replay(native, patch):
@@ -398,56 +397,3 @@ def test_display_entry_returns_every_slot_in_one_call(mode, display, monkeypatch
   def us(samples):
     return round(median(samples) / 1_000, 3), round(sorted(samples)[int(.95 * len(samples))] / 1_000, 3)
   print(f'{mode}: 130 complete CAN frames, 650 filter steps, median/p95 µs {us(python_time)} → {us(rust_time)}')
-
-
-@pytest.mark.parametrize('lane_mode', (0, 1, 2))
-def test_lane_panel_without_0x162_matches_python(lane_mode, display, monkeypatch):  # noqa: F811
-  params, cs, send = display
-  params.update(CcncLaneColor=True, CcncModelLanes=lane_mode)
-  core = ccnc_core_loader.load()
-  assert core is not None and cs.ccnc_0x162 is None
-  rows = replay_inputs()[::5]
-  calls = []
-  update = core.update_display
-
-  def count(values, *args):
-    assert values is None
-    calls.append(args[2])
-    return update(values, *args)
-
-  def unexpected(*args, **kwargs):
-    pytest.fail('0x161-only display called the Python lane renderer')
-
-  def replay():
-    ext.reset()
-    main._stop_go_background.reset()
-    for name in ('_display_options', '_lane_display', '_parking'):
-      monkeypatch.delattr(main.create_ccnc_messages, name, raising=False)
-    trace = []
-    for i in range(160):
-      frame = i * 5
-      params['CcncLaneCurvatureSource'] = (i // 20) % 4
-      cs.modelV2, cs.model_v2_bytes = rows[i % len(rows)][2] if not 105 <= i < 112 else (None, None)
-      if i % 2:
-        cs.model_v2_bytes = None
-      cs.out.vEgo = 22.
-      cs.out.aEgo = (-4., -1., 0., 4., 2., 0.)[i % 6]
-      cs.out.latEnabled = i % 13 != 6
-      cs.out.leftBlinker, cs.out.rightBlinker = i % 17 == 2, i % 17 == 12
-      cs.trailer_connected = i % 19 == 1
-      cs.adrv_0x161['ALERTS_5'] = 16 if i % 7 == 4 else 0
-      values = dict(send(frame))['ADRV_0x161']
-      trace.append(values)
-    return trace
-
-  with monkeypatch.context() as patch:
-    patch.setattr(main, '_CCNC_DISPLAY_RUST', None)
-    expected = replay()
-  with monkeypatch.context() as patch:
-    patch.setattr(core, 'update_display', count)
-    patch.setattr(ext, 'update_lanes', unexpected)
-    actual = replay()
-
-  assert calls == [i * 5 for i in range(160) if i % 19 != 1]
-  for i, (before, after) in enumerate(zip(expected, actual, strict=True)):
-    assert before == after, (i, before, after)
