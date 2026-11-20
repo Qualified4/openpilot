@@ -8,7 +8,22 @@ import struct
 import random
 from types import MethodType, SimpleNamespace as N
 
+import sys
+import types
+
 import pytest
+
+try:
+  import openpilot.common.params  # noqa: F401
+except ImportError:
+  # The CI builds only the Rust core, not openpilot's Params extension. The display reads Params only for the drive
+  # mode (lane colour), which these runs leave off; a Params that fails falls back as on a device without the key.
+  _params = types.ModuleType('openpilot.common.params')
+  class _Params:
+    def __getattr__(self, name):
+      raise RuntimeError('Params is not built in this environment')
+  _params.Params = _Params
+  sys.modules['openpilot.common.params'] = _params
 
 from opendbc.can import CANPacker
 from opendbc.car.hyundai import ccnc_core_loader
