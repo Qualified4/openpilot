@@ -1090,6 +1090,12 @@ def _render_ccnc_vehicles(values, CS, md, frame, model_lanes, lane_panel, radar_
     elif not getattr(ccnc_extension.state, 'vehicle_display_failed', False):
       ccnc_extension.state.vehicle_display_failed = True
       carlog.exception('CCNC Rust vehicle display failed; using the existing display')
+    # The lane panel runs first. Preserve its result if only vehicle rendering failed.
+    if lane_panel is not None and getattr(ccnc_extension.state, 'rust_lane_frame', None) != frame:
+      display, desire, lat_enabled, drive_mode, curvature_source = lane_panel
+      ccnc_extension.update_lanes(display, CS, md, CS.out.vEgo * CV.MS_TO_KPH, CS.out.aEgo * CV.MS_TO_KPH,
+                                  desire, lat_enabled, drive_mode is not None, model_lanes, frame,
+                                  curvature_source=curvature_source)
     return None
 
 
@@ -1667,19 +1673,18 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
             values["LANE_RIGHT"] = 1 if desire in (2, 4) else 0
 
           if lane_color_enabled or model_lanes:
-            ccnc_extension.update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled,
-                                        lane_color_enabled, model_lanes, frame, curvature_source=curvature_source,
-                                        native_positions=native_vehicles and radar_vehicles)
-            if native_vehicles and radar_vehicles:
-              lane_panel = values, desire, lat_enabled
+            if _CCNC_DISPLAY_RUST is None:
+              ccnc_extension.update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled,
+                                          lane_color_enabled, model_lanes, frame, curvature_source=curvature_source)
+            else:
+              drive_mode = ccnc_extension.lane_drive_mode(CS) if lane_color_enabled else None
+              lane_panel = values, desire, lat_enabled, drive_mode, curvature_source
         adrv_values = values
 
       rendered = None
-      if native_vehicles:
-        rendered = _render_ccnc_vehicles(CS.ccnc_0x162, CS, md, frame, model_lanes, lane_panel,
-                                         radar_vehicles, radar_map, CC.enabled, hud_lateral, lead_filter)
-      elif lead_filter is not None and _CCNC_DISPLAY_RUST is not None:
-        _render_ccnc_vehicles(None, CS, md, frame, False, None, False, False, CC.enabled, None, lead_filter)
+      if _CCNC_DISPLAY_RUST is not None and (native_vehicles or lane_panel is not None or lead_filter is not None):
+        rendered = _render_ccnc_vehicles(CS.ccnc_0x162 if native_vehicles else None, CS, md, frame, model_lanes, lane_panel,
+                                         radar_vehicles, native_vehicles and radar_map, CC.enabled, hud_lateral, lead_filter)
       if lead_filter is not None:
         hud_lateral = lead_filter.value
 

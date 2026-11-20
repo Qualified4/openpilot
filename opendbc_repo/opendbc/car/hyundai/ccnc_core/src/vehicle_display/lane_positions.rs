@@ -1,4 +1,4 @@
-//! Lane positions used by both the lane message and the rear vehicle offsets.
+//! The 0x161 lane panel and the lane positions shared with rear vehicle offsets.
 
 use std::collections::VecDeque;
 
@@ -10,6 +10,8 @@ use pyo3::types::{PyDict, PyFloat};
 use crate::display_filter::{self, fixed, value};
 use crate::model_v2::{numpy_interp, valid_curve, GeometryInput};
 use crate::pymath::{py_max, py_min};
+
+use super::lane_curvature::Curvature;
 
 #[pyclass]
 struct LanePositions {
@@ -26,6 +28,7 @@ struct LanePositions {
     hold: bool,
     alpha: f64,
     width: f64,
+    curvature: Curvature,
 }
 
 impl LanePositions {
@@ -44,6 +47,7 @@ impl LanePositions {
             hold: false,
             alpha: 0.2,
             width: 3.,
+            curvature: Curvature::default(),
         }
     }
 
@@ -134,13 +138,15 @@ impl LanePositions {
         &mut self,
         display: &Bound<'py, PyDict>,
         state: &Bound<'py, PyAny>,
-        cs: &Bound<'py, PyAny>,
+        out: &Bound<'py, PyAny>,
         md: &Bound<'py, PyAny>,
+        raw: Option<&[u8]>,
         lines: &GeometryInput,
         now: f64,
         drive_speed: f64,
         desire: i64,
         lat_enabled: bool,
+        curvature_source: i64,
     ) -> PyResult<()> {
         let py = state.py();
         let left = get!(state, "l_lane_f");
@@ -152,6 +158,7 @@ impl LanePositions {
             self.clear_motion();
             self.clear_phase();
             self.alpha = 0.2;
+            self.curvature = Curvature::default();
             self.stamp = None;
             self.reader = None;
             if elapsed.is_some() {
@@ -180,15 +187,42 @@ impl LanePositions {
             Some(md.clone().unbind())
         };
 
-        if lines.probs.len() < 3 {
-            return Err(PyIndexError::new_err("missing lane probability"));
-        }
-        let out = get!(cs, "out");
         let left_blinker = get!(out, "leftBlinker").is_truthy()?;
         let right_blinker = get!(out, "rightBlinker").is_truthy()?;
         let auto = matches!(desire, 3 | 4);
         let blinking = left_blinker != right_blinker;
         let changing = auto || (blinking && drive_speed > 20.);
+        let absent = model_absent(lines);
+        let (curvature, steering_fallback) = self.curvature.update(
+            state,
+            out,
+            md,
+            raw,
+            lines,
+            curvature_source,
+            drive_speed,
+            now,
+            dt,
+            fresh,
+            absent,
+            changing,
+            lat_enabled,
+        )?;
+        if steering_fallback {
+            display.set_item(intern!(py, "LFA_ICON"), 5)?;
+        }
+        display.set_item(
+            intern!(py, "LANELINE_CURVATURE"),
+            py_min(curvature.abs(), 15.) as i64 - i64::from(curvature < 0.),
+        )?;
+        display.set_item(
+            intern!(py, "LANELINE_CURVATURE_DIRECTION"),
+            i64::from(curvature < 0.),
+        )?;
+
+        if lines.probs.len() < 3 {
+            return Err(PyIndexError::new_err("missing lane probability"));
+        }
         let target_alpha = if changing { 0.6 } else { 0.2 };
         let alpha = self.alpha + py_min(py_max(target_alpha - self.alpha, -2. * dt), 2. * dt);
         if alpha != self.alpha {
@@ -318,27 +352,28 @@ impl LanePositions {
         display.set_item(intern!(py, "LANELINE_RIGHT_POSITION"), r as i64)?;
 
         if lat_enabled {
-            let meta = get!(md, "meta");
-            let lca =
-                |warning: bool, other: bool, available: &Bound<'py, PyAny>| -> PyResult<i32> {
-                    Ok(if warning {
-                        1
-                    } else if other || !available.is_truthy()? {
-                        4
-                    } else {
-                        2
-                    })
-                };
+            let lca = |warning: bool,
+                       other: bool,
+                       available: &Bound<'py, pyo3::types::PyString>|
+             -> PyResult<i32> {
+                Ok(if warning {
+                    1
+                } else if other || !get!(md, "meta").getattr(available)?.is_truthy()? {
+                    4
+                } else {
+                    2
+                })
+            };
             let left = lca(
                 get!(out, "leftBlindspot").is_truthy()?,
                 right_blinker,
-                &get!(meta, "laneChangeAvailableLeft"),
+                intern!(py, "laneChangeAvailableLeft"),
             )?;
             display.set_item(intern!(py, "LCA_LEFT_ICON"), left)?;
             let right = lca(
                 get!(out, "rightBlindspot").is_truthy()?,
                 left_blinker,
-                &get!(meta, "laneChangeAvailableRight"),
+                intern!(py, "laneChangeAvailableRight"),
             )?;
             display.set_item(intern!(py, "LCA_RIGHT_ICON"), right)?;
         }
@@ -346,23 +381,88 @@ impl LanePositions {
     }
 }
 
-pub(super) type LanePanel<'py> = Option<(Bound<'py, PyDict>, i64, bool)>;
+pub(super) type LanePanel<'py> = (Bound<'py, PyDict>, i64, bool, Option<i64>, i64);
 
+fn model_absent(lines: &GeometryInput) -> bool {
+    lines.probs.len() < 3
+        || lines.lines.len() < 3
+        || lines.lines[1].1.is_empty()
+        || lines.lines[2].1.is_empty()
+}
+
+fn highlight(previous: i64, accel: f64, mode: i64, speed: f64) -> i64 {
+    if (previous == 4 && accel < -1. && speed > 1.) || (previous == 5 && mode != 4 && accel > 5.) {
+        previous
+    } else if accel < -10. {
+        4
+    } else if mode == 4 || accel > 10. {
+        5
+    } else if mode < 3 {
+        3
+    } else {
+        0
+    }
+}
+
+fn hdp_alert(state: &Bound<'_, PyAny>, display: &Bound<'_, PyDict>, absent: bool) -> PyResult<()> {
+    const HDP_ALERT_SENDS: i64 = 100; // Five seconds at 20 Hz.
+    let pending = get!(state, "hdp_alert_pending").is_truthy()?;
+    let armed = get!(state, "hdp_alert_armed").is_truthy()?;
+    let mut left: i64 = get!(state, "hdp_alert_left").extract()?;
+    if pending || (absent && armed) {
+        put!(state, "hdp_alert_pending" => false, "hdp_alert_armed" => false);
+        left = HDP_ALERT_SENDS;
+    }
+    if !absent && (!armed || pending) {
+        put!(state, "hdp_alert_armed" => true);
+    }
+    let alert = intern!(state.py(), "ALERTS_5");
+    if left > 0 {
+        put!(state, "hdp_alert_left" => left - 1);
+        if !display
+            .get_item(alert)?
+            .map_or(Ok(false), |v| v.is_truthy())?
+        {
+            display.set_item(alert, 19)?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn draw<'py>(
     state: &Bound<'py, PyAny>,
     cs: &Bound<'py, PyAny>,
     md: &Bound<'py, PyAny>,
+    raw: Option<&[u8]>,
     frame: i64,
     model_lanes: bool,
     lines: &GeometryInput,
-    panel: LanePanel<'py>,
+    panel: &LanePanel<'py>,
 ) -> PyResult<()> {
-    let Some((display, desire, lat_enabled)) = panel.filter(|_| model_lanes) else {
-        return Ok(());
-    };
+    let (_, desire, lat_enabled, drive_mode, curvature_source) = *panel;
+    let display = &panel.0;
     let py = state.py();
+    let out = get!(cs, "out");
+    let speed = get!(out, "vEgo").extract::<f64>()? * 3.6;
+    if let Some(mode) = drive_mode {
+        let accel = get!(out, "aEgo").extract::<f64>()? * 3.6;
+        let color = get!(state, "drive_lane_color");
+        let value = highlight(get!(color, "state").extract()?, accel, mode, speed);
+        put!(color, "state" => value);
+        let scaled = py_max(0., py_min(1., speed / 80.));
+        display.set_item(
+            intern!(py, "LANE_HIGHLIGHT_DISTANCE"),
+            (3. + 57. * scaled.powf(1.5)) as i64,
+        )?;
+        display.set_item(intern!(py, "LANE_HIGHLIGHT"), value)?;
+    }
+    if !model_lanes {
+        return Ok(());
+    }
+    hdp_alert(state, display, model_absent(lines))?;
     let geometry = get!(state, "lane_geometry");
-    let name = intern!(py, "_rust_positions");
+    let name = intern!(py, "_rust_lanes");
     let lane = if let Some(previous) = geometry.getattr_opt(name)? {
         previous.cast_into::<LanePositions>()?
     } else {
@@ -370,24 +470,21 @@ pub(super) fn draw<'py>(
         geometry.setattr(name, &lane)?;
         lane
     };
-    let speed: f64 = get!(get!(cs, "out"), "vEgo").extract()?;
     let result = lane.try_borrow_mut()?.draw(
-        &display,
+        display,
         state,
-        cs,
+        &out,
         md,
+        raw,
         lines,
         frame as f64 * 0.01,
-        speed * 3.6,
+        speed,
         desire,
         lat_enabled,
+        curvature_source,
     );
     if result.is_err() {
-        let absent = lines.probs.len() < 3
-            || lines.lines.len() < 3
-            || lines.lines[1].1.is_empty()
-            || lines.lines[2].1.is_empty();
-        if !absent {
+        if !model_absent(lines) {
             for (key, value) in [
                 ("LANELINE_LEFT_POSITION", 30),
                 ("LANELINE_RIGHT_POSITION", 30),

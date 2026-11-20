@@ -11,7 +11,7 @@ from threading import Lock
 from types import ModuleType
 
 _CORE_DIR = Path(__file__).with_name("ccnc_core")
-ABI_VERSION = 9  # Keep in sync with abi_version in src/lib.rs.
+ABI_VERSION = 10  # Keep in sync with abi_version in src/lib.rs.
 _LOAD_LOCK = Lock()
 
 

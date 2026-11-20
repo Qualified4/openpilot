@@ -17,18 +17,20 @@ use crate::guard;
 use crate::observe::Frame;
 use crate::lanes::interpolate;
 use crate::pymath::py_max;
-use crate::live_tracks::{data_bytes, Message, EVENT_DISCRIMINANT_OFFSET};
+use crate::live_tracks::{data_bytes, Message, Struct, EVENT_DISCRIMINANT_OFFSET};
 
 /// `Event`: the modelV2 member of the union.
 pub const EVENT_MODEL_V2: u16 = 73;
 pub const EVENT_MODEL_V2_POINTER: usize = 0;
 /// `ModelDataV2` pointer indices.
+pub const POSITION_POINTER: usize = 0; // XYZTData
 pub const LANE_LINES_POINTER: usize = 4; // List(XYZTData)
 pub const LANE_LINE_PROBS_POINTER: usize = 5; // List(Float32)
 pub const ROAD_EDGES_POINTER: usize = 6; // List(XYZTData)
-/// `XYZTData` pointer indices, both List(Float32).
+/// `XYZTData` pointer indices, all List(Float32).
 pub const XYZT_X_POINTER: usize = 0;
 pub const XYZT_Y_POINTER: usize = 1;
+pub const XYZT_Y_STD_POINTER: usize = 5;
 
 /// Floats and list elements read from one message at most: overlapping pointers could otherwise make a small message
 /// read as a huge one (messaging reads without a traversal limit; this gives None instead).
@@ -45,15 +47,19 @@ pub struct Model {
     pub road_edges: Vec<Line>,
 }
 
-/// laneLines, laneLineProbs and roadEdges of a modelV2 Event message, or None where this does not read them exactly
-/// as pycapnp.
-pub fn parse(bytes: &[u8]) -> Option<Model> {
-    let message = Message::new(bytes)?;
+fn model_root<'a>(message: &Message<'a>) -> Option<Struct<'a>> {
     let event = message.read_struct(0, 0)?;
     if u16::from_le_bytes(data_bytes(event.data, EVENT_DISCRIMINANT_OFFSET * 2)) != EVENT_MODEL_V2 {
         return None;
     }
-    let model = message.struct_pointer(&event, EVENT_MODEL_V2_POINTER)?;
+    message.struct_pointer(&event, EVENT_MODEL_V2_POINTER)
+}
+
+/// laneLines, laneLineProbs and roadEdges of a modelV2 Event message, or None where this does not read them exactly
+/// as pycapnp.
+pub fn parse(bytes: &[u8]) -> Option<Model> {
+    let message = Message::new(bytes)?;
+    let model = model_root(&message)?;
     let mut read = 0usize;
     let mut lines = |index: usize| -> Option<Vec<Line>> {
         let elements = message.struct_elements(&model, index)?;
@@ -104,11 +110,13 @@ pub fn model_v2_schema(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     d.set_item("event_discriminant_offset", EVENT_DISCRIMINANT_OFFSET)?;
     d.set_item("event_model_v2", EVENT_MODEL_V2)?;
     d.set_item("event_model_v2_pointer", EVENT_MODEL_V2_POINTER)?;
+    d.set_item("position_pointer", POSITION_POINTER)?;
     d.set_item("lane_lines_pointer", LANE_LINES_POINTER)?;
     d.set_item("lane_line_probs_pointer", LANE_LINE_PROBS_POINTER)?;
     d.set_item("road_edges_pointer", ROAD_EDGES_POINTER)?;
     d.set_item("xyzt_x_pointer", XYZT_X_POINTER)?;
     d.set_item("xyzt_y_pointer", XYZT_Y_POINTER)?;
+    d.set_item("xyzt_y_std_pointer", XYZT_Y_STD_POINTER)?;
     Ok(d)
 }
 
@@ -215,6 +223,32 @@ pub(crate) fn curve(line: &Bound<'_, PyAny>) -> PyResult<Curve> {
     ))
 }
 
+/// Read the display curvature's position samples. A reader without matching raw bytes uses its fields.
+pub(crate) fn read_path(md: &Bound<'_, PyAny>, raw: Option<&[u8]>) -> PyResult<(Curve, Vec<f64>)> {
+    let parse_path = |raw: &[u8]| {
+        let message = Message::new(raw)?;
+        let model = model_root(&message)?;
+        let position = message.struct_pointer(&model, POSITION_POINTER)?;
+        let read = |index| {
+            Some(message.f32_list(&position, index)?.into_iter().map(f64::from).collect())
+        };
+        Some((
+            (read(XYZT_X_POINTER)?, read(XYZT_Y_POINTER)?),
+            read(XYZT_Y_STD_POINTER)?,
+        ))
+    };
+    if let Some(path) = raw.and_then(parse_path) {
+        return Ok(path);
+    }
+    let py = md.py();
+    let position = md.getattr(intern!(py, "position"))?;
+    Ok((
+        curve(&position)?,
+        position.getattr(intern!(py, "yStd"))?.extract()?,
+    ))
+}
+
+#[derive(Default)]
 pub(crate) struct GeometryInput {
     pub lines: Vec<Curve>,
     pub probs: Vec<f64>,
@@ -246,18 +280,24 @@ impl GeometryInput {
             return Ok(Self::from_raw(model));
         }
         if md.is_none() {
-            return Ok(Self {
-                lines: Vec::new(),
-                probs: Vec::new(),
-                edges: Vec::new(),
-            });
+            return Ok(Self::default());
         }
         let py = md.py();
         let read = |name, n| -> PyResult<Vec<Curve>> {
             let Some(list) = md.getattr_opt(name)? else {
                 return Ok(Vec::new());
             };
-            list.try_iter()?.take(n).map(|line| curve(&line?)).collect()
+            list.try_iter()?
+                .take(n)
+                .map(|line| {
+                    let line = line?;
+                    let x = line
+                        .getattr_opt(intern!(py, "x"))?
+                        .map_or(Ok(Vec::new()), |v| v.extract())?;
+                    let y = line.getattr(intern!(py, "y"))?.extract()?;
+                    Ok((x, y))
+                })
+                .collect()
         };
         let lanes = intern!(py, "laneLines");
         let edges = intern!(py, "roadEdges");

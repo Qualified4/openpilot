@@ -8,9 +8,7 @@ use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFloat, PyTuple};
 
-use super::{
-    deadband, enum_name, finish_fields, optional_model_meta, update_ego_follow, FRONT_FIELDS,
-};
+use super::{deadband, enum_name, finish_fields, optional_model_meta, FRONT_FIELDS};
 use crate::correct::update_centers;
 use crate::display_filter;
 use crate::guard;
@@ -1742,7 +1740,6 @@ impl Selector {
         model: &Model,
         frame: i64,
         model_lanes: bool,
-        desire: Option<i64>,
         filter_type: &Bound<'py, PyAny>,
     ) -> PyResult<()> {
         let py = state.py();
@@ -1757,17 +1754,6 @@ impl Selector {
             get!(out, "leftBlinker").is_truthy()?,
             get!(out, "rightBlinker").is_truthy()?,
         );
-        if let Some(desire) = desire.filter(|_| corrected) {
-            update_ego_follow(
-                &correction,
-                md,
-                &model.geometry,
-                frame as f64 * 0.01,
-                speed / 3.6,
-                desire,
-                (left, right),
-            )?;
-        }
         if corrected != self.temporal.is_some() {
             self.temporal = corrected.then(Temporal::default);
             self.raw = None; // The newly selected observation policy needs its own view of the held reader.
@@ -1977,7 +1963,7 @@ pub(super) fn update_selector_display<'py>(
     md: &Bound<'py, PyAny>,
     frame: i64,
     model_lanes: bool,
-    panel: super::lane_positions::LanePanel<'py>,
+    lines: GeometryInput,
     state: &Bound<'py, PyAny>,
     filter_type: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyDict>> {
@@ -1993,16 +1979,6 @@ pub(super) fn update_selector_display<'py>(
             tracker.setattr(handle, &selector)?;
             selector
         };
-        let raw_model = cs
-            .getattr_opt(intern!(py, "model_v2_bytes"))?
-            .filter(|v| !v.is_none() && !md.is_none());
-        let raw = raw_model
-            .as_ref()
-            .map(|v| v.extract::<&[u8]>())
-            .transpose()?;
-        let lines = GeometryInput::read(md, raw)?;
-        let desire = panel.as_ref().map(|(_, desire, _)| *desire);
-        super::lane_positions::draw(state, cs, md, frame, model_lanes, &lines, panel)?;
         let model = Model::read(md, lines)?;
         let values = existing.copy()?;
         selector.try_borrow_mut()?.draw(
@@ -2014,7 +1990,6 @@ pub(super) fn update_selector_display<'py>(
             &model,
             frame,
             model_lanes,
-            desire,
             filter_type,
         )?;
         finish_fields(&values)

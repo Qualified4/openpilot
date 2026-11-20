@@ -277,7 +277,7 @@ def test_display_entry_returns_every_slot_in_one_call(mode, display, monkeypatch
   assert core is not None
   params, cs, send = display
   use_map = mode.startswith('map')
-  params.update(CcncRadarVehicles=mode != 'stock', CcncModelLanes=2,
+  params.update(CcncRadarVehicles=mode != 'stock', CcncLaneColor=True, CcncModelLanes=2,
                 CcncVehiclePositionCorrection=mode.endswith('corrected'), CcncRadarMap=use_map)
   rows = replay_inputs()
   control = structs.CarControl()
@@ -294,7 +294,7 @@ def test_display_entry_returns_every_slot_in_one_call(mode, display, monkeypatch
     for name in ('_display_options', '_radar_map', '_parking', '_camera_sync', '_lane_display'):
       patch.delattr(main.create_ccnc_messages, name, raising=False)
 
-    draws, calls, times = [], [], []
+    lanes, draws, calls, times = [], [], [], []
     if native:
       entered = core.update_display
 
@@ -309,6 +309,7 @@ def test_display_entry_returns_every_slot_in_one_call(mode, display, monkeypatch
         pytest.fail('production display called a Python drawing or state method')
 
       patch.setattr(core, 'update_display', counted)
+      patch.setattr(ext, 'update_lanes', unexpected)
       for owner, names in (
           (rear.SmoothHandover, ('update',)), (rear.SideFlow, ('update',)),
           (radar_map.CcncRadarMap, ('update', 'display_values')),
@@ -329,6 +330,8 @@ def test_display_entry_returns_every_slot_in_one_call(mode, display, monkeypatch
         self.packer = CANPacker('hyundai_canfd_generated')
 
       def make_can_msg(self, name, bus, values, **kwargs):
+        if name == 'ADRV_0x161':
+          lanes.append(dict(values))
         if name == 'CCNC_0x162':
           draws.append((frame, tuple(values[key] for key in VEHICLE_FIELDS)))
         return self.packer.make_can_msg(name, bus, values, **kwargs)
@@ -371,13 +374,14 @@ def test_display_entry_returns_every_slot_in_one_call(mode, display, monkeypatch
     assert len(draws) == 130
     if native:
       assert calls == [(frame, frame % 5 == 0) for frame in range(len(rows))]
-    return traces, draws, times
+    return traces, lanes, draws, times
 
   with monkeypatch.context() as patch:
-    expected, values, python_time = replay(False, patch)
+    expected, expected_lanes, values, python_time = replay(False, patch)
   with monkeypatch.context() as patch:
-    actual, rendered, rust_time = replay(True, patch)
+    actual, actual_lanes, rendered, rust_time = replay(True, patch)
 
+  assert len(actual_lanes) == 130 and actual_lanes == expected_lanes
   for frame, (a, b) in enumerate(zip(actual, expected, strict=True)):
     assert a == b, (mode, frame, a, b, caplog.text)
   for (frame, got), (_, want) in zip(rendered, values, strict=True):
@@ -394,3 +398,56 @@ def test_display_entry_returns_every_slot_in_one_call(mode, display, monkeypatch
   def us(samples):
     return round(median(samples) / 1_000, 3), round(sorted(samples)[int(.95 * len(samples))] / 1_000, 3)
   print(f'{mode}: 130 complete CAN frames, 650 filter steps, median/p95 µs {us(python_time)} → {us(rust_time)}')
+
+
+@pytest.mark.parametrize('lane_mode', (0, 1, 2))
+def test_lane_panel_without_0x162_matches_python(lane_mode, display, monkeypatch):  # noqa: F811
+  params, cs, send = display
+  params.update(CcncLaneColor=True, CcncModelLanes=lane_mode)
+  core = ccnc_core_loader.load()
+  assert core is not None and cs.ccnc_0x162 is None
+  rows = replay_inputs()[::5]
+  calls = []
+  update = core.update_display
+
+  def count(values, *args):
+    assert values is None
+    calls.append(args[2])
+    return update(values, *args)
+
+  def unexpected(*args, **kwargs):
+    pytest.fail('0x161-only display called the Python lane renderer')
+
+  def replay():
+    ext.reset()
+    main._stop_go_background.reset()
+    for name in ('_display_options', '_lane_display', '_parking'):
+      monkeypatch.delattr(main.create_ccnc_messages, name, raising=False)
+    trace = []
+    for i in range(160):
+      frame = i * 5
+      params['CcncLaneCurvatureSource'] = (i // 20) % 4
+      cs.modelV2, cs.model_v2_bytes = rows[i % len(rows)][2] if not 105 <= i < 112 else (None, None)
+      if i % 2:
+        cs.model_v2_bytes = None
+      cs.out.vEgo = 22.
+      cs.out.aEgo = (-4., -1., 0., 4., 2., 0.)[i % 6]
+      cs.out.latEnabled = i % 13 != 6
+      cs.out.leftBlinker, cs.out.rightBlinker = i % 17 == 2, i % 17 == 12
+      cs.trailer_connected = i % 19 == 1
+      cs.adrv_0x161['ALERTS_5'] = 16 if i % 7 == 4 else 0
+      values = dict(send(frame))['ADRV_0x161']
+      trace.append(values)
+    return trace
+
+  with monkeypatch.context() as patch:
+    patch.setattr(main, '_CCNC_DISPLAY_RUST', None)
+    expected = replay()
+  with monkeypatch.context() as patch:
+    patch.setattr(core, 'update_display', count)
+    patch.setattr(ext, 'update_lanes', unexpected)
+    actual = replay()
+
+  assert calls == [i * 5 for i in range(160) if i % 19 != 1]
+  for i, (before, after) in enumerate(zip(expected, actual, strict=True)):
+    assert before == after, (i, before, after)

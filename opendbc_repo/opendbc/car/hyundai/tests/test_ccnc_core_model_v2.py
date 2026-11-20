@@ -129,12 +129,12 @@ def test_schema_constants_are_the_schema(core):
   assert ccnc_points.model_schema_mismatch(log) is None
 
 
-@pytest.mark.parametrize('change', ['discriminant', 'model_pointer', 'lane_lines', 'probs', 'edges', 'x', 'y', 'offset'])
+@pytest.mark.parametrize('change', ['discriminant', 'model_pointer', 'position', 'lane_lines', 'probs', 'edges', 'x', 'y', 'y_std', 'offset'])
 def test_schema_mismatch_names_what_differs(core, monkeypatch, change):
   c = dict(core.model_v2_schema())
-  name = {'discriminant': 'event_model_v2', 'model_pointer': 'event_model_v2_pointer', 'lane_lines': 'lane_lines_pointer',
+  name = {'discriminant': 'event_model_v2', 'model_pointer': 'event_model_v2_pointer', 'position': 'position_pointer', 'lane_lines': 'lane_lines_pointer',
           'probs': 'lane_line_probs_pointer', 'edges': 'road_edges_pointer', 'x': 'xyzt_x_pointer', 'y': 'xyzt_y_pointer',
-          'offset': 'event_discriminant_offset'}[change]
+          'y_std': 'xyzt_y_std_pointer', 'offset': 'event_discriminant_offset'}[change]
   c[name] += 1
 
   class Reader:

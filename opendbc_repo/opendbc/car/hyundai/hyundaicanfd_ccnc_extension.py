@@ -2678,19 +2678,23 @@ def _model_lanes_absent(md):
 CURVATURE_SOURCE_DEFAULT = 2
 
 
+def lane_drive_mode(CS):
+  if CS.out.gearShifter != structs.CarState.GearShifter.drive:
+    return None
+  now = time.monotonic()
+  if now >= state.drive_mode_refresh:
+    try:
+      state.drive_mode = Params().get_int("MyDrivingMode")
+    except Exception:
+      state.drive_mode = 3
+    state.drive_mode_refresh = now + 1.0
+  return state.drive_mode
+
+
 def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane_color=True, model_lanes=True, frame=None,
                  *, curvature_source=CURVATURE_SOURCE_DEFAULT, native_positions=False):
   # 주행 기어에서만 가속도·드라이브 모드에 따른 차로 색 변경
-  if lane_color and CS.out.gearShifter == structs.CarState.GearShifter.drive:
-    now = time.monotonic()
-    if now >= state.drive_mode_refresh:
-      try:
-        state.drive_mode = Params().get_int("MyDrivingMode")
-      except Exception:
-        state.drive_mode = 3
-      state.drive_mode_refresh = now + 1.0
-    drive_mode = state.drive_mode
-
+  if lane_color and (drive_mode := lane_drive_mode(CS)) is not None:
     # 속도에 비례해 하이라이트 길이 동적으로 조절
     values["LANE_HIGHLIGHT_DISTANCE"] = int(ease_in_interp(v_ego_kph, [0, 80], [3, 60], power=1.5))
     values["LANE_HIGHLIGHT"] = state.drive_lane_color.update(a_ego_kph, drive_mode, v_ego_kph)

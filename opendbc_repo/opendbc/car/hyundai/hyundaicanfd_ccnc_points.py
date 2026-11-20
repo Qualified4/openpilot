@@ -93,7 +93,7 @@ def schema_mismatch(log, car):
 
 
 def model_schema_mismatch(log):
-  """As schema_mismatch, for the Rust reader of modelV2 bytes (the map's lane update): what it assumes about the loaded
+  """As schema_mismatch, for the Rust reader of modelV2 bytes: what it assumes about the loaded
   ``log`` schema that the schema does not say, or None."""
   if RUST is None:
     return 'no Rust core'
@@ -104,10 +104,12 @@ def model_schema_mismatch(log):
   xyzt = log.XYZTData.schema.fields
 
   def slot(fields, name):
-    """A field's (pointer index, list element type), or None for a field the schema does not have."""
+    """A field's pointer index and type, or list element type, for fields the reader uses."""
     if name not in fields or fields[name].proto.which() != 'slot':
       return None
     s = fields[name].proto.slot
+    if s.type.which() == 'struct':
+      return s.offset, s.type.struct.typeId
     if s.type.which() != 'list':
       return s.offset, s.type.which()
     element = s.type.list.elementType
@@ -119,10 +121,12 @@ def model_schema_mismatch(log):
     ('Event.modelV2 discriminant', member.discriminantValue, c['event_model_v2']),
     ('Event.modelV2 pointer', member.slot.offset, c['event_model_v2_pointer']),
     ('Event.modelV2 type', member.slot.type.which() == 'struct' and member.slot.type.struct.typeId, log.ModelDataV2.schema.node.id),
+    ('ModelDataV2.position', slot(model, 'position'), (c['position_pointer'], xyzt_id)),
     ('ModelDataV2.laneLines', slot(model, 'laneLines'), (c['lane_lines_pointer'], xyzt_id)),
     ('ModelDataV2.laneLineProbs', slot(model, 'laneLineProbs'), (c['lane_line_probs_pointer'], 'float32')),
     ('ModelDataV2.roadEdges', slot(model, 'roadEdges'), (c['road_edges_pointer'], xyzt_id)),
     ('XYZTData.x', slot(xyzt, 'x'), (c['xyzt_x_pointer'], 'float32')),
     ('XYZTData.y', slot(xyzt, 'y'), (c['xyzt_y_pointer'], 'float32')),
+    ('XYZTData.yStd', slot(xyzt, 'yStd'), (c['xyzt_y_std_pointer'], 'float32')),
   ]
   return next((f'{what}: schema {found!r}, Rust reader {assumed!r}' for what, found, assumed in checks if found != assumed), None)
