@@ -8,6 +8,11 @@ on:
       - 'opendbc_repo/opendbc/car/hyundai/ccnc_core_loader.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_radar_map.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_live_tracks.py'
+      - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_points.py'
+      # The Rust liveTracks reader's constants are checked against these schemas.
+      - 'opendbc_repo/opendbc/car/car.capnp'
+      - 'openpilot/cereal/log.capnp'
       - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_radar_map.py'
       - '.gitattributes'
       - '.github/workflows/ccnc-core.yaml'
@@ -17,6 +22,11 @@ on:
       - 'opendbc_repo/opendbc/car/hyundai/ccnc_core_loader.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_radar_map.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_live_tracks.py'
+      - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_points.py'
+      # The Rust liveTracks reader's constants are checked against these schemas.
+      - 'opendbc_repo/opendbc/car/car.capnp'
+      - 'openpilot/cereal/log.capnp'
       - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_radar_map.py'
       - '.gitattributes'
       - '.github/workflows/ccnc-core.yaml'
@@ -67,4 +77,5 @@ jobs:
           # One worker per runner core; the parity seeds are separate tests of uneven length (crowded ones are slow).
           python -m pytest -q -n auto --dist worksteal -c /dev/null --confcutdir=opendbc_repo -p no:cacheprovider \
             opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_loader.py \
-            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_radar_map.py
+            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_radar_map.py \
+            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_live_tracks.py

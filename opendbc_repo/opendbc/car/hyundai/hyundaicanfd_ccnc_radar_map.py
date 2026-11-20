@@ -1469,12 +1469,16 @@ class CcncRadarMap:
     return _fused_methods(type(self)) == _FUSED_ORIGINALS and _FUSED_NAMES.isdisjoint(vars(self))
 
   def update(self, live, model, now, v_ego, *, radar_time=None, model_time=None, yaw_rate=None, reverse=False,
-             select=True, lane_curves=None, a_ego=None, blindspot=(False, False), evidence=None, lane_change=False, ego_change=None):
+             select=True, lane_curves=None, a_ego=None, blindspot=(False, False), evidence=None, lane_change=False, ego_change=None,
+             live_bytes=None):
     """Return FF/LF/RF objects; retained state is never fed back to raw radar.
 
     ``yaw_rate`` is left-positive in rad/s. If omitted, use the current model's
     opposite-sign orientationRate. Missing/stale pose or stream discontinuities
     invalidate the local frame; ordinary point loss only grows uncertainty.
+
+    ``live_bytes`` are the bytes of the liveTracks Event message ``live`` is (or is a copy of): the one-call Rust
+    update reads the points from them where it can, and from ``live.points`` otherwise.
     """
     if yaw_rate is None:
       rates = getattr(getattr(model, 'orientationRate', None), 'z', ())
@@ -1530,7 +1534,8 @@ class CcncRadarMap:
         if pose is not None:
           radar = live.points, (pose[0], pose[1], math.cos(pose[2]), math.sin(pose[2]))
         self.raw, self.radar_stamp = live, radar_time
-      self.RUST.update(self, observe, radar, radar_time, self.leads, self.vision_leads, vision, self._model_changing(), select, Wall, Band)
+      self.RUST.update(self, observe, radar, radar_time, self.leads, self.vision_leads, vision, self._model_changing(), select, Wall, Band,
+                       live_bytes)
       if not select:
         self.selected = (None, None, None)
     else:
@@ -1808,7 +1813,8 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
                    reverse=str(out.gearShifter) == 'reverse', a_ego=out.aEgo,
                    blindspot=(out.leftBlindspot, out.rightBlindspot),
                    lane_change=desire in ('laneChangeLeft', 'laneChangeRight') or signal,
-                   ego_change=desire in ('laneChangeLeft', 'laneChangeRight') or signal)
+                   ego_change=desire in ('laneChangeLeft', 'laneChangeRight') or signal,
+                   live_bytes=getattr(CS, 'live_tracks_bytes', None))
     for side, center in enumerate((state.lf_center, state.rf_center)):
       lane_center = ext._ccnc_side_lane_center(md, side)
       if lane_center is not None:

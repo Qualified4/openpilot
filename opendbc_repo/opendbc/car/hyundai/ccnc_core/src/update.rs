@@ -16,7 +16,8 @@ use crate::consts::Consts;
 use crate::guard;
 use crate::lanes::LaneCache;
 use crate::observe::{observe_core, Measurement, State};
-use crate::radar_map::{associate_rows, measure, pair, radar_points_inner, Ego};
+use crate::live_tracks::parse;
+use crate::radar_map::{associate_rows, measure, pair, radar_points_inner, radar_points_raw, Ego};
 use crate::select::{lane_reference, read_selected, vision, Selector};
 use crate::walls::{bands_core, walls_core};
 
@@ -36,7 +37,8 @@ type Radar<'py> = Option<(Bound<'py, PyAny>, (f64, f64, f64, f64))>;
 /// `update()` after `self.usable` and the model's lists are set, up to `_select`.
 ///
 /// `observe` says whether this update observes the radar at `stamp` (Python has set `raw` and `radar_stamp`), and
-/// `radar` holds its points and pose. `leads` is `self.leads`, `vision_leads` `self.vision_leads`, `vision` the
+/// `radar` holds its points and pose. `live_bytes`, the bytes of the liveTracks message those points are from, gives
+/// the points instead where it reads (`live_tracks::parse`). `leads` is `self.leads`, `vision_leads` `self.vision_leads`, `vision` the
 /// (x, y) of each model lead `_vision` takes (none without a fresh model), `changing` `self._model_changing()`.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
@@ -53,6 +55,7 @@ pub fn update<'py>(
     select: bool,
     wall_type: &Bound<'py, PyAny>,
     band_type: &Bound<'py, PyAny>,
+    live_bytes: Option<&[u8]>,
 ) -> PyResult<()> {
     guard(|| {
         CALLS.fetch_add(1, Ordering::Relaxed);
@@ -68,7 +71,10 @@ pub fn update<'py>(
             let stamp_f: f64 = stamp.extract()?;
             let rows = match radar {
                 Some((points, pose)) => {
-                    let points = radar_points_inner(py, &points)?;
+                    let points = match live_bytes.and_then(parse) {
+                        Some(parsed) => radar_points_raw(py, &parsed)?,
+                        None => radar_points_inner(py, &points)?,
+                    };
                     measure(py, m, &k, Ego::read(m)?, &mut Some(leads), &points, stamp, pose)?
                 }
                 None => Vec::new(),

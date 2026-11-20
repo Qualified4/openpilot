@@ -16,6 +16,7 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 use crate::consts::Consts;
 use crate::guard;
 use crate::lanes::LaneCache;
+use crate::live_tracks::RawPoint;
 use crate::map_object::MapObject;
 use crate::observe::Frame;
 use crate::pymath::{hypot, py_max, py_min};
@@ -62,9 +63,15 @@ pub struct RadarPoints {
     points: Vec<Point>,
 }
 
+/// `live_bytes`, the bytes of the liveTracks message the points are from, gives the points instead where it reads, as
+/// in the one-call update.
 #[pyfunction]
-pub fn radar_points(py: Python<'_>, points: &Bound<'_, PyAny>) -> PyResult<RadarPoints> {
-    guard(|| radar_points_inner(py, points))
+#[pyo3(signature = (points, live_bytes=None))]
+pub fn radar_points(py: Python<'_>, points: &Bound<'_, PyAny>, live_bytes: Option<&[u8]>) -> PyResult<RadarPoints> {
+    guard(|| match live_bytes.and_then(crate::live_tracks::parse) {
+        Some(parsed) => radar_points_raw(py, &parsed),
+        None => radar_points_inner(py, points),
+    })
 }
 
 pub(crate) fn radar_points_inner(py: Python<'_>, points: &Bound<'_, PyAny>) -> PyResult<RadarPoints> {
@@ -110,6 +117,33 @@ pub(crate) fn radar_points_inner(py: Python<'_>, points: &Bound<'_, PyAny>) -> P
             speed: values[2],
             motion: motion.unbind(),
             track_state: track_state.unbind(),
+        });
+    }
+    Ok(RadarPoints { points: out })
+}
+
+/// `radar_points_inner` of points read from the message bytes: the same filter and values, without Python objects
+/// for the points it leaves out.
+pub(crate) fn radar_points_raw(py: Python<'_>, points: &[RawPoint]) -> PyResult<RadarPoints> {
+    let mut out = Vec::new();
+    for p in points {
+        // RADAR_SOURCES[0] is frontRadar.
+        if p.source != 0 || !p.measured {
+            continue;
+        }
+        let (x, y, speed) = (p.d_rel as f64, p.y_rel as f64, p.v_lead as f64);
+        if !(x.is_finite() && y.is_finite() && speed.is_finite() && (p.v_rel as f64).is_finite()) {
+            continue;
+        }
+        out.push(Point {
+            track: pyo3::types::PyInt::new(py, p.track_id).into_any().unbind(),
+            x_obj: pyo3::types::PyFloat::new(py, x).into_any().unbind(),
+            y_obj: pyo3::types::PyFloat::new(py, y).into_any().unbind(),
+            x,
+            y,
+            speed,
+            motion: pyo3::types::PyInt::new(py, p.motion_state).into_any().unbind(),
+            track_state: pyo3::types::PyInt::new(py, p.track_state).into_any().unbind(),
         });
     }
     Ok(RadarPoints { points: out })

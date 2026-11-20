@@ -1686,7 +1686,7 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
         if radar_vehicles:
           # Everything below reads the radar points through CS; interfaces.apply sets the message again each frame.
           if hasattr(CS, 'live_tracks'):
-            CS.live_tracks = ccnc_points.snapshot(CS.live_tracks)
+            CS.live_tracks = ccnc_points.snapshot(CS.live_tracks, getattr(CS, 'live_tracks_bytes', None))
           if radar_map:
             values = ccnc_radar_map.update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ccnc_extension)
           else:

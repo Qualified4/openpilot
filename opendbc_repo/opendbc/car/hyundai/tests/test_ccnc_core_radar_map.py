@@ -21,6 +21,7 @@ from opendbc.car import structs
 from opendbc.car.hyundai import ccnc_core_loader
 from opendbc.car.hyundai import hyundaicanfd_ccnc_radar_map as radar_map
 from opendbc.car.hyundai.hyundaicanfd_ccnc_radar_map import CcncRadarMap, MapObject
+from openpilot.cereal import log
 
 SCENARIOS = 24
 FRAMES = 600
@@ -175,6 +176,12 @@ class RustMap(CcncRadarMap):
   """The one-call Rust update: no method replaced."""
 
 
+class BytesRustMap(CcncRadarMap):
+  """The one-call Rust update given the liveTracks Event bytes with each Cap'n Proto input: it reads the points from
+  them (run() checks the Rust reader reads each one)."""
+  bytes_input = True
+
+
 class StepRustMap(Recorder, CcncRadarMap):
   """The stage-by-stage Rust path, which the recorder's methods select."""
 
@@ -187,7 +194,7 @@ class PythonMap(Recorder, CcncRadarMap):
 def rust_core():
   core = ccnc_core_loader.load()
   assert core is not None, 'the x86_64 test build must be in prebuilt/linux-x86_64'
-  assert CcncRadarMap.RUST is core and core.abi_version() == 5
+  assert CcncRadarMap.RUST is core and core.abi_version() == 6
   return core
 
 
@@ -445,6 +452,14 @@ def capnp_live(points):
   return msg
 
 
+def event_bytes(points):
+  """The bytes of a log.Event(liveTracks) with the points capnp_live gets."""
+  event = log.Event.new_message()
+  event.init('liveTracks')
+  event.liveTracks = {'points': points}
+  return event.to_bytes()
+
+
 def namespace_live(points):
   return N(points=[N(**p) for p in points])
 
@@ -465,7 +480,7 @@ def run(seed, maps, frames=FRAMES):
                bridge_stable_y=0, ahead_of=0, departed=0, settled=0, lane_offset=0, negative_zero=0,
                walls=0, wall_created=0, wall_kept=0, wall_cancelled=0, wall_16=0, wall_cap=0, structure_cap=0, bends=0,
                band_created=0, band_extended=0, band_vanished=0, band_early=0, early_twins=0,
-               selected_ff=0, selected_lf=0, selected_rf=0, selection_changed=0, remembered=0, one_call=0)
+               selected_ff=0, selected_lf=0, selected_rf=0, selection_changed=0, remembered=0, one_call=0, bytes_frames=0)
   walls, bands, early, sizes = [], [], set(), {}
   previous = (None, None, None)
   core = CcncRadarMap.RUST
@@ -477,6 +492,11 @@ def run(seed, maps, frames=FRAMES):
     points = scenario.frame(frame, v_ego)
     posts = structures.points(maps[0].pose) + approaching(seed, maps[0].pose)
     live = capnp_live(points + posts) if frame % 2 == 0 else namespace_live(points + posts)
+    raw = None
+    if frame % 2 == 0 and any(getattr(m, 'bytes_input', False) for m in maps):
+      raw = event_bytes(points + posts)
+      assert core._parse_for_test(raw) is not None
+      stats['bytes_frames'] += 1
     lead = scenario.vision or next(((p['dRel'], p['yRel'], p['vLead']) for p in points if abs(p['yRel']) < 1.5 and 0. < p['dRel'] < 80.
                                     and all(math.isfinite(p[k]) for k in ('dRel', 'yRel', 'vLead'))), None)
     desire, change_state = scenario.meta(frame)
@@ -486,7 +506,7 @@ def run(seed, maps, frames=FRAMES):
     radar_time = now - (.02 if scenario.fresh(frame) else .2)  # Some frames are too old to observe.
     for m in maps:
       m.update(live, md, now, v_ego, radar_time=radar_time, yaw_rate=scenario.yaw, evidence=evidence,
-               lane_change=300 <= frame < 330)
+               lane_change=300 <= frame < 330, live_bytes=raw if getattr(m, 'bytes_input', False) else None)
     first = maps[0]
     for other in maps[1:]:
       if hasattr(other, 'log'):  # Both record their stages' results.
@@ -556,6 +576,13 @@ TOTALS = {}
 def test_rust_and_python_paths_give_the_same_bits(seed):
   TOTALS[seed] = run(seed, [PythonMap(), RustMap()])
   assert TOTALS[seed]['calls'] > 0 and TOTALS[seed]['one_call'] == FRAMES
+
+
+@pytest.mark.parametrize('seed', (0, 1, 2, 5, 11, 14, 19, 23))
+def test_bytes_input_gives_the_same_bits(seed):
+  # Python path, object input and bytes input of the one-call Rust update, every frame.
+  stats = run(seed, [PythonMap(), RustMap(), BytesRustMap()])
+  assert stats['calls'] > 0 and stats['one_call'] == 2 * FRAMES and stats['bytes_frames'] == FRAMES // 2
 
 
 @pytest.mark.parametrize('seed', (1, 2, 11, 19))  # Stopping (stop memory), a lead (bridge), crowded, many short rows.

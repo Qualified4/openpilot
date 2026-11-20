@@ -81,15 +81,39 @@ def can_comm_callbacks(logcan: messaging.SubSocket, sendcan: messaging.PubSocket
   return can_recv, can_send
 
 
+class CarSubMaster(messaging.SubMaster):
+  """SubMaster that also keeps the bytes of the liveTracks message it holds: the CCNC display reads the points from
+  them in Rust. Receiving is SubMaster.update's: the same sockets in the same order, then update_msgs."""
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self._live_tracks = (None, None)  # (self.data['liveTracks'], the bytes of its message)
+
+  def update(self, timeout: int = 100) -> None:
+    raw, msgs = [], []
+    # messaging.recv_one_or_none on each polled socket, then on each non-polled one, keeping the bytes.
+    for sock in self.poller.poll(timeout) + [self.sock[s] for s in self.non_polled_services]:
+      raw.append(dat := sock.receive(non_blocking=True))
+      msgs.append(None if dat is None else messaging.log_from_bytes(dat))
+    self.update_msgs(time.monotonic(), msgs)
+    if self.updated['liveTracks']:  # update_msgs keeps the last liveTracks message.
+      i = next(i for i in reversed(range(len(msgs))) if msgs[i] is not None and msgs[i].which() == 'liveTracks')
+      self._live_tracks = (self.data['liveTracks'], raw[i])
+
+  def live_tracks_bytes(self, live_tracks) -> bytes | None:
+    """The bytes of the message live_tracks is, if it is the liveTracks this holds."""
+    return self._live_tracks[1] if live_tracks is self._live_tracks[0] else None
+
+
 class Car:
   CI: CarInterfaceBase
   CP: car.CarParams
 
   def __init__(self, CI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
-    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'carrotMan', 'longitudinalPlan',
-                                   'radarState', 'modelV2', 'drivingModelData', 'customReservedRawData0', 'customReservedRawData2', 'liveTracks',
-                                   'liveParameters', 'livePose', 'selfdriveState', 'lateralPlan'])
+    self.sm = CarSubMaster(['pandaStates', 'carControl', 'onroadEvents', 'carrotMan', 'longitudinalPlan',
+                           'radarState', 'modelV2', 'drivingModelData', 'customReservedRawData0', 'customReservedRawData2', 'liveTracks',
+                           'liveParameters', 'livePose', 'selfdriveState', 'lateralPlan'])
     self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'customReservedRawData1'])
 
     self.can_rcv_cum_timeout_counter = 0
@@ -475,12 +499,13 @@ class Car:
         self.CI.CC.kick_direction = self.kick_output.request(
           CS, kick_now, self.initialized_prev, self.CI.CC.kick_output_ready, clock=time.monotonic)
         self.CI.CC.kick_request_id = self.kick_output.request_id
-      live_tracks = None
+      live_tracks = live_tracks_bytes = None
       if self.sm.valid['liveTracks'] and self.sm.alive['liveTracks']:
         live_tracks_time = self.sm.logMonoTime['liveTracks']
         if 0 <= now_nanos - live_tracks_time < 150_000_000:
           live_tracks = self.sm['liveTracks']
-      self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, model_v2, radar_state, live_tracks)
+          live_tracks_bytes = self.sm.live_tracks_bytes(live_tracks)
+      self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, model_v2, radar_state, live_tracks, live_tracks_bytes)
       can_sends = self.kick_output.isolate(can_sends, model_v2, time.monotonic())
       if self.tesla_signals.configured:
         fresh = all(self.sm.seen[s] and self.sm.alive[s] and self.sm.valid[s] and

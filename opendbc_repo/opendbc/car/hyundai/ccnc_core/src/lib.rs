@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 
 mod consts;
 mod lanes;
+mod live_tracks;
 mod map_object;
 mod observe;
 mod pymath;
@@ -18,7 +19,7 @@ fn source_hash() -> &'static str {
 
 #[pyfunction]
 fn abi_version() -> u32 {
-    5
+    6
 }
 
 /// A Rust panic reaches Python as PanicException, a BaseException that the display's `except Exception`
@@ -82,6 +83,9 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(walls::bands, module)?)?;
     module.add_function(wrap_pyfunction!(update::update, module)?)?;
     module.add_function(wrap_pyfunction!(update::_update_calls_for_test, module)?)?;
+    module.add_function(wrap_pyfunction!(live_tracks::live_tracks_copy, module)?)?;
+    module.add_function(wrap_pyfunction!(live_tracks::_parse_for_test, module)?)?;
+    module.add_function(wrap_pyfunction!(live_tracks::_schema_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_sum_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_math_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_lane_for_test, module)?)?;

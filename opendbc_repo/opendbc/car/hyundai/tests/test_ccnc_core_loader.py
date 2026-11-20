@@ -34,7 +34,7 @@ def test_loads_built_extension():
   assert module is not None
   assert Path(module.__file__).resolve() == (CORE_DIR / BINARY_PATH).resolve()
   assert module.source_hash() == ccnc_core_loader._source_hash(CORE_DIR)
-  assert module.abi_version() == ccnc_core_loader.ABI_VERSION == 5
+  assert module.abi_version() == ccnc_core_loader.ABI_VERSION == 6
 
 
 def test_rust_panic_is_an_ordinary_exception():
