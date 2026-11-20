@@ -81,6 +81,56 @@ def test_ccnc_catalog_and_param_writes_require_confirmed_hda1(settings, tmp_path
   assert params.get_bool(key) == supported
 
 
+def _ccnc_car_params_bytes(case):
+  from opendbc.car import structs
+  from opendbc.car.hyundai.values import HyundaiExtFlags, HyundaiFlags
+
+  if case == "broken":
+    return b"\x00not-capnp"
+  cp = structs.CarParams(brand="hyundai", openpilotLongitudinalControl=True,
+                         flags=int(HyundaiFlags.CANFD | HyundaiFlags.CAMERA_SCC),
+                         extFlags=int(HyundaiExtFlags.CCNC_CLUSTER_RX))
+  if case == "hda2":
+    cp.flags |= int(HyundaiFlags.CANFD_HDA2)
+  if case == "no_templates":
+    cp.extFlags = 0
+  return cp.to_bytes()
+
+
+@pytest.mark.parametrize("live,saved,supported", [
+  (None, "hda1", True),            # before ignition: the vehicle saved on the last drive
+  (None, "no_templates", False),   # saved by code without CCNC_CLUSTER_RX
+  (None, "hda2", False),
+  (None, None, False),
+  (None, "broken", False),
+  ("hda2", "hda1", False),         # the live CarParams wins over the saved vehicle
+  ("hda1", "no_templates", True),
+])
+def test_ccnc_option_uses_saved_vehicle_before_ignition(settings, tmp_path, live, saved, supported):
+  from openpilot.common.params import Params
+  from openpilot.selfdrive.carrot.server.services.params import put_typed
+
+  params = Params(str(tmp_path))
+  if live:
+    params.put("CarParams", _ccnc_car_params_bytes(live))
+  if saved:
+    params.put("CarParamsPersistent", _ccnc_car_params_bytes(saved))
+
+  assert current_ccnc_hda1(params) == supported
+  groups, by_name, group_list = group_index(settings)
+  categories = build_menu_categories(settings, by_name)
+  visible, _, _, hidden = filter_settings_catalog_for_brand(groups, group_list, categories, "hyundai", ccnc_hda1=supported)
+  key = "CcncExtendedDisplay"
+  assert any(item["name"] == key for group in visible.values() for item in group) == supported
+  assert (key in hidden) != supported
+  if supported:
+    put_typed(params, key, True, by_name[key])
+  else:
+    with pytest.raises(ValueError, match="confirmed HDA1"):
+      put_typed(params, key, True, by_name[key])
+  assert params.get_bool(key) == supported
+
+
 @pytest.mark.parametrize("old_lane_kind,eligible,manual,enabled", [
   (b"1", True, None, True),
   (b"2", True, None, True),

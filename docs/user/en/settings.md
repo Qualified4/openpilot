@@ -335,7 +335,7 @@ A saved change takes effect at the **next vehicle-parameter initialization**; it
 <a id="ccnc-display"></a>
 ### CCNC instrument cluster display
 
-Go to **Vehicle and hardware → CAN FD/HDA**. Extended display appears after frames 0x161 and 0x162 are confirmed on an HDA1 vehicle with CAN FD, camera SCC and openpilot longitudinal control.
+Go to **Vehicle and hardware → CAN FD/HDA**. Extended display appears after frames 0x161 and 0x162 are confirmed on an HDA1 vehicle with CAN FD, camera SCC and openpilot longitudinal control. Once confirmed, it also appears after a reboot before ignition, using the vehicle saved on the last drive; the display itself still follows the vehicle confirmed after ignition.
 
 #### CCNC extended display (HDA1)
 

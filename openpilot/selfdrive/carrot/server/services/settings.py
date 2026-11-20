@@ -68,8 +68,21 @@ def current_ccnc_hda1(params=None) -> bool:
     if not HAS_PARAMS or Params is None:
       return False
     params = Params()
-  from opendbc.car.hyundai.ccnc_capability import read_hda1_cluster_support
-  return read_hda1_cluster_support(params)
+  # The Web shows the option before ignition, when only the vehicle saved on the
+  # last drive is known. Car control still reads the live CarParams only.
+  from capnp import KjException
+  from opendbc.car import structs
+  from opendbc.car.hyundai.ccnc_capability import hda1_cluster_supported
+
+  for key in ("CarParams", "CarParamsPersistent"):
+    try:
+      raw = params.get(key)
+      if raw:
+        with structs.CarParams.from_bytes(raw) as cp:
+          return hda1_cluster_supported(cp)
+    except (KjException, OSError, TypeError, ValueError):
+      return False
+  return False
 
 
 def read_settings_file(path: str) -> Dict[str, Any]:
