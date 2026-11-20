@@ -3,7 +3,8 @@
 Reading a Cap'n Proto field from Python costs far more than a plain attribute, and a lookup of a name the
 schema does not have (the display code probes `ccnc_fresh` on every point) costs about twenty times that.
 The display reads the same points many times per update, so each radar message is copied once. With the message's
-bytes the Rust core makes the copy from them, without reading the Cap'n Proto objects."""
+bytes the Rust core makes the copy from them, without reading the Cap'n Proto objects. card also asks here whether the
+Rust readers of liveTracks and modelV2 bytes match the loaded schema."""
 import struct
 
 from opendbc.car.hyundai import ccnc_core_loader
@@ -88,4 +89,40 @@ def schema_mismatch(log, car):
       value = struct.unpack('<I', struct.pack('<f', value))[0]
     enum = kind != 'enum' or slot.type.enum.typeId == car.RadarData.RadarPoint.RadarSource.schema.node.id
     checks.append((f'RadarPoint.{name}', (slot.type.which(), slot.offset, value, enum), (kind, offset, default, True)))
+  return next((f'{what}: schema {found!r}, Rust reader {assumed!r}' for what, found, assumed in checks if found != assumed), None)
+
+
+def model_schema_mismatch(log):
+  """As schema_mismatch, for the Rust reader of modelV2 bytes (the map's lane update): what it assumes about the loaded
+  ``log`` schema that the schema does not say, or None."""
+  if RUST is None:
+    return 'no Rust core'
+  c = RUST.model_v2_schema()
+  event = log.Event.schema
+  member = event.fields['modelV2'].proto
+  model = log.ModelDataV2.schema.fields
+  xyzt = log.XYZTData.schema.fields
+
+  def slot(fields, name):
+    """A field's (pointer index, list element type), or None for a field the schema does not have."""
+    if name not in fields or fields[name].proto.which() != 'slot':
+      return None
+    s = fields[name].proto.slot
+    if s.type.which() != 'list':
+      return s.offset, s.type.which()
+    element = s.type.list.elementType
+    return s.offset, element.which() if element.which() != 'struct' else element.struct.typeId
+
+  xyzt_id = log.XYZTData.schema.node.id
+  checks = [
+    ('Event discriminant offset', event.node.struct.discriminantOffset, c['event_discriminant_offset']),
+    ('Event.modelV2 discriminant', member.discriminantValue, c['event_model_v2']),
+    ('Event.modelV2 pointer', member.slot.offset, c['event_model_v2_pointer']),
+    ('Event.modelV2 type', member.slot.type.which() == 'struct' and member.slot.type.struct.typeId, log.ModelDataV2.schema.node.id),
+    ('ModelDataV2.laneLines', slot(model, 'laneLines'), (c['lane_lines_pointer'], xyzt_id)),
+    ('ModelDataV2.laneLineProbs', slot(model, 'laneLineProbs'), (c['lane_line_probs_pointer'], 'float32')),
+    ('ModelDataV2.roadEdges', slot(model, 'roadEdges'), (c['road_edges_pointer'], xyzt_id)),
+    ('XYZTData.x', slot(xyzt, 'x'), (c['xyzt_x_pointer'], 'float32')),
+    ('XYZTData.y', slot(xyzt, 'y'), (c['xyzt_y_pointer'], 'float32')),
+  ]
   return next((f'{what}: schema {found!r}, Rust reader {assumed!r}' for what, found, assumed in checks if found != assumed), None)

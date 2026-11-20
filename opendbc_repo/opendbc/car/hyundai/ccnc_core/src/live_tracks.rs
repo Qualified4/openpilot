@@ -55,13 +55,13 @@ pub struct RawPoint {
     pub motion_state: u8,
 }
 
-struct Message<'a> {
+pub(crate) struct Message<'a> {
     segments: Vec<&'a [u8]>,
 }
 
 /// A struct's sections: data bytes and the segment/word where its pointers start.
-struct Struct<'a> {
-    data: &'a [u8],
+pub(crate) struct Struct<'a> {
+    pub(crate) data: &'a [u8],
     segment: usize,
     pointers: usize,
     pointer_count: usize,
@@ -79,14 +79,14 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
 }
 
 /// Fields past the end of the data section (a message from an older schema) read as their defaults.
-fn data_bytes<const N: usize>(data: &[u8], at: usize) -> [u8; N] {
+pub(crate) fn data_bytes<const N: usize>(data: &[u8], at: usize) -> [u8; N] {
     data.get(at..at + N).and_then(|b| b.try_into().ok()).unwrap_or([0; N])
 }
 
 impl<'a> Message<'a> {
     /// The framing pycapnp's `to_bytes()` writes and messaging sends: segment count - 1, each segment's size in
     /// words, padding to a word, the segments. The bytes must hold exactly that.
-    fn new(bytes: &'a [u8]) -> Option<Self> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Option<Self> {
         let count = (u32_at(bytes, 0)? as usize).checked_add(1)?;
         if count > MAX_SEGMENTS {
             return None;
@@ -156,7 +156,7 @@ impl<'a> Message<'a> {
         }
     }
 
-    fn read_struct(&self, segment: usize, index: usize) -> Option<Struct<'a>> {
+    pub(crate) fn read_struct(&self, segment: usize, index: usize) -> Option<Struct<'a>> {
         let Some((segment, start, tag)) = self.resolve(segment, index)? else {
             return Some(Struct::empty());
         };
@@ -178,7 +178,7 @@ impl<'a> Message<'a> {
     }
 
     /// Pointer `index` of a struct; one past its pointer section reads as null.
-    fn struct_pointer(&self, s: &Struct<'a>, index: usize) -> Option<Struct<'a>> {
+    pub(crate) fn struct_pointer(&self, s: &Struct<'a>, index: usize) -> Option<Struct<'a>> {
         if index >= s.pointer_count {
             return Some(Struct::empty());
         }
@@ -187,7 +187,7 @@ impl<'a> Message<'a> {
 
     /// A list of structs in the inline composite form pycapnp writes; elements whose sections are smaller or larger
     /// than this schema's (another schema version) read as such. Other list forms give None.
-    fn struct_list(&self, s: &Struct<'a>, index: usize) -> Option<Vec<&'a [u8]>> {
+    pub(crate) fn struct_elements(&self, s: &Struct<'a>, index: usize) -> Option<Vec<Struct<'a>>> {
         if index >= s.pointer_count {
             return Some(Vec::new());
         }
@@ -204,15 +204,40 @@ impl<'a> Message<'a> {
         }
         let count = ((element_tag as u32) >> 2) as usize;
         let data_words = ((element_tag >> 32) & 0xffff) as usize;
-        let step = data_words + (element_tag >> 48) as usize;
+        let pointer_count = (element_tag >> 48) as usize;
+        let step = data_words + pointer_count;
         if count.checked_mul(step)? > words || (step == 0 && count > 0) {
             return None;
         }
         let seg = self.segments[segment];
         Some((0..count).map(|i| {
-            let at = (start + 1 + i * step) * 8;
-            &seg[at..at + data_words * 8]
+            let at = start + 1 + i * step;
+            Struct { data: &seg[at * 8..(at + data_words) * 8], segment, pointers: at + data_words, pointer_count }
         }).collect())
+    }
+
+    /// The data sections of `struct_elements`.
+    fn struct_list(&self, s: &Struct<'a>, index: usize) -> Option<Vec<&'a [u8]>> {
+        Some(self.struct_elements(s, index)?.into_iter().map(|e| e.data).collect())
+    }
+
+    /// A `List(Float32)` in the four-byte element form pycapnp writes; other list forms give None.
+    pub(crate) fn f32_list(&self, s: &Struct<'a>, index: usize) -> Option<Vec<f32>> {
+        if index >= s.pointer_count {
+            return Some(Vec::new());
+        }
+        let Some((segment, start, tag)) = self.resolve(s.segment, s.pointers + index)? else {
+            return Some(Vec::new());
+        };
+        if tag & 3 != 1 || (tag >> 32) & 7 != 4 {
+            return None;
+        }
+        let count = (tag >> 35) as usize; // At most 2^29 - 1.
+        if start.checked_add((count * 4).div_ceil(8))? > self.words(segment) {
+            return None;
+        }
+        let bytes = &self.segments[segment][start * 8..start * 8 + count * 4];
+        Some(bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect())
     }
 }
 

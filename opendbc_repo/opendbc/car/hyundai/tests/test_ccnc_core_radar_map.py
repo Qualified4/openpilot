@@ -182,6 +182,24 @@ class BytesRustMap(CcncRadarMap):
   bytes_input = True
 
 
+class ModelBytesRustMap(CcncRadarMap):
+  """The one-call Rust update given the liveTracks and modelV2 Event bytes, as card passes them: the lanes are updated
+  from the modelV2 bytes in Rust (run() checks that every frame's update did)."""
+  bytes_input = model_bytes_input = True
+
+
+class PythonLanesMap(Recorder, CcncRadarMap):
+  """The Python path with the Python _update_lanes instead of its Cython twin (the reference for both)."""
+  RUST = None
+
+  def _update_lanes(self, *args):
+    native, radar_map._native = radar_map._native, None
+    try:
+      return super()._update_lanes(*args)
+    finally:
+      radar_map._native = native
+
+
 class StepRustMap(Recorder, CcncRadarMap):
   """The stage-by-stage Rust path, which the recorder's methods select."""
 
@@ -194,7 +212,7 @@ class PythonMap(Recorder, CcncRadarMap):
 def rust_core():
   core = ccnc_core_loader.load()
   assert core is not None, 'the x86_64 test build must be in prebuilt/linux-x86_64'
-  assert CcncRadarMap.RUST is core and core.abi_version() == 6
+  assert CcncRadarMap.RUST is core and core.abi_version() == 7
   return core
 
 
@@ -460,6 +478,57 @@ def event_bytes(points):
   return event.to_bytes()
 
 
+def model_event(md, rng, frame, stats):
+  """The bytes of a log.Event(modelV2) with the namespace model's values, and the lane update's corner cases drawn
+  from `rng` (the scenario's generators stay as they were): lines below .1 while ego changes lanes (weak), lines with
+  non-increasing x or a NaN, x and y of different lengths, a NaN probability, fewer or more lines, no road edges, a line
+  moved by about the consistency limit."""
+  def line(ln):
+    return {'x': list(ln.x), 'y': list(ln.y)}
+
+  lines, probs, edges = [line(ln) for ln in md.laneLines], list(md.laneLineProbs), [line(ln) for ln in md.roadEdges]
+  if 300 <= frame < 330 and rng.random() < .4:
+    probs[rng.choice((1, 2))] = .05
+    stats['model_low_change'] += 1
+  target = (lines + edges)[rng.randrange(6)]
+  case = rng.random()
+  if case < .05:
+    j = rng.randrange(1, len(target['x']))
+    target['x'][j - 1], target['x'][j] = target['x'][j], target['x'][j - 1]
+    stats['model_not_increasing'] += 1
+  elif case < .1:
+    target[rng.choice(('x', 'y'))][rng.randrange(len(target['x']))] = rng.choice((math.nan, math.inf))
+    stats['model_nan'] += 1
+  elif case < .12:
+    target['y'] = target['y'][:-1]
+    stats['model_xy_lengths'] += 1
+  elif case < .15:
+    probs[rng.randrange(4)] = math.nan
+    stats['model_nan_prob'] += 1
+  elif case < .2:
+    edges = []
+    stats['model_no_edges'] += 1
+  elif case < .23:
+    count = rng.randrange(4)
+    lines, probs = lines[:count], probs[:rng.choice((count, 4))]
+    stats['model_fewer_lines'] += 1
+  elif case < .26:
+    lines += [dict(lines[0]), dict(lines[3])]
+    probs += [.9, .9]
+    stats['model_six_lines'] += 1
+  elif case < .36:  # A line moved by about the consistency limit (.35m).
+    shift = rng.uniform(.33, .37)
+    target['y'] = [y + shift for y in target['y']]
+    stats['model_shifted'] += 1
+  event = log.Event.new_message()
+  event.init('modelV2')
+  event.modelV2 = {
+    'laneLines': lines, 'laneLineProbs': probs, 'roadEdges': edges, 'orientationRate': {'z': list(md.orientationRate.z)},
+    'leadsV3': [{'x': list(ld.x), 'y': list(ld.y), 'v': list(ld.v), 'prob': ld.prob} for ld in md.leadsV3],
+    'meta': {'desire': md.meta.desire, 'laneChangeState': md.meta.laneChangeState}}
+  return event.to_bytes()
+
+
 def namespace_live(points):
   return N(points=[N(**p) for p in points])
 
@@ -480,11 +549,16 @@ def run(seed, maps, frames=FRAMES):
                bridge_stable_y=0, ahead_of=0, departed=0, settled=0, lane_offset=0, negative_zero=0,
                walls=0, wall_created=0, wall_kept=0, wall_cancelled=0, wall_16=0, wall_cap=0, structure_cap=0, bends=0,
                band_created=0, band_extended=0, band_vanished=0, band_early=0, early_twins=0,
-               selected_ff=0, selected_lf=0, selected_rf=0, selection_changed=0, remembered=0, one_call=0, bytes_frames=0)
+               selected_ff=0, selected_lf=0, selected_rf=0, selection_changed=0, remembered=0, one_call=0, bytes_frames=0,
+               weak=0, lanes_calls=0)
+  stats.update(dict.fromkeys(MODEL_CASES, 0))
+  model_bytes = sum(getattr(m, 'model_bytes_input', False) for m in maps)
+  variants = random.Random(seed + 9000)
   walls, bands, early, sizes = [], [], set(), {}
   previous = (None, None, None)
   core = CcncRadarMap.RUST
   calls = core._update_calls_for_test()
+  lanes_calls = core._update_lanes_calls_for_test()
   one_call = sum(m.RUST is not None and m._fusable() for m in maps)
   for frame in range(frames):
     now = 1000. + frame * DT
@@ -502,11 +576,18 @@ def run(seed, maps, frames=FRAMES):
     desire, change_state = scenario.meta(frame)
     md = model(rng, frame, desire=desire, state=change_state, lead=lead, bend=.001 if seed % 2 else 0., shift=scenario.shift(frame),
                weak=scenario.weak_lines and 420 <= frame < 500)
+    model_raw = None
+    if model_bytes:  # Every map reads this message: its objects, or (model_bytes_input) its bytes.
+      model_raw = model_event(md, variants, frame, stats)
+      with log.Event.from_bytes(model_raw, traversal_limit_in_words=2**64 - 1) as event:
+        md = event.modelV2
+      assert core._parse_model_for_test(model_raw) is not None
     evidence = scenario.evidence_for(points)
     radar_time = now - (.02 if scenario.fresh(frame) else .2)  # Some frames are too old to observe.
     for m in maps:
       m.update(live, md, now, v_ego, radar_time=radar_time, yaw_rate=scenario.yaw, evidence=evidence,
-               lane_change=300 <= frame < 330, live_bytes=raw if getattr(m, 'bytes_input', False) else None)
+               lane_change=300 <= frame < 330, live_bytes=raw if getattr(m, 'bytes_input', False) else None,
+               model_bytes=model_raw if getattr(m, 'model_bytes_input', False) else None)
     first = maps[0]
     for other in maps[1:]:
       if hasattr(other, 'log'):  # Both record their stages' results.
@@ -529,6 +610,7 @@ def run(seed, maps, frames=FRAMES):
     previous = first.selected
     stats['max_objects'] = max(stats['max_objects'], len(first.objects))
     stats['holding'] += first.holding
+    stats['weak'] += bool(first.weak)
     stats['bridge'] += first.bridge is not None
     stats['bridge_stable_y'] += first.bridge is not None and first.objects[first.bridge['key']].stable_y is not None
     stats['lane_offset'] += first.lane_offset != 0
@@ -565,6 +647,9 @@ def run(seed, maps, frames=FRAMES):
   assert all(m.counts['lane_checks'] == 0 for m in maps if m.RUST is not None and hasattr(m, 'counts'))
   # Every update of a map without replaced methods ran as one Rust call (the scenarios never reset the map).
   stats['one_call'] = core._update_calls_for_test() - calls
+  # Every frame's new model updated the lanes of each map given its bytes, in Rust.
+  stats['lanes_calls'] = core._update_lanes_calls_for_test() - lanes_calls
+  assert stats['lanes_calls'] == model_bytes * frames, (seed, stats['lanes_calls'])
   assert stats['one_call'] == one_call * frames, (seed, stats['one_call'])
   return stats
 
@@ -583,6 +668,22 @@ def test_bytes_input_gives_the_same_bits(seed):
   # Python path, object input and bytes input of the one-call Rust update, every frame.
   stats = run(seed, [PythonMap(), RustMap(), BytesRustMap()])
   assert stats['calls'] > 0 and stats['one_call'] == 2 * FRAMES and stats['bytes_frames'] == FRAMES // 2
+
+
+MODEL_CASES = ('model_low_change', 'model_not_increasing', 'model_nan', 'model_xy_lengths', 'model_nan_prob', 'model_no_edges',
+               'model_fewer_lines', 'model_six_lines', 'model_shifted')
+
+
+@pytest.mark.parametrize('seed', (0, 1, 2, 3, 6, 11, 14, 19, 23))
+def test_model_bytes_input_gives_the_same_bits(seed):
+  # Python path (Python and Cython _update_lanes), object input and bytes input (liveTracks and modelV2) of the one-call
+  # Rust update, every frame, on the same modelV2 messages.
+  stats = run(seed, [PythonLanesMap(), PythonMap(), RustMap(), ModelBytesRustMap()])
+  assert stats['calls'] > 0 and stats['one_call'] == 2 * FRAMES and stats['lanes_calls'] == FRAMES
+  for name in MODEL_CASES:
+    assert stats[name] > 0, (seed, name)
+  print('\nmodel bytes', seed, {k: stats[k] for k in MODEL_CASES + ('weak', 'lanes_calls')})
+  assert stats['weak'] > 0, seed  # Lines below .1 kept from their positions during ego's lane change (300-330).
 
 
 @pytest.mark.parametrize('seed', (1, 2, 11, 19))  # Stopping (stop memory), a lead (bridge), crowded, many short rows.

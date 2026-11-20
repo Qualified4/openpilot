@@ -342,7 +342,17 @@ class CcncRadarMap:
       self.geometry[i] = points
     return placed
 
-  def _update_lanes(self, model, stamp, lane_curves=None, previous_placed=None):
+  def _update_lanes(self, model, stamp, lane_curves=None, previous_placed=None, model_bytes=None):
+    # ``model_bytes``: the bytes of the modelV2 Event message ``model`` is from. The Rust core reads the lines from
+    # them and updates the lanes as below. With ``lane_curves`` (offline: the selector's cache, which other readers
+    # share) or bytes it does not read, the model's objects are read as before.
+    if model_bytes is not None and lane_curves is None and previous_placed is not None and self.RUST is not None:
+      pose = self.pose_at(stamp)
+      if pose is None:
+        return
+      if self.RUST.update_lanes(self, model_bytes, pose[0], pose[1], math.cos(pose[2]), math.sin(pose[2]), previous_placed,
+                                LaneBoundary):
+        return
     if _native is not None:
       return _native.update_lanes(self, model, stamp, lane_curves, previous_placed, LaneBoundary)
     pose = self.pose_at(stamp)
@@ -1470,7 +1480,7 @@ class CcncRadarMap:
 
   def update(self, live, model, now, v_ego, *, radar_time=None, model_time=None, yaw_rate=None, reverse=False,
              select=True, lane_curves=None, a_ego=None, blindspot=(False, False), evidence=None, lane_change=False, ego_change=None,
-             live_bytes=None):
+             live_bytes=None, model_bytes=None):
     """Return FF/LF/RF objects; retained state is never fed back to raw radar.
 
     ``yaw_rate`` is left-positive in rad/s. If omitted, use the current model's
@@ -1478,7 +1488,8 @@ class CcncRadarMap:
     invalidate the local frame; ordinary point loss only grows uncertainty.
 
     ``live_bytes`` are the bytes of the liveTracks Event message ``live`` is (or is a copy of): the one-call Rust
-    update reads the points from them where it can, and from ``live.points`` otherwise.
+    update reads the points from them where it can, and from ``live.points`` otherwise. ``model_bytes`` are the bytes of
+    the modelV2 Event message ``model`` is: the lanes are updated from them in Rust where they read (_update_lanes).
     """
     if yaw_rate is None:
       rates = getattr(getattr(model, 'orientationRate', None), 'z', ())
@@ -1511,7 +1522,7 @@ class CcncRadarMap:
     if (model is not None and 0. <= now - model_time <= .25
         and ((model_time != self.model_stamp) if self.model_stamp is not None else True)
         and model is not self.model):
-      self._update_lanes(model, model_time, lane_curves, previous_placed)
+      self._update_lanes(model, model_time, lane_curves, previous_placed, model_bytes)
       self.model, self.model_stamp = model, model_time
     self.usable = live is not None and 0. <= now - radar_time <= .15
     fused = self.RUST is not None and self._fusable()
@@ -1814,7 +1825,8 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
                    blindspot=(out.leftBlindspot, out.rightBlindspot),
                    lane_change=desire in ('laneChangeLeft', 'laneChangeRight') or signal,
                    ego_change=desire in ('laneChangeLeft', 'laneChangeRight') or signal,
-                   live_bytes=getattr(CS, 'live_tracks_bytes', None))
+                   live_bytes=getattr(CS, 'live_tracks_bytes', None),
+                   model_bytes=getattr(CS, 'model_v2_bytes', None) if md is getattr(CS, 'modelV2', None) else None)
     for side, center in enumerate((state.lf_center, state.rf_center)):
       lane_center = ext._ccnc_side_lane_center(md, side)
       if lane_center is not None:

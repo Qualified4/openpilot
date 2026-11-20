@@ -82,12 +82,14 @@ def can_comm_callbacks(logcan: messaging.SubSocket, sendcan: messaging.PubSocket
 
 
 class CarSubMaster(messaging.SubMaster):
-  """SubMaster that also keeps the bytes of the liveTracks message it holds: the CCNC display reads the points from
-  them in Rust. Receiving is SubMaster.update's: the same sockets in the same order, then update_msgs."""
+  """SubMaster that also keeps the bytes of the liveTracks and modelV2 messages it holds: the CCNC display reads the
+  points and lane lines from them in Rust. Receiving is SubMaster.update's: the same sockets in the same order, then
+  update_msgs."""
 
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
     self._live_tracks = (None, None)  # (self.data['liveTracks'], the bytes of its message)
+    self._model_v2 = (None, None)  # (self.data['modelV2'], the bytes of its message)
     # The Rust reader holds schema offsets as constants. If the schema here says otherwise it would read wrong points
     # without an error, so no bytes are passed then and the display reads the objects as before.
     try:
@@ -98,6 +100,13 @@ class CarSubMaster(messaging.SubMaster):
     self._pass_bytes = mismatch is None
     if not self._pass_bytes and mismatch != 'no Rust core':
       cloudlog.error(f"liveTracks bytes are not passed to the CCNC Rust reader: {mismatch}")
+    try:
+      mismatch = ccnc_points.model_schema_mismatch(log)
+    except Exception as e:
+      mismatch = repr(e)
+    self._pass_model_bytes = mismatch is None
+    if not self._pass_model_bytes and mismatch != 'no Rust core':
+      cloudlog.error(f"modelV2 bytes are not passed to the CCNC Rust reader: {mismatch}")
 
   def update(self, timeout: int = 100) -> None:
     raw, msgs = [], []
@@ -109,10 +118,17 @@ class CarSubMaster(messaging.SubMaster):
     if self.updated['liveTracks']:  # update_msgs keeps the last liveTracks message.
       i = next(i for i in reversed(range(len(msgs))) if msgs[i] is not None and msgs[i].which() == 'liveTracks')
       self._live_tracks = (self.data['liveTracks'], raw[i])
+    if self.updated.get('modelV2'):  # Likewise the last modelV2 message.
+      i = next(i for i in reversed(range(len(msgs))) if msgs[i] is not None and msgs[i].which() == 'modelV2')
+      self._model_v2 = (self.data['modelV2'], raw[i])
 
   def live_tracks_bytes(self, live_tracks) -> bytes | None:
     """The bytes of the message live_tracks is, if it is the liveTracks this holds."""
     return self._live_tracks[1] if self._pass_bytes and live_tracks is self._live_tracks[0] else None
+
+  def model_v2_bytes(self, model_v2) -> bytes | None:
+    """The bytes of the message model_v2 is, if it is the modelV2 this holds."""
+    return self._model_v2[1] if self._pass_model_bytes and model_v2 is self._model_v2[0] else None
 
 
 class Car:
@@ -515,7 +531,8 @@ class Car:
         if 0 <= now_nanos - live_tracks_time < 150_000_000:
           live_tracks = self.sm['liveTracks']
           live_tracks_bytes = self.sm.live_tracks_bytes(live_tracks)
-      self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, model_v2, radar_state, live_tracks, live_tracks_bytes)
+      self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, model_v2, radar_state, live_tracks, live_tracks_bytes,
+                                                            self.sm.model_v2_bytes(model_v2))
       can_sends = self.kick_output.isolate(can_sends, model_v2, time.monotonic())
       if self.tesla_signals.configured:
         fresh = all(self.sm.seen[s] and self.sm.alive[s] and self.sm.valid[s] and
