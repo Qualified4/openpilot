@@ -17,6 +17,7 @@ import numpy as np
 from opendbc.car.carlog import carlog
 from opendbc.car.hyundai import ccnc_core_loader
 from opendbc.car.hyundai.ccnc_map_native import loops as _native
+from opendbc.car.hyundai.hyundaicanfd_ccnc_rear import update_rear_display
 
 
 @dataclass
@@ -1889,31 +1890,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
         _correct_positions(tracker, correction, values, frame, md, ext)
       finally:
         correction.lane_change = old_change
-    # Rear blind-spot icons, as in the existing display.
-    offset = (state.r_lane_f.value - state.l_lane_f.value) / 2 if model_lanes else 0.
-    for prefix, active, distance, lateral in (('LR', out.leftBlindspot, state.lr_distance, 2.8 - offset),
-                                              ('RR', out.rightBlindspot, state.rr_distance, 2.8 + offset)):
-      if active or distance.value < 15:
-        values[prefix + '_DETECT_DISTANCE'] = distance.apply(8 if active else 16)
-        values[prefix + '_DETECT_LATERAL'] = lateral
-        values[prefix + '_DETECT'] = 2  # BSD on or sliding out to 16: the same car, no grey/white flip (ext policy)
-    if state.rear_handover is not None:
-      selected = []
-      proven = []
-      for slot, key in enumerate(tracker.selected):
-        obj = tracker.objects.get(key)
-        selected.append((obj.source, obj.born) if obj is not None else None)
-        if slot:
-          proven.append(bool(obj is not None and not obj.structure and not obj.superseded
-                             and tracker._radar_vehicle(obj) and not tracker._crossing(obj)))
-      try:
-        state.rear_handover.update(values, CS, md, frame, selected, (state.lr_distance, state.rr_distance),
-                                   ('map', tracker.generation), proven=proven, rear_laterals=(2.8-offset, 2.8+offset))
-      except Exception:
-        # Rear handover is display memory only: skip it, never the whole vehicle display.
-        if not getattr(state.rear_handover, 'failed', False):
-          state.rear_handover.failed = True
-          carlog.exception('CCNC rear handover failed; skipping it')
+    update_rear_display(values, CS, md, frame, model_lanes, state, tracker, radar_map=True)
     return values
   except Exception:
     if not _live.failed:
@@ -1921,6 +1898,28 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ex
       carlog.exception('CCNC radar map display failed; using the existing selector')
     _live.tracker = None
     return ext.update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes)
+
+_UPDATE_VEHICLES_REFERENCE = update_vehicles
+DISPLAY_RUST = ccnc_core_loader.load()
+
+
+def can_render_vehicles():
+  return (DISPLAY_RUST is not None and CcncRadarMap.RUST is DISPLAY_RUST and CORRECT_RUST is DISPLAY_RUST
+          and update_vehicles is _UPDATE_VEHICLES_REFERENCE)
+
+
+def display_inputs():
+  if _live.tracker is None:
+    reset_live()
+  return _live, LaneBoundary, Wall, Band
+
+
+def display_failed():
+  if not _live.failed:
+    _live.failed = True
+    carlog.exception('CCNC Rust map display failed; using the existing selector')
+  _live.tracker = None
+
 
 def integrated_tracker(previous, radar_map):
   """Offline integration with an isolated legacy selector; no live-module patch.

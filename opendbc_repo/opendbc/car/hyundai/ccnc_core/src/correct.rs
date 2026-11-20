@@ -2,16 +2,15 @@
 //! position correction, `_road_alignment`, `_model_alignment` and `_bend` included.
 //!
 //! The state stays where it is: `correction` (the extension's `_CcncVehiclePositionCorrection`) and
-//! `_live.filters/aligned/handover/ego_blend` are read and written as the Python objects they are, and the
-//! extension's methods (`update_centers` and the filters' `apply`) are called as Python
-//! methods. The model is read in Python: the caller passes the side lane centres and, while a blend may run, the
-//! model's inner lines, planned path and line probabilities as plain lists.
+//! `_live.filters/aligned/handover/ego_blend` are read and written in their original containers. The
+//! model input supplies side lane centres and, while a blend may run, the inner lines, planned path and probabilities.
 
 use pyo3::exceptions::{PyAttributeError, PyKeyError, PyTypeError};
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFloat, PySet, PyTuple};
 
+use crate::display_filter::{self, new_position_filter};
 use crate::lanes::interpolate;
 use crate::map_object::MapObject;
 use crate::position_correction::{apply, stabilize_slots, ApplyInput};
@@ -217,6 +216,46 @@ pub fn _position_apply_for_test<'py>(
     })
 }
 
+pub(crate) fn update_centers<'py>(
+    correction: &Bound<'py, PyAny>,
+    centers: (Bound<'py, PyAny>, Bound<'py, PyAny>),
+    frame: i64,
+    observations: &Bound<'py, PyDict>,
+) -> PyResult<()> {
+    let py = correction.py();
+    let stamp: Option<i64> = correction.getattr(intern!(py, "center_frame"))?.extract()?;
+    let dt = stamp.map_or(0., |stamp| py_max(0., py_min(0.15, (frame - stamp) as f64 * 0.01)));
+    correction.setattr(intern!(py, "center_frame"), frame)?;
+    let previous = correction.getattr(intern!(py, "centers"))?;
+    let valid = correction.getattr(intern!(py, "center_valid"))?;
+    for (i, target) in [centers.0, centers.1].into_iter().enumerate() {
+        let target: Option<f64> = target.extract()?;
+        let target = target.filter(|x| x.is_finite());
+        valid.set_item(i, target.is_some())?;
+        if let Some(mut target) = target {
+            if i == 1 {
+                target = -target;
+            }
+            let center: f64 = previous.get_item(i)?.extract()?;
+            let tau: f64 = correction.getattr(intern!(py, "CENTER_TAU"))?.extract()?;
+            let rate: f64 = correction.getattr(intern!(py, "CENTER_RATE"))?.extract()?;
+            let limit = dt * rate;
+            let step = (target - center) * -(-dt / tau).exp_m1();
+            previous.set_item(i, center + py_min(py_max(step, -limit), limit))?;
+        }
+    }
+    let old = correction.getattr(intern!(py, "tracks"))?.cast_into::<PyDict>()?;
+    let retained = PyDict::new(py);
+    for (key, saved) in old.iter() {
+        if let Some(observation) = observations.get_item(&key)? {
+            if observation.get_item(0)?.eq(saved.get_item(intern!(py, "birth"))?)? {
+                retained.set_item(key, saved)?;
+            }
+        }
+    }
+    correction.setattr(intern!(py, "tracks"), retained)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn correct<'py>(
     py: Python<'py>,
@@ -242,7 +281,7 @@ fn correct<'py>(
         };
         observations.set_item(key, (born, py_round(py, &scaled)?))?;
     }
-    correction.call_method1(intern!(py, "update_centers"), (&centers.0, &centers.1, frame, &observations))?;
+    update_centers(correction, centers, frame, &observations)?;
     let filters = PyDict::new(py);
 
     if !live.getattr(intern!(py, "generation"))?.is(&tracker.getattr(intern!(py, "generation"))?) {
@@ -339,8 +378,8 @@ fn correct<'py>(
                 PyTuple::new(py, [
                     born.clone(),
                     frame.into_pyobject(py)?.into_any(),
-                    position_filter.call1((x, true))?,
-                    position_filter.call1((aligned, false))?,
+                    new_position_filter(position_filter, x, true)?,
+                    new_position_filter(position_filter, aligned, false)?,
                 ])?
                 .into_any()
             } else {
@@ -349,7 +388,7 @@ fn correct<'py>(
             let (_, last, far, side): (Bound<'py, PyAny>, i64, Bound<'py, PyAny>, Bound<'py, PyAny>) = previous.extract()?;
             side.setattr(intern!(py, "dt"), (frame - last) as f64 * 0.01)?;
             filters.set_item(&key, (&born, frame, &far, &side))?;
-            let far_x: f64 = far.call_method1(intern!(py, "apply"), (x,))?.extract()?;
+            let far_x: f64 = display_filter::position(&far, x, true)?;
             values.set_item(&distance, py_min(204.7, py_max(0., far_x * 0.8)))?;
             let fresh = seen.eq(tracker.getattr(intern!(py, "radar_stamp"))?)?;
             let reliable = match bounds {
@@ -357,7 +396,7 @@ fn correct<'py>(
                 Some(_) if slot == 0 => true,
                 Some(_) => item(&correction.getattr(intern!(py, "center_valid"))?, slot - 1)?.is_truthy()?,
             };
-            let filtered = side.call_method1(intern!(py, "apply"), (aligned,))?.extract()?;
+            let filtered = display_filter::position(&side, aligned, false)?;
             let observation = observations.get_item(&key)?.ok_or_else(|| PyKeyError::new_err(key.clone().unbind()))?;
             output = apply(correction, ApplyInput {
                 key: &key, x, y, fresh, aligned, filtered, slot, reference: &reference, bounds,

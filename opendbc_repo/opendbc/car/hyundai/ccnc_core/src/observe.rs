@@ -333,9 +333,7 @@ pub(crate) fn observe_core<'py>(
             let mut o = obj.try_borrow_mut()?;
             // to_world(bx, by, self.pose): math.cos/sin of the pose angle, as Python computes them.
             let (px, py_, angle): (f64, f64, f64) = m.getattr(intern!(py, "pose"))?.extract()?;
-            let math = py.import(intern!(py, "math"))?;
-            let c: f64 = math.call_method1(intern!(py, "cos"), (angle,))?.extract()?;
-            let s: f64 = math.call_method1(intern!(py, "sin"), (angle,))?.extract()?;
+            let (c, s) = (angle.cos(), angle.sin());
             o.x = px + c * bx - s * by;
             o.y = py_ + s * bx + c * by;
             forget(&mut o, frame.c, frame.s);

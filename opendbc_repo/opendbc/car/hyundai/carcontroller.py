@@ -823,7 +823,7 @@ class CarController(CarControllerBase):
       if self.camera_scc_params in [2, 3]:
         self.canfd_toggle_adas(CC, CS)
       if self.CP.openpilotLongitudinalControl:
-        hud_lateral = self.display_lead_lateral.update(getattr(CS, "radarState", None), getattr(CS, "modelV2", None))
+        hud_lateral = None if camera_scc else self.display_lead_lateral.update(getattr(CS, "radarState", None), getattr(CS, "modelV2", None))
         self.hyundai_jerk.make_jerk(self.CP, CS, accel, actuators, hud_control)
         self.hyundai_jerk.check_carrot_cruise(CC, CS, hud_control, stopping, accel, actuators.aTarget)
 
@@ -832,11 +832,14 @@ class CarController(CarControllerBase):
             self.CP, self.packer, self.CAN, self.frame, CC, CS, hud_control, apply_angle,
             left_lane_warning, right_lane_warning, self.enable_corner_radar, stopping,
             self.canfd_debug, self.paddle_mode, hud_lateral=hud_lateral,
+            lead_filter=self.display_lead_lateral if camera_scc else None,
           ))
           if hda2:
             can_sends.extend(hyundaicanfd.create_adrv_messages(self.CP, self.packer, self.CAN, self.frame))
           else:
             can_sends.extend(hyundaicanfd.create_fca_warning_light(self.CP, self.packer, self.CAN, self.frame))
+        if camera_scc:
+          hud_lateral = self.display_lead_lateral.value
         if self.frame % 2 == 0:
           if self.CP.flags & HyundaiFlags.CAMERA_SCC.value:
             if CC.enabled:

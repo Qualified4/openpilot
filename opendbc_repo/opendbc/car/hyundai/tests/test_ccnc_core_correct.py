@@ -211,7 +211,7 @@ def drive(seed, rust, frames=FRAMES, check=None):
 @pytest.fixture(scope='module', autouse=True)
 def rust_core():
   core = ccnc_core_loader.load()
-  assert core is not None and core.abi_version() == 8
+  assert core is not None and core.abi_version() == ccnc_core_loader.ABI_VERSION
   assert radar_map.CORRECT_RUST is core
   return core
 

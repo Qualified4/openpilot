@@ -482,7 +482,7 @@ pub(crate) fn apply(correction: &Bound<'_, PyAny>, input: ApplyInput<'_, '_>) ->
             put!(ff, "output", &output);
         }
         if let Some(filter) = lateral_filter {
-            filter.call_method1(intern!(py, "reset"), (&output,))?;
+            crate::display_filter::reset(filter, filtered)?;
             attr!(filter, "_buffer")
                 .call_method1(intern!(py, "extend"), ((&output, &output, &output),))?;
             filter.setattr(intern!(py, "_following_step"), false)?;

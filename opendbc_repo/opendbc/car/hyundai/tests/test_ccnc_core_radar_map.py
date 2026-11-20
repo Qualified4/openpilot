@@ -212,7 +212,7 @@ class PythonMap(Recorder, CcncRadarMap):
 def rust_core():
   core = ccnc_core_loader.load()
   assert core is not None, 'the x86_64 test build must be in prebuilt/linux-x86_64'
-  assert CcncRadarMap.RUST is core and core.abi_version() == 8
+  assert CcncRadarMap.RUST is core and core.abi_version() == ccnc_core_loader.ABI_VERSION
   return core
 
 

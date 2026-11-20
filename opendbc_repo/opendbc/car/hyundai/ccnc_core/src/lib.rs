@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 
 mod consts;
 mod correct;
+mod display_filter;
 mod lanes;
 mod live_tracks;
 mod map_object;
@@ -11,8 +12,10 @@ mod observe;
 mod position_correction;
 mod pymath;
 mod radar_map;
+mod rear;
 mod select;
 mod update;
+mod vehicle_display;
 mod walls;
 
 #[pyfunction]
@@ -22,7 +25,7 @@ fn source_hash() -> &'static str {
 
 #[pyfunction]
 fn abi_version() -> u32 {
-    8
+    9
 }
 
 /// A Rust panic reaches Python as PanicException, a BaseException that the display's `except Exception`
@@ -98,5 +101,8 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_lane_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(correct::correct_positions, module)?)?;
     module.add_function(wrap_pyfunction!(correct::_position_apply_for_test, module)?)?;
+    module.add_function(wrap_pyfunction!(rear::finish_rear, module)?)?;
+    module.add_function(wrap_pyfunction!(rear::_update_rear_for_test, module)?)?;
+    module.add_function(wrap_pyfunction!(vehicle_display::update_display, module)?)?;
     Ok(())
 }

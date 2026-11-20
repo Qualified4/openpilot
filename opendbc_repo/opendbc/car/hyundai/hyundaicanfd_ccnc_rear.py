@@ -24,6 +24,9 @@ from collections import deque
 import math
 import statistics
 
+from opendbc.car.carlog import carlog
+from opendbc.car.hyundai import ccnc_core_loader
+
 from opendbc.car.hyundai.hyundaicanfd_ccnc_side_flow import SideFlow
 
 
@@ -484,3 +487,59 @@ class SmoothHandover(RearHandover):
       filters[side].reset(-r['x'] if r is not None else 16.)
       if self.flows[side].events:
         self.events.extend({'side': side, 'event': event} for event in self.flows[side].events)
+
+
+RUST = ccnc_core_loader.load()
+
+
+def update_rear_display(values, CS, md, frame, model_lanes, state, tracker, *, radar_map=False):
+  """Apply the shared BSD and handover policy after either front selector."""
+  policy = state.rear_handover
+  if RUST is not None and (policy is None or type(policy) is SmoothHandover and 'update' not in vars(policy)):
+    try:
+      RUST.finish_rear(values, CS, md, frame, model_lanes, state, tracker, radar_map)
+    except Exception:
+      if policy is None:
+        raise
+      _log_handover_failure(policy)
+    return
+
+  offset = (state.r_lane_f.value - state.l_lane_f.value) / 2 if model_lanes else 0.
+  laterals = (2.8 - offset, 2.8 + offset)
+  filters = state.lr_distance, state.rr_distance
+  for index, active in enumerate((CS.out.leftBlindspot, CS.out.rightBlindspot)):
+    distance = filters[index]
+    if active or distance.value < 15:
+      _, _, _, detect, longitudinal, lateral = SmoothHandover.FIELDS[index]
+      values[longitudinal] = distance.apply(8 if active else 16)
+      values[lateral] = laterals[index]
+      values[detect] = 2
+  if policy is None:
+    return
+
+  selected, proven = [], []
+  if radar_map:
+    context = 'map', tracker.generation
+    for slot, key in enumerate(tracker.selected):
+      obj = tracker.objects.get(key)
+      selected.append((obj.source, obj.born) if obj is not None else None)
+      if slot:
+        proven.append(bool(obj is not None and not obj.structure and not obj.superseded
+                           and tracker._radar_vehicle(obj) and not tracker._crossing(obj)))
+  else:
+    context = 'selector', tracker
+    proven = (True, True)
+    for key in tracker.selected:
+      entry = tracker.tracks.get(key)
+      selected.append((int(getattr(entry[3], 'ccnc_source_id', key)), entry[0]) if entry else None)
+  try:
+    policy.update(values, CS, md, frame, selected, filters, context, proven=proven, rear_laterals=laterals)
+  except Exception:
+    _log_handover_failure(policy)
+
+
+def _log_handover_failure(policy):
+  # A handover failure only skips the display memory for this send.
+  if not getattr(policy, 'failed', False):
+    policy.failed = True
+    carlog.exception('CCNC rear handover failed; skipping it')

@@ -16,6 +16,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PySet, PyString, PyTuple};
 
 use crate::consts::Consts;
+use crate::display_filter::empty_object;
 use crate::guard;
 use crate::lanes::{interpolate, LaneCache, Lanes};
 use crate::map_object::MapObject;
@@ -444,7 +445,10 @@ pub(crate) fn walls_core<'py>(
                 o.obj.bind(py).try_borrow_mut()?.structure = true;
             }
         }
-        wall_list.append(wall_type.call1((PyTuple::new(py, wall.members.iter().copied())?, PyList::new(py, wall.points.iter().copied())?))?)?;
+        let drawing = empty_object(wall_type)?;
+        drawing.setattr(intern!(py, "members"), PyTuple::new(py, wall.members.iter().copied())?)?;
+        drawing.setattr(intern!(py, "points"), PyList::new(py, wall.points.iter().copied())?)?;
+        wall_list.append(drawing)?;
         let line = ego_sorted(frame, &wall.points);
         geometry.append(PyList::new(py, line.iter().copied())?)?;
         lines.push(line);
@@ -892,7 +896,16 @@ pub(crate) fn bands_core<'py>(
     for band in &bands {
         let object = match &band.object {
             Some(object) => object.clone(),
-            None => band_type.call1((band.sign, band.reference, band.offset, band.members_dict(py)?, band.supported))?,
+            None => {
+                let object = empty_object(band_type)?;
+                object.setattr(intern!(py, "sign"), band.sign)?;
+                object.setattr(intern!(py, "reference"), band.reference)?;
+                object.setattr(intern!(py, "offset"), band.offset)?;
+                object.setattr(intern!(py, "members"), band.members_dict(py)?)?;
+                object.setattr(intern!(py, "supported"), band.supported)?;
+                object.setattr(intern!(py, "spacing"), 0.)?;
+                object
+            },
         };
         band_list.append(&object)?;
         let Some((reference, line)) = line_of(band.sign) else { continue };

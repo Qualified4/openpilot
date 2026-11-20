@@ -10,9 +10,8 @@ from types import SimpleNamespace
 import numpy as np
 
 from opendbc.car import structs
-from opendbc.car.carlog import carlog
 from opendbc.car.common.conversions import Conversions as CV
-from opendbc.car.hyundai.hyundaicanfd_ccnc_rear import SmoothHandover as RearHandover
+from opendbc.car.hyundai.hyundaicanfd_ccnc_rear import SmoothHandover as RearHandover, update_rear_display
 from openpilot.common.params import Params
 
 
@@ -2680,7 +2679,7 @@ CURVATURE_SOURCE_DEFAULT = 2
 
 
 def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane_color=True, model_lanes=True, frame=None,
-                 *, curvature_source=CURVATURE_SOURCE_DEFAULT):
+                 *, curvature_source=CURVATURE_SOURCE_DEFAULT, native_positions=False):
   # 주행 기어에서만 가속도·드라이브 모드에 따른 차로 색 변경
   if lane_color and CS.out.gearShifter == structs.CarState.GearShifter.drive:
     now = time.monotonic()
@@ -2701,7 +2700,7 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
   is_blinking = CS.out.leftBlinker != CS.out.rightBlinker
   is_currently_lane_changing = model_lanes and (is_auto_lane_changing or (is_blinking and v_ego_kph > 20.0))
   correction = state.radar_display_tracker.position_correction
-  if correction is not None:
+  if correction is not None and not native_positions:
     correction.vision_model = md
     correction.update_ego_follow(md, v_ego_kph / 3.6, desire, CS.out.leftBlinker, CS.out.rightBlinker,
                                  time.monotonic() if frame is None else frame * .01)
@@ -2726,7 +2725,7 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
 
   now = time.monotonic() if frame is None else frame * .01
   geometry = state.lane_geometry
-  if geometry.last_time is not None and not 0 <= now - geometry.last_time <= .15:
+  if not native_positions and geometry.last_time is not None and not 0 <= now - geometry.last_time <= .15:
     state.draw_center = state.hold_lane = False
     state.hold_lane_escape_count = 0
     state.lane_phase_min = 10.0
@@ -2736,7 +2735,7 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
     precise = state.lane_curve_mode == 2
     # Share only immutable model geometry, never filter or selection history.
     curve_cache = None
-    if is_currently_lane_changing:
+    if is_currently_lane_changing and not native_positions:
       state.radar_display_tracker._update_model(md)
       curve_cache = state.radar_display_tracker._curves
     curvature = geometry.update(md, v_ego_kph, now, is_currently_lane_changing, compute_curve=precise, curve_cache=curve_cache)
@@ -2758,6 +2757,8 @@ def update_lanes(values, CS, md, v_ego_kph, a_ego_kph, desire, lat_enabled, lane
 
   values["LANELINE_CURVATURE"] = min(abs(curvature), 15) + (-1 if curvature < 0 else 0)
   values["LANELINE_CURVATURE_DIRECTION"] = 1 if curvature < 0 else 0
+  if native_positions:
+    return
 
   try:
     # 차선 위치 갱신: 항시 적용
@@ -3161,45 +3162,7 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
           and side not in display_tracker.approach_holds):
         values[prefix + '_DETECT'] = 0
 
-    center_lane_offset = (state.r_lane_f.value - state.l_lane_f.value) / 2 if model_lanes else 0.0
-
-    # --- 후측방은 BSD 경고 시 고정 위치에 두부 출력. HDA1은 후측방 레이더 정보가 안채워져서 옴 ---
-    # BSD on: the LPF slides the car to 8; off: the same car (same code) slides back to 16 and is dropped past 15.
-    # A short BSD gap (10-20 segment 8: 0.2 s) only moves it a little toward 16 and back; the code used to switch to
-    # the grey car 1 for the gap (white 4 -> grey 3 -> white 4 on the cluster).
-    BSD_LATERAL_FIXED = 2.8
-    if CS.out.leftBlindspot:
-      values["LR_DETECT_DISTANCE"] = state.lr_distance.apply(8)
-      values["LR_DETECT_LATERAL"] = BSD_LATERAL_FIXED - center_lane_offset
-      values["LR_DETECT"] = 2
-    elif state.lr_distance.value < 15:
-      values["LR_DETECT_DISTANCE"] = state.lr_distance.apply(16)
-      values["LR_DETECT_LATERAL"] = BSD_LATERAL_FIXED - center_lane_offset
-      values["LR_DETECT"] = 2  # same car as under BSD: it slides out to 16, never a grey/white flip
-
-    if CS.out.rightBlindspot:
-      values["RR_DETECT_DISTANCE"] = state.rr_distance.apply(8) # 8m
-      values["RR_DETECT_LATERAL"] = BSD_LATERAL_FIXED + center_lane_offset
-      values["RR_DETECT"] = 2
-    elif state.rr_distance.value < 15:
-      values["RR_DETECT_DISTANCE"] = state.rr_distance.apply(16)
-      values["RR_DETECT_LATERAL"] = BSD_LATERAL_FIXED + center_lane_offset
-      values["RR_DETECT"] = 2  # same car as under BSD: it slides out to 16, never a grey/white flip
-
-    if state.rear_handover is not None:
-      selected = []
-      for key in display_tracker.selected:
-        entry = display_tracker.tracks.get(key)
-        selected.append((int(getattr(entry[3], 'ccnc_source_id', key)), entry[0]) if entry else None)
-      try:
-        state.rear_handover.update(values, CS, md, frame, selected, (state.lr_distance, state.rr_distance),
-                                   ('selector', display_tracker), rear_laterals=(BSD_LATERAL_FIXED-center_lane_offset,
-                                                                              BSD_LATERAL_FIXED+center_lane_offset))
-      except Exception:
-        # Rear handover is display memory only: skip it, never the whole vehicle display.
-        if not getattr(state.rear_handover, 'failed', False):
-          state.rear_handover.failed = True
-          carlog.exception('CCNC rear handover failed; skipping it')
+    update_rear_display(values, CS, md, frame, model_lanes, state, display_tracker)
 
   except:
     values = CS.ccnc_0x162.copy()
@@ -3219,6 +3182,11 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     values["RR_DETECT"] = 11
   return values
 
+def can_render_vehicles():
+  return update_vehicles is _UPDATE_VEHICLES_REFERENCE
+
+
+_UPDATE_VEHICLES_REFERENCE = update_vehicles
 state = SimpleNamespace()
 _options = None
 

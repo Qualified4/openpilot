@@ -34,7 +34,7 @@ def test_loads_built_extension():
   assert module is not None
   assert Path(module.__file__).resolve() == (CORE_DIR / BINARY_PATH).resolve()
   assert module.source_hash() == ccnc_core_loader._source_hash(CORE_DIR)
-  assert module.abi_version() == ccnc_core_loader.ABI_VERSION == 8
+  assert module.abi_version() == ccnc_core_loader.ABI_VERSION == 9
 
 
 def test_rust_panic_is_an_ordinary_exception():
@@ -78,3 +78,11 @@ def test_caches_loaded_module(copied_loader, tmp_path):
   binary.unlink()
   (tmp_path / "ccnc_core" / "Cargo.lock").unlink()
   assert loader.load() is module
+
+
+def test_rejects_incompatible_abi(copied_loader, caplog):
+  loader, binary = copied_loader
+  shutil.copyfile(CORE_DIR / BINARY_PATH, binary)
+  loader.ABI_VERSION -= 1
+  assert loader.load() is None
+  assert caplog.messages == [f'CCNC Rust core unavailable: ABI version {ccnc_core_loader.ABI_VERSION}, expected {loader.ABI_VERSION}']

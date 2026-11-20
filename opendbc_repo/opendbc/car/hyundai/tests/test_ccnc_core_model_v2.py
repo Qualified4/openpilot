@@ -27,7 +27,7 @@ REAL_X = [192. * (i / 32) ** 2 for i in range(33)]  # The model's 33 distances, 
 def core():
   core = ccnc_core_loader.load()
   assert core is not None, 'the x86_64 test build must be in prebuilt/linux-x86_64'
-  assert core.abi_version() == 8
+  assert core.abi_version() == ccnc_core_loader.ABI_VERSION
   return core
 
 

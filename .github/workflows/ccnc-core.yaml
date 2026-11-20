@@ -11,7 +11,11 @@ on:
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_live_tracks.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_model_v2.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_correct.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_rear.py'
       - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_extension.py'
+      - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_rear.py'
+      - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd.py'
+      - 'opendbc_repo/opendbc/car/hyundai/carcontroller.py'
       - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_points.py'
       # The Rust liveTracks and modelV2 readers' constants are checked against these schemas.
       - 'opendbc_repo/opendbc/car/car.capnp'
@@ -28,7 +32,11 @@ on:
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_live_tracks.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_model_v2.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_correct.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_rear.py'
       - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_extension.py'
+      - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_rear.py'
+      - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd.py'
+      - 'opendbc_repo/opendbc/car/hyundai/carcontroller.py'
       - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_points.py'
       # The Rust liveTracks and modelV2 readers' constants are checked against these schemas.
       - 'opendbc_repo/opendbc/car/car.capnp'
@@ -86,4 +94,5 @@ jobs:
             opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_radar_map.py \
             opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_live_tracks.py \
             opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_model_v2.py \
-            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_correct.py
+            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_correct.py \
+            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_rear.py
