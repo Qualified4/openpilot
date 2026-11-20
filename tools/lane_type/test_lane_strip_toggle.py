@@ -1,6 +1,6 @@
 """The StripNet model is assets/lane_strip_v4.* only (DaBin 10-26: the v1-v3 model, the model choice setting, its slots, fallback and
 hot swap were removed). A model that is missing or fails its contract checks is not replaced: strip_model.load returns None with a
-warning and marking_daemon publishes nothing (the existing lane display stays) until CcncLaneTypeDetection is turned off. Unless a
+warning and marking_daemon publishes nothing (the existing lane display stays) until CcncExtendedDisplay is turned off. Unless a
 test says otherwise the model files are the synthetic probe fixture (fixtures/make_strip_v4.py) under the model name; the real
 shipped pair is checked separately."""
 import hashlib
@@ -44,10 +44,10 @@ def test_single_model_api_and_setting_removed():
   assert sorted(p.name for p in strip_model.ASSETS.glob('lane_strip*')) == ['lane_strip_v4.json', 'lane_strip_v4.onnx']
   text = (ROOT/'openpilot/selfdrive/carrot_settings.json').read_text(encoding='utf-8')
   # The runtime model selector (LaneStripModel) is gone from the settings and the params; its neighbours changed since
-  # (CcncLaneCurvatureSource, CcncTrafficBackground were added after it), so check the key itself.
+  # (CcncTrafficBackground were added after it), so check the key itself.
   keys = (ROOT/'openpilot/common/params_keys.h').read_text(encoding='utf-8')
   assert '"LaneStripModel"' not in text and '"LaneStripModel"' not in keys
-  assert re.search(r'\{"CcncLaneTypeDetection", \{PERSISTENT, INT, "0"\}\}', keys) and '"CcncLaneTypeDetection"' in text
+  assert re.search(r'\{"CcncExtendedDisplay", \{PERSISTENT, BOOL, "0"\}\}', keys) and '"CcncExtendedDisplay"' in text
 
 
 def test_load_v4(tmp_path):
@@ -79,18 +79,19 @@ def test_load_failure_returns_none_with_a_warning(tmp_path, broken):
 
 
 def run_daemon(monkeypatch, d, polls):
-  """marking_daemon.main with fake IPC and the model files in ``d`` (CcncLaneTypeDetection on for ``polls`` param polls, then
+  """marking_daemon.main with fake IPC and the model files in ``d`` (CcncExtendedDisplay on for ``polls`` param polls, then
   off; PARAM_CHECK_S 0). -> (recognisers built, cloudlog lines, polls at which DisplayPolicy was reset, packets sent)."""
   from openpilot.selfdrive.carrot.lane_type import marking_daemon as md
   real_load = strip_model.load
   monkeypatch.setattr(strip_model, 'load', lambda directory=None, warn=None: real_load(d, warn))
   state = {'poll': 0, 'i': 0}
 
-  def get_int(key):
+  def get_bool(key):
     assert key == marking.PARAM  # the only param the daemon reads
     state['poll'] += 1
     return 1 if state['poll'] <= polls else 0
-  monkeypatch.setitem(sys.modules, 'openpilot.common.params', N(Params=lambda: N(get_int=get_int)))
+  monkeypatch.setitem(sys.modules, 'openpilot.common.params', N(Params=lambda: N(get_bool=get_bool)))
+  monkeypatch.setattr(marking, 'read_hda1_cluster_support', lambda params: True)
   monkeypatch.setattr(md, 'PARAM_CHECK_S', 0.)
   monkeypatch.setattr(md.os, 'nice', lambda n: None, raising=False)
   built, resets, logs = [], [], {'warning': [], 'info': []}

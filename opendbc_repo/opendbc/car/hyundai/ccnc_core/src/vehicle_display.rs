@@ -908,6 +908,9 @@ pub(crate) fn update_display<'py>(
         if let Some(values) = &values_1ea {
             panel::draw_1ea(values, cs, get!(inputs.0, "latActive").is_truthy()?, desire)?;
         }
+        if values_161.is_some() {
+            display_state.publish_traffic(inputs.7.as_ref())?;
+        }
         state.setattr(panel_attr, Bound::new(py, display_state)?)?;
         if let Some(filter) = lead_filter {
             filter_stock_lead(filter, lead.as_ref(), md)?;

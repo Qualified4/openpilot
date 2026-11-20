@@ -1,7 +1,7 @@
 # CCNC lane marking experiment
 
 This is an experimental classifier and comparison workflow, not an enabled CAN
-feature. `CcncLaneTypeDetection` defaults to OFF. ON starts an independent
+feature. `CcncExtendedDisplay` defaults to OFF. ON starts an independent
 `ccnc_lane_type` process; OFF imports no OpenCV engine and loads no model.
 `modeld`, controls, Xiaoge and Hyundai CAN generation are unchanged.
 

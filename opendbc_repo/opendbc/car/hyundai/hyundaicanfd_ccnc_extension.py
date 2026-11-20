@@ -3186,11 +3186,6 @@ def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes=Tru
     values["RR_DETECT"] = 11
   return values
 
-def can_render_vehicles():
-  return update_vehicles is _UPDATE_VEHICLES_REFERENCE
-
-
-_UPDATE_VEHICLES_REFERENCE = update_vehicles
 state = SimpleNamespace()
 _options = None
 

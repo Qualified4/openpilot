@@ -25,7 +25,7 @@ fn source_hash() -> &'static str {
 
 #[pyfunction]
 fn abi_version() -> u32 {
-    10
+    11
 }
 
 /// A Rust panic reaches Python as PanicException, a BaseException that the display's `except Exception`

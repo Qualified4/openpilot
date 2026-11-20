@@ -123,9 +123,9 @@ def drive(seed, rust, frames=FRAMES, check=None):
   core = Counted(saved[0]) if rust else None
   radar_map.CORRECT_RUST = core
   if not rust:  # Counting wrappers: they also keep the Python path (replaced functions).
-    def correct(*args):
+    def correct(*args, **kwargs):
       counts['corrections'] += 1
-      return saved[3](*args)
+      return saved[3](*args, **kwargs)
     radar_map._correct_positions = correct
 
     def road(tracker, slot, x, y):

@@ -12,6 +12,7 @@ on:
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_model_v2.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_correct.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_rear.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_extended_display.py'
       - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_extension.py'
       - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_rear.py'
       - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd.py'
@@ -33,6 +34,7 @@ on:
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_model_v2.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_correct.py'
       - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_rear.py'
+      - 'opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_extended_display.py'
       - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_extension.py'
       - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd_ccnc_rear.py'
       - 'opendbc_repo/opendbc/car/hyundai/hyundaicanfd.py'
@@ -95,4 +97,5 @@ jobs:
             opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_live_tracks.py \
             opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_model_v2.py \
             opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_correct.py \
-            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_rear.py
+            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_core_rear.py \
+            opendbc_repo/opendbc/car/hyundai/tests/test_ccnc_extended_display.py

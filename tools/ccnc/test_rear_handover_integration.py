@@ -73,8 +73,8 @@ def test_handed_over_rear_keeps_six_metre_gap_after_actual_can_packing(side, fro
 @pytest.mark.parametrize('enhanced', [False, True])
 def test_native_live_entry_radar_option_enables_handover_and_display_bit_allowlist(display, use_map, bsd_interrupt, enhanced):  # noqa: F811
   params, cs, _ = display
-  params.update(CcncRadarVehicles=True, CcncModelLanes=2 if enhanced else 0,
-                CcncVehiclePositionCorrection=enhanced, CcncRadarMap=use_map)
+  params.update(radar_vehicles=True, model_lane_mode=2 if enhanced else 0,
+                position_correction=enhanced, radar_map=use_map)
   msg = CANPacker('hyundai_canfd_generated').dbc.name_to_msg['CCNC_0x162']
   cs.ccnc_0x162 = dict.fromkeys(msg.sigs, 0)
   for key, value in {'COUNTER': 7, 'ALERTS_2': 3, 'VIBRATE': 1, 'BCA_LEFT': 1, 'BCA_RIGHT': 1}.items():
@@ -158,7 +158,7 @@ def test_native_live_entry_radar_option_enables_handover_and_display_bit_allowli
 @pytest.mark.parametrize('radar_enabled,hda2', [(False, False), (True, False), (True, True)])
 def test_radar_option_and_hda2_gate_clear_handover_memory(display, use_map, radar_enabled, hda2):  # noqa: F811
   params, _, send = display
-  params.update(CcncRadarVehicles=radar_enabled, CcncRadarMap=use_map)
+  params.update(radar_vehicles=radar_enabled, radar_map=use_map)
   flags = HyundaiFlags.CAMERA_SCC.value | (HyundaiFlags.CANFD_HDA2.value if hda2 else 0)
   send(0, flags=flags)
   policy = ext.state.rear_handover
@@ -166,10 +166,10 @@ def test_radar_option_and_hda2_gate_clear_handover_memory(display, use_map, rada
   if policy is not None:
     policy.fronts[0] = {'key': (1, 0)}
     policy.rears[1] = {'key': (2, 0)}
-    params['CcncRadarVehicles'] = False
+    params['radar_vehicles'] = False
     send(100, flags=flags)
     assert ext.state.rear_handover is None
-    params['CcncRadarVehicles'] = True
+    params['radar_vehicles'] = True
     send(200, flags=flags)
     assert ext.state.rear_handover is not policy
     assert ext.state.rear_handover.fronts == ext.state.rear_handover.rears == [None, None]
@@ -179,7 +179,7 @@ def test_radar_option_and_hda2_gate_clear_handover_memory(display, use_map, rada
 def test_rear_exception_skips_only_the_rear_memory(display, monkeypatch, use_map):  # noqa: F811
   """A rear handover exception must not replace the vehicle display (map reset / fixed fallback values)."""
   params, cs, _ = display
-  params.update(CcncRadarVehicles=True, CcncModelLanes=2, CcncVehiclePositionCorrection=True, CcncRadarMap=use_map)
+  params.update(radar_vehicles=True, model_lane_mode=2, position_correction=True, radar_map=use_map)
   msg = CANPacker('hyundai_canfd_generated').dbc.name_to_msg['CCNC_0x162']
   cs.ccnc_0x162 = dict.fromkeys(msg.sigs, 0)
   cs.out.aEgo = 0.

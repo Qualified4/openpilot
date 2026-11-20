@@ -25,7 +25,6 @@ import math
 import statistics
 
 from opendbc.car.carlog import carlog
-from opendbc.car.hyundai import ccnc_core_loader
 
 from opendbc.car.hyundai.hyundaicanfd_ccnc_side_flow import SideFlow
 
@@ -487,9 +486,6 @@ class SmoothHandover(RearHandover):
       filters[side].reset(-r['x'] if r is not None else 16.)
       if self.flows[side].events:
         self.events.extend({'side': side, 'event': event} for event in self.flows[side].events)
-
-
-RUST = ccnc_core_loader.load()
 
 
 def update_rear_display(values, CS, md, frame, model_lanes, state, tracker, *, radar_map=False):

@@ -48,11 +48,14 @@ def test_default_off_manager_predicate_and_manual_entrypoint_do_not_load_or_impo
   assert not loaded
   assert not requested(True, params)
   assert not requested(False, N(get_bool=lambda key:True))
-  assert requested(True, N(get_bool=lambda key:True))
+  from opendbc.car.hyundai.values import HyundaiExtFlags, HyundaiFlags
+  cp = N(brand="hyundai", flags=HyundaiFlags.CANFD | HyundaiFlags.CAMERA_SCC,
+         extFlags=HyundaiExtFlags.CCNC_CLUSTER_RX, openpilotLongitudinalControl=True)
+  assert requested(True, N(get_bool=lambda key: True), cp)
+  assert not requested(True, N(get_bool=lambda key: True, get=lambda key: None))
   catalog = json.loads((ROOT/'openpilot/selfdrive/carrot_settings.json').read_text(encoding='utf-8'))
-  item = next(p for p in catalog['params'] if p['name'] == 'CcncLaneTypeDetection')
-  # The option is the display mode (0 off, 1 StripNet; the former 3-way selector's Scanner is gone); this legacy preview
-  # daemon is no longer registered with the manager (marking_daemon is), but it still stays inert with the option off.
+  item = next(p for p in catalog['params'] if p['name'] == 'CcncExtendedDisplay')
+  # The combined HDA1 option controls the production recogniser.
   assert (item['min'], item['max'], item['default']) == (0, 1, 0)
 
 
@@ -62,7 +65,7 @@ def test_lane_marking_reaches_only_the_ccnc_display_path():
   mapping module do."""
   for path in (ROOT/'openpilot/selfdrive/controls').rglob('*.py'):
     text = path.read_text(encoding='utf-8', errors='replace')
-    assert 'CcncLaneTypeDetection' not in text and 'ccnc_lane_marking' not in text
+    assert 'CcncExtendedDisplay' not in text and 'ccnc_lane_marking' not in text
     relative = path.relative_to(ROOT).as_posix()
     if relative.startswith('openpilot/selfdrive/controls/tests/'):
       continue  # tests build marking packets themselves
@@ -81,9 +84,9 @@ def test_lane_marking_reaches_only_the_ccnc_display_path():
     assert 'carrot.lane_type' not in text
     if path.name == 'carcontroller.py':
       # CanfdBlinkerKick yellow-line guard: reads the marking only to hold back a blinker kick, never to send one
-      assert 'CcncLaneTypeDetection' not in text
+      assert 'CcncExtendedDisplay' not in text
     elif path.name not in ('hyundaicanfd.py', 'ccnc_lane_marking.py'):
-      assert 'CcncLaneTypeDetection' not in text and 'ccnc_lane_marking' not in text, path.name
+      assert 'CcncExtendedDisplay' not in text and 'ccnc_lane_marking' not in text, path.name
   for module in ('daemon.py', 'marking_daemon.py', 'strip_model.py', 'profile_scanner.py'):
     source = ast.parse((ROOT/'openpilot/selfdrive/carrot/lane_type'/module).read_text(encoding='utf-8'))
     assert all('can' not in alias.name.split('.')[-1] for node in ast.walk(source) if isinstance(node, ast.Import) for alias in node.names)

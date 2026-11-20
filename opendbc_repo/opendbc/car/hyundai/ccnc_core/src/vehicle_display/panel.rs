@@ -281,6 +281,23 @@ struct Traffic {
 }
 
 impl Traffic {
+    fn read(owner: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            shown: get!(owner, "shown").extract()?,
+            shown_at: get!(owner, "shown_at").extract()?,
+            want_since: get!(owner, "want_since").extract()?,
+            clear_since: get!(owner, "clear_since").extract()?,
+            move_since: get!(owner, "move_since").extract()?,
+            stopped: get!(owner, "stopped").extract()?,
+        })
+    }
+
+    fn write(self, owner: &Bound<'_, PyAny>) -> PyResult<()> {
+        put!(owner, "shown" => self.shown, "shown_at" => self.shown_at, "want_since" => self.want_since,
+            "clear_since" => self.clear_since, "move_since" => self.move_since, "stopped" => self.stopped);
+        Ok(())
+    }
+
     fn update(&mut self, frame: i64, stopping: bool, standstill: bool, speed: f64) -> i64 {
         let want = stopping || standstill;
         self.want_since = want.then(|| self.want_since.unwrap_or(frame));
@@ -316,7 +333,7 @@ impl Traffic {
 pub(super) struct DisplayState {
     lanes: [LaneSide; 2],
     parking: Parking,
-    traffic: Traffic,
+    traffic: Option<Traffic>,
     gap: Option<i64>,
     gap_until: i64,
     sla_since: f64,
@@ -330,12 +347,19 @@ pub(super) type Inputs<'py> = (
     i64,
     Option<i64>,
     i64,
-    bool,
+    Option<Bound<'py, PyAny>>,
     (bool, bool, bool),
 );
 pub(super) type StockOverlay<'py> = ([i64; 2], bool, bool, Bound<'py, PyDict>, bool, bool);
 
 impl DisplayState {
+    pub(super) fn publish_traffic(&self, owner: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
+        if let (Some(traffic), Some(owner)) = (self.traffic, owner) {
+            traffic.write(owner)?;
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn draw_161<'py>(
         &mut self,
@@ -491,8 +515,9 @@ impl DisplayState {
             "TARGET_DISTANCE",
             lead.map_or(0., |lead| lead.distance.clamp(0.1, 204.5)),
         )?;
-        let traffic = if *traffic {
-            self.traffic.update(
+        self.traffic = traffic.as_ref().map(Traffic::read).transpose()?;
+        let traffic = if let Some(traffic) = &mut self.traffic {
+            traffic.update(
                 frame,
                 optional!(hud, "trafficState", 0_i64) == 1,
                 standstill,

@@ -51,7 +51,7 @@ def lanes(send, frame=0, **kw):
 @pytest.mark.parametrize("mode", [1, 2])
 def test_cluster_codes_follow_priority_per_side(display, mode):  # noqa: F811
   params, cs, send = display
-  params["CcncLaneTypeDetection"] = mode
+  params["lane_marking_mode"] = mode
   cs.ccnc_lane_marking = marking(left=('solid', 'yellow'), right=('dashed', 'white'))
   assert lanes(send) == (4, 10)  # both sides lane-change-available green in the fixture
   cs.modelV2.meta.laneChangeAvailableLeft = cs.modelV2.meta.laneChangeAvailableRight = False
@@ -62,12 +62,12 @@ def test_cluster_codes_follow_priority_per_side(display, mode):  # noqa: F811
 
 def test_bsd_no_orange_lat_off_white_and_lane_warning_still_wins(display):  # noqa: F811
   params, cs, send = display
-  params["CcncLaneTypeDetection"] = 1
+  params["lane_marking_mode"] = 1
   cs.ccnc_lane_marking = marking(left=('dashed', 'white'), right=('dashed', 'white'))
   cs.out.leftBlindspot = True
   assert lanes(send) == (10, 10)  # BSD no longer paints the line orange (BSD clears laneChangeAvailable on the car)
   cs.out.leftBlindspot = False
-  params["CcncModelLanes"] = 1
+  params["model_lane_mode"] = 1
   assert lanes(send, lat_active=False) == (8, 8)  # lat off: white base with the recognised shape, never green
   cs.out.leftLaneLine = 20  # existing OEM yellow lane warning still wins
   assert lanes(send) == (4, 10)
@@ -75,8 +75,8 @@ def test_bsd_no_orange_lat_off_white_and_lane_warning_still_wins(display):  # no
 
 def test_cluster_low_prob_grey_and_stop_hold(display):  # noqa: F811
   params, cs, send = display
-  params["CcncLaneTypeDetection"] = 1
-  params["CcncModelLanes"] = 1
+  params["lane_marking_mode"] = 1
+  params["model_lane_mode"] = 1
   cs.ccnc_lane_marking = marking(left=('dashed', 'white'), right=('dashed', 'white'))
   assert lanes(send, 0) == (10, 10)
   cs.modelV2.laneLineProbs = [.9, .2, .9, .9]
@@ -104,7 +104,7 @@ def test_cluster_low_prob_grey_and_stop_hold(display):  # noqa: F811
 
 def test_cluster_lapsed_grey_only_with_the_type_option_on(display, monkeypatch):  # noqa: F811
   params, cs, send = display
-  params["CcncLaneTypeDetection"] = 2
+  params["lane_marking_mode"] = 2
   cs.modelV2.meta.laneChangeAvailableLeft = cs.modelV2.meta.laneChangeAvailableRight = False
   cs.ccnc_lane_marking = marking(left=('dashed', 'white'), right=('solid', 'yellow'))
   assert lanes(send, 0) == (8, 4)
@@ -114,7 +114,7 @@ def test_cluster_lapsed_grey_only_with_the_type_option_on(display, monkeypatch):
   from opendbc.car.hyundai import hyundaicanfd as main
   monkeypatch.delattr(main.create_ccnc_messages, "_lane_display", raising=False)
   monkeypatch.delattr(main.create_ccnc_messages, "_display_options", raising=False)
-  params["CcncLaneTypeDetection"] = 0
+  params["lane_marking_mode"] = 0
   assert lanes(send, 600) == (2, 2)
   assert lanes(send, 1200) == (2, 2)  # OFF: the existing base, never the lapsed grey
 
@@ -278,9 +278,9 @@ def test_off_and_expired_results_match_existing_display(display, monkeypatch):  
   params, cs, send = display
   baseline = dict(send())["ADRV_0x161"]
   cs.ccnc_lane_marking = marking(left=('solid', 'yellow'), right=('dashed', 'white'))
-  params["CcncLaneTypeDetection"] = 0
+  params["lane_marking_mode"] = 0
   assert dict(send())["ADRV_0x161"] == baseline  # OFF: the packet is ignored entirely
-  params["CcncLaneTypeDetection"] = 1
+  params["lane_marking_mode"] = 1
   from opendbc.car.hyundai import hyundaicanfd as main
   monkeypatch.delattr(main.create_ccnc_messages, "_display_options", raising=False)
   cs.ccnc_lane_marking = marking(left=('solid', 'yellow'), right=('dashed', 'white'), expires=time.monotonic_ns() - 1)
@@ -292,7 +292,7 @@ def test_off_and_expired_results_match_existing_display(display, monkeypatch):  
 
 def test_cluster_start_hidden_until_confirmed_and_priorities(display):  # noqa: F811
   params, cs, send = display
-  params["CcncLaneTypeDetection"] = 2
+  params["lane_marking_mode"] = 2
   assert lanes(send, 0) == (14, 14)
   cs.out.leftLaneLine = 20  # OEM lane warning wins over the start-up hide
   assert lanes(send, 5) == (4, 14)

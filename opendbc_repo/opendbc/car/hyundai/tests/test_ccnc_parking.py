@@ -107,7 +107,7 @@ def test_cluster_parking_hide_overrides_lane_marking_and_returns(display, monkey
   from opendbc.car.hyundai import hyundaicanfd as main
   params, cs, send = display
   monkeypatch.delattr(main.create_ccnc_messages, '_parking', raising=False)
-  params["CcncLaneTypeDetection"] = 1
+  params["lane_marking_mode"] = 1
   far = 10**18
   cs.ccnc_lane_marking = {'left': {'type': ('solid', far), 'color': ('yellow', far)}, 'right': {'type': ('dashed', far), 'color': ('white', far)}}
   parking_cs(cs)

@@ -1,4 +1,4 @@
-"""Experimental, display-only CCNC radar map. Live only with the CcncRadarMap option (default off).
+"""Display-only CCNC radar map used by HDA1 extended display.
 
 Positions/velocities are stored in a local odometry frame (left-positive).
 Input timestamps must share the monotonic clock used by ``update``. Radar IDs
@@ -1838,7 +1838,7 @@ _CORRECT_ORIGINALS = (_road_alignment, _model_alignment, _bend, interpolate)
 
 
 def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ext, *, rust=True):
-  """Live FF/LF/RF display from the map alone (CcncRadarMap option); ``ext`` is the existing
+  """Live FF/LF/RF display from the map alone; ``ext`` is the existing
   extension module, used for its display conventions and the rear blind-spot icons. Any
   failure returns to the existing selector for that send."""
   try:

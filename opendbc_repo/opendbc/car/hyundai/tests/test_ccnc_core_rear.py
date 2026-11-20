@@ -326,7 +326,6 @@ def test_display_entry_returns_every_slot_in_one_call(display, monkeypatch, capl
           patch.setattr(owner, name, unexpected)
     else:
       patch.setattr(main, '_CCNC_DISPLAY_RUST', None)
-      patch.setattr(rear, 'RUST', None)
       # Keep the old map observation pipeline. For correction, compare with its original Python policy.
       patch.setattr(radar_map, 'CORRECT_RUST', None)
 
@@ -408,3 +407,72 @@ def test_display_entry_returns_every_slot_in_one_call(display, monkeypatch, capl
   def us(samples):
     return round(median(samples) / 1_000, 3), round(sorted(samples)[int(.95 * len(samples))] / 1_000, 3)
   print(f'{mode}: 130 complete CAN frames, 650 filter steps, median/p95 µs {us(python_time)} → {us(rust_time)}')
+
+
+def test_carcontroller_replay_keeps_display_scc_and_actuators_equal(display, monkeypatch):  # noqa: F811
+  from opendbc.car import Bus
+  from opendbc.car.hyundai import carcontroller, carstate
+  from opendbc.car.hyundai.values import CAR
+
+  params, _, _ = display
+  params.update(CcncExtendedDisplay=True, CcncClusterDisplay=1, CcncTrafficBackground=True, HDPuse=2)
+  params["FingerPrints"] = "{0: {}, 1: {}, 2: {353: 32, 354: 32}}"
+  adapter = SimpleNamespace(get_int=lambda key: int(params.get(key, 0)), get_bool=lambda key: bool(params.get(key)),
+                            get_float=lambda key: float(params.get(key, 0)), get=params.get, put_bool=lambda *args: None)
+  monkeypatch.setattr(carcontroller, "Params", lambda: adapter)
+  monkeypatch.setattr(carstate, "Params", lambda: adapter)
+  cp = structs.CarParams(brand="hyundai", carFingerprint=CAR.HYUNDAI_SONATA_2024, openpilotLongitudinalControl=True,
+                         flags=int(HyundaiFlags.CAMERA_SCC | HyundaiFlags.CANFD), extFlags=int(HyundaiExtFlags.CCNC_CLUSTER_RX),
+                         safetyConfigs=[structs.CarParams.SafetyConfig(safetyModel=structs.CarParams.SafetyModel.hyundaiCanfd)],
+                         wheelbase=2.84, steerRatio=14., mass=1600.)
+  rows = replay_inputs()
+  control = structs.CarControl(enabled=True, latActive=True, longActive=True)
+  control.actuators.torque = .1
+  control.actuators.accel = -.4
+  control.hudControl.leftLaneVisible = control.hudControl.rightLaneVisible = True
+  control.hudControl.setSpeed = 22.
+  control.hudControl.desiredDistance = 16.
+
+  def replay(core, patch):
+    patch.setattr(main, "_CCNC_DISPLAY_RUST", core)
+    patch.setattr(radar_map._live, "failed", False)
+    ext.reset()
+    radar_map.reset_live()
+    main._stop_go_background.reset()
+    for name in tuple(main.create_ccnc_messages.__dict__):
+      patch.delattr(main.create_ccnc_messages, name)
+    controller = carcontroller.CarController({Bus.pt: "hyundai_canfd_generated"}, cp)
+    cs = carstate.CarState(cp)
+    for attr, name in (("adrv_0x161", "ADRV_0x161"), ("ccnc_0x162", "CCNC_0x162"), ("adrv_0x1ea", "ADRV_0x1ea"),
+                       ("scc_control", "SCC_CONTROL"), ("lfa", "LFA")):
+      setattr(cs, attr, dict.fromkeys(controller.packer.dbc.name_to_msg[name].sigs, 0))
+    cs.is_metric = True
+    cs.out = structs.CarState(canValid=True, latEnabled=True, vEgo=12., vEgoRaw=12., gearShifter="drive")
+    cs.out.cruiseState.available = True
+    ci = SimpleNamespace(CS=cs, CC=controller)
+    results = []
+    for frame, scene, (model, model_bytes), (tracks, tracks_bytes) in rows:
+      control.hudControl.trafficState = int(20 <= scene <= 45)
+      control.hudControl.leadDistanceBars = 2 if scene < 30 else 3
+      control.hudControl.driverMonitoringAlert = 3 if 38 <= scene < 41 else 0
+      control.hudControl.alertType = "steerSaturated/warning" if 36 <= scene < 41 else ""
+      cs.out.vEgo = 0. if 40 <= scene < 45 else 12.
+      cs.out.standstill = cs.out.vEgo == 0.
+      radar = SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=18., yRel=.2 + .001 * frame, vRel=-.1,
+                                                      radar=True, radarTrackId=7), leadTwo=None)
+      actuators, messages = CarInterfaceBase.apply(ci, control.as_reader(), (frame + 1) * 10_000_000,
+                                                    model, radar, tracks, tracks_bytes, model_bytes)
+      results.append((actuators.to_bytes(), messages))
+    assert not radar_map._live.failed
+    return results
+
+  core = main._CCNC_DISPLAY_RUST
+  with monkeypatch.context() as patch:
+    expected = replay(None, patch)
+  with monkeypatch.context() as patch:
+    actual = replay(core, patch)
+  counts = Counter(address for _, messages in actual for address, _, _ in messages)
+  assert counts[0x161] == counts[0x162] == counts[0x1EA] == 130
+  assert counts[0x1A0] == 325
+  for frame, (got, want) in enumerate(zip(actual, expected, strict=True)):
+    assert got == want, frame

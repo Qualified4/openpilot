@@ -888,8 +888,8 @@ def _hide_replaced_adas_service_warning(values):
 
 
 # --- CcncClusterDisplay / CcncTrafficBackground (CCNC cluster frames 0x161 / 0x162) ---
-# Purpose: make the stock CCNC cluster show openpilot's state the way the stock HDA2 display does. Both keys default to
-# 0, which turns off only the items gated on them. Not gated, so applied at 0 too: the HDP gap bars / spacing / gap
+# Purpose: make the stock CCNC cluster show openpilot's state the way the stock HDA2 display does. The stock-style
+# option defaults off and the stop/go background defaults on. Always applied: the HDP gap bars / spacing / gap
 # popup, the corner box -> grey car normalization and the standstill steering icons in create_ccnc_messages.
 # Scope: create_ccnc_messages runs on CAN-FD with CAMERA_SCC and openpilot longitudinal (HyundaiCameraSCC 1 or 2; 3 has
 # no openpilot longitudinal); 0x161 items need the camera's 0x161 seen, the HDP icon its 0x162.
@@ -1345,12 +1345,13 @@ def create_alt2_adas_button_request(packer, CAN, frame, CC, CS, stopping, *, kee
 
 
 def _ccnc_display_options(CP, CS, frame, override):
+  supported = hda1_cluster_supported(CP)
   if not hasattr(create_ccnc_messages, '_display_options') or frame % 100 == 0:
     params = Params()
-    create_ccnc_messages._display_options = (bool(params.get_int("CcncExtendedDisplay")),
+    create_ccnc_messages._display_options = (supported and params.get_bool("CcncExtendedDisplay"),
                                              bool(params.get_int("CcncTrafficBackground")))
   requested, traffic_background = create_ccnc_messages._display_options
-  enabled = (requested if override is None else override) and hda1_cluster_supported(CP) and (
+  enabled = (requested if override is None else override) and supported and (
     CS.adrv_0x161 is not None and CS.ccnc_0x162 is not None)
   return (True, 2, True, True, True, 1, 3, traffic_background) if enabled else (
     False, 0, False, False, False, 0, ccnc_extension.CURVATURE_SOURCE_DEFAULT, traffic_background)
@@ -1397,9 +1398,18 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
       inputs = map_inputs = None
       if frame % 5 == 0:
         params = Params()
-        drive_mode = params.get_int("MyDrivingMode") if CS.out.gearShifter == structs.CarState.GearShifter.drive else None
-        inputs = (CC, hud_control, time.monotonic_ns(), lane_line_check, params.get_int("HDPuse"), drive_mode,
-                  paddle_mode, traffic_background, (bool(left_lane_warning), bool(right_lane_warning), canfd_debug > 0))
+        now_ns = time.monotonic_ns()
+        drive_mode = None
+        if CS.out.gearShifter == structs.CarState.GearShifter.drive:
+          display_state = ccnc_extension.state
+          now = now_ns / 1e9
+          if now >= display_state.drive_mode_refresh:
+            display_state.drive_mode = params.get_int("MyDrivingMode")
+            display_state.drive_mode_refresh = now + 1.
+          drive_mode = display_state.drive_mode
+        inputs = (CC, hud_control, now_ns, lane_line_check, params.get_int("HDPuse"), drive_mode,
+                  paddle_mode, _stop_go_background if traffic_background else None,
+                  (bool(left_lane_warning), bool(right_lane_warning), canfd_debug > 0))
         map_inputs = ccnc_radar_map.display_inputs()
       built = native_display.update_display(CS, md, frame, inputs, ccnc_extension.state,
                                             ccnc_extension._CcncRadarPositionFilter, map_inputs, lead_filter)
