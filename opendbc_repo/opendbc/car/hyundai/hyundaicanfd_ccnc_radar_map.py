@@ -1716,6 +1716,9 @@ def _model_alignment(md, slot, x, y, path):
   return None if lane is None else y + lane
 
 
+# The Rust position correction (_correct_positions); None runs the Python reference below.
+CORRECT_RUST = ccnc_core_loader.load()
+
 EGO_ALIGN_TIME = .5  # s, ego's change and the path reference
 EGO_HANDOVER_TIME = .3  # s, one vehicle moving to another slot
 
@@ -1725,6 +1728,13 @@ def _correct_positions(tracker, correction, values, frame, md, ext):
   following and slot debounce, keyed by map object instead of radar ID. The map already
   confirms and predicts objects itself, so the existing temporal track checks are not used."""
   centers = [ext._ccnc_side_lane_center(md, side, None, correction.MIN_LANE_PROBABILITY) for side in (0, 1)]
+  if CORRECT_RUST is not None and type(frame) is int and _rust_correctable():
+    # The model is read here (capnp names stay in Python), and only while the blend may be above zero.
+    model = _live.model if 0. <= frame * .01 - _live.model_time <= .25 else None
+    inputs = _model_inputs(model) if model is not None and (correction.ego_follow_active or _live.ego_blend[1] > 0.) else None
+    CORRECT_RUST.correct_positions(tracker, correction, values, frame, tuple(centers), inputs, _live, ext._CcncRadarPositionFilter,
+                                   SimpleNamespace, EGO_ALIGN_TIME, EGO_HANDOVER_TIME)
+    return
   observations = {o.key: (o.born, round(o.seen * 100.)) for o in tracker.objects.values()}
   correction.update_centers(centers[0], centers[1], frame, observations)
   filters = {}
@@ -1789,6 +1799,23 @@ def _correct_positions(tracker, correction, values, frame, md, ext):
   _live.filters = filters
   _live.aligned, _live.handover = drawn, handover
   correction.stabilize_slots(values, tracker.selected, observations, frame, bypass=tracker.holding)
+
+
+def _model_inputs(md):
+  """The model values the Rust _correct_positions reads: laneLines[1:3] and position as (x, y) lists (position None
+  when the model has none), and laneLineProbs[1:3]."""
+  lines, position = getattr(md, 'laneLines', ()), getattr(md, 'position', None)
+  return ([(list(lines[i].x), list(lines[i].y)) for i in (1, 2) if len(lines) > i],  # capnp lists take no slices
+          (list(position.x), list(position.y)) if position is not None else None,
+          list(getattr(md, 'laneLineProbs', ()))[1:3])
+
+
+def _rust_correctable():
+  """The Rust _correct_positions does what this module's functions do; one replaced (a tool, a test) keeps Python."""
+  return (_road_alignment, _model_alignment, _bend, interpolate) == _CORRECT_ORIGINALS
+
+
+_CORRECT_ORIGINALS = (_road_alignment, _model_alignment, _bend, interpolate)
 
 
 def update_vehicles(values, CS, md, frame, v_ego_kph, a_ego_kph, model_lanes, ext):

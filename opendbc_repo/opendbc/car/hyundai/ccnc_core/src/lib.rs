@@ -2,6 +2,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 mod consts;
+mod correct;
 mod lanes;
 mod live_tracks;
 mod map_object;
@@ -19,7 +20,7 @@ fn source_hash() -> &'static str {
 
 #[pyfunction]
 fn abi_version() -> u32 {
-    6
+    7
 }
 
 /// A Rust panic reaches Python as PanicException, a BaseException that the display's `except Exception`
@@ -89,5 +90,6 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_sum_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_math_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_lane_for_test, module)?)?;
+    module.add_function(wrap_pyfunction!(correct::correct_positions, module)?)?;
     Ok(())
 }
