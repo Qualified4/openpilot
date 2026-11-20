@@ -88,6 +88,16 @@ class CarSubMaster(messaging.SubMaster):
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
     self._live_tracks = (None, None)  # (self.data['liveTracks'], the bytes of its message)
+    # The Rust reader holds schema offsets as constants. If the schema here says otherwise it would read wrong points
+    # without an error, so no bytes are passed then and the display reads the objects as before.
+    try:
+      from opendbc.car.hyundai import hyundaicanfd_ccnc_points as ccnc_points
+      mismatch = ccnc_points.schema_mismatch(log, car)
+    except Exception as e:
+      mismatch = repr(e)
+    self._pass_bytes = mismatch is None
+    if not self._pass_bytes and mismatch != 'no Rust core':
+      cloudlog.error(f"liveTracks bytes are not passed to the CCNC Rust reader: {mismatch}")
 
   def update(self, timeout: int = 100) -> None:
     raw, msgs = [], []
@@ -102,7 +112,7 @@ class CarSubMaster(messaging.SubMaster):
 
   def live_tracks_bytes(self, live_tracks) -> bytes | None:
     """The bytes of the message live_tracks is, if it is the liveTracks this holds."""
-    return self._live_tracks[1] if live_tracks is self._live_tracks[0] else None
+    return self._live_tracks[1] if self._pass_bytes and live_tracks is self._live_tracks[0] else None
 
 
 class Car:

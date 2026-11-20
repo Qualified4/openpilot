@@ -312,9 +312,9 @@ pub fn _parse_for_test<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Option<Boun
     })
 }
 
-/// For the schema test only: the constants above, by schema name.
+/// The constants above, by schema name: compared with the schema pycapnp loads, by the test and when card starts.
 #[pyfunction]
-pub fn _schema_for_test(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
+pub fn live_tracks_schema(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
     let d = pyo3::types::PyDict::new(py);
     d.set_item("event_discriminant_offset", EVENT_DISCRIMINANT_OFFSET)?;
     d.set_item("event_live_tracks", EVENT_LIVE_TRACKS)?;

@@ -135,3 +135,27 @@ def test_bytes_reach_the_display_copy(monkeypatch):
     assert type(from_bytes) is type(from_objects) is ccnc_points.LiveTracks and from_bytes is not from_objects
     assert len(from_bytes.points) == len(from_objects.points) == len(live.points)
     assert points_of(from_bytes) == points_of(from_objects) == points_of(live)
+
+
+@pytest.mark.parametrize('mismatch,passed', [(None, True), ('RadarPoint.dRel: schema 3, Rust reader 2', False), ('no Rust core', False)])
+def test_no_bytes_are_passed_when_the_schema_differs(monkeypatch, mismatch, passed):
+  """card asks once, when it starts, whether the Rust reader's offsets are this schema's; if not, the display gets no
+  bytes and reads the objects."""
+  monkeypatch.setattr(ccnc_points, 'schema_mismatch', lambda log, car: mismatch)
+  with OpenpilotPrefix():
+    sm = CarSubMaster(['liveTracks'])
+    held = object()
+    sm._live_tracks = (held, b'bytes')
+    assert sm.live_tracks_bytes(held) == (b'bytes' if passed else None)
+    assert sm.live_tracks_bytes(object()) is None
+
+
+def test_a_failing_schema_check_passes_no_bytes(monkeypatch):
+  def fail(log, car):
+    raise RuntimeError('schema introspection failed')
+  monkeypatch.setattr(ccnc_points, 'schema_mismatch', fail)
+  with OpenpilotPrefix():
+    sm = CarSubMaster(['liveTracks'])
+    held = object()
+    sm._live_tracks = (held, b'bytes')
+    assert sm.live_tracks_bytes(held) is None

@@ -129,33 +129,41 @@ def random_message(rng):
 
 
 def test_schema_constants_are_the_schema(core):
-  """A schema change that moves what the reader reads fails here; the constants are then fixed in live_tracks.rs."""
-  c = core._schema_for_test()
-  event = log.Event.schema
-  assert event.node.struct.discriminantOffset == c['event_discriminant_offset']
-  member = event.fields['liveTracks'].proto
-  assert member.discriminantValue == c['event_live_tracks']
-  assert member.slot.offset == c['event_live_tracks_pointer']
-  assert member.slot.type.which() == 'struct' and member.slot.type.struct.typeId == car.RadarData.schema.node.id
+  """A schema change that moves what the reader reads fails here; the constants are then fixed in live_tracks.rs.
+  card runs the same comparison when it starts and passes no bytes if it fails."""
+  assert ccnc_points.schema_mismatch(log, car) is None
+  c = core.live_tracks_schema()
+  assert set(c['radar_point_fields']) == set(NAMES)
+  assert list(c['radar_sources']) == list(SOURCES)
 
-  points = car.RadarData.schema.fields['points'].proto
-  assert points.slot.offset == c['radar_data_points_pointer']
-  element = points.slot.type.list.elementType
-  assert element.which() == 'struct' and element.struct.typeId == car.RadarData.RadarPoint.schema.node.id
 
-  fields = car.RadarData.RadarPoint.schema.fields
-  assert set(c['radar_point_fields']) == set(NAMES) == set(ccnc_points.FIELDS) | {'radarSource'}
-  for name, (kind, offset, default) in c['radar_point_fields'].items():
-    slot = fields[name].proto.slot
-    assert (slot.type.which(), slot.offset) == (kind, offset), name
-    value = getattr(slot.defaultValue, kind)
-    if kind == 'float32':
-      value = struct.unpack('<I', struct.pack('<f', value))[0]
-    elif kind == 'enum':
-      assert slot.type.enum.typeId == car.RadarData.RadarPoint.RadarSource.schema.node.id
-    assert value == default, name
-  enumerants = car.RadarData.RadarPoint.RadarSource.schema.node.enum.enumerants
-  assert [e.name for e in enumerants] == list(c['radar_sources']) == list(SOURCES)
+@pytest.mark.parametrize('change', ['offset', 'kind', 'default', 'discriminant', 'pointer', 'source', 'field'])
+def test_schema_mismatch_names_what_differs(core, monkeypatch, change):
+  """The comparison against a reader that assumes something else: each kind of difference is reported."""
+  c = core.live_tracks_schema()
+  kind, offset, default = c['radar_point_fields']['dRel']
+  if change == 'offset':
+    c['radar_point_fields']['dRel'] = (kind, offset + 1, default)
+  elif change == 'kind':
+    c['radar_point_fields']['trackState'] = ('uint16', *c['radar_point_fields']['trackState'][1:])
+  elif change == 'default':
+    c['radar_point_fields']['dRel'] = (kind, offset, 1)
+  elif change == 'discriminant':
+    c['event_live_tracks'] += 1
+  elif change == 'pointer':
+    c['radar_data_points_pointer'] += 1
+  elif change == 'source':
+    c['radar_sources'] = list(c['radar_sources'])[::-1]
+  else:
+    c['radar_point_fields']['notInSchema'] = c['radar_point_fields'].pop('jLead')
+
+  class Reader:
+    live_tracks_schema = staticmethod(lambda: c)
+
+  monkeypatch.setattr(ccnc_points, 'RUST', Reader)
+  assert ccnc_points.schema_mismatch(log, car) is not None
+  monkeypatch.setattr(ccnc_points, 'RUST', None)
+  assert ccnc_points.schema_mismatch(log, car) == 'no Rust core'
 
 
 @pytest.mark.parametrize('chunk', range(CHUNKS))

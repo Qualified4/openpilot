@@ -85,7 +85,7 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(update::_update_calls_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(live_tracks::live_tracks_copy, module)?)?;
     module.add_function(wrap_pyfunction!(live_tracks::_parse_for_test, module)?)?;
-    module.add_function(wrap_pyfunction!(live_tracks::_schema_for_test, module)?)?;
+    module.add_function(wrap_pyfunction!(live_tracks::live_tracks_schema, module)?)?;
     module.add_function(wrap_pyfunction!(_sum_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_math_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_lane_for_test, module)?)?;
