@@ -31,7 +31,9 @@ class CcncCatalogTest(unittest.TestCase):
       self.assertEqual(VALIDATOR.validate_wiki_markdown(page), [])
       self.assertIn(" ".join(setting[field].split()), page)
       self.assertEqual(setting[field].count("\n• "), 8)
-      self.assertEqual(setting[field].count("TBD"), 2)
+      self.assertNotIn("TBD", setting[field])
+      for value in ("0.9", "2.4", "3.1"):
+        self.assertIn(value, setting[field])
       self.assertIn("14.7", setting[field])
 
   def test_current_catalog_ci_report(self):
