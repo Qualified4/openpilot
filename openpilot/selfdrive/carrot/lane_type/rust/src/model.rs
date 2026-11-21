@@ -74,6 +74,21 @@ pub struct StripModel {
     pub strip: StripShape,
     pub threshold: f64,
     plan: Plan,
+    /// The N=2 plan (both sides in one run), built by `enable_batch`.
+    plan2: Option<Plan>,
+    data: Vec<u8>,
+}
+
+fn build_plan(data: &[u8], n: usize, strip: StripShape) -> anyhow::Result<Plan> {
+    let mut model = tract_onnx::onnx().model_for_read(&mut &data[..])?;
+    model.set_input_fact(0, f32::fact([n, 3, strip.rows, strip.cols]).into())?;
+    let outputs: Vec<OutletId> = ["type", "color"]
+        .iter()
+        .map(|n| model.find_outlet_label(n))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| anyhow::anyhow!("lane strip ONNX outputs type / color not found"))?;
+    model.select_output_outlets(&outputs)?;
+    Ok(model.into_optimized()?.into_runnable()?)
 }
 
 fn softmax(x: &[f32]) -> Vec<f64> {
@@ -110,21 +125,38 @@ impl StripModel {
         if manifest.input.shape != [3, strip.rows, strip.cols] {
             anyhow::bail!("lane strip manifest input shape {:?} does not match its strip", manifest.input.shape);
         }
-        let mut model = tract_onnx::onnx().model_for_read(&mut &data[..])?;
-        model.set_input_fact(0, f32::fact([1, 3, strip.rows, strip.cols]).into())?;
-        let outputs: Vec<OutletId> = ["type", "color"]
-            .iter()
-            .map(|n| model.find_outlet_label(n))
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| {
-                let labels: Vec<_> = model.output_outlets().unwrap_or(&[]).iter().map(|o| model.outlet_label(*o).unwrap_or("?").to_string()).collect();
-                anyhow::anyhow!("lane strip ONNX outputs type / color not found (outputs {labels:?})")
-            })?;
-        model.select_output_outlets(&outputs)?;
         let _ = &manifest.input.name;
-        let plan = model.into_optimized()?.into_runnable()?;
+        let plan = build_plan(&data, 1, strip)?;
         Ok(StripModel { name: name.into(), version: manifest.version, sha256: manifest.model_sha256, mirror_right: manifest.mirror_right,
-                        strip, threshold: manifest.threshold, plan })
+                        strip, threshold: manifest.threshold, plan, plan2: None, data })
+    }
+
+    pub fn enable_batch(&mut self) -> anyhow::Result<()> {
+        self.plan2 = Some(build_plan(&self.data, 2, self.strip)?);
+        Ok(())
+    }
+
+    pub fn batched(&self) -> bool {
+        self.plan2.is_some()
+    }
+
+    /// Both strips in one N=2 run: [(type logits, colour logits); 2].
+    pub fn forward2(&self, a: &[f32], b: &[f32]) -> anyhow::Result<[(Vec<f32>, Vec<f32>); 2]> {
+        let plan = self.plan2.as_ref().ok_or_else(|| anyhow::anyhow!("batch plan not built"))?;
+        let mut both = Vec::with_capacity(a.len() * 2);
+        both.extend_from_slice(a);
+        both.extend_from_slice(b);
+        let input = Tensor::from_shape(&[2, 3, self.strip.rows, self.strip.cols], &both)?;
+        let out = plan.run(tvec!(input.into()))?;
+        let rows = |i: usize| -> anyhow::Result<Vec<Vec<f32>>> {
+            let v = out[i].to_plain_array_view::<f32>()?;
+            let flat: Vec<f32> = v.iter().copied().collect();
+            let w = flat.len() / 2;
+            Ok(vec![flat[..w].to_vec(), flat[w..].to_vec()])
+        };
+        let (mut t, mut c) = (rows(0)?, rows(1)?);
+        let (t1, c1) = (t.pop().unwrap(), c.pop().unwrap());
+        Ok([(t.pop().unwrap(), c.pop().unwrap()), (t1, c1)])
     }
 
     /// (type logits, colour logits) of one 3 x rows x cols strip.
@@ -200,5 +232,12 @@ mod tests {
         assert_eq!(m.strip, DEFAULT_STRIP);
         let (t, c) = m.forward(&vec![128.; 3 * 128 * 128]).unwrap();
         assert_eq!((t.len(), c.len()), (5, 3));
+        let mut m = m;
+        m.enable_batch().unwrap();
+        let b: Vec<f32> = (0..3 * 128 * 128).map(|i| (i % 251) as f32).collect();
+        let [x, y] = m.forward2(&vec![128.; 3 * 128 * 128], &b).unwrap();
+        let (tb, cb) = m.forward(&b).unwrap();
+        let close = |p: &[f32], q: &[f32]| p.iter().zip(q).all(|(a, b)| (a - b).abs() < 1e-3);
+        assert!(close(&x.0, &t) && close(&x.1, &c) && close(&y.0, &tb) && close(&y.1, &cb));
     }
 }

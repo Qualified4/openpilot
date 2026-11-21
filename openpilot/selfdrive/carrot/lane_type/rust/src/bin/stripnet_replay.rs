@@ -6,7 +6,7 @@
 //!   b'F' a camera frame: u32 frameId, u64 timestampEof, u32 width, u32 height, then NV12 (stride = width);
 //!   b'N' u64 monotonic now for the next modelV2's processing (publish time; the replay has no clock).
 //! Frames are kept like the device FrameBuffer (newest 3); there are no hold / slot-reuse drops offline.
-//! Args: <assets dir> [--threads N]
+//! Args: <assets dir> [--threads N] [--batch] [--no-record]
 
 use std::io::{BufWriter, Read, Write};
 use std::path::PathBuf;
@@ -29,10 +29,13 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let assets = PathBuf::from(args.get(1).map_or("../assets", |s| s.as_str()));
     let threads = args.iter().position(|a| a == "--threads").and_then(|i| args.get(i + 1)).map_or(2, |v| v.parse().unwrap());
-    let model = StripModel::load(&assets, "lane_strip_v4")?;
+    let mut model = StripModel::load(&assets, "lane_strip_v4")?;
+    if args.iter().any(|a| a == "--batch") {
+        model.enable_batch()?; // both sides in one N=2 tract run
+    }
     let mut recogniser = Recogniser::new(model);
     recogniser.threads = threads;
-    recogniser.record = true;
+    recogniser.record = !args.iter().any(|a| a == "--no-record"); // strip sha256 / logits per side
     let mut daemon = Daemon::new(recogniser);
     let mut frames: FrameBuffer<Owned> = FrameBuffer::default();
     let mut stdin = std::io::stdin().lock();

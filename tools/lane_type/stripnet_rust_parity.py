@@ -76,10 +76,10 @@ class RecordingModel:
 
 class PyDaemon:
   """marking_daemon.main's per-modelV2 body with replay inputs (no VisionIPC hold / slot checks)."""
-  def __init__(self, model):
+  def __init__(self, model, record=True):
     from openpilot.selfdrive.carrot.lane_type.display import DisplayPolicy
     from openpilot.selfdrive.carrot.lane_type.marking_daemon import FrameBuffer, Recogniser
-    self.model = RecordingModel(model)
+    self.model = RecordingModel(model) if record else model
     self.recogniser, self.policy = Recogniser(2, model=self.model, lanechange='C2'), DisplayPolicy()
     self.frames = FrameBuffer()
     self.latest, self.mono = {}, {}
@@ -134,7 +134,8 @@ class PyDaemon:
                'blinker': bool(car.leftBlinker or car.rightBlinker), 'lcs': str(model.meta.laneChangeState),
                'lcs_change': str(model.meta.laneChangeState) != 'off', 'v_ego': float(car.vEgo),
                'lead_d_rel': lead_d_rel(radar, self.mono.get('radarState', 0), stamp) if radar is not None else None}
-      self.model.last = []
+      if hasattr(self.model, 'last'):
+        self.model.last = []
       raw = self.recogniser.process(y_plane, uv_plane, frame)
     except (ValueError, KeyError, AttributeError, cv2.error) as error:
       self.counters['errors'] += 1
@@ -146,7 +147,7 @@ class PyDaemon:
     self.counters['processed'] += 1
     pub = packet(2, int(model.frameId), stamp, raw, confirmed, now_ns, {}, dict(self.counters), self.info)
     pub = json.loads(json.dumps(pub, separators=(',', ':'), allow_nan=False))
-    return {'status': 'published', 'packet': pub, 'diag': self.model.last, 'wallMs': wall_ms, 'cpuMs': cpu_ms,
+    return {'status': 'published', 'packet': pub, 'diag': getattr(self.model, 'last', []), 'wallMs': wall_ms, 'cpuMs': cpu_ms,
             'extractMs': self.recogniser.timing['extractMs'], 'inferMs': self.recogniser.timing['inferMs'],
             'lane_change': frame['lane_change'], 'luma': None}
 
@@ -293,6 +294,133 @@ def run_segment(spec, rust, py, rows, totals, diffs_file):
   return summary
 
 
+def serve_python(record, threads):
+  """The Python daemon path as an engine process with stripnet_replay's stdin protocol (one JSON line per modelV2)."""
+  import sys
+  import cv2
+  from openpilot.cereal import log
+  from openpilot.selfdrive.carrot.lane_type.strip_extractor import tune_allocator
+  from openpilot.selfdrive.carrot.lane_type.strip_model import StripModel
+  cv2.setNumThreads(threads)
+  tune_allocator()
+  d = PyDaemon(StripModel(), record=record)
+  stdin, stdout = sys.stdin.buffer, sys.stdout
+  now = 0
+  while True:
+    head = stdin.read(5)
+    if len(head) < 5:
+      return
+    tag, size = head[:1], struct.unpack('<I', head[1:])[0]
+    payload = stdin.read(size)
+    if tag == b'N':
+      now = struct.unpack('<q', payload)[0]
+    elif tag == b'F':
+      fid, eof, w, h = struct.unpack_from('<IQII', payload)
+      d.frames.frames.append((fid, eof, FakeBuffer(payload[20:], w, h, fid), 0))
+    elif tag == b'E':
+      with log.Event.from_bytes(payload) as e:
+        which = e.which()
+        if which != 'modelV2':
+          d.take(which, e.as_builder().as_reader())
+          continue
+        r = d.step(e.modelV2, int(e.logMonoTime), now)
+      r.pop('lane_change', None)
+      r.pop('luma', None)
+      stdout.write(json.dumps(r) + '\n')
+      stdout.flush()
+
+
+class Engine(Rust):
+  """Any engine process speaking the replay protocol; its own peak RSS and CPU time are read from /proc before it exits."""
+  def __init__(self, cmd):
+    self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    self.start = time.monotonic()
+
+  def stats(self):
+    status = Path(f'/proc/{self.p.pid}/status').read_text()
+    hwm = next(int(line.split()[1]) for line in status.splitlines() if line.startswith('VmHWM:'))
+    stat = Path(f'/proc/{self.p.pid}/stat').read_text().rsplit(')', 1)[1].split()
+    import os
+    tick = os.sysconf('SC_CLK_TCK')
+    return {'maxRssMiB': hwm/1024, 'cpuS': (int(stat[11]) + int(stat[12]))/tick, 'wallS': time.monotonic() - self.start}
+
+
+def run_engines(spec, engines, limit, rows, totals, diffs_file):
+  """run_segment with every engine in its own process (device runs): the same events and frames to each, in lockstep."""
+  import av
+  rlog, video, seg = segment_paths(spec)
+  stream = list(events(rlog))
+  encode = {e.roadEncodeIdx.segmentId: (e.roadEncodeIdx.frameId, e.roadEncodeIdx.timestampEof)
+            for which, _, e in stream if which == 'roadEncodeIdx' and e.roadEncodeIdx.segmentNum == seg}
+  container = av.open(str(video))
+  decoded = container.decode(video=0)
+  sent, next_index, models = set(), 0, 0
+  seg_totals = Counter()
+
+  def frame_for(frame_id):
+    nonlocal next_index
+    while frame_id not in sent:
+      try:
+        f = next(decoded)
+      except StopIteration:
+        return
+      key = encode.get(next_index)
+      next_index += 1
+      if key is None:
+        continue
+      h, w = f.height, f.width
+      p = f.to_ndarray(format='yuv420p')
+      nv12 = np.empty((h*3//2, w), np.uint8)
+      nv12[:h] = p[:h]
+      c = p[h:].reshape(-1)
+      nv12[h:].reshape(-1)[0::2] = c[:h*w//4]
+      nv12[h:].reshape(-1)[1::2] = c[h*w//4:]
+      sent.add(key[0])
+      record = struct.pack('<IQII', key[0], key[1], w, h) + nv12.tobytes()
+      for e in engines.values():
+        e.send(b'F', record)
+
+  for which, raw, e in stream:
+    if which not in SERVICES:
+      continue
+    if which != 'modelV2':
+      for eng in engines.values():
+        eng.send(b'E', raw)
+      continue
+    if models >= limit:
+      break
+    models += 1
+    frame_for(int(e.modelV2.frameId))
+    now = int(e.logMonoTime)
+    for eng in engines.values():
+      eng.send(b'N', struct.pack('<q', now))
+      eng.send(b'E', raw)
+    res = {name: eng.result() for name, eng in engines.items()}
+    if 'py' in res and 'rs' in res:
+      d = compare(res['py'], res['rs'], seg_totals)
+      if d:
+        seg_totals['frames_with_diff'] += 1
+        diffs_file.write(json.dumps({'segment': spec, 'frameId': int(e.modelV2.frameId), 'diffs': d}, default=str) + '\n')
+    for other in ('rsb',):
+      if 'py' in res and other in res:
+        sub = Counter()
+        if compare(res['py'], res[other], sub):
+          sub['frames_with_diff'] += 1
+        for k, v in sub.items():
+          k = f'{other}.{k}'
+          seg_totals[k] = max(seg_totals[k], v) if k.split('.', 1)[1].startswith('max_') else seg_totals[k] + v
+    row = {'segment': spec, 'index': models}
+    for name, r in res.items():
+      if r['status'] == 'published':
+        row[name] = {'wall': r['wallMs'], 'extract': r['extractMs'], 'infer': r['inferMs'],
+                     'inferred': sum(x is not None for x in r['diag']) if r.get('diag') else None}
+    rows.append(row)
+  container.close()
+  for k, v in seg_totals.items():
+    totals[k] = max(totals[k], v) if k.rsplit('.', 1)[-1].startswith('max_') else totals[k] + v
+  print(json.dumps({'segment': spec, 'models': models, **dict(seg_totals)}), flush=True)
+
+
 def scan(specs):
   for spec in specs:
     rlog, _, _ = segment_paths(spec)
@@ -308,14 +436,35 @@ def scan(specs):
 
 def main():
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-  ap.add_argument('segments', nargs='+', help='ROUTE_DIR:SEGMENT')
+  ap.add_argument('segments', nargs='*', help='ROUTE_DIR:SEGMENT')
   ap.add_argument('--rust', help='stripnet_replay binary')
   ap.add_argument('--out')
   ap.add_argument('--threads', type=int, default=2)
   ap.add_argument('--scan', action='store_true')
+  ap.add_argument('--serve-python', action='store_true', help='run as the Python engine process (stdin protocol)')
+  ap.add_argument('--record', action='store_true', help='--serve-python: strip sha256 / logits per side')
+  ap.add_argument('--engine', action='append', default=[], help='NAME=COMMAND (space separated), each its own process')
+  ap.add_argument('--limit', type=int, default=10**9, help='modelV2 per segment')
   a = ap.parse_args()
+  if a.serve_python:
+    return serve_python(a.record, a.threads)
   if a.scan:
     return scan(a.segments)
+  if a.engine:
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    rows, totals = [], Counter()
+    engines = {n: Engine(c.split()) for n, c in (x.split('=', 1) for x in a.engine)}
+    with open(out/'diffs.jsonl', 'w') as diffs_file:
+      for spec in a.segments:
+        run_engines(spec, engines, a.limit, rows, totals, diffs_file)
+    stats = {n: e.stats() for n, e in engines.items()}
+    for e in engines.values():
+      e.close()
+    (out/'rows.json').write_text(json.dumps(rows))
+    (out/'summary.json').write_text(json.dumps({'totals': dict(totals), 'engines': stats}, indent=1))
+    print(json.dumps({'totals': dict(totals), 'engines': stats}, indent=1))
+    return
   import cv2
   cv2.setNumThreads(a.threads)
   from openpilot.selfdrive.carrot.lane_type.strip_extractor import tune_allocator

@@ -246,7 +246,17 @@ impl Recogniser {
             let d = model.decide4(&t, &c);
             Ok((d, record.then(|| Diag { strip_sha: strip_sha(s), type_logits: t, color_logits: c })))
         };
-        let decisions: Vec<(usize, (Decision, Option<Diag>))> = if self.threads > 1 && strips.len() == 2 {
+        let decisions: Vec<(usize, (Decision, Option<Diag>))> = if model.batched() && strips.len() == 2 {
+            let (a, b) = (strips[0].1.as_ref().unwrap(), strips[1].1.as_ref().unwrap());
+            let [x, y] = model.forward2(a, b)?;
+            [(strips[0].0, a, x), (strips[1].0, b, y)]
+                .into_iter()
+                .map(|(side, s, (t, c))| {
+                    let d = model.decide4(&t, &c);
+                    (side, (d, record.then(|| Diag { strip_sha: strip_sha(s), type_logits: t, color_logits: c })))
+                })
+                .collect()
+        } else if self.threads > 1 && strips.len() == 2 {
             std::thread::scope(|s| -> anyhow::Result<_> {
                 let h = s.spawn(|| run(strips[1].1.as_ref().unwrap()));
                 let a = run(strips[0].1.as_ref().unwrap())?;
