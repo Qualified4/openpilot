@@ -120,6 +120,10 @@ class CcncRadarMap:
   MEMORY_TRACKED = 40  # A never-moved neighbour is remembered only after 2s as a measured radar track.
   CROSSING_TRAVEL = 1.5  # Sideways travel since first seen, more than a lane change needs without forward progress.
   BODY_CLEARANCE, BODY_FAR_SIDE = .9, 2.6
+  # m, 0 off. Reviewed video (2026-11-21, 476/16): a street-light post on a narrow shoulder 1.02m past the line was
+  # admitted while ego waited; its line-to-road-edge room was 1.96-2.34m, real waiting vehicles' 2.46m or more
+  # (bus stop, 475/5). With a usable road edge on that side, waiting admission needs this much room.
+  WAITING_EDGE_ROOM = 2.4
   PREDICTION_HOLD = .3  # s; same hold as the existing selector's temporal prediction.
   MEMORY_MOVING_HOLD = 5.  # s; trial value for a vehicle still rolling alongside when last seen.
   REPORT_DELAY_BOUND = .25  # s; observed .07..22 on two segments, not a calibrated constant.
@@ -889,7 +893,8 @@ class CcncRadarMap:
       # it never moved in view. Walls and wall-side positions are excluded at selection.
       if (self.WAITING_ADMISSION and self.holding and obj.stationary and obj.slot in (1, 2) and not obj.structure and 0. < ex <= self.MEMORY_MAX_X
           and stamp - obj.born >= .5 and obj.hits >= 7 and obj.tracked >= self.WAITING_TRACKED
-          and self._body_clear(obj.slot, ex, ey) and not self._crossing(obj) and not self._band_line(ex, ey)):
+          and self._body_clear(obj.slot, ex, ey) and self._edge_room(obj.slot, ex) and not self._crossing(obj)
+          and not self._band_line(ex, ey)):
         obj.admitted = True
       if obj.motion_confirmed:
         obj.vehicle = max(.8, obj.vehicle)
@@ -1234,6 +1239,17 @@ class CcncRadarMap:
     if lane is None or lane.probability < .1 or base is None:
       return False
     return self.BODY_CLEARANCE <= (y - base if slot == 1 else base - y) <= self.BODY_FAR_SIDE
+
+  def _edge_room(self, slot, x):
+    """Whether the side's road edge leaves WAITING_EDGE_ROOM past ego's lane line (true without a usable edge)."""
+    if not self.WAITING_EDGE_ROOM:
+      return True
+    inner, edge = (1, 4) if slot == 1 else (2, 5)
+    lane = self.lanes.get(edge)
+    base, bound = interpolate(self.geometry.get(inner, []), x), interpolate(self.geometry.get(edge, []), x)
+    if lane is None or lane.probability < .1 or base is None or bound is None:
+      return True
+    return (bound - base if slot == 1 else base - bound) >= self.WAITING_EDGE_ROOM
 
   def _crossing(self, obj):
     """Reviewed video: pedestrians and cyclists on a crosswalk travel sideways with little
@@ -1706,7 +1722,7 @@ if _native is not None:
 # The methods the one-call Rust update runs in Rust (and those they call), as this module defines them.
 _FUSED_NAMES = frozenset((
   '_update_lane_reference', '_observe', '_measurements', '_associate', '_reconnect', '_stable', '_forget_lateral', '_settle',
-  '_lane', '_lane_view', '_model_changing', '_band_line', '_body_clear', '_crossing', '_vision', '_walls', '_bend',
+  '_lane', '_lane_view', '_model_changing', '_band_line', '_body_clear', '_edge_room', '_crossing', '_vision', '_walls', '_bend',
   '_bridge_walls', '_band_row', '_bands', '_in_range', '_radar_vehicle', '_approach_only', '_wall_outside', '_select',
   '_trail', '_behind_lead', '_ego_lines', '_centre', '_far_hold', '_bridge', '_bridged', '_stop_memory', 'to_ego', 'to_world'))
 _fused_methods = operator.attrgetter(*sorted(_FUSED_NAMES))

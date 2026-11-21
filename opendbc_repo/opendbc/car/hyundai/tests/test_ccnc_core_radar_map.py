@@ -858,3 +858,25 @@ def test_rust_lane_is_python_lane(seed):
   m = LaneMap()
   run(seed, [m])
   assert m.checked > 50000 and (m.corridor > 0 or seed != 1)
+
+
+@pytest.mark.parametrize('room,rule,admitted', ((2.3, 2.4, False), (2.5, 2.4, True), (2.3, 0., True)))
+def test_waiting_admission_needs_room_to_the_road_edge(monkeypatch, room, rule, admitted):
+  # 476/16: ego waits; a never-moved return 1m past ego's right line, on a shoulder whose road edge is `room` past
+  # that line. The Python and Rust maps agree on every frame; WAITING_EDGE_ROOM 0 turns the rule off.
+  monkeypatch.setattr(CcncRadarMap, 'WAITING_EDGE_ROOM', rule)
+  xs = [-8., 0., 10., 20., 30., 50., 80., 120., 210.]
+  md = N(laneLines=[N(x=xs, y=[-y] * len(xs)) for y in LANES], laneLineProbs=[.9, .95, .95, .9],
+         roadEdges=[N(x=xs, y=[-8.75] * len(xs)), N(x=xs, y=[1.75 + room] * len(xs))], leadsV3=[],
+         meta=N(desire='none', laneChangeState='off'), orientationRate=N(z=[0.]))
+  maps = [PythonMap(), RustMap()]
+  post = dict(trackId=51, dRel=5.8, yRel=-2.75, vRel=0., vLead=0., measured=True, radarSource='frontRadar',
+              motionState=1, trackState=2)
+  for frame in range(60):
+    now = 1000. + frame * DT
+    for m in maps:
+      m.update(namespace_live([dict(post)]), md, now, 0., radar_time=now - .02, yaw_rate=0., evidence={})
+    assert same(state(maps[1]), state(maps[0])), frame
+  for m in maps:
+    objects = [obj for obj in m.objects.values() if obj.slot == 2]
+    assert objects and any(obj.admitted for obj in objects) == admitted

@@ -561,6 +561,7 @@ pub(crate) fn observe_core<'py>(
             && o.hits >= 7
             && o.tracked as f64 >= k.waiting_tracked
             && view.body_clear(slot.unwrap_or(0), ex, ey, k.body_clearance, k.body_far_side)
+            && view.edge_room(slot.unwrap_or(0), ex, k.waiting_edge_room)
             && !crossing(&o, frame, k.crossing_travel)
             && !view.band_line(ex, ey, odometer, k.band_bin, k.band_memory)?
         {

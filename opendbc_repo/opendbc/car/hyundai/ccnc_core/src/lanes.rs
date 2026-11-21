@@ -343,6 +343,23 @@ impl<'py> Lanes<'py> {
         clearance <= v && v <= far_side
     }
 
+    /// `_edge_room(slot, x)`: the side's road edge leaves `room` past ego's lane line, or there is no usable edge.
+    pub fn edge_room(&self, slot: i64, x: f64, room: f64) -> bool {
+        if room == 0. {
+            return true;
+        }
+        let (inner, edge) = if slot == 1 { (1, 4) } else { (2, 5) };
+        let (Some((probability, _)), Some(base), Some(bound)) =
+            (self.lines[edge].lane, interpolate(self.points(inner), x), interpolate(self.points(edge), x))
+        else {
+            return true;
+        };
+        if probability < 0.1 {
+            return true;
+        }
+        (if slot == 1 { bound - base } else { base - bound }) >= room
+    }
+
     fn bands(&mut self) -> PyResult<&[Band]> {
         if self.bands.is_none() {
             let py = self.radar_map.py();
