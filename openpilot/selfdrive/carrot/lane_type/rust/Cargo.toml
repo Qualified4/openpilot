@@ -12,11 +12,17 @@ path = "src/lib.rs"
 default = []
 # msgq / VisionIPC through a small C++ shim over msgq_repo (src/ipc.rs, ipc/shim.cc).
 ipc = ["dep:cc"]
+# Extraction-speed candidates (aarch64): the remap through KleidiCV's C API or OpenCV's cv::remap (src/native.rs,
+# native/*.cc), linked statically from the builds tools/build_native.sh makes (STRIPNET_NATIVE_DIR).
+kleidicv = ["dep:cc"]
+opencv = ["dep:cc"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 tract-onnx = { version = "0.23.10", default-features = false }
+# Only for tract's intra-op thread pool (rayon), off unless STRIPNET_TRACT_THREADS > 1 (model::tract_threads).
+tract-linalg = { version = "=0.23.10", features = ["multithread-mm"] }
 sha2 = "0.10.9"
 anyhow = "1"
 

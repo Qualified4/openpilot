@@ -33,6 +33,13 @@ fn main() -> anyhow::Result<()> {
     if args.iter().any(|a| a == "--batch") {
         model.enable_batch()?; // both sides in one N=2 tract run
     }
+    let backend = stripnet::strip::backend();
+    if !stripnet::native::available(backend) {
+        anyhow::bail!("STRIPNET_BACKEND {backend:?} is not compiled into this binary");
+    }
+    eprintln!("stripnet_replay: remap rule {:?}, backend {backend:?}, simd {}, map cache {}, tract threads {}, batch {}",
+              stripnet::strip::remap_rule(), stripnet::strip::simd(), stripnet::strip::map_cache_enabled(),
+              stripnet::model::tract_threads(), args.iter().any(|a| a == "--batch"));
     let mut recogniser = Recogniser::new(model);
     recogniser.threads = threads;
     recogniser.record = !args.iter().any(|a| a == "--no-record"); // strip sha256 / logits per side
@@ -81,8 +88,11 @@ fn main() -> anyhow::Result<()> {
                         let diag: Vec<_> = daemon.recogniser.last.iter().map(|d| d.as_ref().map(|d| json!({
                             "strip": d.strip_sha, "typeLogits": d.type_logits, "colorLogits": d.color_logits}))).collect();
                         let t = daemon.recogniser.timing;
+                let stages_ms = [t.stages.rows, t.stages.maps, t.stages.remap, t.stages.reduce].map(|v| v as f64 / 1e6);
                         json!({"status": "published", "frameId": model.frame_id, "packet": packet, "diag": diag,
-                               "wallMs": wall_ms, "cpuMs": cpu_ms, "extractMs": t.extract_ms, "inferMs": t.infer_ms})
+                               "wallMs": wall_ms, "cpuMs": cpu_ms, "extractMs": t.extract_ms, "inferMs": t.infer_ms,
+                               "stagesMs": stages_ms,
+                               "srcRows": t.stages.src_rows, "cacheHits": t.stages.cache_hits})
                     }
                     Step::Mismatch => json!({"status": "frame_mismatch", "frameId": model.frame_id}),
                     Step::Stale => json!({"status": "stale_inputs", "frameId": model.frame_id}),
@@ -94,6 +104,11 @@ fn main() -> anyhow::Result<()> {
             }
             t => anyhow::bail!("unknown record {t}"),
         }
+    }
+    out.flush()?;
+    let fb = stripnet::native::fallbacks();
+    if fb > 0 {
+        eprintln!("stripnet_replay: {fb} native remap calls fell back to the Rust remap");
     }
     Ok(())
 }

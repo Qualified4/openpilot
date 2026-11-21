@@ -11,6 +11,19 @@ use tract_onnx::prelude::*;
 
 use crate::strip::{StripShape, DEFAULT_STRIP};
 
+/// tract's intra-op threads (its matrix products split over a rayon pool shared by both sides): STRIPNET_TRACT_THREADS=n,
+/// unset or 1 = single-threaded (each side's inference on its own thread only). Set once, before the first run.
+pub fn tract_threads() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        let n = std::env::var("STRIPNET_TRACT_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(1usize);
+        if n > 1 {
+            tract_linalg::multithread::set_default_executor(tract_linalg::multithread::Executor::multithread(n));
+        }
+        n
+    })
+}
+
 pub const TYPES_V4: [&str; 5] = ["dashed", "solid", "dbl_near", "dbl_far", "unknown"];
 pub const COLORS_V4: [&str; 3] = ["white", "yellow", "blue"];
 
@@ -110,6 +123,7 @@ fn argmax(p: &[f64]) -> usize {
 
 impl StripModel {
     pub fn load(directory: &Path, name: &str) -> anyhow::Result<Self> {
+        tract_threads();
         let manifest: Manifest = serde_json::from_slice(&std::fs::read(directory.join(format!("{name}.json")))?)?;
         let data = std::fs::read(directory.join(format!("{name}.onnx")))?;
         let digest = format!("{:x}", Sha256::digest(&data));

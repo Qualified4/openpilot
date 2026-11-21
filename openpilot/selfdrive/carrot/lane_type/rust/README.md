@@ -12,7 +12,8 @@ the device still runs the Python process (no process_config entry yet).
 | `display` | `display.DisplayPolicy.confirm` |
 | `daemon` | `main`'s per-modelV2 body: SubMaster state, FrameBuffer, odometer, stale / error / drop handling, `packet` |
 | `capnp`, `messages` | schema-less reader of the subscribed cereal fields (positions checked against `fixtures/schema_offsets.json`) |
-| `ipc` (feature `ipc`) | msgq / VisionIPC through `ipc/shim.cc` over `msgq_repo` — the only FFI |
+| `ipc` (feature `ipc`) | msgq / VisionIPC through `ipc/shim.cc` over `msgq_repo` — the only FFI in the default build |
+| `native` (features `kleidicv`, `opencv`) | extraction-speed candidates: the KleidiCV-rule remap through `kleidicv_remap_f32_u8` or `cv::remap` (OpenCV + KleidiCV HAL), static, aarch64 only |
 
 Binaries: `stripnet_replay` (stdin replay for `tools/lane_type/stripnet_rust_parity.py`), `stripnet_daemon` (feature `ipc`).
 
@@ -23,3 +24,42 @@ python tools/lane_type/stripnet_rust_parity.py --rust <target/release/stripnet_r
 python openpilot/selfdrive/carrot/lane_type/rust/tools/schema_offsets.py > openpilot/selfdrive/carrot/lane_type/rust/fixtures/schema_offsets.json
 cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.35   # cross build (zig from pip: ziglang, cargo-zigbuild)
 ```
+
+## Speed switches (all bit-identical; environment, read once per process)
+
+| switch | effect | default |
+|---|---|---|
+| `STRIPNET_SIMD=0\|1` | remap SIMD: aarch64 NEON (KleidiCV rule), x86_64 AVX2 (OpenCV rule, when the CPU has it) | `strip::SIMD_DEFAULT` |
+| `STRIPNET_MAP_CACHE=1` | reuse a side's rows / maps while line x/y/z, projection (rpy, K), frame height and strip shape are bit-identical; any changed bit is a miss | off |
+| `--batch` (replay) | both sides in one tract N=2 run | off |
+| `STRIPNET_TRACT_THREADS=n` | tract intra-op rayon pool of n threads | 1 |
+| `STRIPNET_BACKEND=rust\|kleidicv\|opencv` | who runs the KleidiCV-rule remap on aarch64 (features `kleidicv` / `opencv`) | rust |
+| `STRIPNET_CV_THREADS=n` | cv::setNumThreads for the `opencv` backend | 1 |
+| `STRIPNET_REMAP=opencv\|kleidicv\|kleidicv-unfused` | which rounding rule (OpenCV generic x86 vs device KleidiCV) | per arch |
+
+`stripnet_replay` prints the stage times per modelV2 (`stagesMs`: rows, maps, remap, reduce = 4:1 mean + row resize +
+float32 output, summed over both sides) and `cacheHits`.
+
+### KleidiCV / OpenCV backends (aarch64)
+
+The device's cv2 (`opencv-python-headless` 4.13.0.92) is one `cv2.abi3.so` exporting only `PyInit_cv2`
+(`-fvisibility=hidden`, stripped), so it cannot be linked or dlopen'd for `cv::remap`. `tools/build_native.sh` builds the
+same sources (KleidiCV 0.7.0, OpenCV 4.13.0 core + imgproc with the KleidiCV HAL) as static libraries with zig; the
+binary then needs no new `.so` on the device.
+
+```sh
+ZIG_PYTHON=<python with ziglang> tools/build_native.sh target/native-aarch64      # ~10 min with -j2 (cmake, ninja from pip)
+STRIPNET_NATIVE_DIR=$PWD/target/native-aarch64 cargo zigbuild -j2 --release --target aarch64-unknown-linux-gnu.2.35 \
+    --bin stripnet_replay --features kleidicv,opencv
+```
+
+### Combo bench (M8 and device)
+
+`tools/combo_bench.sh m8|device [all|parity|time|summary]` runs the table base / simd / cache / batch / mt2 / mt4 / sc
+(simd+cache) / sc_b (+batch), and on the device kc / cv (backends), in lockstep with the Python path: one parity run
+(py, strips and logits recorded) and 3 timing repeats with the engine order rotated; `tools/extract_summary.py OUT`
+gives median / p95 / p99 (first 20 modelV2 of each segment dropped), stage medians, RSS and CPU per modelV2.
+Device: copy `stripnet_replay` (features kleidicv,opencv), `tools/lane_type/stripnet_rust_parity.py`,
+`tools/extract_summary.py`, `tools/combo_bench.sh` and the two segments (`seg/<route>/<route>--<n>--{rlog.zst,fcamera.mp4}`)
+to `/data/tmp/stripnet_bench`, run `bash combo_bench.sh device all` parked (it checks IsOnroad before and after every run;
+taskset -c 0-3, nice 10; `CPUS=4-7` for the big cores), then `rm -rf /data/tmp/stripnet_bench`.

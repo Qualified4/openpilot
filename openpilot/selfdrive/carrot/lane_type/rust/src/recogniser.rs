@@ -37,6 +37,8 @@ pub struct Frame {
 pub struct Timing {
     pub extract_ms: f64,
     pub infer_ms: f64,
+    /// Extraction stages summed over the sides (both threads' wall time, so it can exceed extract_ms).
+    pub stages: strip::Stages,
 }
 
 pub struct Recogniser {
@@ -51,6 +53,9 @@ pub struct Recogniser {
     lc_fresh: [[bool; 2]; 2],
     dist: Vec<f64>,
     pub threads: usize,
+    /// Reuse each side's rows / maps while the geometry inputs are bit-identical (strip::MapCache).
+    pub map_cache_on: bool,
+    map_cache: [strip::MapCache; 2],
     pub timing: Timing,
     /// Replay diagnostics: keep each inferred side's strip sha256 (first 16 hex) and logits.
     pub record: bool,
@@ -87,6 +92,8 @@ impl Recogniser {
             lc_fresh: [[false; 2]; 2],
             dist: strip::distances(),
             threads: 2,
+            map_cache_on: strip::map_cache_enabled(),
+            map_cache: Default::default(),
             timing: Timing::default(),
             record: false,
             last: [None, None],
@@ -221,17 +228,34 @@ impl Recogniser {
         let shape = self.model.strip;
         let mirror = self.model.mirror_right;
         let dist = &self.dist;
-        let extract = |side: usize| strip::extract(image, &frame.lines[side], &m, shape, mirror && side == 1, dist);
+        let cache_on = self.map_cache_on;
+        let extract = |side: usize, cache: &mut strip::MapCache| {
+            let mut st = strip::Stages::default();
+            let s = strip::extract_cached(image, &frame.lines[side], &m, shape, mirror && side == 1, dist, &mut st,
+                                          cache_on.then_some(cache));
+            (s, st)
+        };
         // Both sides in parallel (2 threads, as the Python daemon's cv2.setNumThreads(2)).
-        let mut strips: Vec<(usize, Option<Vec<f32>>)> = if self.threads > 1 && eligible.len() == 2 {
+        let threads = self.threads;
+        let caches = &mut self.map_cache;
+        let extracted: Vec<(usize, (Option<Vec<f32>>, strip::Stages))> = if threads > 1 && eligible.len() == 2 {
+            let [c0, c1] = caches; // eligible == [0, 1]
             std::thread::scope(|s| {
-                let h = s.spawn(|| extract(eligible[1]));
-                let a = extract(eligible[0]);
-                vec![(eligible[0], a), (eligible[1], h.join().unwrap())]
+                let h = s.spawn(|| extract(1, c1));
+                let a = extract(0, c0);
+                vec![(0, a), (1, h.join().unwrap())]
             })
         } else {
-            eligible.iter().map(|&s| (s, extract(s))).collect()
+            eligible.iter().map(|&s| (s, extract(s, &mut caches[s]))).collect()
         };
+        let mut stages = strip::Stages::default();
+        let mut strips: Vec<(usize, Option<Vec<f32>>)> = extracted
+            .into_iter()
+            .map(|(side, (s, st))| {
+                stages.add(&st);
+                (side, s)
+            })
+            .collect();
         strips.retain(|(side, s)| {
             if s.is_none() {
                 out[*side] = Some(filter_input("unknown", "unknown", 0., 0., frame.stamp, false, "invalid_lane_geometry"));
@@ -269,6 +293,7 @@ impl Recogniser {
         self.timing = Timing {
             extract_ms: (infer_start - extract_start).as_nanos() as f64 / 1e6,
             infer_ms: (now - infer_start).as_nanos() as f64 / 1e6,
+            stages,
         };
         let mut models: [Option<Decision>; 2] = [None, None];
         self.last = [None, None];

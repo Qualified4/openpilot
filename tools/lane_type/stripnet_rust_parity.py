@@ -401,7 +401,7 @@ def run_engines(spec, engines, limit, rows, totals, diffs_file):
       if d:
         seg_totals['frames_with_diff'] += 1
         diffs_file.write(json.dumps({'segment': spec, 'frameId': int(e.modelV2.frameId), 'diffs': d}, default=str) + '\n')
-    for other in ('rsb',):
+    for other in [n for n in res if n not in ('py', 'rs')]:  # every other engine against py, keys prefixed by its name
       if 'py' in res and other in res:
         sub = Counter()
         if compare(res['py'], res[other], sub):
@@ -412,7 +412,8 @@ def run_engines(spec, engines, limit, rows, totals, diffs_file):
     row = {'segment': spec, 'index': models}
     for name, r in res.items():
       if r['status'] == 'published':
-        row[name] = {'wall': r['wallMs'], 'extract': r['extractMs'], 'infer': r['inferMs'],
+        row[name] = {'wall': r['wallMs'], 'extract': r['extractMs'], 'infer': r['inferMs'], 'cpu': r.get('cpuMs'),
+                     'stages': r.get('stagesMs'), 'srcRows': r.get('srcRows'), 'cacheHits': r.get('cacheHits'),
                      'inferred': sum(x is not None for x in r['diag']) if r.get('diag') else None,
                      'strips': [x['strip'] for x in r.get('diag') or [] if x is not None]}
     row['frameId'] = int(e.modelV2.frameId)

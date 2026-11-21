@@ -217,9 +217,22 @@ fn remap_weights() -> [[i32; 4]; 1024] {
 #[allow(clippy::too_many_arguments)]
 fn remap(plane: &[u8], width: usize, height: usize, stride: usize, channel: usize, step: usize, mx: &[f32], my_row: &[f32],
          n: usize, weights: &[[i32; 4]; 1024], out: &mut [u8]) {
+    #[cfg(target_arch = "x86_64")]
+    if simd() && std::is_x86_feature_detected!("avx2") {
+        // SAFETY: AVX2 is present (checked above); every gather is bounds-checked per row inside.
+        unsafe { remap_avx2(plane, width, height, stride, channel, step, mx, my_row, n, weights, out) };
+        return;
+    }
+    remap_scalar(plane, width, height, stride, channel, step, mx, my_row, n, weights, out, 0..my_row.len())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn remap_scalar(plane: &[u8], width: usize, height: usize, stride: usize, channel: usize, step: usize, mx: &[f32], my_row: &[f32],
+                n: usize, weights: &[[i32; 4]; 1024], out: &mut [u8], rows: std::ops::Range<usize>) {
     let (w1, h1) = (width as i32 - 1, height as i32 - 1);
     let px = |x: i32, y: i32| plane[y as usize * stride + x as usize * step + channel] as i32;
-    for (r, &my) in my_row.iter().enumerate() {
+    for r in rows {
+        let my = my_row[r];
         let yy = (my * TAB_SIZE as f32).round_ties_even() as i32;
         let (y0, fy) = (yy >> TAB_BITS, yy & (TAB_SIZE - 1));
         let row = &mx[r * n..(r + 1) * n];
@@ -234,6 +247,95 @@ fn remap(plane: &[u8], width: usize, height: usize, stride: usize, channel: usiz
             dst[j] = ((v + (1 << (COEF_BITS - 1))) >> COEF_BITS).clamp(0, 255) as u8;
         }
     }
+}
+
+/// remap() with AVX2, 8 columns at a time: the same 1/32 rounding (cvtps_epi32 rounds to nearest even, as
+/// round_ties_even) and integer weights computed as (32-fx)(32-fy)*32 etc. — the remap_weights() entries exactly.
+/// Chunks with a coordinate beyond +-1e6 or NaN (where `as i32` saturates) and rows whose 4-byte gathers could pass
+/// the end of the plane go through the scalar form.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn remap_avx2(plane: &[u8], width: usize, height: usize, stride: usize, channel: usize, step: usize, mx: &[f32], my_row: &[f32],
+                     n: usize, weights: &[[i32; 4]; 1024], out: &mut [u8]) {
+    use std::arch::x86_64::*;
+    let (w1, h1) = (width as i32 - 1, height as i32 - 1);
+    let full = n / 8 * 8;
+    let v32 = _mm256_set1_ps(TAB_SIZE as f32);
+    let lim = _mm256_set1_ps(1e6);
+    let absmask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7fff_ffff));
+    let (zero, vw1, one) = (_mm256_setzero_si256(), _mm256_set1_epi32(w1), _mm256_set1_epi32(1));
+    let (mask31, c32, byte) = (_mm256_set1_epi32(TAB_SIZE - 1), _mm256_set1_epi32(TAB_SIZE), _mm256_set1_epi32(0xff));
+    let vstep = _mm256_set1_epi32(step as i32);
+    let half = _mm256_set1_epi32(1 << (COEF_BITS - 1));
+    for (r, &my) in my_row.iter().enumerate() {
+        let yy = (my * TAB_SIZE as f32).round_ties_even() as i32;
+        let (y0, fy) = (yy >> TAB_BITS, yy & (TAB_SIZE - 1));
+        let (ya, yb) = (y0.clamp(0, h1) as usize, (y0 + 1).clamp(0, h1) as usize);
+        let (ra, rb) = (ya * stride + channel, yb * stride + channel);
+        if ra.max(rb) + w1 as usize * step + 4 > plane.len() || stride * height > i32::MAX as usize {
+            remap_scalar(plane, width, height, stride, channel, step, mx, my_row, n, weights, out, r..r + 1);
+            continue;
+        }
+        let vfy = _mm256_set1_epi32(fy);
+        let vfy1 = _mm256_sub_epi32(c32, vfy);
+        let (pa, pb) = (plane.as_ptr().add(ra) as *const i32, plane.as_ptr().add(rb) as *const i32);
+        let row = &mx[r * n..(r + 1) * n];
+        let dst = &mut out[r * n..(r + 1) * n];
+        let mut j = 0;
+        while j < full {
+            let m = _mm256_loadu_ps(row.as_ptr().add(j));
+            let ok = _mm256_movemask_ps(_mm256_cmp_ps::<_CMP_LE_OQ>(_mm256_and_ps(m, absmask), lim));
+            if ok != 0xff {
+                for (k, d) in dst[j..j + 8].iter_mut().enumerate() {
+                    *d = remap_px(plane, stride, channel, step, w1, ya, yb, fy, row[j + k], weights);
+                }
+                j += 8;
+                continue;
+            }
+            let xx = _mm256_cvtps_epi32(_mm256_mul_ps(m, v32));
+            let x0 = _mm256_srai_epi32::<TAB_BITS>(xx);
+            let fx = _mm256_and_si256(xx, mask31);
+            let xa = _mm256_min_epi32(_mm256_max_epi32(x0, zero), vw1);
+            let xb = _mm256_min_epi32(_mm256_max_epi32(_mm256_add_epi32(x0, one), zero), vw1);
+            let (oa, ob) = (_mm256_mullo_epi32(xa, vstep), _mm256_mullo_epi32(xb, vstep));
+            let p00 = _mm256_and_si256(_mm256_i32gather_epi32::<1>(pa, oa), byte);
+            let p01 = _mm256_and_si256(_mm256_i32gather_epi32::<1>(pa, ob), byte);
+            let p10 = _mm256_and_si256(_mm256_i32gather_epi32::<1>(pb, oa), byte);
+            let p11 = _mm256_and_si256(_mm256_i32gather_epi32::<1>(pb, ob), byte);
+            let fx1 = _mm256_sub_epi32(c32, fx);
+            let w0 = _mm256_slli_epi32::<5>(_mm256_mullo_epi32(fx1, vfy1));
+            let w1v = _mm256_slli_epi32::<5>(_mm256_mullo_epi32(fx, vfy1));
+            let w2 = _mm256_slli_epi32::<5>(_mm256_mullo_epi32(fx1, vfy));
+            let w3 = _mm256_slli_epi32::<5>(_mm256_mullo_epi32(fx, vfy));
+            let v = _mm256_add_epi32(_mm256_add_epi32(_mm256_mullo_epi32(p00, w0), _mm256_mullo_epi32(p01, w1v)),
+                                     _mm256_add_epi32(_mm256_mullo_epi32(p10, w2), _mm256_mullo_epi32(p11, w3)));
+            let v = _mm256_srai_epi32::<COEF_BITS>(_mm256_add_epi32(v, half));
+            let mut lanes = [0i32; 8];
+            _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, v);
+            for (d, &l) in dst[j..j + 8].iter_mut().zip(&lanes) {
+                *d = l.clamp(0, 255) as u8;
+            }
+            j += 8;
+        }
+        for jj in full..n {
+            dst[jj] = remap_px(plane, stride, channel, step, w1, ya, yb, fy, row[jj], weights);
+        }
+    }
+}
+
+/// One output pixel of remap() at the clamped rows ya / yb (the AVX2 path's fallback).
+#[allow(clippy::too_many_arguments, dead_code)]
+#[inline]
+fn remap_px(plane: &[u8], stride: usize, channel: usize, step: usize, w1: i32, ya: usize, yb: usize, fy: i32, m: f32,
+            weights: &[[i32; 4]; 1024]) -> u8 {
+    let xx = (m * TAB_SIZE as f32).round_ties_even() as i32;
+    let (x0, fx) = (xx >> TAB_BITS, xx & (TAB_SIZE - 1));
+    let w = &weights[(fy * TAB_SIZE + fx) as usize];
+    let (xa, xb) = (x0.clamp(0, w1) as usize, (x0 + 1).clamp(0, w1) as usize);
+    let px = |x: usize, y: usize| plane[y * stride + x * step + channel] as i32;
+    let v = px(xa, ya) * w[0] + px(xb, ya) * w[1] + px(xa, yb) * w[2] + px(xb, yb) * w[3];
+    ((v + (1 << (COEF_BITS - 1))) >> COEF_BITS).clamp(0, 255) as u8
 }
 
 /// cv2.resize INTER_AREA's per-axis table (computeResizeAreaTab): (dst index, src index, weight).
@@ -322,9 +424,104 @@ pub fn resize_rows(src: &[u8], src_rows: usize, width: usize, dst_rows: usize) -
 
 /// The 3 x rows x cols float32 strip of one line (`mirror`: columns reversed), or None without usable geometry.
 pub fn extract(frame: &Nv12, line: &LineF64, m: &Mat3, shape: StripShape, mirror: bool, dist: &[f64]) -> Option<Vec<f32>> {
-    let r = rows(line, m, frame.height, dist)?;
+    extract_timed(frame, line, m, shape, mirror, dist, &mut Stages::default())
+}
+
+/// Wall time of the extraction stages of one strip, in nanoseconds (added to `st`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Stages {
+    /// rows(): projecting the line at the 776 distances and the per-row interp.
+    pub rows: u64,
+    /// maps(): the per-row edge projections and the float32 column maps (luma and chroma).
+    pub maps: u64,
+    /// The luma and CbCr remaps (the backend's work).
+    pub remap: u64,
+    /// The 4:1 column mean, the row resize and the float32 (mirrored) output.
+    pub reduce: u64,
+    /// Source rows sampled (strip height before the resize).
+    pub src_rows: u64,
+    /// Strips whose rows / maps came from the MapCache.
+    pub cache_hits: u64,
+}
+
+/// The last rows()/maps() result of one side, reused while its inputs are bit-identical: the lane line's x / y / z,
+/// the projection matrix (calibration rpy and intrinsics), the frame height and the strip shape (the distances are a
+/// constant). Any change in any of these bits is a miss and replaces the entry. STRIPNET_MAP_CACHE=1 turns it on.
+#[derive(Default)]
+pub struct MapCache {
+    key: Vec<u64>,
+    scratch: Vec<u64>,
+    maps: Option<Maps>,
+    filled: bool,
+}
+
+pub fn map_cache_enabled() -> bool {
+    static C: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *C.get_or_init(|| std::env::var("STRIPNET_MAP_CACHE").as_deref() == Ok("1"))
+}
+
+fn cache_key(line: &LineF64, m: &Mat3, height: usize, shape: StripShape, key: &mut Vec<u64>) {
+    key.clear();
+    key.extend([height as u64, shape.half_m.to_bits(), shape.cols as u64, shape.rows as u64]);
+    key.extend(m.iter().flatten().map(|v| v.to_bits()));
+    for v in [&line.x, &line.y, &line.z] {
+        key.push(v.len() as u64);
+        key.extend(v.iter().map(|x| x.to_bits()));
+    }
+}
+
+impl Stages {
+    pub fn add(&mut self, o: &Stages) {
+        self.rows += o.rows;
+        self.maps += o.maps;
+        self.remap += o.remap;
+        self.reduce += o.reduce;
+        self.src_rows += o.src_rows;
+        self.cache_hits += o.cache_hits;
+    }
+}
+
+fn ns(t: std::time::Instant) -> u64 {
+    t.elapsed().as_nanos() as u64
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn extract_timed(frame: &Nv12, line: &LineF64, m: &Mat3, shape: StripShape, mirror: bool, dist: &[f64],
+                     st: &mut Stages) -> Option<Vec<f32>> {
+    extract_cached(frame, line, m, shape, mirror, dist, st, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn extract_cached(frame: &Nv12, line: &LineF64, m: &Mat3, shape: StripShape, mirror: bool, dist: &[f64],
+                      st: &mut Stages, cache: Option<&mut MapCache>) -> Option<Vec<f32>> {
+    if let Some(c) = cache {
+        let t = std::time::Instant::now();
+        let mut key = std::mem::take(&mut c.scratch);
+        cache_key(line, m, frame.height, shape, &mut key);
+        let hit = c.filled && key == c.key;
+        if hit {
+            st.cache_hits += 1;
+            st.maps += ns(t);
+        } else {
+            let r = rows(line, m, frame.height, dist);
+            st.rows += ns(t);
+            let t = std::time::Instant::now();
+            c.maps = r.map(|r| maps(&r, m, shape.half_m, shape.cols));
+            c.filled = true;
+            st.maps += ns(t);
+        }
+        c.scratch = std::mem::replace(&mut c.key, key);
+        let g = c.maps.as_ref()?;
+        return Some(sample_timed(frame, g, shape, mirror, remap_rule(), backend(), st));
+    }
+    let t = std::time::Instant::now();
+    let r = rows(line, m, frame.height, dist);
+    st.rows += ns(t);
+    let r = r?;
+    let t = std::time::Instant::now();
     let g = maps(&r, m, shape.half_m, shape.cols);
-    Some(sample(frame, &g, shape, mirror))
+    st.maps += ns(t);
+    Some(sample_timed(frame, &g, shape, mirror, remap_rule(), backend(), st))
 }
 
 /// Which OpenCV remap the Python path meets: the generic 8-bit fixed-point one (x86 / M8 cv2), or KleidiCV's float
@@ -349,6 +546,40 @@ pub fn remap_rule() -> RemapRule {
     })
 }
 
+/// Whether the remaps use SIMD: NEON for the KleidiCV rule (aarch64), AVX2 for the OpenCV rule (x86_64, when the CPU
+/// has it). Both are bit-identical to the scalar forms (tests `neon_matches_scalar`, `avx2_matches_scalar`).
+/// STRIPNET_SIMD=0|1; unset: the build default (`SIMD_DEFAULT`).
+pub fn simd() -> bool {
+    static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *S.get_or_init(|| match std::env::var("STRIPNET_SIMD").as_deref() {
+        Ok("0") => false,
+        Ok("1") => true,
+        _ => SIMD_DEFAULT && std::env::var_os("STRIPNET_SCALAR").is_none(),
+    })
+}
+
+pub const SIMD_DEFAULT: bool = cfg!(target_arch = "aarch64");
+
+/// Who computes the KleidiCV-rule remap (RemapRule::KleidiCv): this crate's NEON / scalar code, KleidiCV's own
+/// `kleidicv_remap_f32_u8` linked statically (feature `kleidicv`), or OpenCV's `cv::remap` built with the KleidiCV HAL
+/// (feature `opencv`, the call cv2.remap makes on the device). STRIPNET_BACKEND=rust|kleidicv|opencv; default rust.
+/// A backend that is not compiled in, or that returns an error, falls back to rust (counted in `native::fallbacks`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    Rust,
+    KleidiCv,
+    OpenCv,
+}
+
+pub fn backend() -> Backend {
+    static B: std::sync::OnceLock<Backend> = std::sync::OnceLock::new();
+    *B.get_or_init(|| match std::env::var("STRIPNET_BACKEND").as_deref() {
+        Ok("kleidicv") => Backend::KleidiCv,
+        Ok("opencv") => Backend::OpenCv,
+        _ => Backend::Rust,
+    })
+}
+
 /// KleidiCV remap_f32 (u8, INTER_LINEAR, BORDER_REPLICATE) of an image with `outs.len()` interleaved channels (1 or 2;
 /// one set of coordinates for all of them, as KleidiCV's 2-channel path): x0 = min(floor(x) saturated to u32, xmax),
 /// x1 = x0 + 1 only when x >= 0 and x0 < xmax; frac = x - floor(x); pixels as f32; line0 = a + (b - a) * xfrac,
@@ -358,7 +589,7 @@ pub fn remap_rule() -> RemapRule {
 fn remap_kleidi(plane: &[u8], width: usize, height: usize, stride: usize, mx: &[f32], my_row: &[f32], n: usize, fused: bool,
                 outs: &mut [&mut [u8]]) {
     #[cfg(target_arch = "aarch64")]
-    if std::env::var_os("STRIPNET_SCALAR").is_none() {
+    if simd() {
         // SAFETY: NEON is part of the aarch64 baseline; all indices are bounds-checked inside.
         unsafe { remap_kleidi_neon(plane, width, height, stride, mx, my_row, n, fused, outs) };
         return;
@@ -459,7 +690,17 @@ pub fn sample(frame: &Nv12, g: &Maps, shape: StripShape, mirror: bool) -> Vec<f3
 }
 
 pub fn sample_with(frame: &Nv12, g: &Maps, shape: StripShape, mirror: bool, rule: RemapRule) -> Vec<f32> {
-    let weights = remap_weights();
+    sample_timed(frame, g, shape, mirror, rule, backend(), &mut Stages::default())
+}
+
+fn weights() -> &'static [[i32; 4]; 1024] {
+    static W: std::sync::OnceLock<[[i32; 4]; 1024]> = std::sync::OnceLock::new();
+    W.get_or_init(remap_weights)
+}
+
+pub fn sample_timed(frame: &Nv12, g: &Maps, shape: StripShape, mirror: bool, rule: RemapRule, backend: Backend,
+                    st: &mut Stages) -> Vec<f32> {
+    let t = std::time::Instant::now();
     let (rows, n, cols) = (g.rows, g.n, shape.cols);
     let my: Vec<f32> = g.ys.iter().map(|&y| y as f32).collect();
     let my_uv: Vec<f32> = my.iter().map(|&v| v * 0.5).collect();
@@ -468,19 +709,31 @@ pub fn sample_with(frame: &Nv12, g: &Maps, shape: StripShape, mirror: bool, rule
     let (cw, ch) = (frame.width / 2, frame.height / 2);
     match rule {
         RemapRule::OpenCv => {
-            remap(frame.y, frame.width, frame.height, frame.stride, 0, 1, &g.mx, &my, n, &weights, lum);
-            remap(frame.uv, cw, ch, frame.stride, 0, 2, &g.mx_uv, &my_uv, n, &weights, cb);
-            remap(frame.uv, cw, ch, frame.stride, 1, 2, &g.mx_uv, &my_uv, n, &weights, cr);
+            let w = weights();
+            remap(frame.y, frame.width, frame.height, frame.stride, 0, 1, &g.mx, &my, n, w, lum);
+            remap(frame.uv, cw, ch, frame.stride, 0, 2, &g.mx_uv, &my_uv, n, w, cb);
+            remap(frame.uv, cw, ch, frame.stride, 1, 2, &g.mx_uv, &my_uv, n, w, cr);
         }
         RemapRule::KleidiCv { fused } => {
-            remap_kleidi(frame.y, frame.width, frame.height, frame.stride, &g.mx, &my, n, fused, &mut [lum]);
-            remap_kleidi(frame.uv, cw, ch, frame.stride, &g.mx_uv, &my_uv, n, fused, &mut [cb, cr]);
+            let native = backend != Backend::Rust
+                && crate::native::remap(backend, frame.y, frame.width, frame.height, frame.stride, &g.mx, &my, n, &mut [lum])
+                && crate::native::remap(backend, frame.uv, cw, ch, frame.stride, &g.mx_uv, &my_uv, n, &mut [cb, cr]);
+            if !native {
+                remap_kleidi(frame.y, frame.width, frame.height, frame.stride, &g.mx, &my, n, fused, &mut [lum]);
+                remap_kleidi(frame.uv, cw, ch, frame.stride, &g.mx_uv, &my_uv, n, fused, &mut [cb, cr]);
+            }
         }
     }
+    st.remap += ns(t);
+    st.src_rows += rows as u64;
+    let t = std::time::Instant::now();
     let mut out = vec![0f32; 3 * shape.rows * cols];
+    let mut boxed = vec![0u8; rows * cols];
     for (c, plane) in planes.iter().enumerate() {
         // Exact 4:1 column box mean truncated to uint8.
-        let boxed: Vec<u8> = plane.chunks_exact(SUB).map(|q| ((q[0] as u32 + q[1] as u32 + q[2] as u32 + q[3] as u32) >> 2) as u8).collect();
+        for (o, q) in boxed.iter_mut().zip(plane.chunks_exact(SUB)) {
+            *o = ((q[0] as u32 + q[1] as u32 + q[2] as u32 + q[3] as u32) >> 2) as u8;
+        }
         let resized = resize_rows(&boxed, rows, cols, shape.rows);
         let dst = &mut out[c * shape.rows * cols..(c + 1) * shape.rows * cols];
         for (row_out, row_in) in dst.chunks_exact_mut(cols).zip(resized.chunks_exact(cols)) {
@@ -495,6 +748,7 @@ pub fn sample_with(frame: &Nv12, g: &Maps, shape: StripShape, mirror: bool, rule
             }
         }
     }
+    st.reduce += ns(t);
     out
 }
 
@@ -544,6 +798,31 @@ mod tests {
                 let mut rb: Vec<&mut [u8]> = b.iter_mut().map(|v| v.as_mut_slice()).collect();
                 remap_kleidi_scalar(&plane, w, h, w * ch, &mx2, &my, n, fused, &mut rb, 0);
                 assert_eq!(a, b, "fused {fused} channels {ch}");
+            }
+        }
+    }
+
+    /// The OpenCV-rule remap's AVX2 path against its scalar form (x86_64 with AVX2; elsewhere nothing to compare).
+    #[test]
+    fn avx2_matches_scalar() {
+        #[cfg(target_arch = "x86_64")]
+        if std::is_x86_feature_detected!("avx2") {
+            let (w, h) = (61usize, 37usize);
+            let plane: Vec<u8> = (0..w * h * 2).map(|i| ((i * 7919) % 256) as u8).collect();
+            let n = 29;
+            let mut seed = 777u32;
+            let mut rnd = || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); seed as f32 / u32::MAX as f32 };
+            let my: Vec<f32> = vec![-2.5, -0.25, 0., 3.5, 17.25, 35.75, 36., 36.5, 50., 17.53125];
+            let rows = my.len();
+            let mut mx: Vec<f32> = (0..rows * n).map(|_| rnd() * 40. - 4. + 0.515625).collect();
+            mx[3] = 30.5; mx[4] = -0.5; mx[5] = 59.999; mx[6] = 60.; mx[7] = 61.5; mx[8] = 0.015625; mx[9] = f32::NAN;
+            mx[12] = 3e9; mx[13] = -3e9; mx[40] = 0.046875; mx[41] = 0.078125;
+            let wt = remap_weights();
+            for (ch, step) in [(0usize, 1usize), (0, 2), (1, 2)] {
+                let (mut a, mut b) = (vec![0u8; rows * n], vec![0u8; rows * n]);
+                unsafe { remap_avx2(&plane, w, h, w * step, ch, step, &mx, &my, n, &wt, &mut a) };
+                remap_scalar(&plane, w, h, w * step, ch, step, &mx, &my, n, &wt, &mut b, 0..rows);
+                assert_eq!(a, b, "channel {ch} step {step}");
             }
         }
     }
