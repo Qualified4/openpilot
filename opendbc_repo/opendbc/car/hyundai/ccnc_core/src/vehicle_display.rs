@@ -14,7 +14,7 @@ use crate::model_v2::{
 };
 use crate::observe::{self, Frame};
 use crate::pymath::{py_max, py_min, py_sum};
-use crate::{radar_map, rear, update};
+use crate::{pos, radar_map, rear, update};
 
 macro_rules! get {
     ($object:expr, $name:literal) => {
@@ -501,10 +501,12 @@ fn deadband(value: f64, center: f64, radius: f64, degree: f64) -> f64 {
     }
 }
 
+/// `assigned` replaces the map's selection (display modes 1 and 2).
 fn draw_front<'py>(
     map: &Bound<'py, PyAny>,
     state: &Bound<'py, PyAny>,
     values: &Bound<'py, PyDict>,
+    assigned: Option<[Option<i64>; 3]>,
 ) -> PyResult<()> {
     let py = map.py();
     let objects = get!(map, "objects").cast_into::<PyDict>()?;
@@ -521,7 +523,10 @@ fn draw_front<'py>(
     ];
     let centers = [get!(state, "lf_center"), get!(state, "rf_center")];
     for (slot, [distance, lateral, detect]) in FRONT_FIELDS.into_iter().enumerate() {
-        let key = selected.get_item(slot)?;
+        let key = match assigned {
+            Some(keys) => keys[slot].into_pyobject(py)?.into_any(),
+            None => selected.get_item(slot)?,
+        };
         let pair = if usable {
             objects.get_item(&key)?.zip(local.get_item(&key)?)
         } else {
@@ -652,7 +657,28 @@ fn update_map_display<'py>(
                 display_filter::fixed(filter, PyFloat::new(py, center).as_any())?;
             }
         }
-        draw_front(&map, state, &values)?;
+        let mode = pos::mode(state)?;
+        if mode != 0 {
+            // DESIGN 10: the position-correction path and the lateral hysteresis are bypassed in modes 1 and 2.
+            let (assigned, drawn) = pos::assign_and_draw(&map, cs, state, mode)?;
+            draw_front(&map, state, &values, Some(assigned))?;
+            for (slot, [_, lateral, detect]) in FRONT_FIELDS.into_iter().enumerate() {
+                let Some(y) = drawn[slot] else { continue };
+                if !values.as_any().get_item(detect)?.is_truthy()? {
+                    continue;
+                }
+                let value = match slot {
+                    0 => -y,
+                    1 => py_min(py_max(y, 0.), 12.7),
+                    _ => py_min(py_max(-y, 0.), 12.7),
+                };
+                values.set_item(lateral, value)?;
+            }
+            rear::finish_map(&values, cs, md, frame, state, &map)?;
+            return finish_fields(&values);
+        }
+        pos::shadow(&map, cs, state)?;
+        draw_front(&map, state, &values, None)?;
 
         let model_time: f64 = get!(live, "model_time").extract()?;
         let old_change = get!(correction, "lane_change");

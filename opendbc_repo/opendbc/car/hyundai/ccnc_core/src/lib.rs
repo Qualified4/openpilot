@@ -10,6 +10,7 @@ mod map_object;
 mod model_v2;
 mod observe;
 mod position_correction;
+mod pos;
 mod pymath;
 mod radar_map;
 mod rear;
@@ -25,7 +26,7 @@ fn source_hash() -> &'static str {
 
 #[pyfunction]
 fn abi_version() -> u32 {
-    11
+    12
 }
 
 /// A Rust panic reaches Python as PanicException, a BaseException that the display's `except Exception`
@@ -116,5 +117,7 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(correct::_position_apply_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(rear::_update_rear_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(vehicle_display::update_display, module)?)?;
+    module.add_class::<pos::PosState>()?;
+    module.add_function(wrap_pyfunction!(pos::_pos_run_for_test, module)?)?;
     Ok(())
 }

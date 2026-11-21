@@ -329,7 +329,7 @@ class CarInterfaceBase(ABC):
 
 
   def apply(self, c: structs.CarControl, now_nanos: int | None = None, model_v2=None, radar_state=None, live_tracks=None,
-            live_tracks_bytes=None, model_v2_bytes=None) -> tuple[structs.CarControl.Actuators, list[CanData]]:
+            live_tracks_bytes=None, model_v2_bytes=None, live_pose=None) -> tuple[structs.CarControl.Actuators, list[CanData]]:
     if now_nanos is None:
       now_nanos = int(time.monotonic() * 1e9)
     self.CS.modelV2 = model_v2
@@ -337,6 +337,7 @@ class CarInterfaceBase(ABC):
     self.CS.radarState = radar_state
     self.CS.live_tracks = live_tracks
     self.CS.live_tracks_bytes = live_tracks_bytes  # The bytes of the Event message live_tracks is from, or None.
+    self.CS.livePose = live_pose  # The CCNC position display's ego yaw rate (CcncPosDisplayMode 1 and 2), or None.
     return self.CC.update(c, self.CS, now_nanos)
 
   @staticmethod

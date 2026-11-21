@@ -533,8 +533,9 @@ class Car:
         if 0 <= now_nanos - live_tracks_time < 150_000_000:
           live_tracks = self.sm['liveTracks']
           live_tracks_bytes = self.sm.live_tracks_bytes(live_tracks)
+      live_pose = self.sm['livePose'] if self.sm.valid['livePose'] and self.sm.alive['livePose'] else None
       self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos, model_v2, radar_state, live_tracks, live_tracks_bytes,
-                                                            self.sm.model_v2_bytes(model_v2))
+                                                            self.sm.model_v2_bytes(model_v2), live_pose)
       can_sends = self.kick_output.isolate(can_sends, model_v2, time.monotonic())
       if self.tesla_signals.configured:
         fresh = all(self.sm.seen[s] and self.sm.alive[s] and self.sm.valid[s] and

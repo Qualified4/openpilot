@@ -3291,6 +3291,7 @@ def reset_vehicles():
   state.rf_detect = ThresholdTracker(bounds=(2, -1), states=(1, 2))
   state.lr_distance = NoiseFilter(1, 15, alpha_range=0.05)
   state.rr_distance = NoiseFilter(1, 15, alpha_range=0.05)
+  state._rust_pos = None  # ccnc_core.PosState of CcncPosDisplayMode 1 and 2
 
 
 def reset():
