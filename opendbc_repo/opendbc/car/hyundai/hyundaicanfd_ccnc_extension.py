@@ -1831,7 +1831,13 @@ class _CcncVehiclePositionCorrection:
     if observation is None:
       return filtered_y
     birth, stamp = observation[:2]
-    center = 0.0 if slot == 0 else self.centers[slot - 1]
+    # Lock onto the slot lane's midpoint at the car's distance when both of its lines are known; the ego path
+    # (FF) and the 20 m side centre stay as the fallback.
+    if (reference == ('lane', 'center') and bounds is not None and all(math.isfinite(v) for v in bounds)
+        and bounds[0] > bounds[1]):
+      center = .5 * (bounds[0] + bounds[1])
+    else:
+      center = 0.0 if slot == 0 else self.centers[slot - 1]
     # A boundary-straddling or lane-free target must retain its measured position.
     clearance = (min(bounds[0] - aligned_y, aligned_y - bounds[1], bounds[0] - center, center - bounds[1])
                  if bounds is not None and all(math.isfinite(v) for v in (*bounds, aligned_y, center)) else -math.inf)

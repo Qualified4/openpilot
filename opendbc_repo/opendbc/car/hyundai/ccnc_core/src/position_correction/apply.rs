@@ -410,10 +410,15 @@ pub(crate) fn apply(correction: &Bound<'_, PyAny>, input: ApplyInput<'_, '_>) ->
     }
     let birth = observation.get_item(0)?;
     let stamp: i64 = observation.get_item(1)?.extract()?;
-    let center = if slot == 0 {
-        0.
-    } else {
-        attr!(correction, "centers").get_item(slot - 1)?.extract()?
+    let common_road = reference.eq((intern!(py, "lane"), intern!(py, "center")))?;
+    // Lock onto the slot lane's midpoint at the car's distance when both of its lines are known; the ego path
+    // (FF) and the 20 m side centre stay as the fallback.
+    let center = match bounds {
+        Some((left, right)) if common_road && left.is_finite() && right.is_finite() && left > right => {
+            0.5 * (left + right)
+        }
+        _ if slot == 0 => 0.,
+        _ => attr!(correction, "centers").get_item(slot - 1)?.extract()?,
     };
     let clearance = match bounds {
         Some((left, right))
@@ -428,7 +433,6 @@ pub(crate) fn apply(correction: &Bound<'_, PyAny>, input: ApplyInput<'_, '_>) ->
         }
         _ => f64::NEG_INFINITY,
     };
-    let common_road = reference.eq((intern!(py, "lane"), intern!(py, "center")))?;
     let (release, return_margin): (f64, f64) = if common_road {
         (
             attr!(correction, "ROAD_BOUNDARY_RELEASE_MARGIN").extract()?,
