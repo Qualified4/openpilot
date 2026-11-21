@@ -123,3 +123,26 @@ def test_stop_go_dwell_survives_switching_renderers(display, monkeypatch):  # no
   assert dict(send(220))["ADRV_0x161"]["BACKGROUND"] == 8
   params["CcncExtendedDisplay"] = False
   assert dict(send(300))["ADRV_0x161"]["BACKGROUND"] == 8
+
+
+def test_first_map_frame_accepts_parsed_float_detects(display, monkeypatch):  # noqa: F811
+  # The car's CAN parser hands 0x162 over as floats. With canValid false (the first display
+  # frame of a drive) the rear pass leaves LR/RR_DETECT at that 0.0, and the Rust call failed
+  # with "'float' object cannot be interpreted as an integer".
+  params, cs, send = display
+  params["CcncExtendedDisplay"] = True
+  templates(cs)
+  cs.ccnc_0x162 = dict.fromkeys(cs.ccnc_0x162, 0.)
+  cs.out.canValid = False
+  assert main._CCNC_DISPLAY_RUST is not None
+  logged = []
+  monkeypatch.setattr(main.ccnc_radar_map._live, "failed", False)
+  monkeypatch.setattr(main.ccnc_radar_map.carlog, "exception", logged.append)
+  with monkeypatch.context() as patch:
+    patch.setattr(main, "_CCNC_DISPLAY_RUST", None)
+    expected = [dict(send(frame))["CCNC_0x162"] for frame in (0, 5)]
+  main.ccnc_extension.reset()
+  main.ccnc_radar_map.reset_live()
+  actual = [dict(send(frame))["CCNC_0x162"] for frame in (0, 5)]
+  assert logged == []
+  assert actual == expected

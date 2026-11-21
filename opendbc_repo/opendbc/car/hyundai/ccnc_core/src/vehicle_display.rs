@@ -607,12 +607,14 @@ fn finish_fields<'py>(values: &Bound<'py, PyDict>) -> PyResult<Bound<'py, PyDict
         for key in [distance, lateral] {
             fields.set_item(key, values.as_any().get_item(key)?)?;
         }
+        // A slot the map left untouched still holds the parsed 0x162 value, a float
+        // (LR/RR on the first map frame); keep its type as the Python path does.
         let code = values.as_any().get_item(detect)?;
-        let code: i64 = code.extract()?;
+        let number: f64 = code.extract()?;
         fields.set_item(
             detect,
-            if matches!(code, 1 | 2) {
-                code + 2
+            if number == 1. || number == 2. {
+                code.add(2)?
             } else {
                 code
             },
