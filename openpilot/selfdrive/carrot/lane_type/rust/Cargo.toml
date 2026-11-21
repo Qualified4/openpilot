@@ -1,0 +1,50 @@
+[package]
+name = "stripnet"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "CCNC lane marking recogniser (StripNet) in Rust: the marking_daemon.py processing path"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+# msgq / VisionIPC through a small C++ shim over msgq_repo (src/ipc.rs, ipc/shim.cc).
+ipc = ["dep:cc"]
+# Extraction-speed candidates (aarch64): the remap through KleidiCV's C API or OpenCV's cv::remap (src/native.rs,
+# native/*.cc), linked statically from the builds tools/build_native.sh makes (STRIPNET_NATIVE_DIR).
+kleidicv = ["dep:cc"]
+opencv = ["dep:cc"]
+# tract intra-op threads (combo bench only: slower on M8 and the device; +7 MB on aarch64).
+# onnxruntime inference (src/ort_engine.rs; STRIPNET_ENGINE=ort-cpu|ort-xnnpack), libonnxruntime.so loaded at run time
+# (ORT_DYLIB_PATH). Combo bench only.
+ort = ["dep:ort"]
+tract-mt = ["dep:tract-linalg", "tract-linalg/multithread-mm"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+tract-onnx = { version = "0.23.10", default-features = false }
+# Only for tract's intra-op thread pool (rayon, feature `tract-mt`; STRIPNET_TRACT_THREADS > 1, model::tract_threads).
+tract-linalg = { version = "=0.23.10", optional = true }
+sha2 = "0.10.9"
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-31", "xnnpack"], optional = true }
+anyhow = "1"
+
+[build-dependencies]
+cc = { version = "1.11", optional = true }
+
+[[bin]]
+name = "stripnet_replay"
+path = "src/bin/stripnet_replay.rs"
+
+[[bin]]
+name = "stripnet_daemon"
+path = "src/bin/stripnet_daemon.rs"
+required-features = ["ipc"]
+
+[profile.release]
+debug = false
+lto = "thin"
+codegen-units = 4
