@@ -66,6 +66,7 @@ def _car_state(distance_time_tenths=60):
   state.vehicleNaviEvents = []
   state.vehicleNaviSegmentTimestamp = 0
   state.vehicleNaviProfileTimestamp = 0
+  state.vehicleNaviProfile4b8Timestamp = 0
   state.vehicleNaviAvailable = False
   state.vehicleNaviRouteResetTimestamp = 0
   state.vehicleNaviRouteState = 0
@@ -93,6 +94,7 @@ def _car_state(distance_time_tenths=60):
   state.navi_segment_4b9 = None
   state.navi_position_4b4 = None
   state.navi_profile_4be = None
+  state.navi_profile_4b8 = None
   state.hda_info_4a3 = None
   state.speedcam_policy = SpeedcamPolicy()
   state.speedcam_accel_swallow = False
@@ -210,7 +212,7 @@ def test_vehicle_navigation_toggles_reload_every_second_without_restart():
 
 def test_vehicle_navi_availability_only_requires_receiving_0x4be():
   state = _car_state()
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
   ret = SimpleNamespace()
 
   assert not state._update_vehicle_navi_events(cp, ret, False)
@@ -316,7 +318,7 @@ def test_vehicle_navi_control_mode_filters_profiles_by_calculated_route(
     "PROLONG_PATH_INDEX": profile_path,
     "PROLONG_PROFILE_TYPE": 16,
   }
-  cp = SimpleNamespace(ts_nanos={
+  cp = SimpleNamespace(dat={}, ts_nanos={
     "NEW_MSG_4B9": {"BYTE_1": 1},
     "NEW_MSG_4BE": {"PROLONG_VALUE": 2},
   })
@@ -348,7 +350,7 @@ def test_vehicle_navi_leaving_calculated_route_clears_route_filtered_events(mode
   state.navi_segment_4b9 = {
     f"BYTE_{i + 1}": byte for i, byte in enumerate(segment_raw.to_bytes(8, "little"))
   }
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4B9": {"BYTE_1": 1}})
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4B9": {"BYTE_1": 1}})
   ret = SimpleNamespace(speedLimit=0.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   state._update_vehicle_navi_events(cp, ret, False)
@@ -363,7 +365,7 @@ def test_vehicle_navi_stale_calculated_route_rejects_route_filtered_bump():
   state.vehicleNaviRoutePathIndex = 8
   state.vehicleNaviSegmentTimestamp = 1_000_000_000
   state.vehicleNaviEvents = [{"type": "bump", "speed": 0, "kind": 6, "target": 200.0}]
-  cp = SimpleNamespace(ts_nanos={}, _last_update_nanos=1_000_000_000 + VEHICLE_NAVI_ROUTE_TIMEOUT_NS + 1)
+  cp = SimpleNamespace(dat={}, ts_nanos={}, _last_update_nanos=1_000_000_000 + VEHICLE_NAVI_ROUTE_TIMEOUT_NS + 1)
   ret = SimpleNamespace(speedLimit=0.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   state._update_vehicle_navi_events(cp, ret, False)
@@ -384,7 +386,7 @@ def test_vehicle_navi_route_recalculation_clears_events():
     "PROLONG_UPDATE": 1,
     "PROLONG_PROFILE_TYPE": 16,
   }
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
   ret = SimpleNamespace(speedLimit=0.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert not state._update_vehicle_navi_events(cp, ret, False)
@@ -409,7 +411,7 @@ def test_vehicle_navi_school_zone_follows_vehicle_camera_status():
     "PROLONG_UPDATE": 1,
     "PROLONG_PROFILE_TYPE": 16,
   }
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
   ret = SimpleNamespace(speedLimit=0.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   ret.speedLimit = 30.0
@@ -446,7 +448,7 @@ def test_vehicle_navi_unconfirmed_30_zone_does_not_activate_school_zone():
     "PROLONG_UPDATE": 1,
     "PROLONG_PROFILE_TYPE": 16,
   }
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
   ret = SimpleNamespace(speedLimit=0.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   # 00000166--a0a89dc8d2--7: 0x77 occurred on a non-school road while
@@ -468,7 +470,7 @@ def test_vehicle_navi_school_zone_is_blocked_by_controlled_access_link_class(lin
     "PROLONG_UPDATE": 1,
     "PROLONG_PROFILE_TYPE": 16,
   }
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
   ret = SimpleNamespace(speedLimit=30.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert not state._update_vehicle_navi_events(cp, ret, True)
@@ -483,7 +485,7 @@ def test_vehicle_navi_school_zone_is_cleared_by_controlled_access_road_class(roa
   state.vehicleNaviSchoolZoneActive = True
   raw = road_class << 24
   state.navi_segment_4b9 = {f"BYTE_{i + 1}": byte for i, byte in enumerate(raw.to_bytes(8, "little"))}
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4B9": {"BYTE_1": 1}})
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4B9": {"BYTE_1": 1}})
   ret = SimpleNamespace(speedLimit=30.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert not state._update_vehicle_navi_events(cp, ret, True)
@@ -504,7 +506,7 @@ def test_vehicle_navi_speed_bump_is_blocked_on_controlled_access_road(road_class
     "PROLONG_UPDATE": 1,
     "PROLONG_PROFILE_TYPE": 16,
   }
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
   ret = SimpleNamespace(speedLimit=100.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert not state._update_vehicle_navi_events(cp, ret, False)
@@ -519,7 +521,7 @@ def test_vehicle_navi_road_class_ahead_does_not_purge_current_bumps():
   state = _car_state()
   state.vehicleNaviCanControl = 1
   state.totalDistance = 1000.0
-  cp = SimpleNamespace(ts_nanos={}, _last_update_nanos=0)
+  cp = SimpleNamespace(dat={}, ts_nanos={}, _last_update_nanos=0)
   ret = SimpleNamespace(speedLimit=0.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   def feed_segment(raw_hex, ts):
@@ -550,7 +552,7 @@ def test_vehicle_navi_pending_speed_bump_is_cleared_on_expressway_entry():
   state.vehicleNaviCanControl = True
   state.vehicleNaviEvents = [{"type": "bump", "speed": 0, "kind": 6, "target": 300.0}]
   state.vehicleNaviRoadClass = 2
-  cp = SimpleNamespace(ts_nanos={})
+  cp = SimpleNamespace(dat={}, ts_nanos={})
   ret = SimpleNamespace(speedLimit=100.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert not state._update_vehicle_navi_events(cp, ret, False)
@@ -569,7 +571,7 @@ def test_vehicle_navi_school_zone_explicit_speed_change_clears_cap():
     "PROLONG_UPDATE": 1,
     "PROLONG_PROFILE_TYPE": 16,
   }
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
   ret = SimpleNamespace(speedLimit=50.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert not state._update_vehicle_navi_events(cp, ret, False)
@@ -584,7 +586,7 @@ def test_vehicle_navi_route_recalculation_clears_school_zone():
   state.vehicleNaviSchoolZoneStartDistance = 10.0
   raw = bytes.fromhex("0000b8063110fdff")
   state.navi_segment_4b9 = {f"BYTE_{i + 1}": byte for i, byte in enumerate(raw)}
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4B9": {"BYTE_1": 2}})
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4B9": {"BYTE_1": 2}})
   ret = SimpleNamespace(speedLimit=30.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert not state._update_vehicle_navi_events(cp, ret, True)
@@ -598,7 +600,7 @@ def test_vehicle_navi_school_zone_distance_fail_safe():
   state.vehicleNaviSchoolZoneActive = True
   state.vehicleNaviSchoolZoneStartDistance = 10.0
   state.totalDistance = 10.0 + VEHICLE_NAVI_SCHOOL_ZONE_MAX_DISTANCE
-  cp = SimpleNamespace(ts_nanos={})
+  cp = SimpleNamespace(dat={}, ts_nanos={})
   ret = SimpleNamespace(speedLimit=0.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert not state._update_vehicle_navi_events(cp, ret, False)
@@ -623,7 +625,7 @@ def test_vehicle_navi_preview_remains_available_before_camera_status():
   state.vehicleNaviCanControl = True
   camera = {"type": "camera", "speed": 50, "kind": 1, "target": 500.0}
   state.vehicleNaviEvents = [camera]
-  cp = SimpleNamespace(ts_nanos={})
+  cp = SimpleNamespace(dat={}, ts_nanos={})
   ret = SimpleNamespace(speedLimit=0.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert state._update_vehicle_navi_events(cp, ret, False)
@@ -637,7 +639,7 @@ def test_vehicle_navi_camera_status_end_retires_confirmed_event_immediately():
   current_camera = {"type": "camera", "speed": 60, "kind": 1, "target": 40.0}
   next_camera = {"type": "camera", "speed": 50, "kind": 1, "target": 510.0}
   state.vehicleNaviEvents = [current_camera, next_camera]
-  cp = SimpleNamespace(ts_nanos={})
+  cp = SimpleNamespace(dat={}, ts_nanos={})
   ret = SimpleNamespace(speedLimit=60.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert state._update_vehicle_navi_events(cp, ret, True)
@@ -659,7 +661,7 @@ def test_vehicle_navi_camera_status_does_not_select_mismatched_future_camera():
   state = _car_state()
   state.vehicleNaviCanControl = True
   state.vehicleNaviEvents = [{"type": "camera", "speed": 50, "kind": 1, "target": 500.0}]
-  cp = SimpleNamespace(ts_nanos={})
+  cp = SimpleNamespace(dat={}, ts_nanos={})
   ret = SimpleNamespace(speedLimit=60.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert not state._update_vehicle_navi_events(cp, ret, True)
@@ -673,7 +675,7 @@ def test_vehicle_navi_current_warning_rejects_distant_same_speed_preview(future_
   state.vehicleNaviCanControl = True
   camera = {"type": "camera", "speed": 50, "kind": 1, "target": future_distance}
   state.vehicleNaviEvents = [camera]
-  cp = SimpleNamespace(ts_nanos={})
+  cp = SimpleNamespace(dat={}, ts_nanos={})
   ret = SimpleNamespace(speedLimit=0.0, vEgo=0.0)
 
   # A previously selected preview must not leak into the current warning.
@@ -704,7 +706,7 @@ def test_vehicle_navi_current_warning_rejects_distant_same_speed_preview(future_
 def test_vehicle_navi_late_profile_cannot_extend_current_warning_distance():
   state = _car_state(75)
   state.vehicleNaviCanControl = True
-  cp = SimpleNamespace(ts_nanos={})
+  cp = SimpleNamespace(dat={}, ts_nanos={})
   ret = SimpleNamespace(speedLimit=50.0, vEgo=0.0)
   assert not state._update_vehicle_navi_events(cp, ret, True)
   state.update_speed_limit(ret, True, distance_time_changed=False)
@@ -726,7 +728,7 @@ def test_vehicle_navi_warning_keeps_cap_after_profile_endpoint():
   state = _car_state()
   state.vehicleNaviCanControl = True
   state._add_vehicle_navi_event("camera", 50, 1, 20.0)
-  cp = SimpleNamespace(ts_nanos={})
+  cp = SimpleNamespace(dat={}, ts_nanos={})
   ret = SimpleNamespace(speedLimit=50.0, vEgo=0.0)
   assert state._update_vehicle_navi_events(cp, ret, True)
   state.totalDistance = 60.0
@@ -741,7 +743,7 @@ def test_vehicle_navi_warning_keeps_cap_after_profile_endpoint():
 
 def test_vehicle_navi_warning_speed_change_and_restart_reset_fallback():
   state = _car_state(75)
-  cp = SimpleNamespace(ts_nanos={})
+  cp = SimpleNamespace(dat={}, ts_nanos={})
   ret = SimpleNamespace(speedLimit=50.0, vEgo=0.0)
   state._update_vehicle_navi_events(cp, ret, True)
   state.totalDistance = 100.0
@@ -761,7 +763,7 @@ def test_vehicle_navi_warning_speed_change_and_restart_reset_fallback():
 def test_vehicle_navi_live_distance_setting_updates_current_warning():
   state = _car_state(75)
   ret = SimpleNamespace(speedLimit=50.0, vEgo=0.0)
-  state._update_vehicle_navi_events(SimpleNamespace(ts_nanos={}), ret, True)
+  state._update_vehicle_navi_events(SimpleNamespace(dat={}, ts_nanos={}), ret, True)
   state.totalDistance = 100.0
   state.op_params.value = 62
   state.vehicleSpeedCameraParamsCounter = VEHICLE_SPEED_CAMERA_PARAM_UPDATE_FRAMES - 1
@@ -779,7 +781,7 @@ def test_vehicle_navi_section_log_frames_hold_cap_until_camera_status_ends():
     "PROLONG_UPDATE": 1,
     "PROLONG_PROFILE_TYPE": 16,
   }
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
   ret = SimpleNamespace(speedLimit=100.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert not state._update_vehicle_navi_events(cp, ret, True)
@@ -808,7 +810,7 @@ def test_vehicle_navi_range_average_holds_section_until_zero():
   state = _car_state()
   state.vehicleNaviCanControl = True
   state.navi_position_4b4 = {"POS_RANGE_AVG_SPEED": 103}
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4B4": {"POS_RANGE_AVG_SPEED": 1_000_000_000}},
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4B4": {"POS_RANGE_AVG_SPEED": 1_000_000_000}},
                        _last_update_nanos=1_100_000_000)
   ret = SimpleNamespace(speedLimit=100.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
@@ -893,7 +895,7 @@ def test_pv5_canfd_navi_profile_uses_wrapped_message_timestamp():
     "PROLONG_UPDATE": 1,
     "PROLONG_PROFILE_TYPE": 16,
   }
-  cp = SimpleNamespace(ts_nanos={CANFD_NAVI_PROFILE_MSG: {"PROLONG_VALUE": 1}})
+  cp = SimpleNamespace(dat={}, ts_nanos={CANFD_NAVI_PROFILE_MSG: {"PROLONG_VALUE": 1}})
   ret = SimpleNamespace(speedLimit=0.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert state._update_vehicle_navi_events(cp, ret, False)
@@ -915,7 +917,7 @@ def test_pv5_canfd_navi_ignores_unverified_speed_limit_zones():
     "PROLONG_UPDATE": 1,
     "PROLONG_PROFILE_TYPE": 16,
   }
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
   ret = SimpleNamespace(speedLimit=50.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   assert not state._update_vehicle_navi_events(cp, ret, True)
@@ -1230,7 +1232,7 @@ def test_vehicle_navi_stale_range_average_releases_section():
   state = _car_state()
   state.vehicleNaviCanControl = True
   state.navi_position_4b4 = {"POS_RANGE_AVG_SPEED": 103}
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4B4": {"POS_RANGE_AVG_SPEED": 1_000_000_000}},
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4B4": {"POS_RANGE_AVG_SPEED": 1_000_000_000}},
                        _last_update_nanos=1_000_000_000)
   ret = SimpleNamespace(speedLimit=100.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
@@ -1247,7 +1249,7 @@ def test_vehicle_navi_range_average_does_not_keep_regular_cap_in_school_zone():
   state.vehicleNaviSpeedZoneActive = True
   state.vehicleNaviSpeedZoneSpeed = 100
   state.navi_position_4b4 = {"POS_RANGE_AVG_SPEED": 25}
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4B4": {"POS_RANGE_AVG_SPEED": 1_000_000_000}},
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4B4": {"POS_RANGE_AVG_SPEED": 1_000_000_000}},
                        _last_update_nanos=1_000_000_000)
   ret = SimpleNamespace(speedLimit=30.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
@@ -1266,7 +1268,7 @@ def test_vehicle_navi_section_end_camera_uses_logged_1997_meter_offset():
     "PROLONG_UPDATE": 1,
     "PROLONG_PROFILE_TYPE": 16,
   }
-  cp = SimpleNamespace(ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
+  cp = SimpleNamespace(dat={}, ts_nanos={"NEW_MSG_4BE": {"PROLONG_VALUE": 1}})
   ret = SimpleNamespace(speedLimit=100.0, speedBumpDistance=0.0, schoolZoneActive=False)
 
   # The section-end profile is still useful as a future preview, but must

@@ -217,7 +217,7 @@ VW MEB(ID.4 포함)에도 수동 조향비와 학습 비율이 적용됩니다. 
 
 | 세부 구역 | 파라미터 | 용도 |
 |---|---|---|
-| [과속카메라](speed-deceleration.md#speed-camera) | `AutoNaviSpeedCtrlMode`, `AutoNaviSpeedCtrlEnd`, `AutoNaviRearCameraHoldDistance`, `AutoNaviSpeedDecelRate`, `AutoNaviSpeedSafetyFactor`, `AutoNaviCountDownMode`, `VehicleNaviCanControl`, `VehicleNaviSchoolZoneControl`, `VehicleNaviDecelCancel`(`VehicleNaviDecelCancelBox`, `VehicleNaviDecelCancelMobileZone`, `VehicleNaviDecelCancelBump`, `VehicleNaviDecelCancelUnknown`, `VehicleNaviDecelCancelEarlyWarning`), `VehicleNaviSectionAvgControl`, `VehicleSpeedCameraControlMode`, `VehicleSpeedCameraDistanceTime` | 안전운전 이벤트의 대상, 후면단속 통과 후 유지, 순정 카메라 거리 연결·가상거리, PV5 단속 상태에 따른 카메라 유지·해제와 구간단속 제한속도 유지, 감속 시점과 목표 속도 |
+| [과속카메라](speed-deceleration.md#speed-camera) | `AutoNaviSpeedCtrlMode`, `AutoNaviSpeedCtrlEnd`, `AutoNaviRearCameraHoldDistance`, `AutoNaviSpeedDecelRate`, `AutoNaviSpeedSafetyFactor`, `AutoNaviCountDownMode`, `VehicleNaviCanControl`, `VehicleNaviSchoolZoneControl`, `VehicleNaviDecelCancel`(`VehicleNaviDecelCancelBox`, `VehicleNaviDecelCancelMobileZone`, `VehicleNaviDecelCancelBump`, `VehicleNaviDecelCancelUnknown`, `VehicleNaviDecelCancelEarlyWarning`), `VehicleNaviSectionAvgControl`, `VehicleSpeedCameraControlMode`, `VehicleSpeedCameraDistanceTime` | 안전운전 이벤트의 대상, 후면단속 통과 후 유지, 동일 CAN 형식의 차종 공통 지원, 순정 카메라 거리 연결·가상거리, EV4 카메라·방지턱 지원과 평균속도 검증 상태, PV5 단속 상태에 따른 카메라 유지·해제와 구간단속 제한속도 유지, 감속 시점과 목표 속도 |
 | [도로 제한속도](speed-deceleration.md#road-speed-limit) | `AutoRoadSpeedLimitOffset`, `AutoRoadSpeedAdjust`, `AutoSpeedUptoRoadSpeedLimit` | 도로 제한속도에 맞춘 목표 속도 조절 |
 | [과속방지턱](speed-deceleration.md#speed-bump) | `AutoNaviSpeedBumpTime`, `AutoNaviSpeedBumpSpeed`, `AutoNaviSpeedBumpEndDistance` | 방지턱 감속 완료 시점, 통과 속도와 조기 종료 거리 |
 | [커브·턴](speed-deceleration.md#curve-turn) | `AutoCurveSpeedFactor`, `AutoCurveSpeedLowerLimit`, `TurnSpeedControlMode`, `MapTurnSpeedFactor`, `ApplyModelSpeed` | 곡률·남은 거리 기반 감속, 회전 완화 확인 후 빠른 복구와 경로 턴 속도 |
@@ -293,7 +293,7 @@ VW MEB(ID.4 포함)에도 수동 조향비와 학습 비율이 적용됩니다. 
 - `HyundaiCameraSCC`: 현대·기아 차량의 롱컨, 크루즈 동기화와 CAN FD 배선 구성에 따라 모드가 달라집니다.
   CAN-FD CameraSCC에서 캐럿 롱컨과 코너레이더가 켜져 있으면, 정상 CAN·D단·브레이크 해제·시속 10.8km 초과 조건에서 꺼진 순정 SCC MAIN을 주기적으로 켜도록 요청합니다. AutoEngage와 캐럿 크루즈 활성 여부에 관계없이 적용하며, MAIN이 이미 켜져 있으면 이 경로의 추가 요청은 끝납니다. SET·재출발 요청에는 기존 캐럿 크루즈 활성 조건이 적용됩니다. CAN-FD CameraSCC에서 캐럿 롱컨을 사용하는 경우 계기판용 순정 SCC MAIN 상태와 캐럿의 활성 선택을 분리해 처리합니다. 조향 활성은 AutoEngage 초기 설정과 기존 운전자 버튼 설정을 따릅니다.
   설정이 `0`이고 차량에 카메라 SCC가 적용되지 않은 상태에서, 이번 onroad의 카메라 버스(bus2, 다중 Panda에서는 해당 카메라 버스)에서 `SCC_CONTROL`(CAN-FD) 또는 `SCC12`(일반 CAN)를 수신하면 CAN 오류 화면에 **CameraSCC 설정을 켜 주세요** 안내가 표시됩니다. 수신 이력에 따른 설정 확인 안내이며 모든 CAN 오류의 원인을 확정하지는 않습니다. 설정을 자동 변경하지 않으며, 기존 제어 해제와 진입 차단은 유지됩니다. 정차 후 차량·배선에 맞는 모드를 설정하고 다음 onroad에서 확인하세요.
-- `CanfdHDA2`: HDA2 차량에서만 활성화합니다.
+- `CanfdHDA2`: HDA2 차량·하네스에서만 활성화합니다. `HyundaiCameraSCC=0`이면 차종의 HDA1 CameraSCC 기본값 대신 순정 HDA2 SCC 연결을 사용합니다. CameraSCC 개조 설정을 켠 경우에는 해당 연결 방식을 유지합니다. 정차 상태에서 차종과 하네스를 확인해 설정하고 재시작하세요.
 - **계기판 CAN 직접 송신** (`HyundaiCanfdClusterDirectTx`): 현대·기아·제네시스 CAN-FD CameraSCC 차량에서 간헐적인 계기판 경고가 발생할 때 기존 직접 송신 방식과 비교하는 설정입니다. 모든 차량에서 기본 꺼짐이며 증상 차량에서 직접 켭니다. 변경 후 기기를 재부팅해야 적용됩니다. 이 설정을 지원하는 Panda 펌웨어가 필요하며, 경고 원인 해결이 검증된 것은 아닙니다.
 <a id="indicator-control"></a>
 ### 깜박이 제어
@@ -612,15 +612,19 @@ ATC 세부 설정의 `AutoTurnControlRightLaneChange`는 1·2번 모드에서 10
 
 수동 차선 접근은 짧은 경계 흔들림을 0.15초 확인하며, 수동 턴 조건까지 충족되면 같은 점등 요청으로 턴 완료를 추적합니다. 모델 턴 표시는 같은 방향 조향각 15도 이상과 실제 회전 3도/초 이상을 함께 확인합니다.
 
-`ManualLaneChangeIndicator`는 시속 5km 이상에서 수동 차로변경을 감지해 깜빡이를 요청합니다. 최근 조향 의도를 최대 1.5초 기억합니다. 왼쪽은 최신 흰 차선 분류로 중앙선을 제외하고, 오른쪽은 목표 차선부터 로드에지까지 2.5m 이상 여유를 확인합니다. 바깥 차선 인식 확률은 사용하지 않으며 자동 조향은 요청하지 않습니다. 자세한 조건은 [차로 변경](lane-change.md)을 참고하세요.
+`ManualLaneChangeIndicator`는 시속 5km 이상에서 수동 차로변경을 감지해 깜빡이를 요청합니다. 최근 조향 의도를 최대 1.5초 기억합니다. 좌측 중앙선 분류와 우측 로드에지 거리 제한은 사용하지 않습니다. 바깥 차선 인식 확률은 사용하지 않으며 자동 조향은 요청하지 않습니다. 자세한 조건은 [차로 변경](lane-change.md)을 참고하세요.
 
-수동 차선변경 깜박이는 이전 요청 후 최소 3초·연속 1초 소등과 새로운 조향/접근 조건을 확인한 뒤 재요청합니다. 자동 조향 피드백 보호는 최소 12초 유지합니다.
+수동 차선변경 자동깜박이는 좌측 차선 색상·중앙선 분류와 우측 로드에지 거리로 점등을 제한하지 않습니다. 5km/h 이상, 같은 방향 조향 의도와 실제 차선 접근, 차로 폭·경계 연속성·최근 차선 신뢰도 조건은 유지합니다. 자동조향은 요청하지 않습니다. 2초 이내 끝난 접근 신호 뒤에도 같은 방향의 실제 수동 턴을 별도로 확인해 새 요청을 만들며, 반대 방향의 새 차선접근은 연속 1초 소등 후 다시 확인할 수 있습니다. 운전자 레버·반대 램프·입력 오류·취소가 우선하며 자동조향 피드백 격리는 유지합니다. 중앙선 접근이나 도로 밖으로 움직이는 경우에도 표시될 수 있습니다.
+
+점등 직후의 경계 흔들림은 기존 요청 안에서만 제한적으로 확인합니다. 경계 가까이에서 양쪽 차선이 다시 배정되는 짧은 변화는 0.15초 기다립니다. 신뢰도가 낮은 대상 경계가 멀어져도 반대편 경계와 운전자 조향이 접근을 뒷받침하면 최대 3초 안에 안정된 차로를 확인하며, 반대 조향·입력 오류는 유지하지 않습니다.
+
+짧은 접근 취소 후 복구를 제외하면 수동 차선변경 깜박이는 이전 요청 후 최소 3초·연속 1초 소등과 새로운 조향/접근 조건을 확인한 뒤 재요청합니다. 자동 조향 피드백 보호는 최소 12초 유지합니다.
 
 ATC 재요청이 실행되면 새 요청부터 점등 확인 제한 4초를 다시 적용합니다. 최초 요청부터 전체 유지 상한 5분은 연장하지 않습니다.
 
 `ModelDesireIndicator`와 `ModelPathIndicator`는 표시 전용인 별도 기본 꺼짐 옵션입니다. TBT 턴의 거리 유지와 각 기능의 시작·종료 조건은 [차로 변경](lane-change.md)을 참고하세요. 30km/h 이상에서는 모델의 가까운 두 미래 예측이 모두 같은 방향 차로변경을 65% 이상으로 가리키고, 실제 좌우 차선 위치도 그 방향으로 접근할 때 깜빡이를 요청할 수 있습니다. 차선에 접근하지 않는 예측만으로는 켜지지 않으며, 이 기능은 조향을 요청하지 않습니다. 예측으로 점등한 뒤 분기에서 차로 폭이 넓어져도 같은 방향 모델 의도와 진행이 확인되면 같은 요청을 유지합니다. 의도가 약해지거나 반대로 바뀌면 분기 유지가 끝나며, CANCEL은 즉시 유지 요청을 해제합니다.
 
-수동 깜박이는 차선 접근 속도로 0.3초 뒤를 예측하되, 중심에서 경계까지의 기준을 최대 0.3m만 앞당깁니다. 기존 속도·중앙선·로드에지 조건은 유지합니다.
+수동 깜박이는 차선 접근 속도로 0.3초 뒤를 예측하되, 중심에서 경계까지의 기준을 최대 0.3m만 앞당깁니다. 속도·조향 의도·경계 연속성 조건은 유지합니다.
 
 TBT 턴은 실제 회전 진입을 확인한 뒤 주행 중 핸들이 ±15도 안으로 돌아오면 30m 이동을 기다리지 않고 유지 요청을 끝냅니다. 턴 진입 전 신호 대기에서는 유지하며, 자세한 조건은 [차로 변경](lane-change.md)을 참고하세요.
 
