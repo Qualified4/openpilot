@@ -1565,6 +1565,17 @@ class _CcncVehiclePositionCorrection:
   # report step, not a reflection: no hold starts and the track is not marked as jumped. Below INWARD_KEEP_X the
   # reflection hold stays (2026-10-15: 358/4 and 3e1/11 near straight cars were followed more without it).
   INWARD_KEEP_X, INWARD_KEEP_TIME = 10., 30
+  # Lane-change display (2026-11-21, F): a moving car must not stop and run backwards on the cluster.
+  # LC_TRANSIT (0 off): a track unlocked by the motion gates stays in transit, and settling cannot re-lock it until it
+  #   has left LC_NEAR of its lane centre and come back within it, or its road-aligned position moved less than
+  #   LC_STALL_DIST over LC_STALL_TIME.
+  # LC_TRANSIT_ANY (m, 0 off): a following track whose road-aligned position moved this far over the last second
+  #   enters transit too (a lock released by the boundary or slot rules, not only by the motion gates).
+  # LC_PULL_LIMIT (m, 0 off): while locked, the output does not move towards the centre when the measured position
+  #   lies more than this on the other side of the output, only while the track is in transit and for LC_PULL_TIME
+  #   frames after it. A lane-keeping car is still pulled to its lane centre.
+  LC_TRANSIT, LC_TRANSIT_ANY, LC_PULL_LIMIT = 1., .2, .15
+  LC_NEAR, LC_STALL_TIME, LC_STALL_DIST, LC_PULL_TIME = .45, 200, .15, 150
   SLOT_FIELDS = (('FF_DISTANCE', 'FF_LATERAL', 'FF_DETECT'),
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
                  ('RF_DETECT_DISTANCE', 'RF_DETECT_LATERAL', 'RF_DETECT'))
@@ -2004,6 +2015,12 @@ class _CcncVehiclePositionCorrection:
       samples.append((stamp, point.yRel, aligned_y))
       while len(samples) > 1 and stamp - samples[1][0] >= self.SETTLE_TIME:
         samples.popleft()
+      lc_hist = saved.setdefault('lc_hist', deque())
+      lc_hist.append((stamp, aligned_y))
+      while len(lc_hist) > 1 and stamp - lc_hist[1][0] >= self.LC_STALL_TIME:
+        lc_hist.popleft()
+      if saved['fast_speed'] > 0.0:
+        saved['lc_transit'] = 1 if nets[1] > 0 else -1
       moving = [sample for sample in samples if stamp - sample[0] <= 70]
       # Fast evidence has already unlocked following in this publication.
       if saved['fast_speed'] == 0.0 and len(moving) >= 5 and stamp - moving[0][0] >= self.MOVE_TIME:
@@ -2019,8 +2036,29 @@ class _CcncVehiclePositionCorrection:
             and saved['hold'] is None and not self._slow_outward(saved, slot, stamp, nets[1], frame)):
           saved['following'] = True
           saved['locked'] = False
+          saved['lc_transit'] = 1 if nets[1] > 0 else -1
           if side and nets[1] * (1 if slot == 1 else -1) < 0:
             saved['inward_frame'] = frame
+      transit_block = False
+      recent = [h for h in saved['lc_hist'] if stamp - h[0] <= 100]
+      moved = (bool(self.LC_TRANSIT_ANY) and len(recent) >= 5 and stamp - recent[0][0] >= 80
+               and abs(recent[-1][1] - recent[0][1]) >= self.LC_TRANSIT_ANY)
+      if moved and saved['following'] and not saved.get('lc_transit'):
+        saved['lc_transit'] = 1 if recent[-1][1] > recent[0][1] else -1
+      if saved.get('lc_transit'):
+        saved['lc_moving'] = frame
+      if self.LC_TRANSIT and saved.get('lc_transit'):
+        hist = saved['lc_hist']
+        stalled = (stamp - hist[0][0] >= self.LC_STALL_TIME - 10
+                   and abs(hist[-1][1] - hist[0][1]) < self.LC_STALL_DIST)
+        near = abs(aligned_y - center) <= self.LC_NEAR
+        if not near:
+          saved['lc_left'] = True
+        if stalled or (near and saved.get('lc_left')):
+          saved['lc_left'] = False
+          saved['lc_transit'] = 0
+        else:
+          transit_block = True
       # Curves move raw yRel even when a vehicle keeps its lane. Isolated spikes
       # must not erase all evidence that its road-relative position has settled.
       settling = saved['settling']
@@ -2043,7 +2081,7 @@ class _CcncVehiclePositionCorrection:
         geometry_drift = trends[0] * trends[1] < 0.0 and min(abs(v) for v in trends) > self.SETTLE_SPEED * span
         settled = (ordered[-trim - 1] - ordered[trim] <= (self.ROAD_SETTLE_RANGE if common_road else self.SETTLE_RANGE)
                    and abs(end - start) <= self.SETTLE_SPEED * span)
-        if ((settled or geometry_drift) and not moving_trend
+        if ((settled or geometry_drift) and not moving_trend and not transit_block
             and sum(s[4] for s in evidence) >= 0.8 * len(evidence)):
           saved['following'] = False
           saved['locked'] = True
@@ -2141,6 +2179,10 @@ class _CcncVehiclePositionCorrection:
     if exit_follow:
       saved['locked'], saved['following'] = False, True
     target = filtered_y if saved['following'] else center
+    if (self.LC_PULL_LIMIT and not saved['following'] and frame - saved.get('lc_moving', -1000) <= self.LC_PULL_TIME
+        and (center - saved['output']) * (aligned_y - saved['output']) < 0
+        and abs(aligned_y - saved['output']) > self.LC_PULL_LIMIT):
+      target = saved['output']
     rate = max(self.FOLLOW_RATE, 3.0 if exit_follow else 0.) if saved['following'] else self.CENTER_RATE
     if saved['following'] and saved['fast_speed'] > 0 and fresh:
       # Keep ordinary smoothing until a physical boundary is actually crossed.

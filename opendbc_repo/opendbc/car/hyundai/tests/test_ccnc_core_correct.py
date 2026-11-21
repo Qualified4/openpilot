@@ -338,6 +338,65 @@ def test_apply_vision_backed_ff_departure(rust_core):
   print(dict(pair.counts))
 
 
+def _side_lane_change(core, path):
+  """A left car in its lane (5.4..1.8, centre 3.6) driven through both paths; (frame, output, centre locked)."""
+  pair, trace = ApplyPair(core, False), []
+  for frame, y in path:
+    pair.apply(frame, y, slot=1, bounds=(5.4, 1.8))
+    saved = pair.corrections[0].tracks[10]
+    trace.append((frame, saved['output'], saved['locked'] and not saved['following']))
+  return trace
+
+
+@pytest.mark.parametrize('rule', (True, False))
+def test_lane_change_pause_does_not_relock(rust_core, monkeypatch, rule):
+  # Moves inward at 1 m/s, pauses 1.2 s at 2.6 m (1 m from the old centre), then goes on.
+  if not rule:  # The code before the rules (the pull limit would also stop the backwards run).
+    monkeypatch.setattr(ext._CcncVehiclePositionCorrection, 'LC_TRANSIT', 0.)
+    monkeypatch.setattr(ext._CcncVehiclePositionCorrection, 'LC_PULL_LIMIT', 0.)
+  path = []
+  for frame in range(0, 700, 5):
+    t = frame * .01
+    y = 3.6 if t < 1.5 else max(2.6, 3.6 - (t - 1.5)) if t < 3.7 else 2.6 - (t - 3.7)
+    path.append((frame, max(y, 1.9)))
+  trace = _side_lane_change(rust_core, path)
+  pause = [locked for frame, _, locked in trace if 260 <= frame <= 420]
+  outputs = [output for frame, output, _ in trace if 260 <= frame <= 480]
+  backwards = max(b - a for a, b in zip(outputs, outputs[1:]))
+  if rule:
+    assert not any(pause) and backwards <= 0.
+  else:  # The settle gate re-locks during the pause and the lock pulls the output back towards 3.6.
+    assert any(pause) and max(outputs) - outputs[0] > .1
+
+
+@pytest.mark.parametrize('rule', (True, False))
+def test_locked_output_is_not_pulled_against_the_motion(rust_core, monkeypatch, rule):
+  # Moves to 3.0 m, stays 2 s (stalled: transit ends and the lock comes back), then drifts inward at 0.25 m/s.
+  # For LC_PULL_TIME after the transit the lock does not pull it back towards 3.6; later it is a locked car again.
+  if not rule:
+    monkeypatch.setattr(ext._CcncVehiclePositionCorrection, 'LC_PULL_LIMIT', 0.)
+  path = []
+  for frame in range(0, 860, 5):
+    t = frame * .01
+    path.append((frame, 3.6 if t < 1. else max(3.0, 3.6 - (t - 1.)) if t < 4.5 else 3.0 - (t - 4.5) * .25))
+  trace = _side_lane_change(rust_core, path)
+  relock = next(frame for frame, _, locked in trace if frame > 200 and locked)
+  window = [output for frame, output, _ in trace
+            if relock <= frame <= relock + ext._CcncVehiclePositionCorrection.LC_PULL_TIME]
+  if rule:  # Pulled at most LC_PULL_LIMIT past the measured car (3.0 m, then lower).
+    assert max(window) < 3.2
+  else:
+    assert max(window) > 3.3
+  assert trace[-1][2] and trace[-1][1] == pytest.approx(3.6, abs=.05)
+
+
+@pytest.mark.parametrize('measured', (4.3, 3.0))
+def test_lane_keeping_car_is_pulled_to_its_lane_centre(rust_core, measured):
+  # Never moved: the pull limit does not apply, and the lock pulls the output all the way to the 3.6 m centre.
+  trace = _side_lane_change(rust_core, [(frame, measured) for frame in range(0, 600, 5)])
+  assert all(locked for _, _, locked in trace) and trace[-1][1] == pytest.approx(3.6)
+
+
 def test_positions_inherit_both_front_display_values(rust_core, monkeypatch):
   xs = [0., 30.]
   edges = (5.4, 1.8, -1.8, -5.4)

@@ -187,13 +187,16 @@ def _map_left_vehicle(display, monkeypatch, correction, lateral, sends):
   return shown
 
 
-def test_position_correction_centers_a_lane_keeping_vehicle_selected_by_the_radar_map(display, monkeypatch):
+@pytest.mark.parametrize('pull_limit', (0., ccnc_extension._CcncVehiclePositionCorrection.LC_PULL_LIMIT))
+def test_position_correction_centers_a_lane_keeping_vehicle_selected_by_the_radar_map(display, monkeypatch, pull_limit):
+  monkeypatch.setattr(ccnc_extension._CcncVehiclePositionCorrection, 'LC_PULL_LIMIT', pull_limit)
   wobble = lambda t: 4.3 + .12 * math.sin(5. * math.pi * t)  # Small and fast: below what the correction accepts as a lane change.
   measured = _map_left_vehicle(display, monkeypatch, False, wobble, 160)[-40:]
   monkeypatch.delattr(main.create_ccnc_messages, "_display_options", raising=False)
   centered = _map_left_vehicle(display, monkeypatch, True, wobble, 160)[-40:]
   assert max(centered) - min(centered) < .05 < max(measured) - min(measured)
-  assert centered[-1] == pytest.approx(3.6, abs=.2)  # The left lane centre, not the measured 4.3m.
+  # The left lane centre, not the measured 4.3m, also with the pull limit (it holds only moving cars).
+  assert centered[-1] == pytest.approx(3.6, abs=.2)
 
 
 def test_position_correction_follows_sustained_lateral_motion_on_the_radar_map(display, monkeypatch):
@@ -275,8 +278,10 @@ def test_live_position_option_preserves_selection_and_existing_filters(display):
   assert tracker.selected == (42, None, None)
 
 
-@pytest.mark.parametrize('correction', [False, True])
-def test_position_correction_changes_lateral_display_only(display, correction):
+@pytest.mark.parametrize('correction,pull_limit', [(False, None), (True, 0.), (True, None)])
+def test_position_correction_changes_lateral_display_only(display, monkeypatch, correction, pull_limit):
+  if pull_limit is not None:
+    monkeypatch.setattr(ccnc_extension._CcncVehiclePositionCorrection, 'LC_PULL_LIMIT', pull_limit)
   params, cs, send = display
   params[KEYS[2]], params[POSITION_KEY] = True, correction
   cs.out.vEgo = 15.
@@ -295,6 +300,7 @@ def test_position_correction_changes_lateral_display_only(display, correction):
   assert values['FF_DISTANCE'] == values['LF_DETECT_DISTANCE'] == values['RF_DETECT_DISTANCE'] == 16.
   assert (values['FF_DETECT'], values['LF_DETECT'], values['RF_DETECT']) == (3, 3, 3)
   if correction:
+    # Lane-keeping cars reach their centres with or without the pull limit.
     assert (values['FF_LATERAL'], values['LF_DETECT_LATERAL'], values['RF_DETECT_LATERAL']) == pytest.approx((0., 3., 3.))
   else:
     assert values['FF_LATERAL'] == pytest.approx(ccnc_extension.apply_curved_deadband(-.5, 0., .7, 1))

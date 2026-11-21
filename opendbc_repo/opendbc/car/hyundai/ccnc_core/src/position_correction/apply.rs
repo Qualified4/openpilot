@@ -215,12 +215,24 @@ fn follow(
     }
     put!(saved, "locked", false);
     put!(saved, "following", true);
+    if fast_speed.is_none() {
+        put!(saved, "lc_transit", direction(net));
+    }
     if side && net * side_sign(slot) < 0. {
         put!(saved, "inward_frame", frame);
     }
     Ok(())
 }
 
+fn direction(net: f64) -> i64 {
+    if net > 0. {
+        1
+    } else {
+        -1
+    }
+}
+
+/// Returns the road-aligned net motion when fast evidence unlocked following in this publication.
 fn fast_motion(
     correction: &Bound<'_, PyAny>,
     saved: &Bound<'_, PyDict>,
@@ -229,7 +241,7 @@ fn fast_motion(
     center_valid: bool,
     common_road: bool,
     side: bool,
-) -> PyResult<()> {
+) -> PyResult<Option<f64>> {
     let fast = field!(saved, "fast");
     if fast.is_truthy()? {
         let (last, raw, aligned): MotionSample = fast.get_item(-1)?.extract()?;
@@ -246,13 +258,13 @@ fn fast_motion(
         || age(stamp, fast.get_item(0)?.get_item(0)?.extract()?)
             < attr!(correction, "FAST_TIME").extract::<i64>()?
     {
-        return Ok(());
+        return Ok(None);
     }
     if center_valid && input.reliable {
         let (left, right) = require_bounds(input.bounds)?;
         let history: Vec<MotionSample> = read_samples(&fast)?;
         let (Some(first), Some(last)) = (history.first(), history.last()) else {
-            return Ok(());
+            return Ok(None);
         };
         let total = nets(*first, *last);
         let span = age(stamp, first.0) as f64 * 0.01;
@@ -284,9 +296,10 @@ fn fast_motion(
                 total[1],
                 input.frame,
             )?;
+            return Ok(Some(total[1]));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -300,6 +313,7 @@ fn ordinary_motion(
     common_road: bool,
     side: bool,
     settle_time: i64,
+    fast_net: Option<f64>,
 ) -> PyResult<()> {
     if samples.is_truthy()? {
         let (last, raw, aligned): MotionSample = samples.get_item(-1)?.extract()?;
@@ -316,6 +330,19 @@ fn ordinary_motion(
     }
     append(samples, (stamp, input.y, input.aligned))?;
     prune(samples, stamp, settle_time)?;
+    let history = match saved.get_item(intern!(saved.py(), "lc_hist"))? {
+        Some(history) => history,
+        None => {
+            let history = new_deque(saved.py(), None)?;
+            put!(saved, "lc_hist", &history);
+            history
+        }
+    };
+    append(&history, (stamp, input.aligned))?;
+    prune(&history, stamp, attr!(correction, "LC_STALL_TIME").extract()?)?;
+    if let Some(net) = fast_net {
+        put!(saved, "lc_transit", direction(net));
+    }
     if number!(saved, "fast_speed") == 0. && center_valid && input.reliable && samples.len()? >= 5 {
         let mut moving: Vec<MotionSample> = read_samples(samples)?;
         moving.retain(|sample| age(stamp, sample.0) <= 70);
@@ -344,6 +371,62 @@ fn ordinary_motion(
         }
     }
     Ok(())
+}
+
+fn transit(saved: &Bound<'_, PyDict>) -> PyResult<bool> {
+    Ok(saved
+        .get_item(intern!(saved.py(), "lc_transit"))?
+        .map(|value| value.is_truthy())
+        .transpose()?
+        .unwrap_or(false))
+}
+
+/// A car the motion gates (or LC_TRANSIT_ANY) saw changing lanes may not be re-locked by settling until it has left
+/// its lane centre and come back, or has stopped moving: a pause mid-change would otherwise park it on the cluster.
+fn transit_block(
+    correction: &Bound<'_, PyAny>,
+    saved: &Bound<'_, PyDict>,
+    stamp: i64,
+    frame: i64,
+    aligned: f64,
+    center: f64,
+) -> PyResult<bool> {
+    let history: Vec<(i64, f64)> = read_samples(&field!(saved, "lc_hist"))?;
+    let any = attr!(correction, "LC_TRANSIT_ANY").extract::<f64>()?;
+    let recent: Vec<_> = history.iter().filter(|h| age(stamp, h.0) <= 100).collect();
+    let net = match (recent.first(), recent.last()) {
+        (Some(first), Some(last)) => last.1 - first.1,
+        _ => 0.,
+    };
+    let moved = any != 0. && recent.len() >= 5 && age(stamp, recent[0].0) >= 80 && net.abs() >= any;
+    if moved && truth!(saved, "following") && !transit(saved)? {
+        put!(saved, "lc_transit", direction(net));
+    }
+    if transit(saved)? {
+        put!(saved, "lc_moving", frame);
+    }
+    if attr!(correction, "LC_TRANSIT").extract::<f64>()? == 0. || !transit(saved)? {
+        return Ok(false);
+    }
+    let stall_time: i64 = attr!(correction, "LC_STALL_TIME").extract()?;
+    let stalled = age(stamp, history[0].0) >= stall_time - 10
+        && (history[history.len() - 1].1 - history[0].1).abs()
+            < attr!(correction, "LC_STALL_DIST").extract::<f64>()?;
+    let near = (aligned - center).abs() <= attr!(correction, "LC_NEAR").extract::<f64>()?;
+    if !near {
+        put!(saved, "lc_left", true);
+    }
+    let left = saved
+        .get_item(intern!(saved.py(), "lc_left"))?
+        .map(|value| value.is_truthy())
+        .transpose()?
+        .unwrap_or(false);
+    if stalled || (near && left) {
+        put!(saved, "lc_left", false);
+        put!(saved, "lc_transit", 0);
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 fn settled(
@@ -587,7 +670,7 @@ pub(crate) fn apply(correction: &Bound<'_, PyAny>, input: ApplyInput<'_, '_>) ->
         if side {
             update_side(correction, &saved, &input, stamp)?;
         }
-        fast_motion(
+        let fast_net = fast_motion(
             correction,
             &saved,
             &input,
@@ -607,7 +690,9 @@ pub(crate) fn apply(correction: &Bound<'_, PyAny>, input: ApplyInput<'_, '_>) ->
             common_road,
             side,
             settle_time,
+            fast_net,
         )?;
+        let blocked = transit_block(correction, &saved, stamp, frame, aligned, center)?;
         let settling = field!(saved, "settling");
         append(&settling, (stamp, y, aligned, filtered, inside))?;
         prune(&settling, stamp, settle_time)?;
@@ -625,7 +710,7 @@ pub(crate) fn apply(correction: &Bound<'_, PyAny>, input: ApplyInput<'_, '_>) ->
             && age(stamp, settling.get_item(0)?.get_item(0)?.extract()?) >= settle_time
         {
             let items: Vec<SettlingSample> = read_samples(&settling)?;
-            if settled(correction, &items, stamp, common_road)? {
+            if settled(correction, &items, stamp, common_road)? && !blocked {
                 put!(saved, "following", false);
                 put!(saved, "locked", true);
                 if let (Some(ff), Some(vision_history)) = (&ff, &vision_history) {
@@ -721,6 +806,21 @@ pub(crate) fn apply(correction: &Bound<'_, PyAny>, input: ApplyInput<'_, '_>) ->
         rate = py_min(15., py_max(rate, 1.4 * fast_speed + 1.));
     }
     let output = number!(saved, "output");
+    // Locked: no pull towards the centre while a moving car is measured on the other side (it would run backwards).
+    let pull_limit = attr!(correction, "LC_PULL_LIMIT").extract::<f64>()?;
+    let moving = saved
+        .get_item(intern!(py, "lc_moving"))?
+        .map(|value| value.extract::<i64>())
+        .transpose()?
+        .unwrap_or(-1000);
+    if pull_limit != 0.
+        && !following
+        && age(frame, moving) <= attr!(correction, "LC_PULL_TIME").extract::<i64>()?
+        && (center - output) * (aligned - output) < 0.
+        && (aligned - output).abs() > pull_limit
+    {
+        target = output;
+    }
     let output = output + py_min(py_max(target - output, -rate * dt), rate * dt);
     put!(saved, "output", output);
     if let Some(ff) = &ff {
