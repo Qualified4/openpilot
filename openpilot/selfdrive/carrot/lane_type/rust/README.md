@@ -56,7 +56,7 @@ cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.35   # cross build
 | `STRIPNET_REMAP=opencv\|kleidicv\|kleidicv-unfused` | which rounding rule (OpenCV generic x86 vs device KleidiCV) | per arch |
 | `STRIPNET_SIDES=spawn\|worker\|seq` | second side on a new scoped thread per phase / one resident worker thread / sequential on the caller (`tail`) | worker |
 | `STRIPNET_TRACT_STATE=0\|1` | one reused tract SimpleState per side instead of a new one per run | on |
-| `STRIPNET_CPUS=list` | the daemon's CPU affinity (`0-3`, `0-2`, `1-2`, `4`, `0,2,5-6`); invalid → `0-3`; refused by the kernel (all offline) → unchanged. `stripnet_replay` applies it only when set | `0-3` |
+| `STRIPNET_CPUS=list` | the daemon's CPU affinity (`0-3`, `0-2`, `1-2`, `4`, `0,2,5-6`); invalid → `0-2`; refused by the kernel (all offline) → unchanged. `stripnet_replay` applies it only when set | `0-2` |
 | `STRIPNET_MALLOPT=0\|1` | glibc mallopt as `strip_extractor.tune_allocator` (64 MB / 256 MB / 16 MB) | off |
 
 `stripnet_replay` prints the stage times per modelV2 (`stagesMs`: rows, maps, remap, reduce = 4:1 mean + row resize +

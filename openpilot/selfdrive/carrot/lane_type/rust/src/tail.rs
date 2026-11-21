@@ -6,7 +6,7 @@
 //! * `STRIPNET_SIDES=spawn|worker|seq` — how the second side runs: a new scoped thread per phase (spawn), one resident
 //!   worker thread fed through a channel (worker), or both sides one after the other on the caller (seq).
 //! * `STRIPNET_TRACT_STATE=0|1` — keep one tract SimpleState per side instead of a new one per run (`model`).
-//! * `STRIPNET_CPUS=0-3` — the daemon's CPU affinity, a list such as `0-2`, `1-2`, `4` or `0,2,5-6` (CPUs 0-63).
+//! * `STRIPNET_CPUS=0-2` — the daemon's CPU affinity, a list such as `0-2`, `1-2`, `4` or `0,2,5-6` (CPUs 0-63).
 
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -48,8 +48,9 @@ pub fn sides() -> Sides {
     })
 }
 
-/// CPUs the daemon may run on, as the bits of an affinity mask; the default is CPU 0-3 (the Python process's set).
-pub const DEFAULT_CPUS: u64 = 0b1111;
+/// CPUs the daemon may run on, as the bits of an affinity mask; the default is CPU 0-2 (2026-11-21 device bench: 0-3
+/// had the longest p99 in every run, 0-2 the lowest p99 of the step).
+pub const DEFAULT_CPUS: u64 = 0b0111;
 
 /// A CPU list (`0-3`, `1-2`, `4`, `0,2,5-6`) as a mask; None when empty, malformed or above CPU 63.
 pub fn parse_cpus(spec: &str) -> Option<u64> {
@@ -76,7 +77,7 @@ pub fn parse_cpus(spec: &str) -> Option<u64> {
 pub fn cpu_mask() -> u64 {
     match std::env::var("STRIPNET_CPUS") {
         Ok(v) => parse_cpus(&v).unwrap_or_else(|| {
-            eprintln!("STRIPNET_CPUS={v:?} invalid: 0-3");
+            eprintln!("STRIPNET_CPUS={v:?} invalid: 0-2");
             DEFAULT_CPUS
         }),
         Err(_) => DEFAULT_CPUS,
@@ -255,6 +256,7 @@ mod tests {
     #[test]
     fn cpu_lists() {
         assert_eq!(parse_cpus("0-3"), Some(0b1111));
+        assert_eq!(DEFAULT_CPUS, parse_cpus("0-2").unwrap());
         assert_eq!(parse_cpus("0-2"), Some(0b0111));
         assert_eq!(parse_cpus("1-2"), Some(0b0110));
         assert_eq!(parse_cpus("4"), Some(0b1_0000));
