@@ -61,10 +61,12 @@ fn main() -> anyhow::Result<()> {
         if getppid() == 1 {
             return Ok(());
         }
-        let mut set = [0u64; 16];
-        set[0] = 0b1111; // CPU 0-3, as the Python process
-        sched_setaffinity(0, std::mem::size_of_val(&set), set.as_ptr());
         nice(10);
+    }
+    // Before Recogniser::new starts the side worker, so it inherits the mask.
+    let cpus = stripnet::tail::cpu_mask();
+    if !stripnet::tail::pin_cpus(cpus) {
+        eprintln!("CCNC lane marking: CPU mask {cpus:#x} refused, affinity unchanged");
     }
     let subs: Vec<Sub> = SERVICES.iter().map(|s| Sub::new(s, false).expect("subscribe")).collect();
     let publisher = Pub::new("customReservedRawData2").expect("publish");
@@ -123,7 +125,6 @@ fn main() -> anyhow::Result<()> {
 }
 
 extern "C" {
-    fn sched_setaffinity(pid: i32, size: usize, mask: *const u64) -> i32;
     fn nice(inc: i32) -> i32;
     fn prctl(option: i32, arg2: u64, ...) -> i32;
     fn getppid() -> i32;

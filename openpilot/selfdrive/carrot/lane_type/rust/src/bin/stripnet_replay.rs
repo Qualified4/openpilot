@@ -32,6 +32,9 @@ fn main() -> anyhow::Result<()> {
     let assets = PathBuf::from(args.get(1).map_or("../assets", |s| s.as_str()));
     let threads = args.iter().position(|a| a == "--threads").and_then(|i| args.get(i + 1)).map_or(2, |v| v.parse().unwrap());
     let mallopt = stripnet::tail::tune_allocator();
+    if std::env::var_os("STRIPNET_CPUS").is_some() && !stripnet::tail::pin_cpus(stripnet::tail::cpu_mask()) {
+        eprintln!("STRIPNET_CPUS refused by the kernel, affinity unchanged");
+    }
     let diag_on = args.iter().any(|a| a == "--diag");
     let mut model = StripModel::load(&assets, "lane_strip_v4")?;
     if args.iter().any(|a| a == "--batch") {

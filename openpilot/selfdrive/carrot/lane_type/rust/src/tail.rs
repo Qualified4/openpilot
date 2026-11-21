@@ -6,6 +6,7 @@
 //! * `STRIPNET_SIDES=spawn|worker|seq` — how the second side runs: a new scoped thread per phase (spawn), one resident
 //!   worker thread fed through a channel (worker), or both sides one after the other on the caller (seq).
 //! * `STRIPNET_TRACT_STATE=0|1` — keep one tract SimpleState per side instead of a new one per run (`model`).
+//! * `STRIPNET_CPUS=0-3` — the daemon's CPU affinity, a list such as `0-2`, `1-2`, `4` or `0,2,5-6` (CPUs 0-63).
 
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -45,6 +46,57 @@ pub fn sides() -> Sides {
         }
         Err(_) => Sides::Worker,
     })
+}
+
+/// CPUs the daemon may run on, as the bits of an affinity mask; the default is CPU 0-3 (the Python process's set).
+pub const DEFAULT_CPUS: u64 = 0b1111;
+
+/// A CPU list (`0-3`, `1-2`, `4`, `0,2,5-6`) as a mask; None when empty, malformed or above CPU 63.
+pub fn parse_cpus(spec: &str) -> Option<u64> {
+    let mut mask = 0u64;
+    for part in spec.split(',') {
+        let (lo, hi) = match part.trim().split_once('-') {
+            Some((a, b)) => (a.trim().parse::<u32>().ok()?, b.trim().parse::<u32>().ok()?),
+            None => {
+                let c = part.trim().parse::<u32>().ok()?;
+                (c, c)
+            }
+        };
+        if lo > hi || hi > 63 {
+            return None;
+        }
+        for c in lo..=hi {
+            mask |= 1 << c;
+        }
+    }
+    (mask != 0).then_some(mask)
+}
+
+/// `STRIPNET_CPUS` as a mask: DEFAULT_CPUS when unset or invalid.
+pub fn cpu_mask() -> u64 {
+    match std::env::var("STRIPNET_CPUS") {
+        Ok(v) => parse_cpus(&v).unwrap_or_else(|| {
+            eprintln!("STRIPNET_CPUS={v:?} invalid: 0-3");
+            DEFAULT_CPUS
+        }),
+        Err(_) => DEFAULT_CPUS,
+    }
+}
+
+/// Pins the calling thread (and threads it starts later) to `mask`; false when the kernel refuses it (e.g. every
+/// CPU in the mask is offline) and the affinity stays as it was.
+pub fn pin_cpus(mask: u64) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        extern "C" {
+            fn sched_setaffinity(pid: i32, size: usize, mask: *const u64) -> i32;
+        }
+        let mut set = [0u64; 16];
+        set[0] = mask;
+        return unsafe { sched_setaffinity(0, std::mem::size_of_val(&set), set.as_ptr()) } == 0;
+    }
+    #[allow(unreachable_code)]
+    false
 }
 
 /// strip_extractor.tune_allocator; true when every mallopt call succeeded (false when off or not glibc).
@@ -198,6 +250,18 @@ mod tests {
         let r = catch_unwind(AssertUnwindSafe(|| w.join(|| panic!("side 1"), || 1)));
         assert!(r.is_err());
         assert_eq!(w.join(|| 5, || 6).0, 5);
+    }
+
+    #[test]
+    fn cpu_lists() {
+        assert_eq!(parse_cpus("0-3"), Some(0b1111));
+        assert_eq!(parse_cpus("0-2"), Some(0b0111));
+        assert_eq!(parse_cpus("1-2"), Some(0b0110));
+        assert_eq!(parse_cpus("4"), Some(0b1_0000));
+        assert_eq!(parse_cpus(" 0, 2,5-6 "), Some(0b110_0101));
+        for bad in ["", "a", "3-1", "64", "0-", ","] {
+            assert_eq!(parse_cpus(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
