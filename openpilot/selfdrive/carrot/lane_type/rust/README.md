@@ -29,16 +29,19 @@ cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.35   # cross build
 
 | switch | effect | default |
 |---|---|---|
-| `STRIPNET_SIMD=0\|1` | remap SIMD: aarch64 NEON (KleidiCV rule), x86_64 AVX2 (OpenCV rule, when the CPU has it) | `strip::SIMD_DEFAULT` |
+| `STRIPNET_SIMD=0\|1` | remap SIMD: aarch64 NEON (KleidiCV rule), x86_64 AVX2 (OpenCV rule, when the CPU has it) | on |
 | `STRIPNET_MAP_CACHE=1` | reuse a side's rows / maps while line x/y/z, projection (rpy, K), frame height and strip shape are bit-identical; any changed bit is a miss | off |
 | `--batch` (replay) | both sides in one tract N=2 run | off |
-| `STRIPNET_TRACT_THREADS=n` | tract intra-op rayon pool of n threads | 1 |
-| `STRIPNET_BACKEND=rust\|kleidicv\|opencv` | who runs the KleidiCV-rule remap on aarch64 (features `kleidicv` / `opencv`) | rust |
+| `STRIPNET_TRACT_THREADS=n` | tract intra-op rayon pool of n threads (feature `tract-mt`) | 1 |
+| `STRIPNET_BACKEND=rust\|kleidicv\|opencv` | who runs the KleidiCV-rule remap on aarch64 (features `kleidicv` / `opencv`) | kleidicv if compiled in, else rust |
 | `STRIPNET_CV_THREADS=n` | cv::setNumThreads for the `opencv` backend | 1 |
 | `STRIPNET_REMAP=opencv\|kleidicv\|kleidicv-unfused` | which rounding rule (OpenCV generic x86 vs device KleidiCV) | per arch |
 
 `stripnet_replay` prints the stage times per modelV2 (`stagesMs`: rows, maps, remap, reduce = 4:1 mean + row resize +
 float32 output, summed over both sides) and `cacheHits`.
+
+Device build to use: `--features kleidicv` (the fastest remap measured, 0.1 MB larger than the plain binary, no new .so).
+Map cache, N=2 batch and tract threads stay off: no hits on real drives, no gain, and slower / more CPU respectively.
 
 ### KleidiCV / OpenCV backends (aarch64)
 
@@ -50,7 +53,7 @@ binary then needs no new `.so` on the device.
 ```sh
 ZIG_PYTHON=<python with ziglang> tools/build_native.sh target/native-aarch64      # ~10 min with -j2 (cmake, ninja from pip)
 STRIPNET_NATIVE_DIR=$PWD/target/native-aarch64 cargo zigbuild -j2 --release --target aarch64-unknown-linux-gnu.2.35 \
-    --bin stripnet_replay --features kleidicv,opencv
+    --bin stripnet_replay --features kleidicv,opencv,tract-mt     # the combo-bench binary; the device build: kleidicv
 ```
 
 ### Combo bench (M8 and device)

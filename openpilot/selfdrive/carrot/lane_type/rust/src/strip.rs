@@ -558,11 +558,15 @@ pub fn simd() -> bool {
     })
 }
 
-pub const SIMD_DEFAULT: bool = cfg!(target_arch = "aarch64");
+/// On everywhere: bit-identical, and the remap stage drops 3.4 -> 1.6 ms on M8 (AVX2), 23.0 -> 17.4 ms on the device
+/// (NEON) in the 2026-11-21 combo bench.
+pub const SIMD_DEFAULT: bool = true;
 
 /// Who computes the KleidiCV-rule remap (RemapRule::KleidiCv): this crate's NEON / scalar code, KleidiCV's own
 /// `kleidicv_remap_f32_u8` linked statically (feature `kleidicv`), or OpenCV's `cv::remap` built with the KleidiCV HAL
-/// (feature `opencv`, the call cv2.remap makes on the device). STRIPNET_BACKEND=rust|kleidicv|opencv; default rust.
+/// (feature `opencv`, the call cv2.remap makes on the device). STRIPNET_BACKEND=rust|kleidicv|opencv; default kleidicv
+/// when the binary has the `kleidicv` feature (remap stage 7.4 ms against the crate's NEON 17.4 ms on the device,
+/// same bits), else rust.
 /// A backend that is not compiled in, or that returns an error, falls back to rust (counted in `native::fallbacks`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {
@@ -576,6 +580,8 @@ pub fn backend() -> Backend {
     *B.get_or_init(|| match std::env::var("STRIPNET_BACKEND").as_deref() {
         Ok("kleidicv") => Backend::KleidiCv,
         Ok("opencv") => Backend::OpenCv,
+        Ok("rust") => Backend::Rust,
+        _ if cfg!(feature = "kleidicv") => Backend::KleidiCv,
         _ => Backend::Rust,
     })
 }

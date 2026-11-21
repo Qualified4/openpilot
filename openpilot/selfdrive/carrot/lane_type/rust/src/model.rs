@@ -17,10 +17,15 @@ pub fn tract_threads() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
         let n = std::env::var("STRIPNET_TRACT_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(1usize);
+        #[cfg(feature = "tract-mt")]
         if n > 1 {
             tract_linalg::multithread::set_default_executor(tract_linalg::multithread::Executor::multithread(n));
+            return n;
         }
-        n
+        if n > 1 {
+            eprintln!("STRIPNET_TRACT_THREADS={n} needs the tract-mt feature: single-threaded");
+        }
+        1
     })
 }
 

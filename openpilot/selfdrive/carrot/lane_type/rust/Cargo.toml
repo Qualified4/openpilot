@@ -16,13 +16,15 @@ ipc = ["dep:cc"]
 # native/*.cc), linked statically from the builds tools/build_native.sh makes (STRIPNET_NATIVE_DIR).
 kleidicv = ["dep:cc"]
 opencv = ["dep:cc"]
+# tract intra-op threads (combo bench only: slower on M8 and the device; +7 MB on aarch64).
+tract-mt = ["dep:tract-linalg", "tract-linalg/multithread-mm"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 tract-onnx = { version = "0.23.10", default-features = false }
-# Only for tract's intra-op thread pool (rayon), off unless STRIPNET_TRACT_THREADS > 1 (model::tract_threads).
-tract-linalg = { version = "=0.23.10", features = ["multithread-mm"] }
+# Only for tract's intra-op thread pool (rayon, feature `tract-mt`; STRIPNET_TRACT_THREADS > 1, model::tract_threads).
+tract-linalg = { version = "=0.23.10", optional = true }
 sha2 = "0.10.9"
 anyhow = "1"
 

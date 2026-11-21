@@ -8,7 +8,8 @@
 #   batch     both sides in one tract N=2 run                              (--batch)
 #   mt2, mt4  tract intra-op threads 2 / 4                                 (STRIPNET_TRACT_THREADS)
 #   sc, sc_mt2, sc_b   simd+cache, + mt2, + batch
-#   device only (stripnet_replay built with --features kleidicv,opencv), remap backend with SIMD on:
+#   (mt2 / mt4 need --features tract-mt; device binary: --features kleidicv,opencv,tract-mt)
+#   device only, remap backend with SIMD on:
 #   kc        kleidicv_remap_f32_u8 linked statically                      (STRIPNET_BACKEND=kleidicv)
 #   cv        cv::remap, OpenCV 4.13.0 + KleidiCV HAL, static, 1 cv thread (STRIPNET_BACKEND=opencv)
 #   py        the Python daemon path (parity reference; only in the parity run)
@@ -63,10 +64,12 @@ engine() {  # NAME RECORD(0|1)
     sc) env="STRIPNET_SIMD=1 STRIPNET_MAP_CACHE=1" ;;
     sc_mt2) env="STRIPNET_SIMD=1 STRIPNET_MAP_CACHE=1 STRIPNET_TRACT_THREADS=2" ;;
     sc_b) env="STRIPNET_SIMD=1 STRIPNET_MAP_CACHE=1"; extra=--batch ;;
+    rs) env="STRIPNET_SIMD=1 STRIPNET_BACKEND=rust" ;;
     kc) env="STRIPNET_SIMD=1 STRIPNET_BACKEND=kleidicv" ;;
     cv) env="STRIPNET_SIMD=1 STRIPNET_BACKEND=opencv" ;;
     *) echo "unknown engine $1" >&2; exit 2 ;;
   esac
+  case $1 in kc|cv) ;; *) env="STRIPNET_BACKEND=rust $env" ;; esac  # the default backend is kleidicv when compiled in
   echo "$1=env $env $PIN $BIN $A --threads 2 $extra $rec"
 }
 run() {  # NAME RECORD ENGINES...
