@@ -1,0 +1,232 @@
+{
+ "enums": {
+  "CalStatus": [
+   "uncalibrated",
+   "calibrated",
+   "invalid",
+   "recalibrating"
+  ],
+  "DeviceType": [
+   "unknown",
+   "neo",
+   "chffrAndroid",
+   "chffrIos",
+   "tici",
+   "pc",
+   "tizi",
+   "mici"
+  ],
+  "ImageSensor": [
+   "unknown",
+   "ar0231",
+   "ox03c10",
+   "os04c10"
+  ],
+  "LaneChangeState": [
+   "off",
+   "preLaneChange",
+   "laneChangeStarting",
+   "laneChangeFinishing"
+  ]
+ },
+ "structs": {
+  "CarState": {
+   "dataWords": 24,
+   "fields": {
+    "leftBlinker": {
+     "default": false,
+     "kind": "bool",
+     "offset": 69
+    },
+    "rightBlinker": {
+     "default": false,
+     "kind": "bool",
+     "offset": 70
+    },
+    "vEgo": {
+     "default": 0.0,
+     "kind": "float32",
+     "offset": 0
+    }
+   },
+   "pointers": 13
+  },
+  "DeviceState": {
+   "dataWords": 15,
+   "fields": {
+    "deviceType": {
+     "default": 0,
+     "kind": "enum",
+     "offset": 41
+    },
+    "started": {
+     "default": false,
+     "kind": "bool",
+     "offset": 192
+    }
+   },
+   "pointers": 10
+  },
+  "Event": {
+   "dataWords": 2,
+   "discriminantOffset": 4,
+   "fields": {
+    "carState": {
+     "discriminant": 21,
+     "kind": "struct",
+     "offset": 0
+    },
+    "customReservedRawData2": {
+     "discriminant": 153,
+     "kind": "data",
+     "offset": 0
+    },
+    "deviceState": {
+     "discriminant": 5,
+     "kind": "struct",
+     "offset": 0
+    },
+    "liveCalibration": {
+     "discriminant": 18,
+     "kind": "struct",
+     "offset": 0
+    },
+    "logMonoTime": {
+     "default": 0,
+     "kind": "uint64",
+     "offset": 0
+    },
+    "modelV2": {
+     "discriminant": 73,
+     "kind": "struct",
+     "offset": 0
+    },
+    "radarState": {
+     "discriminant": 12,
+     "kind": "struct",
+     "offset": 0
+    },
+    "roadCameraState": {
+     "discriminant": 1,
+     "kind": "struct",
+     "offset": 0
+    },
+    "valid": {
+     "default": true,
+     "kind": "bool",
+     "offset": 80
+    }
+   },
+   "pointers": 1
+  },
+  "FrameData": {
+   "dataWords": 12,
+   "fields": {
+    "sensor": {
+     "default": 0,
+     "kind": "enum",
+     "offset": 40
+    }
+   },
+   "pointers": 7
+  },
+  "LiveCalibrationData": {
+   "dataWords": 2,
+   "fields": {
+    "calStatus": {
+     "default": 0,
+     "kind": "enum",
+     "offset": 1
+    },
+    "rpyCalib": {
+     "kind": "list",
+     "offset": 4
+    }
+   },
+   "pointers": 8
+  },
+  "ModelDataV2": {
+   "dataWords": 6,
+   "fields": {
+    "frameId": {
+     "default": 0,
+     "kind": "uint32",
+     "offset": 0
+    },
+    "laneLineProbs": {
+     "kind": "list",
+     "offset": 5
+    },
+    "laneLines": {
+     "kind": "list",
+     "offset": 4
+    },
+    "meta": {
+     "kind": "struct",
+     "offset": 8
+    },
+    "timestampEof": {
+     "default": 0,
+     "kind": "uint64",
+     "offset": 2
+    }
+   },
+   "pointers": 17
+  },
+  "ModelDataV2.MetaData": {
+   "dataWords": 13,
+   "fields": {
+    "laneChangeState": {
+     "default": 0,
+     "kind": "enum",
+     "offset": 9
+    }
+   },
+   "pointers": 8
+  },
+  "RadarState": {
+   "dataWords": 5,
+   "fields": {
+    "leadOne": {
+     "kind": "struct",
+     "offset": 1
+    }
+   },
+   "pointers": 15
+  },
+  "RadarState.LeadData": {
+   "dataWords": 9,
+   "fields": {
+    "dRel": {
+     "default": 0.0,
+     "kind": "float32",
+     "offset": 0
+    },
+    "status": {
+     "default": false,
+     "kind": "bool",
+     "offset": 321
+    }
+   },
+   "pointers": 0
+  },
+  "XYZTData": {
+   "dataWords": 0,
+   "fields": {
+    "x": {
+     "kind": "list",
+     "offset": 0
+    },
+    "y": {
+     "kind": "list",
+     "offset": 1
+    },
+    "z": {
+     "kind": "list",
+     "offset": 2
+    }
+   },
+   "pointers": 7
+  }
+ }
+}

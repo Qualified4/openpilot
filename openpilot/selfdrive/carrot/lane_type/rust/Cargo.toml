@@ -1,0 +1,38 @@
+[package]
+name = "stripnet"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "CCNC lane marking recogniser (StripNet) in Rust: the marking_daemon.py processing path"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+# msgq / VisionIPC through a small C++ shim over msgq_repo (src/ipc.rs, ipc/shim.cc).
+ipc = ["dep:cc"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+tract-onnx = { version = "0.23.10", default-features = false }
+sha2 = "0.10.9"
+anyhow = "1"
+
+[build-dependencies]
+cc = { version = "1.11", optional = true }
+
+[[bin]]
+name = "stripnet_replay"
+path = "src/bin/stripnet_replay.rs"
+
+[[bin]]
+name = "stripnet_daemon"
+path = "src/bin/stripnet_daemon.rs"
+required-features = ["ipc"]
+
+[profile.release]
+debug = false
+lto = "thin"
+codegen-units = 4
