@@ -84,6 +84,18 @@ pub struct Decision {
 
 type Plan = std::sync::Arc<TypedRunnableModel>;
 
+/// STRIPNET_ENGINE=tract (default) | ort-cpu | ort-xnnpack (the latter two need the `ort` feature).
+pub fn engine() -> &'static str {
+    static E: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    E.get_or_init(|| std::env::var("STRIPNET_ENGINE").unwrap_or_else(|_| "tract".into())).as_str()
+}
+
+enum Backend {
+    Tract { plan: Plan, plan2: Option<Plan> },
+    #[cfg(feature = "ort")]
+    Ort(crate::ort_engine::OrtModel),
+}
+
 pub struct StripModel {
     pub name: String,
     pub version: serde_json::Value,
@@ -91,9 +103,7 @@ pub struct StripModel {
     pub mirror_right: bool,
     pub strip: StripShape,
     pub threshold: f64,
-    plan: Plan,
-    /// The N=2 plan (both sides in one run), built by `enable_batch`.
-    plan2: Option<Plan>,
+    backend: Backend,
     data: Vec<u8>,
 }
 
@@ -145,23 +155,42 @@ impl StripModel {
             anyhow::bail!("lane strip manifest input shape {:?} does not match its strip", manifest.input.shape);
         }
         let _ = &manifest.input.name;
-        let plan = build_plan(&data, 1, strip)?;
+        let backend = match engine() {
+            "tract" => Backend::Tract { plan: build_plan(&data, 1, strip)?, plan2: None },
+            #[cfg(feature = "ort")]
+            e @ ("ort-cpu" | "ort-xnnpack") => {
+                Backend::Ort(crate::ort_engine::OrtModel::new(data.clone(), e == "ort-xnnpack", [3, strip.rows, strip.cols])?)
+            }
+            e => anyhow::bail!("STRIPNET_ENGINE {e:?} is not built in (tract; ort-cpu / ort-xnnpack with the ort feature)"),
+        };
         Ok(StripModel { name: name.into(), version: manifest.version, sha256: manifest.model_sha256, mirror_right: manifest.mirror_right,
-                        strip, threshold: manifest.threshold, plan, plan2: None, data })
+                        strip, threshold: manifest.threshold, backend, data })
     }
 
     pub fn enable_batch(&mut self) -> anyhow::Result<()> {
-        self.plan2 = Some(build_plan(&self.data, 2, self.strip)?);
+        match &mut self.backend {
+            Backend::Tract { plan2, .. } => *plan2 = Some(build_plan(&self.data, 2, self.strip)?),
+            #[cfg(feature = "ort")]
+            Backend::Ort(m) => m.enable_batch()?,
+        }
         Ok(())
     }
 
     pub fn batched(&self) -> bool {
-        self.plan2.is_some()
+        match &self.backend {
+            Backend::Tract { plan2, .. } => plan2.is_some(),
+            #[cfg(feature = "ort")]
+            Backend::Ort(m) => m.batched(),
+        }
     }
 
     /// Both strips in one N=2 run: [(type logits, colour logits); 2].
     pub fn forward2(&self, a: &[f32], b: &[f32]) -> anyhow::Result<[(Vec<f32>, Vec<f32>); 2]> {
-        let plan = self.plan2.as_ref().ok_or_else(|| anyhow::anyhow!("batch plan not built"))?;
+        let plan = match &self.backend {
+            Backend::Tract { plan2, .. } => plan2.as_ref().ok_or_else(|| anyhow::anyhow!("batch plan not built"))?,
+            #[cfg(feature = "ort")]
+            Backend::Ort(m) => return m.forward2(a, b),
+        };
         let mut both = Vec::with_capacity(a.len() * 2);
         both.extend_from_slice(a);
         both.extend_from_slice(b);
@@ -180,8 +209,13 @@ impl StripModel {
 
     /// (type logits, colour logits) of one 3 x rows x cols strip.
     pub fn forward(&self, strip: &[f32]) -> anyhow::Result<(Vec<f32>, Vec<f32>)> {
+        let plan = match &self.backend {
+            Backend::Tract { plan, .. } => plan,
+            #[cfg(feature = "ort")]
+            Backend::Ort(m) => return m.forward(strip),
+        };
         let input = Tensor::from_shape(&[1, 3, self.strip.rows, self.strip.cols], strip)?;
-        let out = self.plan.run(tvec!(input.into()))?;
+        let out = plan.run(tvec!(input.into()))?;
         let flat = |i: usize| -> anyhow::Result<Vec<f32>> { Ok(out[i].to_plain_array_view::<f32>()?.iter().copied().collect()) };
         Ok((flat(0)?, flat(1)?))
     }

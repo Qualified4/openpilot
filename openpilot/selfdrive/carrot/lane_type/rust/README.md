@@ -35,12 +35,18 @@ cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.35   # cross build
 | `STRIPNET_TRACT_THREADS=n` | tract intra-op rayon pool of n threads (feature `tract-mt`) | 1 |
 | `STRIPNET_BACKEND=rust\|kleidicv\|opencv` | who runs the KleidiCV-rule remap on aarch64 (features `kleidicv` / `opencv`) | kleidicv if compiled in, else rust |
 | `STRIPNET_CV_THREADS=n` | cv::setNumThreads for the `opencv` backend | 1 |
+| `STRIPNET_ENGINE=tract\|ort-cpu\|ort-xnnpack` | inference engine; `ort-*` need feature `ort` (onnxruntime loaded from `ORT_DYLIB_PATH`, `ort` 2.0.0-rc.15 / api-31 as the detection runner). N=1: two 1-thread sessions, one per side; `--batch`: one N=2 session | tract |
+| `STRIPNET_ORT_THREADS=n` | intra-op threads of the ort N=2 session | 1 |
+| `STRIPNET_ORT_KLEIDIAI=0` | `mlas.disable_kleidiai` (MLAS's KleidiAI kernels off) | on |
 | `STRIPNET_REMAP=opencv\|kleidicv\|kleidicv-unfused` | which rounding rule (OpenCV generic x86 vs device KleidiCV) | per arch |
 
 `stripnet_replay` prints the stage times per modelV2 (`stagesMs`: rows, maps, remap, reduce = 4:1 mean + row resize +
 float32 output, summed over both sides) and `cacheHits`.
 
 Device build to use: `--features kleidicv` (the fastest remap measured, 0.1 MB larger than the plain binary, no new .so).
+Inference stays on tract: onnxruntime 1.32 (2026-11-21, device, parity 3,178/3,178) cut the inference tail with N=2
+(p95 13.6 vs 18.1 ms) but not the whole step, for +27 MB .so and +25 MB RSS; the device CPU (SD845) has no
+dotprod / i8mm / SME, so none of the wheel's KleidiAI kernels can run there (on/off identical); the wheel has no XNNPACK EP.
 Map cache, N=2 batch and tract threads stay off: no hits on real drives, no gain, and slower / more CPU respectively.
 
 ### KleidiCV / OpenCV backends (aarch64)

@@ -17,6 +17,9 @@ ipc = ["dep:cc"]
 kleidicv = ["dep:cc"]
 opencv = ["dep:cc"]
 # tract intra-op threads (combo bench only: slower on M8 and the device; +7 MB on aarch64).
+# onnxruntime inference (src/ort_engine.rs; STRIPNET_ENGINE=ort-cpu|ort-xnnpack), libonnxruntime.so loaded at run time
+# (ORT_DYLIB_PATH). Combo bench only.
+ort = ["dep:ort"]
 tract-mt = ["dep:tract-linalg", "tract-linalg/multithread-mm"]
 
 [dependencies]
@@ -26,6 +29,7 @@ tract-onnx = { version = "0.23.10", default-features = false }
 # Only for tract's intra-op thread pool (rayon, feature `tract-mt`; STRIPNET_TRACT_THREADS > 1, model::tract_threads).
 tract-linalg = { version = "=0.23.10", optional = true }
 sha2 = "0.10.9"
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-31", "xnnpack"], optional = true }
 anyhow = "1"
 
 [build-dependencies]

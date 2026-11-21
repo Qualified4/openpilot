@@ -37,8 +37,8 @@ fn main() -> anyhow::Result<()> {
     if !stripnet::native::available(backend) {
         anyhow::bail!("STRIPNET_BACKEND {backend:?} is not compiled into this binary");
     }
-    eprintln!("stripnet_replay: remap rule {:?}, backend {backend:?}, simd {}, map cache {}, tract threads {}, batch {}",
-              stripnet::strip::remap_rule(), stripnet::strip::simd(), stripnet::strip::map_cache_enabled(),
+    eprintln!("stripnet_replay: engine {}, remap rule {:?}, backend {backend:?}, simd {}, map cache {}, tract threads {}, batch {}",
+              stripnet::model::engine(), stripnet::strip::remap_rule(), stripnet::strip::simd(), stripnet::strip::map_cache_enabled(),
               stripnet::model::tract_threads(), args.iter().any(|a| a == "--batch"));
     let mut recogniser = Recogniser::new(model);
     recogniser.threads = threads;
