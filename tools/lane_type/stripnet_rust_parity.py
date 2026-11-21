@@ -296,6 +296,7 @@ def run_segment(spec, rust, py, rows, totals, diffs_file):
 
 def serve_python(record, threads):
   """The Python daemon path as an engine process with stripnet_replay's stdin protocol (one JSON line per modelV2)."""
+  import resource
   import sys
   import cv2
   from openpilot.cereal import log
@@ -323,7 +324,9 @@ def serve_python(record, threads):
         if which != 'modelV2':
           d.take(which, e.as_builder().as_reader())
           continue
+        flt = resource.getrusage(resource.RUSAGE_SELF).ru_minflt
         r = d.step(e.modelV2, int(e.logMonoTime), now)
+        r['minflt'] = resource.getrusage(resource.RUSAGE_SELF).ru_minflt - flt
       r.pop('lane_change', None)
       r.pop('luma', None)
       stdout.write(json.dumps(r) + '\n')
@@ -415,7 +418,8 @@ def run_engines(spec, engines, limit, rows, totals, diffs_file):
         row[name] = {'wall': r['wallMs'], 'extract': r['extractMs'], 'infer': r['inferMs'], 'cpu': r.get('cpuMs'),
                      'stages': r.get('stagesMs'), 'srcRows': r.get('srcRows'), 'cacheHits': r.get('cacheHits'),
                      'inferred': sum(x is not None for x in r['diag']) if r.get('diag') else None,
-                     'strips': [x['strip'] for x in r.get('diag') or [] if x is not None]}
+                     'strips': [x['strip'] for x in r.get('diag') or [] if x is not None],
+                     'minflt': r.get('minflt'), 'wait': r.get('waitMs'), 'inferSide': r.get('inferSideMs')}
     row['frameId'] = int(e.modelV2.frameId)
     rows.append(row)
   container.close()

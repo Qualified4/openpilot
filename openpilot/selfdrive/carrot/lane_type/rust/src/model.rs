@@ -91,7 +91,8 @@ pub fn engine() -> &'static str {
 }
 
 enum Backend {
-    Tract { plan: Plan, plan2: Option<Plan> },
+    /// `states`: one reused SimpleState per side (STRIPNET_TRACT_STATE=1).
+    Tract { plan: Plan, plan2: Option<Plan>, states: Option<[std::sync::Mutex<TypedSimpleState>; 2]> },
     #[cfg(feature = "ort")]
     Ort(crate::ort_engine::OrtModel),
 }
@@ -156,7 +157,15 @@ impl StripModel {
         }
         let _ = &manifest.input.name;
         let backend = match engine() {
-            "tract" => Backend::Tract { plan: build_plan(&data, 1, strip)?, plan2: None },
+            "tract" => {
+                let plan = build_plan(&data, 1, strip)?;
+                let states = if crate::tail::tract_state_reuse() {
+                    Some([std::sync::Mutex::new(plan.spawn()?), std::sync::Mutex::new(plan.spawn()?)])
+                } else {
+                    None
+                };
+                Backend::Tract { plan, plan2: None, states }
+            }
             #[cfg(feature = "ort")]
             e @ ("ort-cpu" | "ort-xnnpack") => {
                 Backend::Ort(crate::ort_engine::OrtModel::new(data.clone(), e == "ort-xnnpack", [3, strip.rows, strip.cols])?)
@@ -209,13 +218,21 @@ impl StripModel {
 
     /// (type logits, colour logits) of one 3 x rows x cols strip.
     pub fn forward(&self, strip: &[f32]) -> anyhow::Result<(Vec<f32>, Vec<f32>)> {
-        let plan = match &self.backend {
-            Backend::Tract { plan, .. } => plan,
+        self.forward_side(0, strip)
+    }
+
+    /// `forward` for side 0 / 1 (with STRIPNET_TRACT_STATE=1 each side reuses its own tract state).
+    pub fn forward_side(&self, side: usize, strip: &[f32]) -> anyhow::Result<(Vec<f32>, Vec<f32>)> {
+        let (plan, states) = match &self.backend {
+            Backend::Tract { plan, states, .. } => (plan, states),
             #[cfg(feature = "ort")]
             Backend::Ort(m) => return m.forward(strip),
         };
         let input = Tensor::from_shape(&[1, 3, self.strip.rows, self.strip.cols], strip)?;
-        let out = plan.run(tvec!(input.into()))?;
+        let out = match states {
+            Some(s) => s[side].lock().unwrap_or_else(|p| p.into_inner()).run(tvec!(input.into()))?,
+            None => plan.run(tvec!(input.into()))?,
+        };
         let flat = |i: usize| -> anyhow::Result<Vec<f32>> { Ok(out[i].to_plain_array_view::<f32>()?.iter().copied().collect()) };
         Ok((flat(0)?, flat(1)?))
     }

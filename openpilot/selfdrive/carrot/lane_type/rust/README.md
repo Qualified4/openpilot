@@ -54,6 +54,9 @@ cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.35   # cross build
 | `STRIPNET_ORT_THREADS=n` | intra-op threads of the ort N=2 session | 1 |
 | `STRIPNET_ORT_KLEIDIAI=0` | `mlas.disable_kleidiai` (MLAS's KleidiAI kernels off) | on |
 | `STRIPNET_REMAP=opencv\|kleidicv\|kleidicv-unfused` | which rounding rule (OpenCV generic x86 vs device KleidiCV) | per arch |
+| `STRIPNET_SIDES=spawn\|worker\|seq` | second side on a new scoped thread per phase / one resident worker thread / sequential on the caller (`tail`) | worker |
+| `STRIPNET_TRACT_STATE=0\|1` | one reused tract SimpleState per side instead of a new one per run | on |
+| `STRIPNET_MALLOPT=0\|1` | glibc mallopt as `strip_extractor.tune_allocator` (64 MB / 256 MB / 16 MB) | off |
 
 `stripnet_replay` prints the stage times per modelV2 (`stagesMs`: rows, maps, remap, reduce = 4:1 mean + row resize +
 float32 output, summed over both sides) and `cacheHits`.
@@ -63,6 +66,33 @@ Inference stays on tract: onnxruntime 1.32 (2026-11-21, device, parity 3,178/3,1
 (p95 13.6 vs 18.1 ms) but not the whole step, for +27 MB .so and +25 MB RSS; the device CPU (SD845) has no
 dotprod / i8mm / SME, so none of the wheel's KleidiAI kernels can run there (on/off identical); the wheel has no XNNPACK EP.
 Map cache, N=2 batch and tract threads stay off: no hits on real drives, no gain, and slower / more CPU respectively.
+
+### Inference tail (2026-11-21, device, parked, taskset 0-3, nice 10, 1,560 modelV2 x 3 rotated runs, n=4,680)
+
+`stripnet_replay --diag` adds minflt, the caller's wait for the other side (waitMs) and per-side inference (inferSideMs);
+`combo_bench.sh` engines s0 (594e1391: spawn, new state, no mallopt), v1 / v2 / v2b / v3 and combinations. ms, median / p95 / p99:
+
+| run (load) | engine | inference | whole step | minflt / modelV2 |
+|---|---|---|---|---|
+| 1 (4.8-6.2) | py | 6.18 / 15.06 / 22.32 | 29.18 / 53.23 / 60.95 | 0 |
+| 1 | s0 | 8.28 / 23.30 / 36.08 | 23.44 / 48.10 / 55.73 | 0 |
+| 1 | v1 mallopt | 8.57 / 24.89 / 39.43 | 26.93 / 51.25 / 57.56 | 0 |
+| 1 | v2 worker | 7.69 / 20.26 / 32.51 | 21.20 / 43.88 / 51.72 | 0 |
+| 1 | v2b seq | 7.36 / 24.24 / 35.18 | 26.66 / 48.11 / 56.33 | 0.3 |
+| 1 | v3 state | 8.37 / 18.61 / 26.56 | 22.69 / 42.81 / 51.14 | 0 |
+| 1 | v123 | 7.77 / 18.28 / 26.77 | 18.98 / 37.22 / 46.74 | 0 |
+| 1 | v12b3 | 7.55 / 18.23 / 28.07 | 24.17 / 44.08 / 53.32 | 0 |
+| 2 (4.0-5.4) | py | 6.08 / 10.39 / 13.75 | 24.47 / 34.70 / 39.56 | 0 |
+| 2 | s0 | 8.03 / 15.23 / 21.25 | 18.97 / 29.25 / 36.16 | 0 |
+| 2 | v123 | 7.37 / 14.10 / 20.42 | 17.71 / 28.30 / 34.56 | 0 |
+| 2 | v23 (default) | 6.57 / 12.55 / 17.66 | 16.94 / 26.57 / 33.37 | 0 |
+
+No page faults per modelV2 with or without mallopt, so mallopt stays off. Reusing the tract state and the resident
+thread each cut the tail; together the inference p95 / p99 fall ~18 % / ~17 % against s0, but stay above Python's: one
+side's tract run (median 4.0 ms) is slower than Python's two sides together on cv2.dnn (6.1 ms), so Rust only wins the
+median by running the sides in parallel, and each frame then waits for the slower of two threads on a loaded CPU.
+The whole step's tail is below Python's in every run. Parity of every engine: M8 14,386 / 14,386, strips 11,789 / 11,789;
+device 3,178 / 3,178, strips 2,395 / 2,395.
 
 ### KleidiCV / OpenCV backends (aarch64)
 

@@ -19,6 +19,12 @@
 #   ob, ob2   ort-cpu N=2 batch, 1 / 2 intra-op threads                    (--batch, STRIPNET_ORT_THREADS)
 #   ok0, ok0b2  o1 / ob2 with MLAS KleidiAI off                            (STRIPNET_ORT_KLEIDIAI=0)
 #   x1, xb2   ort-xnnpack N=1 / N=2 with 2 threads                         (STRIPNET_ENGINE=ort-xnnpack)
+#   tail switches (stripnet::tail; --diag: minflt / side wait / per-side inference in the rows), default backend:
+#   s0        spawn per phase, no mallopt, new tract state per run (594e1391) (STRIPNET_SIDES=spawn ...=0)
+#   v1        s0 + mallopt as tune_allocator                             (STRIPNET_MALLOPT=1)
+#   v2, v2b   s0 with one resident side thread / both sides sequential   (STRIPNET_SIDES=worker|seq)
+#   v3        s0 + one reused tract state per side                       (STRIPNET_TRACT_STATE=1)
+#   v123, v12b3, v23  v1+v2+v3, v1+v2b+v3, v2+v3
 #   py        the Python daemon path (parity reference; only in the parity run)
 # Runs: `parity` once with py and recording (strip sha256 / logits), then `time` REPEATS times without py or recording,
 # the engine order rotated each repeat. Summary: tools/extract_summary.py OUT.
@@ -32,7 +38,7 @@
 set -u
 HOST=${1:?m8|device}; STEP=${2:-all}
 if [ "$HOST" = device ]; then
-  B=/data/tmp/stripnet_bench
+  B=${B:-/data/tmp/stripnet_bench}
   export PYTHONPATH=/data/openpilot/pydeps:/data/openpilot:/data/pythonpath
   PY=/usr/local/venv/bin/python3
   A=/data/openpilot/openpilot/selfdrive/carrot/lane_type/assets
@@ -85,9 +91,18 @@ engine() {  # NAME RECORD(0|1)
     x1) env="STRIPNET_ENGINE=ort-xnnpack" ;;
     xb2) env="STRIPNET_ENGINE=ort-xnnpack STRIPNET_ORT_THREADS=2"; extra=--batch ;;
     cv) env="STRIPNET_SIMD=1 STRIPNET_BACKEND=opencv" ;;
+    s0) env="STRIPNET_SIDES=spawn STRIPNET_MALLOPT=0 STRIPNET_TRACT_STATE=0" ;;
+    v1) env="STRIPNET_SIDES=spawn STRIPNET_MALLOPT=1 STRIPNET_TRACT_STATE=0" ;;
+    v2) env="STRIPNET_SIDES=worker STRIPNET_MALLOPT=0 STRIPNET_TRACT_STATE=0" ;;
+    v2b) env="STRIPNET_SIDES=seq STRIPNET_MALLOPT=0 STRIPNET_TRACT_STATE=0" ;;
+    v3) env="STRIPNET_SIDES=spawn STRIPNET_MALLOPT=0 STRIPNET_TRACT_STATE=1" ;;
+    v123) env="STRIPNET_SIDES=worker STRIPNET_MALLOPT=1 STRIPNET_TRACT_STATE=1" ;;
+    v12b3) env="STRIPNET_SIDES=seq STRIPNET_MALLOPT=1 STRIPNET_TRACT_STATE=1" ;;
+    v23) env="STRIPNET_SIDES=worker STRIPNET_MALLOPT=0 STRIPNET_TRACT_STATE=1" ;;
     *) echo "unknown engine $1" >&2; exit 2 ;;
   esac
-  case $1 in kc|cv|def|tb|o*|x*) ;; *) env="STRIPNET_BACKEND=rust $env" ;; esac  # the default backend is kleidicv when compiled in
+  case $1 in kc|cv|def|tb|o*|x*|s0|v*) ;; *) env="STRIPNET_BACKEND=rust $env" ;; esac
+  case $1 in s0|v*) extra="$extra --diag" ;; esac  # the default backend is kleidicv when compiled in
   echo "$1=env $env $PIN $BIN $A --threads 2 $extra $rec"
 }
 run() {  # NAME RECORD ENGINES...

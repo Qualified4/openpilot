@@ -39,6 +39,10 @@ pub struct Timing {
     pub infer_ms: f64,
     /// Extraction stages summed over the sides (both threads' wall time, so it can exceed extract_ms).
     pub stages: strip::Stages,
+    /// Time the caller waited for the other side's thread after finishing its own (extraction + inference).
+    pub wait_ms: f64,
+    /// Each side's own inference time (0 when not inferred or batched).
+    pub infer_side_ms: [f64; 2],
 }
 
 pub struct Recogniser {
@@ -57,6 +61,9 @@ pub struct Recogniser {
     pub map_cache_on: bool,
     map_cache: [strip::MapCache; 2],
     pub timing: Timing,
+    /// How the second side runs (tail::Sides, STRIPNET_SIDES) and its resident thread for `Worker`.
+    pub sides: crate::tail::Sides,
+    worker: Option<crate::tail::Worker>,
     /// Replay diagnostics: keep each inferred side's strip sha256 (first 16 hex) and logits.
     pub record: bool,
     pub last: [Option<Diag>; 2],
@@ -95,6 +102,8 @@ impl Recogniser {
             map_cache_on: strip::map_cache_enabled(),
             map_cache: Default::default(),
             timing: Timing::default(),
+            sides: crate::tail::sides(),
+            worker: None,
             record: false,
             last: [None, None],
         }
@@ -235,16 +244,20 @@ impl Recogniser {
                                           cache_on.then_some(cache));
             (s, st)
         };
-        // Both sides in parallel (2 threads, as the Python daemon's cv2.setNumThreads(2)).
+        // Both sides in parallel (2 threads, as the Python daemon's cv2.setNumThreads(2)), unless STRIPNET_SIDES=seq.
         let threads = self.threads;
+        let mode = if threads > 1 { self.sides } else { crate::tail::Sides::Seq };
+        if mode == crate::tail::Sides::Worker && self.worker.is_none() {
+            self.worker = Some(crate::tail::Worker::new());
+        }
+        let worker = self.worker.as_ref();
+        let mut wait_ns = 0u64;
         let caches = &mut self.map_cache;
-        let extracted: Vec<(usize, (Option<Vec<f32>>, strip::Stages))> = if threads > 1 && eligible.len() == 2 {
+        let extracted: Vec<(usize, (Option<Vec<f32>>, strip::Stages))> = if eligible.len() == 2 {
             let [c0, c1] = caches; // eligible == [0, 1]
-            std::thread::scope(|s| {
-                let h = s.spawn(|| extract(1, c1));
-                let a = extract(0, c0);
-                vec![(0, a), (1, h.join().unwrap())]
-            })
+            let (b, a, w) = crate::tail::pair(mode, worker, || extract(1, c1), || extract(0, c0));
+            wait_ns += w;
+            vec![(0, a), (1, b)]
         } else {
             eligible.iter().map(|&s| (s, extract(s, &mut caches[s]))).collect()
         };
@@ -265,11 +278,14 @@ impl Recogniser {
         let infer_start = Instant::now();
         let model = &self.model;
         let record = self.record;
-        let run = |s: &Vec<f32>| -> anyhow::Result<(Decision, Option<Diag>)> {
-            let (t, c) = model.forward(s)?;
+        let run = |side: usize, s: &Vec<f32>| -> anyhow::Result<((Decision, Option<Diag>), f64)> {
+            let t0 = Instant::now();
+            let (t, c) = model.forward_side(side, s)?;
+            let ms = t0.elapsed().as_nanos() as f64 / 1e6;
             let d = model.decide4(&t, &c);
-            Ok((d, record.then(|| Diag { strip_sha: strip_sha(s), type_logits: t, color_logits: c })))
+            Ok(((d, record.then(|| Diag { strip_sha: strip_sha(s), type_logits: t, color_logits: c })), ms))
         };
+        let mut infer_side_ms = [0.; 2];
         let decisions: Vec<(usize, (Decision, Option<Diag>))> = if model.batched() && strips.len() == 2 {
             let (a, b) = (strips[0].1.as_ref().unwrap(), strips[1].1.as_ref().unwrap());
             let [x, y] = model.forward2(a, b)?;
@@ -280,20 +296,30 @@ impl Recogniser {
                     (side, (d, record.then(|| Diag { strip_sha: strip_sha(s), type_logits: t, color_logits: c })))
                 })
                 .collect()
-        } else if self.threads > 1 && strips.len() == 2 {
-            std::thread::scope(|s| -> anyhow::Result<_> {
-                let h = s.spawn(|| run(strips[1].1.as_ref().unwrap()));
-                let a = run(strips[0].1.as_ref().unwrap())?;
-                Ok(vec![(strips[0].0, a), (strips[1].0, h.join().unwrap()?)])
-            })?
+        } else if strips.len() == 2 {
+            let (b, a, w) = crate::tail::pair(mode, worker, || run(strips[1].0, strips[1].1.as_ref().unwrap()),
+                                              || run(strips[0].0, strips[0].1.as_ref().unwrap()));
+            wait_ns += w;
+            let ((a, ma), (b, mb)) = (a?, b?);
+            infer_side_ms = [ma, mb];
+            vec![(strips[0].0, a), (strips[1].0, b)]
         } else {
-            strips.iter().map(|(side, s)| Ok((*side, run(s.as_ref().unwrap())?))).collect::<anyhow::Result<_>>()?
+            strips
+                .iter()
+                .map(|(side, s)| {
+                    let (r, ms) = run(*side, s.as_ref().unwrap())?;
+                    infer_side_ms[*side] = ms;
+                    Ok((*side, r))
+                })
+                .collect::<anyhow::Result<_>>()?
         };
         let now = Instant::now();
         self.timing = Timing {
             extract_ms: (infer_start - extract_start).as_nanos() as f64 / 1e6,
             infer_ms: (now - infer_start).as_nanos() as f64 / 1e6,
             stages,
+            wait_ms: wait_ns as f64 / 1e6,
+            infer_side_ms,
         };
         let mut models: [Option<Decision>; 2] = [None, None];
         self.last = [None, None];

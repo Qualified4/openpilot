@@ -16,6 +16,7 @@ pub mod native;
 pub mod recogniser;
 pub mod result;
 pub mod strip;
+pub mod tail;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 #[cfg(feature = "ort")]

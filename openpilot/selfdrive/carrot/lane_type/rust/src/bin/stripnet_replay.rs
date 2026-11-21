@@ -6,7 +6,9 @@
 //!   b'F' a camera frame: u32 frameId, u64 timestampEof, u32 width, u32 height, then NV12 (stride = width);
 //!   b'N' u64 monotonic now for the next modelV2's processing (publish time; the replay has no clock).
 //! Frames are kept like the device FrameBuffer (newest 3); there are no hold / slot-reuse drops offline.
-//! Args: <assets dir> [--threads N] [--batch] [--no-record]
+//! Args: <assets dir> [--threads N] [--batch] [--no-record] [--diag]
+//! --diag adds per modelV2 the process's minor page faults (minflt), the caller's wait for the other side's thread
+//! (waitMs) and each side's inference time (inferSideMs).
 
 use std::io::{BufWriter, Read, Write};
 use std::path::PathBuf;
@@ -29,6 +31,8 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let assets = PathBuf::from(args.get(1).map_or("../assets", |s| s.as_str()));
     let threads = args.iter().position(|a| a == "--threads").and_then(|i| args.get(i + 1)).map_or(2, |v| v.parse().unwrap());
+    let mallopt = stripnet::tail::tune_allocator();
+    let diag_on = args.iter().any(|a| a == "--diag");
     let mut model = StripModel::load(&assets, "lane_strip_v4")?;
     if args.iter().any(|a| a == "--batch") {
         model.enable_batch()?; // both sides in one N=2 tract run
@@ -37,9 +41,10 @@ fn main() -> anyhow::Result<()> {
     if !stripnet::native::available(backend) {
         anyhow::bail!("STRIPNET_BACKEND {backend:?} is not compiled into this binary");
     }
-    eprintln!("stripnet_replay: engine {}, remap rule {:?}, backend {backend:?}, simd {}, map cache {}, tract threads {}, batch {}",
+    eprintln!("stripnet_replay: engine {}, remap rule {:?}, backend {backend:?}, simd {}, map cache {}, tract threads {}, batch {}, mallopt {mallopt}, sides {:?}, tract state reuse {}",
               stripnet::model::engine(), stripnet::strip::remap_rule(), stripnet::strip::simd(), stripnet::strip::map_cache_enabled(),
-              stripnet::model::tract_threads(), args.iter().any(|a| a == "--batch"));
+              stripnet::model::tract_threads(), args.iter().any(|a| a == "--batch"),
+              stripnet::tail::sides(), stripnet::tail::tract_state_reuse());
     let mut recogniser = Recogniser::new(model);
     recogniser.threads = threads;
     recogniser.record = !args.iter().any(|a| a == "--no-record"); // strip sha256 / logits per side
@@ -80,19 +85,27 @@ fn main() -> anyhow::Result<()> {
                 let arg = picked.zip(image.as_ref()).map(|((f, kind), img)| (f.frame_id, f.eof, img, kind, f.recv_ns));
                 let t0 = Instant::now();
                 let cpu0 = thread_cpu_ns();
+                let flt0 = if diag_on { stripnet::tail::minflt() } else { 0 };
                 let step = daemon.step(model, event.log_mono_time as i64, arg, || now_next, |_| None);
                 let wall_ms = t0.elapsed().as_nanos() as f64 / 1e6;
                 let cpu_ms = (thread_cpu_ns() - cpu0) as f64 / 1e6;
+                let minflt = diag_on.then(|| stripnet::tail::minflt() - flt0);
                 let line = match step {
                     Step::Published { packet, .. } => {
                         let diag: Vec<_> = daemon.recogniser.last.iter().map(|d| d.as_ref().map(|d| json!({
                             "strip": d.strip_sha, "typeLogits": d.type_logits, "colorLogits": d.color_logits}))).collect();
                         let t = daemon.recogniser.timing;
                 let stages_ms = [t.stages.rows, t.stages.maps, t.stages.remap, t.stages.reduce].map(|v| v as f64 / 1e6);
-                        json!({"status": "published", "frameId": model.frame_id, "packet": packet, "diag": diag,
+                        let mut j = json!({"status": "published", "frameId": model.frame_id, "packet": packet, "diag": diag,
                                "wallMs": wall_ms, "cpuMs": cpu_ms, "extractMs": t.extract_ms, "inferMs": t.infer_ms,
                                "stagesMs": stages_ms,
-                               "srcRows": t.stages.src_rows, "cacheHits": t.stages.cache_hits})
+                               "srcRows": t.stages.src_rows, "cacheHits": t.stages.cache_hits});
+                        if let Some(f) = minflt {
+                            j["minflt"] = json!(f);
+                            j["waitMs"] = json!(t.wait_ms);
+                            j["inferSideMs"] = json!(t.infer_side_ms);
+                        }
+                        j
                     }
                     Step::Mismatch => json!({"status": "frame_mismatch", "frameId": model.frame_id}),
                     Step::Stale => json!({"status": "stale_inputs", "frameId": model.frame_id}),

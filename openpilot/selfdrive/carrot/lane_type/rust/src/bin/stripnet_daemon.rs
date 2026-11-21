@@ -42,6 +42,7 @@ fn main() -> anyhow::Result<()> {
     if !enabled(&params) {
         return Ok(());
     }
+    stripnet::tail::tune_allocator();
     let assets = PathBuf::from(std::env::var("STRIPNET_ASSETS").unwrap_or_else(|_| "../assets".into()));
     let model = match StripModel::load(&assets, "lane_strip_v4") {
         Ok(m) => m,

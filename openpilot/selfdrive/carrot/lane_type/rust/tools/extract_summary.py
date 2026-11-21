@@ -31,6 +31,10 @@ def main(root):
       for eng in summ:
         if eng in r:
           d = per.setdefault(eng, {'extract': [], 'infer': [], 'wall': [], 'stages': [], 'runs': {}, 'hits': 0, 'strips': 0})
+          for k, v in (('minflt', r[eng].get('minflt')), ('wait', r[eng].get('wait')),
+                       ('inferSideMax', max(r[eng]['inferSide']) if r[eng].get('inferSide') else None)):
+            if v is not None:
+              d.setdefault(k, []).append(v)
           d['hits'] += r[eng].get('cacheHits') or 0
           d['strips'] += 1  # modelV2 published
           for k in ('extract', 'infer', 'wall'):
@@ -38,6 +42,7 @@ def main(root):
           if r[eng].get('stages'):
             d['stages'].append(r[eng]['stages'])
           d['runs'].setdefault(run.name, []).append(r[eng]['extract'])
+          d.setdefault('iruns', {}).setdefault(run.name, []).append(r[eng]['infer'])
           d.setdefault('wruns', {}).setdefault(run.name, []).append(r[eng]['wall'])
     for eng, s in summ.items():
       per.setdefault(eng, {'extract': [], 'infer': [], 'wall': [], 'stages': [], 'runs': {}, 'hits': 0, 'strips': 0}).setdefault('stat', []).append(
@@ -46,6 +51,14 @@ def main(root):
     res = {'n': len(d['extract'])}
     for k in ('extract', 'infer', 'wall'):
       res[k] = pct(d[k])
+    for k in ('wait', 'inferSideMax'):
+      if d.get(k):
+        res[k] = pct(d[k])
+    if d.get('minflt'):
+      f = np.asarray(d['minflt'], float)
+      res['minfltPerModel'] = {'mean': round(float(f.mean()), 1), 'median': float(np.median(f)), 'p95': float(np.percentile(f, 95)),
+                               'p99': float(np.percentile(f, 99))}
+    res['inferMedianPerRun'] = {k: round(float(np.median(v)), 2) for k, v in d.get('iruns', {}).items()}
     res['extractMedianPerRun'] = {k: round(float(np.median(v)), 2) for k, v in d['runs'].items()}
     res['wallMedianPerRun'] = {k: round(float(np.median(v)), 2) for k, v in d.get('wruns', {}).items()}
     res['mapCacheHitsPerModels'] = f"{d['hits']} hits / {d['strips']} modelV2" 
