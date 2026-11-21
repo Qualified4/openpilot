@@ -12,6 +12,7 @@
 #   device only, remap backend with SIMD on:
 #   kc        kleidicv_remap_f32_u8 linked statically                      (STRIPNET_BACKEND=kleidicv)
 #   cv        cv::remap, OpenCV 4.13.0 + KleidiCV HAL, static, 1 cv thread (STRIPNET_BACKEND=opencv)
+#   def       the build's defaults, no switches (a --features kleidicv binary: SIMD + KleidiCV)
 #   py        the Python daemon path (parity reference; only in the parity run)
 # Runs: `parity` once with py and recording (strip sha256 / logits), then `time` REPEATS times without py or recording,
 # the engine order rotated each repeat. Summary: tools/extract_summary.py OUT.
@@ -66,10 +67,11 @@ engine() {  # NAME RECORD(0|1)
     sc_b) env="STRIPNET_SIMD=1 STRIPNET_MAP_CACHE=1"; extra=--batch ;;
     rs) env="STRIPNET_SIMD=1 STRIPNET_BACKEND=rust" ;;
     kc) env="STRIPNET_SIMD=1 STRIPNET_BACKEND=kleidicv" ;;
+    def) ;;
     cv) env="STRIPNET_SIMD=1 STRIPNET_BACKEND=opencv" ;;
     *) echo "unknown engine $1" >&2; exit 2 ;;
   esac
-  case $1 in kc|cv) ;; *) env="STRIPNET_BACKEND=rust $env" ;; esac  # the default backend is kleidicv when compiled in
+  case $1 in kc|cv|def) ;; *) env="STRIPNET_BACKEND=rust $env" ;; esac  # the default backend is kleidicv when compiled in
   echo "$1=env $env $PIN $BIN $A --threads 2 $extra $rec"
 }
 run() {  # NAME RECORD ENGINES...
