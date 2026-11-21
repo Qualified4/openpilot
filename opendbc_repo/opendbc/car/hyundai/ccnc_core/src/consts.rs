@@ -93,6 +93,12 @@ pub struct Consts {
     pub report_step: f64,
     pub ff_far_x: f64,
     pub ff_far_hold: f64,
+    pub switch_settle: f64,
+    pub switch_hold: f64,
+    pub switch_margin_x: f64,
+    pub switch_margin_c: f64,
+    pub switch_grace: f64,
+    pub switch_depart: f64,
 }
 
 impl Consts {
@@ -175,6 +181,12 @@ impl Consts {
             report_step: k(intern!(py, "REPORT_STEP"))?,
             ff_far_x: k(intern!(py, "FF_FAR_X"))?,
             ff_far_hold: k(intern!(py, "FF_FAR_HOLD"))?,
+            switch_settle: k(intern!(py, "SWITCH_SETTLE"))?,
+            switch_hold: k(intern!(py, "SWITCH_HOLD"))?,
+            switch_margin_x: k(intern!(py, "SWITCH_MARGIN_X"))?,
+            switch_margin_c: k(intern!(py, "SWITCH_MARGIN_C"))?,
+            switch_grace: k(intern!(py, "SWITCH_GRACE"))?,
+            switch_depart: k(intern!(py, "SWITCH_DEPART"))?,
         })
     }
 }

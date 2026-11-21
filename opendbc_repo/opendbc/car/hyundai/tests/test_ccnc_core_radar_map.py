@@ -157,6 +157,12 @@ class Recorder:
     self.counts['stop_memory'] += out is not None
     return out
 
+  def _switch_guard(self, slot, choice, candidates, blocked):
+    out = super()._switch_guard(slot, choice, candidates, blocked)
+    self.counts['switch_kept'] += out[0] != choice and out[1] is None
+    self.counts['switch_grace'] += out[0] != choice and out[1] is not None
+    return out
+
   def _far_hold(self, normal, far):
     out = super()._far_hold(normal, far)
     self.counts['far_hold'] += out != normal
@@ -538,7 +544,8 @@ def wall_keys(m):
 
 
 COUNTS = ('lane_checks', 'reconnects', 'meta_checks', 'meta_changing', 'bridged_walls', 'vision_changed', 'wall_outside',
-          'approach_only', 'behind_lead', 'stop_memory', 'far_hold', 'bridge_start', 'bridge_kept', 'bridge_expired')
+          'approach_only', 'behind_lead', 'stop_memory', 'far_hold', 'bridge_start', 'bridge_kept', 'bridge_expired',
+          'switch_kept', 'switch_grace')
 
 
 def run(seed, maps, frames=FRAMES):
@@ -714,9 +721,11 @@ def test_scenarios_reach_the_corner_cases():
                'bridged_walls', 'band_created', 'band_extended', 'band_vanished', 'band_early', 'early_twins'):
     assert total[name] > 0, name
   # Selection: each slot shown and replaced, stop memory, a side vehicle behind the lead, wall-outside and approach-only
-  # candidates, the FF bridge started, kept and expired, the far FF hold, vision matches.
+  # candidates, the FF bridge started, kept and expired, the far FF hold, vision matches, a settled target kept against a
+  # slightly better one after a change and held for a cycle out of the candidates.
   for name in ('selected_ff', 'selected_lf', 'selected_rf', 'selection_changed', 'remembered', 'stop_memory', 'behind_lead',
-               'wall_outside', 'approach_only', 'bridge_start', 'bridge_kept', 'bridge_expired', 'far_hold', 'vision_changed'):
+               'wall_outside', 'approach_only', 'bridge_start', 'bridge_kept', 'bridge_expired', 'far_hold', 'vision_changed',
+               'switch_kept', 'switch_grace'):
     assert total[name] > 0, name
 
 

@@ -16,6 +16,15 @@ spec.loader.exec_module(module)
 RadarMap = module.CcncRadarMap
 
 
+class PythonRadarMap(RadarMap):
+  RUST = None
+
+
+class UnguardedRadarMap(RadarMap):
+  """The selection before SWITCH_SETTLE: no target is old enough to be kept."""
+  SWITCH_SETTLE = math.inf
+
+
 def point(key, x, y=0., speed=0., **extra):
   extra.setdefault('trackState', 2)  # A measured track, unless the test says otherwise.
   return N(trackId=key, dRel=x, yRel=y, vLead=speed, vRel=speed, radarSource='frontRadar', measured=True, **extra)
@@ -1100,11 +1109,11 @@ def test_wall_follows_a_row_bending_into_a_turn_pocket(angle, moving, joins):
 
 
 
-def far_lead(left, x=70., lane_change=lambda i: False, near=lambda i: None):
+def far_lead(left, x=70., lane_change=lambda i: False, near=lambda i: None, cls=None):
   """Ego at 15m/s and a vehicle ``x`` ahead at the same speed, reported 1.6m left; ego's left lane line is drawn
   ``left[i]`` from the centre (1.8 keeps the vehicle in ego's lane, 1.4 puts it in the left lane), as far lane
   lines wander. Optionally a nearer in-lane car ``near(i)`` metres ahead. Per step, the FF object's source."""
-  radar, shown = RadarMap(), []
+  radar, shown = (cls or RadarMap)(), []
   for i, line in enumerate(left):
     m = N(laneLines=[N(x=[0., 10., 30., 100., 200.], y=[y] * 5) for y in (-5.4, -line, 1.8, 5.4)],
           laneLineProbs=[.95] * 4, orientationRate=N(z=[0.]), leadsV3=[])
@@ -1115,12 +1124,13 @@ def far_lead(left, x=70., lane_change=lambda i: False, near=lambda i: None):
   return shown
 
 
-@pytest.mark.parametrize('x,kept', [(70., True), (40., False)])
-def test_far_lead_stays_ff_while_its_lane_slot_flickers(x, kept):
+@pytest.mark.parametrize('x,cls,kept', [(70., None, True), (40., None, True), (40., UnguardedRadarMap, False)])
+def test_far_lead_stays_ff_while_its_lane_slot_flickers(x, cls, kept):
   # Recorded 2026-10-14: 339 of 356 FF flickers beyond 50m were the lead's lane slot leaving ego's lane for a
   # cycle or two (243 of them .1s) while it was measured throughout. Beyond 50m the displayed FF object stays
-  # FF through such a flicker; nearer, the lane decides at once as before.
-  shown = far_lead([1.8] * 30 + [1.4, 1.4, 1.8, 1.4, 1.8, 1.8, 1.4, 1.4, 1.8, 1.8], x)
+  # FF through such a flicker (FF_FAR_HOLD); nearer, a settled lead stays for up to SWITCH_GRACE (replayed
+  # 2026-11-21: such flickers started half of the slot ping-pongs). Without that the lane decides at once.
+  shown = far_lead([1.8] * 30 + [1.4, 1.4, 1.8, 1.4, 1.8, 1.8, 1.4, 1.4, 1.8, 1.8], x, cls=cls)
   assert all(s == 1 for s in shown[20:30])
   assert all(s == 1 for s in shown[30:]) == kept
 
@@ -1375,3 +1385,45 @@ def test_position_only_lines_do_not_align_the_display_or_survive_a_map_reset():
   generation = radar.generation
   radar.update(N(points=[]), lane_model((-5.4, -1.8, 1.8, 5.4), .02), 5., 10., lane_change=True)  # time gap
   assert radar.generation is not generation
+
+
+def switch_scene(radar, third_gap, *, lead_lost=False, frames=50):
+  """FF: track 2 alone at 30m, track 1 appears 10m nearer at 1s (a change), track 3 appears third_gap nearer than
+  track 1 at 1.6s; with lead_lost track 1 stops being reported then. All move ahead at 1m/s. -> FF track per frame."""
+  shown = []
+  for i in range(frames):
+    now = round(i * .05, 6)
+    points = [point(2, 30. + now, 0., 1., motionState=2)]
+    if now >= 1. and not (lead_lost and now >= 1.6):
+      points.append(point(1, 20. + now, 0., 1., motionState=2))
+    if now >= 1.6:
+      points.append(point(3, 20. - third_gap + now, 0., 1., motionState=2))
+    radar.update(N(points=points), model(), now, 0.)
+    key = radar.selected[0]
+    shown.append(None if key is None else radar.objects[key].source)
+  return shown
+
+
+@pytest.mark.parametrize('cls', (RadarMap, PythonRadarMap))
+def test_settled_target_keeps_the_slot_against_a_slightly_nearer_one_after_a_change(cls):
+  plain = switch_scene(UnguardedRadarMap(), 1.5)
+  assert plain[19] == 2 and plain[30] == 1 and plain[-1] == 3  # Without the guard the nearer one takes FF.
+  shown = switch_scene(cls(), 1.5)
+  assert shown[:36] == plain[:36]
+  assert set(shown[36:]) == {1}
+
+
+@pytest.mark.parametrize('cls', (RadarMap, PythonRadarMap))
+def test_clearly_nearer_target_and_lost_target_change_the_slot_at_once(cls):
+  # A vehicle SWITCH_MARGIN_X nearer (a cut-in) takes FF on the same frame as before; so does any vehicle once the
+  # shown one is no longer reported.
+  assert switch_scene(cls(), 2.5) == switch_scene(UnguardedRadarMap(), 2.5)
+  shown, plain = switch_scene(cls(), 1.5, lead_lost=True), switch_scene(UnguardedRadarMap(), 1.5, lead_lost=True)
+  assert shown == plain and plain[-1] == 3
+
+
+@pytest.mark.parametrize('cls', (RadarMap, PythonRadarMap))
+def test_guard_ends_after_switch_hold(cls):
+  class Short(cls):
+    SWITCH_HOLD = .3  # The change at about 1.15s is over by the time track 3 qualifies.
+  assert switch_scene(Short(), 1.5) == switch_scene(UnguardedRadarMap(), 1.5)

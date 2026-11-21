@@ -3,7 +3,7 @@
 
 use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyFloat, PyList, PySet};
+use pyo3::types::{PyDict, PyFloat, PyList, PySet, PyTuple};
 
 use crate::correct::correct_positions;
 use crate::display_filter;
@@ -227,6 +227,7 @@ fn map_reset(map: &Bound<'_, PyAny>) -> PyResult<()> {
         "hold",
         "bridge",
         "far_since",
+        "shown",
     ] {
         map.setattr(attr, py.None())?;
     }
@@ -235,6 +236,7 @@ fn map_reset(map: &Bound<'_, PyAny>) -> PyResult<()> {
     }
     put!(map, "pose" => (0., 0., 0.), "cos" => 1., "sin" => 0., "speed" => 0., "odometer" => 0., "a_ego" => 0., "yaw_rate" => 0.,
         "poses" => radar_map::deque(py)?.call1(((), 64))?, "next_id" => 1, "selected" => (py.None(), py.None(), py.None()),
+        "switched" => (py.None(), py.None(), py.None()), "absent" => (py.None(), py.None(), py.None()),
         "blindspot" => (false, false), "remembered" => PyList::new(py, [false; 3])?, "generation" => py.get_type::<PyAny>().call0()?);
     Ok(())
 }
@@ -566,6 +568,39 @@ fn draw_front<'py>(
     Ok(())
 }
 
+/// DISPLAY_HYSTERESIS (m, 0 off): the drawn FF/LF/RF lateral keeps its last value while the slot keeps its target
+/// and the new value is less than this far from it.
+fn hysteresis<'py>(map: &Bound<'py, PyAny>, values: &Bound<'py, PyDict>) -> PyResult<()> {
+    let py = map.py();
+    let band: f64 = get!(map, "DISPLAY_HYSTERESIS").extract()?;
+    if !(band > 0.) {
+        return Ok(());
+    }
+    let selected = get!(map, "selected");
+    let previous = map.getattr_opt(intern!(py, "shown"))?.filter(|v| !v.is_none());
+    let mut shown = Vec::with_capacity(3);
+    for (slot, [_, lateral, detect]) in FRONT_FIELDS.into_iter().enumerate() {
+        let key: Option<i64> = selected.get_item(slot)?.extract()?;
+        let value: f64 = values.as_any().get_item(lateral)?.extract()?;
+        if key.is_none() || !values.as_any().get_item(detect)?.is_truthy()? {
+            shown.push(py.None().into_bound(py));
+            continue;
+        }
+        let last: Option<(i64, f64)> = match &previous {
+            Some(p) => p.get_item(slot)?.extract()?,
+            None => None,
+        };
+        let kept = match last {
+            Some((k, v)) if Some(k) == key && (value - v).abs() < band - 1e-9 => v,
+            _ => value,
+        };
+        values.set_item(lateral, kept)?;
+        shown.push((key, kept).into_pyobject(py)?.into_any());
+    }
+    map.setattr(intern!(py, "shown"), PyTuple::new(py, shown)?)?;
+    Ok(())
+}
+
 fn finish_fields<'py>(values: &Bound<'py, PyDict>) -> PyResult<Bound<'py, PyDict>> {
     let fields = PyDict::new(values.py());
     for [distance, lateral, detect] in FRONT_FIELDS.into_iter().chain(REAR_FIELDS) {
@@ -678,6 +713,7 @@ fn update_map_display<'py>(
         put!(correction, "lane_change" => old_change);
         result?;
         rear::finish_map(&values, cs, md, frame, state, &map)?;
+        hysteresis(&map, &values)?;
         finish_fields(&values)
     })
 }

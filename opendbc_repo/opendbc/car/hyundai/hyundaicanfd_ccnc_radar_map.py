@@ -204,6 +204,18 @@ class CcncRadarMap:
   # .1s, the object measured throughout). The displayed FF object, still measured and otherwise eligible, stays FF
   # for up to FF_FAR_HOLD after its slot leaves ego's lane; a nearer FF candidate takes FF at once.
   FF_FAR_X, FF_FAR_HOLD = 50., .3
+  # Slot ping-pong (replayed 2026-11-21, 56 segments at bc8f4d82: 18-33 % of the slot target changes returned to the
+  # previous target within 3s, half of them after .2-.3s, mostly two tracked vehicles taking turns while one left
+  # the candidates for a cycle or two or lost to one about 1m nearer). Only a target tracked for SWITCH_SETTLE, measured
+  # this radar cycle and within FF_FAR_X (farther, lane lines are off by up to a lane; FF has its own far hold) is
+  # kept: for SWITCH_HOLD after the slot's target changed, while still a candidate, it gives way only to one
+  # SWITCH_MARGIN_X nearer or SWITCH_MARGIN_C nearer the lane centre; out of the candidates but not moving sideways
+  # faster than SWITCH_DEPART, it keeps the slot for up to SWITCH_GRACE. A lost, predicted, deleted or newly tracked
+  # target is replaced at once, as before; nothing is kept while ego changes lanes or its lanes are renumbered, nor an
+  # FF object the vision bridge keeps.
+  SWITCH_SETTLE, SWITCH_HOLD, SWITCH_MARGIN_X, SWITCH_MARGIN_C, SWITCH_GRACE, SWITCH_DEPART = .5, 3., 2., .5, .3, 1.
+  # Optional output hysteresis of the drawn FF/LF/RF lateral (m) while the slot keeps its target; 0 is off.
+  DISPLAY_HYSTERESIS = 0.
   # A row bends where a turn pocket opens (recorded 2026-10-14: 3e3/15, posts beside ego at 1.6m, then 20 degrees
   # outwards; the bent part became a wall only once three of its posts were seen, after one was admitted as a
   # waiting vehicle). A fresh resting return within WALL_MAX_GAP of a wall end, at most WALL_BEND off the
@@ -263,6 +275,9 @@ class CcncRadarMap:
     self.hold = None  # (key, lateral, centred, speed): the FF object at its last report inside ego's lane.
     self.bridge = None  # The FF object kept on vision: dict(key, start, x, y, dx, speed, cause, kind), x/y as drawn.
     self.far_since = None  # (key, time): the displayed far FF object left ego's lane slot then.
+    self.switched = (None, None, None)  # Per slot: time its displayed target last changed to another one.
+    self.absent = (None, None, None)  # Per slot: since when its displayed target is held outside the candidates.
+    self.shown = None  # DISPLAY_HYSTERESIS only: per front slot (key, drawn lateral).
 
   def reset(self):
     self.__init__()
@@ -1280,6 +1295,7 @@ class CcncRadarMap:
       # merging the underlying tracks or claiming that they are the same body.
       groups[slot].append((x, center_distance, obj.key))
     selected = []
+    absent = [None, None, None]
     for slot, candidates in enumerate(groups):
       if slot and selected[0] is not None:
         lead_x = self.local[selected[0]][0]
@@ -1299,14 +1315,19 @@ class CcncRadarMap:
             adjacent.append(candidate)
         if adjacent:
           candidates = adjacent
-      if not candidates:
-        selected.append(None)
-      else:
+      choice = None
+      if candidates:
         nearest = min(c[0] for c in candidates)
         close = [c for c in candidates if c[0] <= nearest + 1.]
         old = next((c for c in close if c[2] == self.selected[slot]), None)
         best = min(close, key=lambda c: (c[1], c[0], c[2]))
-        selected.append(old[2] if old and old[1] <= best[1] + .25 else best[2])
+        choice = old[2] if old and old[1] <= best[1] + .25 else best[2]
+      # A side target that moved to the other side's candidates is not held (it would be drawn twice).
+      blocked = selected[0] if slot else None
+      if slot and any(c[2] == self.selected[slot] for c in groups[3 - slot]):
+        blocked = self.selected[slot]
+      choice, absent[slot] = self._switch_guard(slot, choice, candidates, blocked)
+      selected.append(choice)
       if not slot:
         selected[0] = self._bridge(self._far_hold(selected[0], far))
     self.remembered = [False, False, False]
@@ -1317,7 +1338,32 @@ class CcncRadarMap:
           if selected[slot] is not None and selected[slot] == selected[0]:
             selected[slot] = None
           self.remembered[slot] = selected[slot] is not None
+    self.switched = tuple(self.now if new is not None and old is not None and new != old else since
+                          for new, old, since in zip(selected, self.selected, self.switched, strict=True))
+    self.absent = tuple(absent)
     self.selected = tuple(selected)
+
+  def _switch_guard(self, slot, choice, candidates, blocked):
+    """(target, absent since) of a slot whose target is tracked for SWITCH_SETTLE. ``blocked`` is not held."""
+    current = self.selected[slot]
+    obj = self.objects.get(current) if current is not None else None
+    if (obj is None or choice == current or self.lane_change or self.lane_offset or (not slot and self.bridge is not None)
+        or self.now - obj.born < self.SWITCH_SETTLE - 1e-6
+        or obj.seen != self.radar_stamp or not 0. <= self.local[current][0] <= self.FF_FAR_X):
+      return choice, None
+    held = next((c for c in candidates if c[2] == current), None)
+    if held is not None:
+      since = self.switched[slot]
+      new = next((c for c in candidates if c[2] == choice), None)
+      if (self.now - (-math.inf if since is None else since) > self.SWITCH_HOLD + 1e-6 or new is None
+          or new[0] < held[0] - self.SWITCH_MARGIN_X or new[1] < held[1] - self.SWITCH_MARGIN_C):
+        return choice, None
+      return current, None
+    absent = self.now if self.absent[slot] is None else self.absent[slot]
+    if (current == blocked or obj.structure
+        or abs(self.cos * obj.vy - self.sin * obj.vx) > self.SWITCH_DEPART or self.now - absent > self.SWITCH_GRACE + 1e-6):
+      return choice, None
+    return current, absent
 
   def _ego_lines(self, x):
     """Ego's left and right lane lines at x (None where unusable)."""

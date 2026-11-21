@@ -259,6 +259,13 @@ impl<'py> Selector<'_, 'py> {
         }
 
         let mut selected: [Option<i64>; 3] = [None; 3];
+        let switched = self.m.getattr(intern!(py, "switched"))?;
+        let held_since = self.m.getattr(intern!(py, "absent"))?;
+        let mut absent: [Option<Bound<'py, PyAny>>; 3] = [None, None, None];
+        // A side target that moved to the other side's candidates is not held (it would be drawn twice).
+        let elsewhere: [bool; 3] = std::array::from_fn(|slot| {
+            slot != 0 && self.previous[slot].is_some_and(|p| groups[3 - slot].iter().any(|c| c.2 == p))
+        });
         for (slot, mut candidates) in groups.into_iter().enumerate() {
             if slot != 0 {
                 if let Some(lead) = selected[0] {
@@ -290,6 +297,7 @@ impl<'py> Selector<'_, 'py> {
                     candidates = adjacent;
                 }
             }
+            let mut choice = None;
             if let Some(first) = candidates.first() {
                 let nearest = candidates[1..].iter().fold(first.0, |m, c| if c.0 < m { c.0 } else { m });
                 let close: Vec<Candidate> = candidates.iter().copied().filter(|c| c.0 <= nearest + 1.).collect();
@@ -300,11 +308,22 @@ impl<'py> Selector<'_, 'py> {
                         best = c;
                     }
                 }
-                selected[slot] = Some(match old {
+                choice = Some(match old {
                     Some(old) if old.1 <= best.1 + 0.25 => old.2,
                     _ => best.2,
                 });
             }
+            let blocked = if slot == 0 {
+                None
+            } else if elsewhere[slot] {
+                self.previous[slot]
+            } else {
+                selected[0]
+            };
+            let since = switched.get_item(slot)?;
+            let (kept, held) = self.switch_guard(slot, choice, &candidates, blocked, &since, &held_since.get_item(slot)?)?;
+            selected[slot] = kept;
+            absent[slot] = held;
             if slot == 0 {
                 let normal = self.far_hold(selected[0], far)?;
                 selected[0] = self.bridge(normal)?;
@@ -324,8 +343,65 @@ impl<'py> Selector<'_, 'py> {
             }
         }
         self.m.setattr(intern!(py, "remembered"), PyList::new(py, remembered)?)?;
+        let mut since = Vec::with_capacity(3);
+        for slot in 0..3 {
+            since.push(match (selected[slot], self.previous[slot]) {
+                (Some(new), Some(old)) if new != old => self.now_obj.clone(),
+                _ => switched.get_item(slot)?,
+            });
+        }
+        self.m.setattr(intern!(py, "switched"), PyTuple::new(py, since)?)?;
+        self.m.setattr(intern!(py, "absent"), PyTuple::new(py, absent)?)?;
         self.m.setattr(intern!(py, "selected"), PyTuple::new(py, selected)?)?;
         Ok(())
+    }
+
+    /// `_switch_guard(slot, choice, candidates, blocked)`: the slot's target and since when it is held outside the
+    /// candidates, for a target tracked for SWITCH_SETTLE, measured this radar cycle and within FF_FAR_X.
+    fn switch_guard(
+        &self,
+        slot: usize,
+        choice: Option<i64>,
+        candidates: &[Candidate],
+        blocked: Option<i64>,
+        since: &Bound<'py, PyAny>,
+        absent: &Bound<'py, PyAny>,
+    ) -> PyResult<(Option<i64>, Option<Bound<'py, PyAny>>)> {
+        let k = self.k;
+        let Some(current) = self.previous[slot] else { return Ok((choice, None)) };
+        let Some(obj) = self.objects.get_item(current)? else { return Ok((choice, None)) };
+        let obj = obj.cast_into::<MapObject>()?;
+        let (born, structure, seen, sideways) = {
+            let o = obj.try_borrow()?;
+            (o.born, o.structure, o.seen, self.frame.c * o.vy - self.frame.s * o.vx)
+        };
+        let x = local_xy(&self.local, current)?.0;
+        if choice == Some(current)
+            || self.lane_change
+            || self.m.getattr(intern!(self.py(), "lane_offset"))?.is_truthy()?
+            || (slot == 0 && !self.m.getattr(intern!(self.py(), "bridge"))?.is_none())
+            || self.now - born < k.switch_settle - 1e-6
+            || Some(seen) != self.radar_stamp
+            || !(0. <= x && x <= k.ff_far_x)
+        {
+            return Ok((choice, None));
+        }
+        if let Some(held) = candidates.iter().find(|c| c.2 == current) {
+            let new = candidates.iter().find(|c| Some(c.2) == choice);
+            let since: f64 = if since.is_none() { f64::NEG_INFINITY } else { since.extract()? };
+            let release = self.now - since > k.switch_hold + 1e-6
+                || new.is_none_or(|new| new.0 < held.0 - k.switch_margin_x || new.1 < held.1 - k.switch_margin_c);
+            return Ok((if release { choice } else { Some(current) }, None));
+        }
+        let absent = if absent.is_none() { self.now_obj.clone() } else { absent.clone() };
+        if Some(current) == blocked
+            || structure
+            || sideways.abs() > k.switch_depart
+            || self.now - absent.extract::<f64>()? > k.switch_grace + 1e-6
+        {
+            return Ok((choice, None));
+        }
+        Ok((Some(current), Some(absent)))
     }
 
     /// `_trail(obj)`: for each recorded point TRAIL_NEAR-TRAIL_FAR ahead, how far it lies outside ego's lane lines.
