@@ -327,17 +327,156 @@ pub fn extract(frame: &Nv12, line: &LineF64, m: &Mat3, shape: StripShape, mirror
     Some(sample(frame, &g, shape, mirror))
 }
 
+/// Which OpenCV remap the Python path meets: the generic 8-bit fixed-point one (x86 / M8 cv2), or KleidiCV's float
+/// remap (the device's cv2 4.13 + KleidiCV 0.7.0 HAL takes 1- and 2-channel 8-bit INTER_LINEAR maps).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemapRule {
+    OpenCv,
+    /// `fused`: vmlaq_f32 compiled to a fused multiply-add (GCC/clang contract it on AArch64), else mul then add.
+    KleidiCv { fused: bool },
+}
+
+/// The rule for this build: KleidiCV (fused) on aarch64, the OpenCV one elsewhere; STRIPNET_REMAP=opencv|kleidicv|kleidicv-unfused
+/// overrides it (replays on M8).
+pub fn remap_rule() -> RemapRule {
+    static RULE: std::sync::OnceLock<RemapRule> = std::sync::OnceLock::new();
+    *RULE.get_or_init(|| match std::env::var("STRIPNET_REMAP").as_deref() {
+        Ok("opencv") => RemapRule::OpenCv,
+        Ok("kleidicv") => RemapRule::KleidiCv { fused: true },
+        Ok("kleidicv-unfused") => RemapRule::KleidiCv { fused: false },
+        _ if cfg!(target_arch = "aarch64") => RemapRule::KleidiCv { fused: true },
+        _ => RemapRule::OpenCv,
+    })
+}
+
+/// KleidiCV remap_f32 (u8, INTER_LINEAR, BORDER_REPLICATE) of an image with `outs.len()` interleaved channels (1 or 2;
+/// one set of coordinates for all of them, as KleidiCV's 2-channel path): x0 = min(floor(x) saturated to u32, xmax),
+/// x1 = x0 + 1 only when x >= 0 and x0 < xmax; frac = x - floor(x); pixels as f32; line0 = a + (b - a) * xfrac,
+/// line1 likewise, result = line0 + (line1 - line0) * yfrac, rounded to nearest with ties away (vcvtaq_u32_f32).
+/// aarch64: NEON for 4 pixels at a time (`remap_kleidi_neon`), bit-identical to this scalar form (test `neon_matches_scalar`).
+#[allow(clippy::too_many_arguments)]
+fn remap_kleidi(plane: &[u8], width: usize, height: usize, stride: usize, mx: &[f32], my_row: &[f32], n: usize, fused: bool,
+                outs: &mut [&mut [u8]]) {
+    #[cfg(target_arch = "aarch64")]
+    if std::env::var_os("STRIPNET_SCALAR").is_none() {
+        // SAFETY: NEON is part of the aarch64 baseline; all indices are bounds-checked inside.
+        unsafe { remap_kleidi_neon(plane, width, height, stride, mx, my_row, n, fused, outs) };
+        return;
+    }
+    remap_kleidi_scalar(plane, width, height, stride, mx, my_row, n, fused, outs, 0)
+}
+
+#[inline(always)]
+fn lerp(a: f32, b: f32, t: f32, fused: bool) -> f32 {
+    if fused { (b - a).mul_add(t, a) } else { a + (b - a) * t }
+}
+
+/// Columns `from..n` of every row (the NEON path's tail).
+#[allow(clippy::too_many_arguments)]
+fn remap_kleidi_scalar(plane: &[u8], width: usize, height: usize, stride: usize, mx: &[f32], my_row: &[f32], n: usize,
+                       fused: bool, outs: &mut [&mut [u8]], from: usize) {
+    let (xmax, ymax) = (width as u32 - 1, height as u32 - 1);
+    let step = outs.len();
+    for (r, &yf) in my_row.iter().enumerate() {
+        let y0 = (yf.floor() as u32).min(ymax);
+        let y1 = if yf >= 0. && y0 < ymax { y0 + 1 } else { y0 };
+        let yfrac = yf - yf.floor();
+        let (row0, row1) = (&plane[y0 as usize * stride..], &plane[y1 as usize * stride..]);
+        for j in from..n {
+            let xf = mx[r * n + j];
+            let x0 = (xf.floor() as u32).min(xmax);
+            let x1 = if xf >= 0. && x0 < xmax { x0 + 1 } else { x0 };
+            let xfrac = xf - xf.floor();
+            for (c, out) in outs.iter_mut().enumerate() {
+                let px = |row: &[u8], x: u32| row[x as usize * step + c] as f32;
+                let line0 = lerp(px(row0, x0), px(row0, x1), xfrac, fused);
+                let line1 = lerp(px(row1, x0), px(row1, x1), xfrac, fused);
+                out[r * n + j] = lerp(line0, line1, yfrac, fused).round() as u32 as u8;
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn remap_kleidi_neon(plane: &[u8], width: usize, height: usize, stride: usize, mx: &[f32], my_row: &[f32], n: usize,
+                            fused: bool, outs: &mut [&mut [u8]]) {
+    use std::arch::aarch64::*;
+    let (xmax, ymax) = (width as u32 - 1, height as u32 - 1);
+    let step = outs.len();
+    let vxmax = vdupq_n_u32(xmax);
+    let zero = vdupq_n_f32(0.);
+    let mla = |a: float32x4_t, b: float32x4_t, t: float32x4_t| -> float32x4_t {
+        let d = vsubq_f32(b, a);
+        if fused { vfmaq_f32(a, d, t) } else { vaddq_f32(a, vmulq_f32(d, t)) }
+    };
+    let full = n / 4 * 4;
+    let (mut i0, mut i1) = ([0u32; 4], [0u32; 4]);
+    let mut q = [[0f32; 4]; 4];
+    for (r, &yf) in my_row.iter().enumerate() {
+        let y0 = (yf.floor() as u32).min(ymax);
+        let y1 = if yf >= 0. && y0 < ymax { y0 + 1 } else { y0 };
+        let vyfrac = vdupq_n_f32(yf - yf.floor());
+        let (row0, row1) = (&plane[y0 as usize * stride..], &plane[y1 as usize * stride..]);
+        let mrow = &mx[r * n..(r + 1) * n];
+        let mut j = 0;
+        while j < full {
+            let xf = vld1q_f32(mrow[j..j + 4].as_ptr());
+            let x0 = vminq_u32(vcvtmq_u32_f32(xf), vxmax);
+            let inside = vandq_u32(vcgeq_f32(xf, zero), vcltq_u32(x0, vxmax));
+            let x1 = vsubq_u32(x0, inside);
+            let xfrac = vsubq_f32(xf, vrndmq_f32(xf));
+            vst1q_u32(i0.as_mut_ptr(), x0);
+            vst1q_u32(i1.as_mut_ptr(), x1);
+            for (c, out) in outs.iter_mut().enumerate() {
+                for k in 0..4 {
+                    let (a0, a1) = (i0[k] as usize * step + c, i1[k] as usize * step + c);
+                    q[0][k] = row0[a0] as f32;
+                    q[1][k] = row0[a1] as f32;
+                    q[2][k] = row1[a0] as f32;
+                    q[3][k] = row1[a1] as f32;
+                }
+                let line0 = mla(vld1q_f32(q[0].as_ptr()), vld1q_f32(q[1].as_ptr()), xfrac);
+                let line1 = mla(vld1q_f32(q[2].as_ptr()), vld1q_f32(q[3].as_ptr()), xfrac);
+                let v = vcvtaq_u32_f32(mla(line0, line1, vyfrac));
+                let mut lanes = [0u32; 4];
+                vst1q_u32(lanes.as_mut_ptr(), v);
+                let dst = &mut out[r * n + j..r * n + j + 4];
+                for k in 0..4 {
+                    dst[k] = lanes[k] as u8;
+                }
+            }
+            j += 4;
+        }
+    }
+    if full < n {
+        remap_kleidi_scalar(plane, width, height, stride, mx, my_row, n, fused, outs, full);
+    }
+}
+
 pub fn sample(frame: &Nv12, g: &Maps, shape: StripShape, mirror: bool) -> Vec<f32> {
+    sample_with(frame, g, shape, mirror, remap_rule())
+}
+
+pub fn sample_with(frame: &Nv12, g: &Maps, shape: StripShape, mirror: bool, rule: RemapRule) -> Vec<f32> {
     let weights = remap_weights();
     let (rows, n, cols) = (g.rows, g.n, shape.cols);
     let my: Vec<f32> = g.ys.iter().map(|&y| y as f32).collect();
     let my_uv: Vec<f32> = my.iter().map(|&v| v * 0.5).collect();
     let mut planes = [vec![0u8; rows * n], vec![0u8; rows * n], vec![0u8; rows * n]];
     let [lum, cb, cr] = &mut planes;
-    remap(frame.y, frame.width, frame.height, frame.stride, 0, 1, &g.mx, &my, n, &weights, lum);
     let (cw, ch) = (frame.width / 2, frame.height / 2);
-    remap(frame.uv, cw, ch, frame.stride, 0, 2, &g.mx_uv, &my_uv, n, &weights, cb);
-    remap(frame.uv, cw, ch, frame.stride, 1, 2, &g.mx_uv, &my_uv, n, &weights, cr);
+    match rule {
+        RemapRule::OpenCv => {
+            remap(frame.y, frame.width, frame.height, frame.stride, 0, 1, &g.mx, &my, n, &weights, lum);
+            remap(frame.uv, cw, ch, frame.stride, 0, 2, &g.mx_uv, &my_uv, n, &weights, cb);
+            remap(frame.uv, cw, ch, frame.stride, 1, 2, &g.mx_uv, &my_uv, n, &weights, cr);
+        }
+        RemapRule::KleidiCv { fused } => {
+            remap_kleidi(frame.y, frame.width, frame.height, frame.stride, &g.mx, &my, n, fused, &mut [lum]);
+            remap_kleidi(frame.uv, cw, ch, frame.stride, &g.mx_uv, &my_uv, n, fused, &mut [cb, cr]);
+        }
+    }
     let mut out = vec![0f32; 3 * shape.rows * cols];
     for (c, plane) in planes.iter().enumerate() {
         // Exact 4:1 column box mean truncated to uint8.
@@ -382,6 +521,31 @@ mod tests {
         assert_eq!(interp(1., &xp, &fp), 20.);
         assert_eq!(interp(2., &xp, &fp), 40.);
         assert_eq!(interp(1.5, &xp, &fp), 30.);
+    }
+
+    /// The KleidiCV remap's NEON path against its scalar form (aarch64; on x86 both calls are the scalar one).
+    #[test]
+    fn neon_matches_scalar() {
+        let (w, h) = (61usize, 37usize);
+        let plane: Vec<u8> = (0..w * h * 2).map(|i| ((i * 7919) % 256) as u8).collect();
+        let n = 30; // not a multiple of 4: the tail too
+        let mut seed = 12345u32;
+        let mut rnd = || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); seed as f32 / u32::MAX as f32 };
+        let rows = 9;
+        let mx: Vec<f32> = (0..rows * n).map(|_| rnd() * 40. - 4. + 0.5).collect();
+        let my: Vec<f32> = (0..rows).map(|i| [-2.5, -0.25, 0., 3.5, 17.25, 35.75, 36., 36.5, 50.][i]).collect();
+        let mut mx2 = mx.clone();
+        mx2[3] = 30.5; mx2[4] = -0.5; mx2[5] = 59.999; mx2[6] = 60.; mx2[7] = 61.5; mx2[8] = 0.5;
+        for fused in [true, false] {
+            for ch in [1usize, 2] {
+                let (mut a, mut b) = (vec![vec![0u8; rows * n]; ch], vec![vec![0u8; rows * n]; ch]);
+                let mut ra: Vec<&mut [u8]> = a.iter_mut().map(|v| v.as_mut_slice()).collect();
+                remap_kleidi(&plane, w, h, w * ch, &mx2, &my, n, fused, &mut ra);
+                let mut rb: Vec<&mut [u8]> = b.iter_mut().map(|v| v.as_mut_slice()).collect();
+                remap_kleidi_scalar(&plane, w, h, w * ch, &mx2, &my, n, fused, &mut rb, 0);
+                assert_eq!(a, b, "fused {fused} channels {ch}");
+            }
+        }
     }
 
     #[test]

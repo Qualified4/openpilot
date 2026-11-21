@@ -413,7 +413,9 @@ def run_engines(spec, engines, limit, rows, totals, diffs_file):
     for name, r in res.items():
       if r['status'] == 'published':
         row[name] = {'wall': r['wallMs'], 'extract': r['extractMs'], 'infer': r['inferMs'],
-                     'inferred': sum(x is not None for x in r['diag']) if r.get('diag') else None}
+                     'inferred': sum(x is not None for x in r['diag']) if r.get('diag') else None,
+                     'strips': [x['strip'] for x in r.get('diag') or [] if x is not None]}
+    row['frameId'] = int(e.modelV2.frameId)
     rows.append(row)
   container.close()
   for k, v in seg_totals.items():
