@@ -1,7 +1,22 @@
 # stripnet (Rust) — CCNC lane marking recogniser
 
-The processing path of `../marking_daemon.py` (process `ccnc_lane_type`) in Rust. Stage 1: offline equivalence only;
-the device still runs the Python process (no process_config entry yet).
+The processing path of `../marking_daemon.py` (process `ccnc_lane_type`) in Rust. The device runs it:
+process_config starts `stripnet_launch.sh`, which runs `prebuilt/linux-$(uname -m)/stripnet_daemon` and falls back to
+`marking_daemon.py` when that binary is missing (PC) or the Rust process fails (non-zero exit within 60 s of its start,
+or the 3rd crash since boot; marker `/dev/shm/ccnc_lane_type_rust.failed`, cleared by a reboot).
+
+Device binary (committed, no build on the device; rebuild after any change under `src/`, `ipc/`, `native/`):
+
+```sh
+# ION: a dir with linux/{ion.h,msm_ion.h} copied from the device's /usr/include (zig's libc has no ion headers)
+CXXFLAGS_aarch64_unknown_linux_gnu=-I$ION STRIPNET_NATIVE_DIR=<tools/build_native.sh output> STRIPNET_VISIONBUF=ion \
+  cargo zigbuild -j2 --release --target aarch64-unknown-linux-gnu.2.31 --features ipc,kleidicv --bin stripnet_daemon \
+  --config profile.release.strip=true
+cp target/aarch64-unknown-linux-gnu/release/stripnet_daemon prebuilt/linux-aarch64/
+```
+
+`STRIPNET_VISIONBUF=ion|plain` picks msgq's VisionBuf implementation for a cross build (default: whether the build
+machine has `/dev/ion`, as `msgq_repo/SConscript`).
 
 | module | ports |
 |---|---|

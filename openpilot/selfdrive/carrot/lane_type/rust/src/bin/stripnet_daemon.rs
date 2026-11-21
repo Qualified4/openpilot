@@ -1,5 +1,5 @@
 //! The Rust ccnc_lane_type process (feature `ipc`): marking_daemon.main's loop on msgq / VisionIPC.
-//! Not wired into process_config yet (stage 1: offline equivalence only); see the report for the switch design.
+//! process_config runs it through `stripnet_launch.sh` (prebuilt/linux-aarch64), which falls back to marking_daemon.py.
 //!
 //! Differences from the Python process that remain: the HDA1 CarParams check is left to process_config's enable
 //! function (this loop only re-reads CcncExtendedDisplay every second), no swaglog (stderr), no minflt / thread CPU timing.
@@ -53,7 +53,13 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
     };
+    eprintln!("CCNC lane marking: Rust StripNet daemon, model lane_strip_v4 loaded");
     unsafe {
+        // The launcher waits on this process; if it is killed, do not keep publishing as an orphan.
+        prctl(1, 15); // PR_SET_PDEATHSIG, SIGTERM
+        if getppid() == 1 {
+            return Ok(());
+        }
         let mut set = [0u64; 16];
         set[0] = 0b1111; // CPU 0-3, as the Python process
         sched_setaffinity(0, std::mem::size_of_val(&set), set.as_ptr());
@@ -118,4 +124,6 @@ fn main() -> anyhow::Result<()> {
 extern "C" {
     fn sched_setaffinity(pid: i32, size: usize, mask: *const u64) -> i32;
     fn nice(inc: i32) -> i32;
+    fn prctl(option: i32, arg2: u64, ...) -> i32;
+    fn getppid() -> i32;
 }

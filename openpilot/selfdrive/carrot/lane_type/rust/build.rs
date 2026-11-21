@@ -4,7 +4,16 @@ fn main() {
     {
         // msgq + VisionIPC from msgq_repo (the sources openpilot's SConscript builds) and the C shim.
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../../msgq_repo");
-        let vipc_buf = if std::path::Path::new("/dev/ion").exists() { "visionbuf_ion.cc" } else { "visionbuf.cc" };
+        // msgq_repo/SConscript picks the ion buffer when the build machine has /dev/ion; a cross build names it
+        // (STRIPNET_VISIONBUF=ion|plain, the device's choice).
+        println!("cargo:rerun-if-env-changed=STRIPNET_VISIONBUF");
+        let ion = match std::env::var("STRIPNET_VISIONBUF").as_deref() {
+            Ok("ion") => true,
+            Ok("plain") => false,
+            Ok(v) => panic!("STRIPNET_VISIONBUF={v}: expected ion or plain"),
+            Err(_) => std::path::Path::new("/dev/ion").exists(),
+        };
+        let vipc_buf = if ion { "visionbuf_ion.cc" } else { "visionbuf.cc" };
         let mut b = cc::Build::new();
         b.cpp(true).std("c++17").include(&root).warnings(false).file("ipc/shim.cc");
         for f in ["msgq/ipc.cc", "msgq/event.cc", "msgq/impl_msgq.cc", "msgq/impl_fake.cc", "msgq/msgq.cc"] {

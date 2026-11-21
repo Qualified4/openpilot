@@ -1,4 +1,5 @@
 import os
+import sys
 import platform
 import importlib.util
 
@@ -199,7 +200,9 @@ procs = [
   # Starts after onroad readiness, when manager already has live IPC mappings.
   # Launch a fresh interpreter instead of forking that running manager state.
   PythonProcess("xiaoge_data", "openpilot.selfdrive.carrot.xiaoge_data", enable_xiaoge_data, spawn=True),
-  PythonProcess("ccnc_lane_type", "openpilot.selfdrive.carrot.lane_type.marking_daemon", enable_ccnc_lane_type, spawn=True),
+  # Rust StripNet (lane_type/rust); the launcher falls back to marking_daemon.py when the binary is missing or fails.
+  NativeProcess("ccnc_lane_type", "openpilot/selfdrive/carrot/lane_type/rust", ["./stripnet_launch.sh", sys.executable],
+                enable_ccnc_lane_type),
 
   # C3x lite has no speaker; mirror alerts to the GPIO buzzer instead.
   PythonProcess("beep", "openpilot.selfdrive.controls.beep", c3x_lite, enabled=TICI),
