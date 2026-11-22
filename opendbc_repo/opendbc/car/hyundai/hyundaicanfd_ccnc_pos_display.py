@@ -3,10 +3,11 @@ display_b.rs): CcncPosDisplayMode 1 draws display A (estimate behind a distance-
 operation for operation on the same plain frames (the Rust trace or ``_pos_run_for_test``), so the two compare
 exactly. Keep both in step.
 
-A frame is (now, yaw, selected, lead, objs): yaw the livePose yaw rate (left +) or None, selected the existing
+A frame is (now, yaw, selected, lead, objs, heading): yaw the livePose yaw rate (left +) or None, selected the existing
 selector's FF/LF/RF map keys, lead radarState leadOne (dRel, yRel) or None, objs (vid, x, y, seen, report, lines)
 with report the map object's last (stamp, x, y) in the ego frame and lines the ego lane view's left outer, left
-inner, right inner and right outer line at x (left +) or None. An output is (assigned keys, drawn lateral).
+inner, right inner and right outer line at x (left +) or None, and heading the road's heading in the ego frame at ego
+(left +, rad, from ego's inner lines) or None. An output is (assigned keys, drawn lateral).
 """
 import math
 
@@ -32,6 +33,9 @@ ANIM_SPEED = 1.2
 REMAP = 1.2
 
 PLAY_PER_M = 0.0025
+FF_PLAY_PER_M = 0.00325
+HEADING_TAU = 0.3
+HEADING_DEADBAND = 0.006
 
 
 def _clamp(v, lo, hi):
@@ -147,7 +151,7 @@ class Common:
     self.slots = [[None, None, 0.] for _ in range(3)]  # owner, previous, since
 
   def update(self, f):
-    now, yaw, selected, lead_one, objs = f
+    now, yaw, selected, lead_one, objs, _ = f
     objs = {o[0]: o for o in objs}
     self.tracks = {vid: t for vid, t in self.tracks.items() if vid in objs}
     for vid in sorted(objs):
@@ -295,15 +299,24 @@ class Vehicle:
 
 
 class DisplayA:
-  """display_a.rs: the estimate behind a backlash of PLAY_PER_M * x, per vid."""
+  """display_a.rs: remove the low-passed road heading after a soft deadband, then apply distance-scaled backlash."""
   def __init__(self):
     self.shown = {}
+    self.last_heading = None
+    self.heading = None
 
-  def draw(self, tracks, assigned):
+  def draw(self, tracks, assigned, now, heading):
     self.shown = {vid: v for vid, v in self.shown.items() if vid in tracks}
+    raw = heading if heading is not None else self.last_heading if self.last_heading is not None else 0.
+    self.last_heading = raw
+    h, t0 = self.heading if self.heading is not None else (raw, now)
+    h = h + (raw - h) * min(max(now - t0, 0.) / HEADING_TAU, 1.)
+    self.heading = (h, now)
+    head = math.copysign(max(abs(h) - HEADING_DEADBAND, 0.), h)
     for vid in sorted(tracks):
-      y = tracks[vid].y
-      play = PLAY_PER_M * max(tracks[vid].x, 0.)
+      y = tracks[vid].y - tracks[vid].x * head
+      play_per_m = FF_PLAY_PER_M if vid == assigned[0] else PLAY_PER_M
+      play = play_per_m * max(tracks[vid].x, 0.)
       s = self.shown.get(vid, y)
       if y - s > play:
         s = y - play
@@ -337,7 +350,7 @@ class PosState:
           self.vehicles[vid] = Vehicle(view, tracks[vid].y, now)
       drawn = [None if vid is None else self.vehicles[vid].value for vid in assigned]
     else:
-      drawn = self.a.draw(tracks, assigned)
+      drawn = self.a.draw(tracks, assigned, f[0], f[5])
     return assigned, drawn
 
 

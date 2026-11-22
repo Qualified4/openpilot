@@ -34,10 +34,16 @@ def parse(payload, received_ns):
     raise ValueError('expected a ccncLaneMarking v1 packet')
   out = {'mode': data.get('mode'), 'frameId': data.get('frameId')}
   for side in ('left', 'right'):
-    entry = data.get(side) or {}
+    entry = data.get(side)
+    if entry is None:
+      entry = {}
+    elif not isinstance(entry, dict):
+      raise ValueError(f'invalid lane marking object for {side}')
     heads = {}
     for head, classes in (('type', TYPES), ('color', COLORS)):
       value, age = entry.get(head), entry.get(head + 'AgeNs')
+      if (value is not None and not isinstance(value, str)) or (age is not None and type(age) is not int):
+        raise ValueError(f'invalid lane marking head for {side}.{head}')
       if value in classes and isinstance(age, int) and not isinstance(age, bool) and 0 <= age <= MAX_AGE_NS:
         heads[head] = (value, received_ns - age + MAX_AGE_NS)
       else:

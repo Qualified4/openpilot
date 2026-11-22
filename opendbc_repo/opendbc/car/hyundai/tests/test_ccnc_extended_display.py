@@ -50,6 +50,15 @@ def test_display_matrix(display, monkeypatch, on, cluster, traffic, flags, longi
   assert calls == ([(n, n % 5 == 0) for n in range(10)] if native else [])
 
 
+@pytest.mark.parametrize("stored,chosen", [(None, 0), ("invalid", 0), (1, 1), (2, 2), (3, 0)])
+def test_position_mode_uses_safe_params_read(display, stored, chosen):  # noqa: F811
+  params, cs, send = display
+  params.update(CcncExtendedDisplay=False, CcncPosDisplayMode=stored)
+  templates(cs)
+  assert "ADRV_0x161" in dict(send())
+  assert main.ccnc_extension.state.pos_display_mode == chosen
+
+
 @pytest.mark.parametrize("xs,ys,stds", [
   ([], [], []),
   ([0., 30.], [], [0., 0.]),

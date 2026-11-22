@@ -17,8 +17,8 @@ def obj(vid, x, y, now, lines=LINES, report=True):
   return (vid, x, y, now, (now, x, y) if report else None, lines)
 
 
-def frame(now, objs, selected, yaw=None, lead=None):
-  return (now, yaw, tuple(selected), lead, list(objs))
+def frame(now, objs, selected, yaw=None, lead=None, heading=None):
+  return (now, yaw, tuple(selected), lead, list(objs), heading)
 
 
 def run_both(mode, frames):
@@ -29,11 +29,12 @@ def run_both(mode, frames):
   return rust
 
 
-def single(ys, x=30., yaw=None, mode=1, selected=(1, None, None), lead=None, lines=LINES):
+def single(ys, x=30., yaw=None, mode=1, selected=(1, None, None), lead=None, lines=LINES, heading=None):
   frames = []
   for i, y in enumerate(ys):
     now = i * DT
-    frames.append(frame(now, [obj(1, x, y, now, lines)], selected, yaw(now) if callable(yaw) else yaw, lead))
+    h = heading(now) if callable(heading) else heading
+    frames.append(frame(now, [obj(1, x, y, now, lines)], selected, yaw(now) if callable(yaw) else yaw, lead, h))
   return frames, run_both(mode, frames)
 
 
@@ -58,7 +59,7 @@ def test_jump_that_stays_is_followed_slowly():
   values = drawn_of(out)
   assert values[21] < 0.1
   assert 0.25 < values[20 + 35] < 0.45  # about one time constant
-  assert abs(values[-1] - 0.6) < 0.05 + ref.PLAY_PER_M * 30.
+  assert abs(values[-1] - 0.6) < 0.05 + ref.FF_PLAY_PER_M * 30.
 
 
 def test_steady_move_is_followed():
@@ -80,7 +81,7 @@ def test_ego_rotation_is_not_a_jump():
   ys = [0.5 - x * rate * DT * i for i in range(40)]
   _, out = single(ys, x=x, yaw=rate, lines=(None,) * 4)
   values = drawn_of(out)
-  play = ref.PLAY_PER_M * x  # display A trails a steady sweep by its backlash
+  play = ref.FF_PLAY_PER_M * x
   assert max(abs(v - y) for v, y in zip(values, ys, strict=True)) < 0.05 + play
   fixed = [v + x * rate * DT * i for i, v in enumerate(values)]
   assert max(fixed) - min(fixed) < 0.05 + play
@@ -88,15 +89,41 @@ def test_ego_rotation_is_not_a_jump():
   assert max(abs(v - y) for v, y in zip(drawn_of(out), ys, strict=True)) > 1.
 
 
-def test_a_backlash_hides_small_back_and_forth():
-  """At 40 m (0.1 m play) a 0.15 m back-and-forth every 0.2 s around a fixed car moves the drawn value at most by the
-  first half swing; a steady 0.5 m/s move afterwards is drawn at the same speed, trailing by the play."""
+def test_a_takes_the_road_heading_out():
+  """Ego turns 0.03 rad towards a new lane (0.03 rad/s for 1 s) before it moves sideways: a car 40 m ahead in its own
+  lane moves 1.2 m right in the ego frame. A removes the angular correction beyond the soft deadband.
+  The low-pass holds its input over frames where heading is unavailable."""
+  x, rate = 40., 0.03
+  turn = lambda now: min(max(now - 1., 0.), 1.)
+  th = -rate
+  ys = [x * th * turn(i * DT) for i in range(70)]
+  yaw = lambda now: rate if 1. < now <= 2. else 0.
+  heading = lambda now: None if 2.5 < now < 2.8 else th * turn(now)
+  _, out = single(ys, x=x, yaw=yaw, lines=(None,) * 4, heading=heading)
+  play = ref.FF_PLAY_PER_M * x
+  values = drawn_of(out)
+  assert values[-1] == pytest.approx(-x * ref.HEADING_DEADBAND, abs=play + 0.01)
+  _, out = single(ys, x=x, yaw=yaw, lines=(None,) * 4)
+  assert drawn_of(out)[-1] == pytest.approx(x * th, abs=play + 0.01)
+
+
+def test_a_ignores_small_heading_changes():
+  _, out = single([0.] * 40, heading=lambda now: ref.HEADING_DEADBAND * math.sin(5. * now))
+  assert drawn_of(out) == [0.] * 40
+
+
+@pytest.mark.parametrize("slot, offset, play_per_m", [
+  ((1, None, None), 0., ref.FF_PLAY_PER_M),
+  ((None, 1, None), 3.5, ref.PLAY_PER_M),
+])
+def test_a_backlash_hides_small_back_and_forth(slot, offset, play_per_m):
+  """Both slots allow steady motion through at the same speed with their own backlash."""
   x = 40.
-  play = ref.PLAY_PER_M * x
+  play = play_per_m * x
   wobble = [0.15 if (i // 4) % 2 else 0. for i in range(80)]
   move = [0.15 + 0.5 * DT * i for i in range(1, 41)]
-  ys = wobble + move
-  _, out = single(ys, x=x, lines=(None,) * 4)
+  ys = [y + offset for y in wobble + move]
+  _, out = single(ys, x=x, selected=slot)
   values = drawn_of(out)
   assert max(values[:80]) - min(values[:80]) <= 0.15 - play + 1e-9
   slope = (values[-1] - values[-11]) / (10 * DT)
@@ -191,7 +218,8 @@ def test_rust_matches_python_on_random_frames(mode):
     if objs and rng.random() < 0.3:
       o = rng.choice(objs)
       lead = (o[1] + rng.uniform(-1, 1), o[2])
-    frames.append(frame(now, objs, selected, yaw, lead))
+    heading = None if rng.random() < 0.2 else rng.uniform(-0.05, 0.05)
+    frames.append(frame(now, objs, selected, yaw, lead, heading))
   out = run_both(mode, frames)
   assert any(a != [None, None, None] for a, _ in out)
   assert all(d is None or math.isfinite(d) for _, ds in out for d in ds)
@@ -222,5 +250,5 @@ def test_ego_lane_change_moves_cars_without_a_step(mode):
     steps = [abs(b - a) for a, b in zip(values, values[1:], strict=False)]
     assert max(steps) <= 1. * DT + ref.ANIM_SPEED * DT + 1e-6
   assert out[-1][0][0] == 2 and out[-1][0][1] == 1
-  play = ref.PLAY_PER_M * 32. if mode == 1 else 0.  # display A stops trailing by its backlash
+  play = ref.FF_PLAY_PER_M * 32. if mode == 1 else 0.
   assert drawn_of(out, 2)[-1] == pytest.approx(0., abs=0.05 + play)

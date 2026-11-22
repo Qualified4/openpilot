@@ -3,7 +3,14 @@ fn main() {
     #[cfg(feature = "ipc")]
     {
         // msgq + VisionIPC from msgq_repo (the sources openpilot's SConscript builds) and the C shim.
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../../msgq_repo");
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest.join("../../../../../msgq_repo");
+        let services = manifest.join("../../../../cereal/services.py");
+        let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+        println!("cargo:rerun-if-changed={}", services.display());
+        let header = std::process::Command::new("python3").arg(services).output().expect("run cereal services.py");
+        assert!(header.status.success(), "cereal services.py: {}", String::from_utf8_lossy(&header.stderr));
+        std::fs::write(out_dir.join("services.h"), header.stdout).expect("write services.h");
         // msgq_repo/SConscript picks the ion buffer when the build machine has /dev/ion; a cross build names it
         // (STRIPNET_VISIONBUF=ion|plain, the device's choice).
         println!("cargo:rerun-if-env-changed=STRIPNET_VISIONBUF");
@@ -15,7 +22,7 @@ fn main() {
         };
         let vipc_buf = if ion { "visionbuf_ion.cc" } else { "visionbuf.cc" };
         let mut b = cc::Build::new();
-        b.cpp(true).std("c++17").include(&root).warnings(false).file("ipc/shim.cc");
+        b.cpp(true).std("c++17").include(&root).include(&out_dir).warnings(false).file("ipc/shim.cc");
         for f in ["msgq/ipc.cc", "msgq/event.cc", "msgq/impl_msgq.cc", "msgq/impl_fake.cc", "msgq/msgq.cc"] {
             b.file(root.join(f));
         }

@@ -40,7 +40,7 @@ impl Sub {
     pub fn new(service: &str, conflate: bool) -> Option<Self> {
         let name = CString::new(service).ok()?;
         let p = unsafe { sn_sub_new(name.as_ptr(), conflate as c_int) };
-        (!p.is_null()).then_some(Sub(p))
+        (!p.is_null()).then(|| Sub(p))
     }
 
     pub fn poll(&self, timeout_ms: i32) -> bool {
@@ -73,7 +73,7 @@ impl Pub {
     pub fn new(service: &str) -> Option<Self> {
         let name = CString::new(service).ok()?;
         let p = unsafe { sn_pub_new(name.as_ptr()) };
-        (!p.is_null()).then_some(Pub(p))
+        (!p.is_null()).then(|| Pub(p))
     }
 
     pub fn send(&self, data: &[u8]) -> bool {
@@ -156,15 +156,25 @@ mod tests {
         let dir = std::path::PathBuf::from(format!("/dev/shm/msgq_{prefix}"));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("OPENPILOT_PREFIX", &prefix);
+        let model = Sub::new("modelV2", false).expect("modelV2 sub");
         let publisher = Pub::new("customReservedRawData2").expect("pub");
         let sub = Sub::new("customReservedRawData2", false).expect("sub");
+        // The two files share the same msgq header. Their data sizes are BIG and SMALL in cereal/services.py.
+        let model_size = std::fs::metadata(dir.join("modelV2")).unwrap().len();
+        let raw_data_size = std::fs::metadata(dir.join("customReservedRawData2")).unwrap().len();
+        assert_eq!(model_size - raw_data_size, 10 * 1024 * 1024 - 250 * 1024);
         let event = crate::messages::raw_data_event(crate::daemon::EVENT_CUSTOM_RAW_2, 42, b"{\"type\":\"ccncLaneMarking\"}");
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(publisher.send(&event));
         assert!(sub.poll(1000));
         let got = sub.drain();
         assert_eq!(got, vec![event]);
-        drop((sub, publisher));
+        let mismatched = dir.join("deviceState");
+        std::fs::write(&mismatched, [0; 8]).unwrap();
+        assert!(Sub::new("deviceState", false).is_none());
+        assert!(Pub::new("deviceState").is_none());
+        assert_eq!(std::fs::metadata(mismatched).unwrap().len(), 8);
+        drop((sub, publisher, model));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

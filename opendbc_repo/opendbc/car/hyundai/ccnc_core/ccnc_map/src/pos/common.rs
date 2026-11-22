@@ -66,6 +66,8 @@ pub struct FrameIn {
     /// radarState leadOne (dRel, yRel) when its status is set.
     pub lead: Option<(f64, f64)>,
     pub objs: Vec<Obj>,
+    /// The road's heading in the ego frame (left +, rad) at ego, from the ego lane's inner lines; None without them.
+    pub heading: Option<f64>,
 }
 
 /// The lateral estimate of one vehicle (DESIGN 11.1-11.3). `m` follows the radar measurement with a light,

@@ -7,6 +7,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
+
 use stripnet::daemon::{buffer_drop_reason, Buffered, Daemon, FrameBuffer, Step, EVENT_CUSTOM_RAW_2};
 use stripnet::ipc::{Pub, Sub, Vipc, VipcFrame, VISION_STREAM_ROAD};
 use stripnet::messages::{self, Payload};
@@ -15,6 +17,7 @@ use stripnet::recogniser::Recogniser;
 use stripnet::strip::Nv12;
 
 const PARAM_CHECK: Duration = Duration::from_secs(1);
+const CEREAL_OPEN_ATTEMPTS: usize = 3;
 const SERVICES: [&str; 6] = ["modelV2", "liveCalibration", "carState", "deviceState", "roadCameraState", "radarState"];
 
 fn monotonic_ns() -> i64 {
@@ -37,6 +40,24 @@ fn enabled(params: &std::path::Path) -> bool {
     std::fs::read(params.join("CcncExtendedDisplay")).is_ok_and(|v| v.first() == Some(&b'1'))
 }
 
+fn open_cereal(params: &std::path::Path) -> anyhow::Result<Option<(Vec<Sub>, Pub)>> {
+    for attempt in 1..=CEREAL_OPEN_ATTEMPTS {
+        if !enabled(params) {
+            return Ok(None);
+        }
+        let subs: Option<Vec<_>> = SERVICES.iter().map(|s| Sub::new(s, false)).collect();
+        if let Some(subs) = subs {
+            if let Some(publisher) = Pub::new("customReservedRawData2") {
+                return Ok(Some((subs, publisher)));
+            }
+        }
+        if attempt < CEREAL_OPEN_ATTEMPTS {
+            std::thread::sleep(PARAM_CHECK);
+        }
+    }
+    anyhow::bail!("StripNet cereal queues unavailable after {CEREAL_OPEN_ATTEMPTS} attempts")
+}
+
 fn main() -> anyhow::Result<()> {
     let params = PathBuf::from(std::env::var("PARAMS_DIR").unwrap_or_else(|_| "/data/params/d".into()));
     if !enabled(&params) {
@@ -44,16 +65,7 @@ fn main() -> anyhow::Result<()> {
     }
     stripnet::tail::tune_allocator();
     let assets = PathBuf::from(std::env::var("STRIPNET_ASSETS").unwrap_or_else(|_| "../assets".into()));
-    let model = match StripModel::load(&assets, "lane_strip_v4") {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("CCNC lane marking: lane strip model lane_strip_v4 not loaded, lane types are not shown: {e}");
-            while enabled(&params) {
-                std::thread::sleep(PARAM_CHECK);
-            }
-            return Ok(());
-        }
-    };
+    let model = StripModel::load(&assets, "lane_strip_v4").context("load StripNet model lane_strip_v4")?;
     eprintln!("CCNC lane marking: Rust StripNet daemon, model lane_strip_v4 loaded");
     unsafe {
         // The launcher waits on this process; if it is killed, do not keep publishing as an orphan.
@@ -68,12 +80,13 @@ fn main() -> anyhow::Result<()> {
     if !stripnet::tail::pin_cpus(cpus) {
         eprintln!("CCNC lane marking: CPU mask {cpus:#x} refused, affinity unchanged");
     }
-    let subs: Vec<Sub> = SERVICES.iter().map(|s| Sub::new(s, false).expect("subscribe")).collect();
-    let publisher = Pub::new("customReservedRawData2").expect("publish");
+    let Some((subs, publisher)) = open_cereal(&params)? else { return Ok(()) };
     let client = Vipc::new("camerad", VISION_STREAM_ROAD, false);
     let mut frames: FrameBuffer<VipcFrame> = FrameBuffer::default();
     let mut daemon = Daemon::new(Recogniser::new(model));
     let mut next_param = Instant::now() + PARAM_CHECK;
+    let progress = std::env::var_os("STRIPNET_HEARTBEAT");
+    let mut next_heartbeat = Instant::now();
     loop {
         if Instant::now() >= next_param {
             next_param = Instant::now() + PARAM_CHECK;
@@ -115,7 +128,13 @@ fn main() -> anyhow::Result<()> {
         match step {
             Step::Published { packet, .. } => {
                 let payload = serde_json::to_vec(&packet)?;
-                publisher.send(&messages::raw_data_event(EVENT_CUSTOM_RAW_2, monotonic_ns() as u64, &payload));
+                let now_ns = monotonic_ns();
+                if publisher.send(&messages::raw_data_event(EVENT_CUSTOM_RAW_2, now_ns as u64, &payload)) {
+                    if let Some(path) = progress.as_ref().filter(|_| Instant::now() >= next_heartbeat) {
+                        std::fs::write(path, format!("{now_ns}\n")).context("write StripNet publish heartbeat")?;
+                        next_heartbeat = Instant::now() + PARAM_CHECK;
+                    }
+                }
             }
             Step::Error(e) => eprintln!("CCNC lane marking: {e}"),
             _ => {}

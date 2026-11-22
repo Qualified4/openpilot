@@ -1348,7 +1348,7 @@ def _ccnc_display_options(CP, CS, frame, override):
   supported = hda1_cluster_supported(CP)
   if not hasattr(create_ccnc_messages, '_display_options') or frame % 100 == 0:
     params = Params()
-    pos_mode = params.get_int("CcncPosDisplayMode")
+    pos_mode = params.get("CcncPosDisplayMode")
     create_ccnc_messages._display_options = (supported and params.get_bool("CcncExtendedDisplay"),
                                              bool(params.get_int("CcncTrafficBackground")), pos_mode if pos_mode in (1, 2) else 0)
   requested, traffic_background, pos_mode = create_ccnc_messages._display_options

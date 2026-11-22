@@ -14,6 +14,13 @@ import json
 PRODUCT_GATE = md.GATE_RELAX  # read before the pre_g1_gate fixture pins the replay value
 
 
+@pytest.mark.parametrize('entry', [[], 'invalid', 42, {'type': []}, {'color': 'white', 'colorAgeNs': '0'}])
+def test_card_drops_malformed_marking_packet(entry):
+  packet = json.dumps({'type': 'ccncLaneMarking', 'version': 1, 'left': entry})
+  with pytest.raises(ValueError):
+    marking.parse(packet, 0)
+
+
 @pytest.fixture(autouse=True)
 def pre_g1_gate(monkeypatch):
   # These tests are written around the pre-10-26 lane prob floors (.5 / .3, GATE_RELAX None); the product default G1 (.25 / .15,

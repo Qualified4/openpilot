@@ -1,9 +1,15 @@
 # stripnet (Rust) — CCNC lane marking recogniser
 
-The processing path of `../marking_daemon.py` (process `ccnc_lane_type`) in Rust. The device runs it:
-process_config starts `stripnet_launch.sh`, which runs `prebuilt/linux-$(uname -m)/stripnet_daemon` and falls back to
+The processing path of `../marking_daemon.py` (process `ccnc_lane_type`) in Rust. The launcher's default backend
+is Python. Set the internal `CcncStripNetRust` parameter to `1` before the process starts to opt in to Rust.
+The launcher runs `prebuilt/linux-$(uname -m)/stripnet_daemon` and falls back to
 `marking_daemon.py` when that binary is missing (PC) or the Rust process fails (non-zero exit within 60 s of its start,
 or the 3rd crash since boot; marker `/dev/shm/ccnc_lane_type_rust.failed`, cleared by a reboot).
+
+Building the `ipc` feature uses `python3` to generate the shared cereal service table. The daemon opens queues with
+the declared sizes and retries startup if a queue is unavailable or has a different size.
+The launcher falls back to Python if the enabled daemon stops publishing for 20 seconds. Rust updates a per-launch
+heartbeat after a successful publish, at most once per second.
 
 Device binary (committed, no build on the device; rebuild after any change under `src/`, `ipc/`, `native/`):
 
