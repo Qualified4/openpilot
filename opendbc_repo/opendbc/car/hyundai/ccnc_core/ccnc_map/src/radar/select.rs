@@ -139,7 +139,7 @@ type Candidate = (f64, f64, i64);
 pub struct Selector<'a> {
     pub st: &'a mut MapState,
     pub k: &'a Consts,
-    pub lanes: &'a Lanes,
+    pub lanes: &'a Lanes<'a>,
     pub frame: Frame,
     pub now: f64,
     pub vision_leads: &'a [(f64, f64, Option<f64>)],

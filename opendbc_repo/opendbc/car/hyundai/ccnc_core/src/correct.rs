@@ -79,6 +79,19 @@ struct Road {
 
 impl Road {
     fn read(tracker: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Some(state) = crate::map_state::attached(tracker)? {
+            let state = state.try_borrow()?;
+            let cache = &state.st.lane_cache;
+            let mut road = Road { lines: Default::default(), weak: [false; 4] };
+            for i in 0..4 {
+                let physical = (i as i64 + state.st.lane_offset) as usize;
+                road.weak[i] = cache.weak_at(physical);
+                if cache.lines.get(&physical).is_some_and(|line| line.probability.partial_cmp(&0.1) != Some(std::cmp::Ordering::Less)) {
+                    road.lines[i] = cache.geometry.get(&physical).filter(|points| !points.is_empty()).cloned();
+                }
+            }
+            return Ok(road);
+        }
         let py = tracker.py();
         let offset: i64 = tracker.getattr(intern!(py, "lane_offset"))?.extract()?;
         let lanes = tracker.getattr(intern!(py, "lanes"))?;

@@ -75,9 +75,7 @@ fn _lane_for_test(
     settled: bool,
 ) -> PyResult<(Option<i64>, bool, f64)> {
     guard(|| {
-        let mut view = lanes::LaneCache::new(radar_map);
-        let lanes = view.get()?;
-        lanes.changing = radar_map.call_method0("_model_changing")?.is_truthy()?;
+        let lanes = lanes::read(radar_map)?;
         lanes.lane(x, y, moving, settled, &[]).map_err(map_state::py_err)
     })
 }
@@ -113,10 +111,10 @@ fn _associate_for_test<'py>(
             })
             .collect();
         let state = map_state::attach(radar_map)?;
-        let mut lanes = lanes::LaneCache::new(radar_map);
+        let lanes = lanes::read(radar_map)?;
         let pairs = {
             let state = state.try_borrow()?;
-            associate(&state.st, &k, inp, lanes.get()?, &ms, stamp).map_err(map_state::py_err)?
+            associate(&state.st, &k, inp, &lanes, &ms, stamp).map_err(map_state::py_err)?
         };
         let out = pyo3::types::PyDict::new(py);
         for (i, key) in pairs {
@@ -142,6 +140,7 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(live_tracks::_parse_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(live_tracks::live_tracks_schema, module)?)?;
     module.add_function(wrap_pyfunction!(model_v2::update_lanes, module)?)?;
+    module.add_function(wrap_pyfunction!(model_v2::prepare_lanes, module)?)?;
     module.add_function(wrap_pyfunction!(
         model_v2::_update_lanes_calls_for_test,
         module
@@ -155,6 +154,7 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(correct::correct_positions, module)?)?;
     module.add_function(wrap_pyfunction!(correct::_position_apply_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(rear::_update_rear_for_test, module)?)?;
+    module.add_function(wrap_pyfunction!(rear::_rear_snapshot_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(vehicle_display::update_display, module)?)?;
     module.add_class::<pos::PosState>()?;
     module.add_function(wrap_pyfunction!(pos::_pos_run_for_test, module)?)?;

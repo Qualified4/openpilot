@@ -59,6 +59,73 @@ def freeze(value, seen=None):
   return kind, value
 
 
+def rear_snapshot(policy, core=None):
+  """Compare policy fields, including whether a drawing shares the active rear motion."""
+  fields = ('fronts', 'rears', 'consumed', 'context', 'last', 'raw', 'raw_stamp', 'fresh',
+            'unproven', 'events', 'v_ego', 'changing', 'ego_hist')
+  if core is None:
+    snapshot = {name: getattr(policy, name) for name in fields}
+    if hasattr(policy, 'flows'):
+      snapshot['flows'] = [vars(flow) for flow in policy.flows]
+  else:
+    snapshot = core._rear_snapshot_for_test(policy)
+
+  def key(value):
+    if value is None or value[0] == 'display':
+      return value
+    return value[0], float(value[1])
+
+  def keys(d):
+    result = dict(d)
+    if 'key' in d:
+      result['key'] = key(d['key'])
+    if 'aliases' in d:
+      result['aliases'] = [key(alias) for alias in d['aliases']]
+    return result
+
+  def track(d):
+    if d is None:
+      return None
+    return {k: v for k, v in keys(d).items() if k not in ('force_at', 'deadline', 'max_speed', 'end_reason')}
+
+  def motion(d, live):
+    if d is None:
+      return None
+    names = ('key', 'aliases', 'phase', 'signed', 'speed', 'distance', 'force_at', 'deadline', 'max_speed', 'end_reason')
+    record = keys(d)
+    return dict({name: record.get(name) for name in names}, live=d.get('live', d is live))
+
+  def drawing(d, live):
+    if d is None:
+      return None
+    record = keys(d)
+    names = ('key', 'x', 'y', 'detect', 'phase', 'display_pass', 'model_distance', 'spacing')
+    return dict({name: record.get(name) for name in names},
+                target=keys(d['target']) if d.get('target') is not None else None,
+                motion=motion(d.get('motion'), live))
+
+  if 'flows' in snapshot:
+    snapshot['flows'] = [dict(flow, front=drawing(flow['front'], live), rear=drawing(flow['rear'], live))
+                         for flow, live in zip(snapshot['flows'], snapshot['rears'], strict=True)]
+  for name in ('fronts', 'rears'):
+    snapshot[name] = [track(d) for d in snapshot[name]]
+  snapshot['events'] = [keys(event) for event in snapshot['events']]
+  for event in snapshot['events']:
+    if 'hits' in event and event['hits'] is None:  # The seeded forced-exit fixture starts without front observations.
+      event['hits'] = 0
+      event['qualified'] = False
+  snapshot['ego_hist'] = list(snapshot['ego_hist'])
+  snapshot['consumed'] = [[key(k) for k in queue] for queue in snapshot['consumed']]
+  # Snapshot field order belongs to the projection. Drawing numbers and event order remain bit-exact.
+  def ordered(value):
+    if isinstance(value, dict):
+      return {k: ordered(v) for k, v in sorted(value.items())}
+    if isinstance(value, list):
+      return [ordered(v) for v in value]
+    return value
+  return ordered(snapshot)
+
+
 def point(source, x, y, speed, ego, moving):
   return SimpleNamespace(trackId=source, dRel=x, yRel=y, vRel=speed, vLead=ego + speed, motionState=2 if moving else 0,
                          radarSource='frontRadar')
@@ -152,7 +219,7 @@ def test_rear_state_and_display_match(seed, policy):
     left = update(python, python_filters, row)
     right = update(rust, rust_filters, row, core=core)
     assert freeze(right) == freeze(left), f'seed {seed}, frame {i}, values'
-    assert freeze((rust, filter_state(rust_filters))) == freeze((python, filter_state(python_filters))), f'seed {seed}, frame {i}, rear and flow state'
+    assert freeze((rear_snapshot(rust, core), filter_state(rust_filters))) == freeze((rear_snapshot(python), filter_state(python_filters))), f'seed {seed}, frame {i}, rear and flow state'
 
     reached.update(f'event:{event["event"]}' for event in python.events)
     reached.update(f'reason:{event["reason"]}' for event in python.events if 'reason' in event)
@@ -191,7 +258,7 @@ def test_missing_lateral_preserves_type_and_partial_state():
     del values['LF_DETECT_LATERAL']
     with pytest.raises(KeyError) as error:
       update(policy, filters, row, core=backend, values=values)
-    rows.append(freeze((error.value.args, values, policy, filter_state(filters))))
+    rows.append(freeze((error.value.args, values, rear_snapshot(policy, backend), filter_state(filters))))
   assert rows[0] == rows[1]
 
 
@@ -212,11 +279,12 @@ def test_rear_forced_exit_matches():
         for fd, *_ in rear.SmoothHandover.FIELDS:
           row[0][fd] = 0
         values = update(policy, filters, row, core=backend)
-        trace.append(freeze((values, policy, filter_state(filters))))
+        state = rear_snapshot(policy, backend)
+        trace.append(freeze((values, state, filter_state(filters))))
         if i == 1:
-          assert policy.events[0]['event'] == 'forced_exit'
+          assert state['events'][0]['event'] == 'forced_exit'
         if i == 3:
-          assert policy.rears == [None, None]
+          assert state['rears'] == [None, None]
           break
     traces.append(trace)
   assert traces[0] == traces[1]

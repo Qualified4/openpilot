@@ -7,7 +7,7 @@ use std::hash::Hash;
 
 use super::associate::{associate, measure, AssociateIn, Ego, Evidence, RadarPoint};
 use super::consts::Consts;
-use super::lanes::Lanes;
+use super::lanes::{LaneCache, Lanes};
 use super::object::{MapObjectData, Ring};
 use super::observe::{observe, ObserveIn};
 use super::select::{lane_reference, vision, Bridge, Selector};
@@ -20,6 +20,7 @@ pub enum Error {
     Index(&'static str),
     Type(&'static str),
     Key(i64),
+    Field(&'static str),
     Value(&'static str),
     Overflow(&'static str),
 }
@@ -138,6 +139,8 @@ pub struct UpdateIn<'a> {
     pub yaw_rate: f64,
     pub holding: bool,
     pub ego_change: bool,
+    pub model_stamp: Option<f64>,
+    pub model_changing: bool,
     pub lane_change: bool,
     pub blindspot: [bool; 2],
     pub leads: &'a [(f64, f64)],
@@ -190,6 +193,7 @@ pub struct MapState {
     pub far_since: Option<(i64, f64)>,
     pub lane_return: Option<f64>,
     pub lane_offset: i64,
+    pub lane_cache: LaneCache,
 }
 
 impl Default for MapState {
@@ -231,7 +235,8 @@ impl MapState {
             hold: Default::default(),
             far_since: Default::default(),
             lane_return: Default::default(),
-            lane_offset: Default::default(),
+            lane_offset: 0,
+            lane_cache: LaneCache::default(),
         }
     }
 
@@ -258,7 +263,24 @@ impl MapState {
     }
 
     /// Update the legacy map from prepared inputs after advancing ego and placing the model lines.
-    pub fn update(&mut self, k: &Consts, lanes: &mut Lanes, inp: UpdateIn<'_>) -> Result<Updated> {
+    pub fn update(&mut self, k: &Consts, inp: UpdateIn<'_>) -> Result<Updated> {
+        let now = self.now.ok_or(Error::Value("map not advanced"))?;
+        let fresh = inp
+            .model_stamp
+            .is_some_and(|stamp| (0. ..=0.25).contains(&(now - stamp)));
+        let cache = std::mem::take(&mut self.lane_cache);
+        let mut lanes = cache.view(
+            self.lane_offset,
+            fresh,
+            (k.outer_narrow, k.outer_far),
+            inp.model_changing,
+        );
+        let result = self.update_stages(k, &mut lanes, inp);
+        self.lane_cache = cache;
+        result
+    }
+
+    fn update_stages(&mut self, k: &Consts, lanes: &mut Lanes<'_>, inp: UpdateIn<'_>) -> Result<Updated> {
         let now = self.now.ok_or(Error::Value("map not advanced"))?;
         let frame = self.frame();
         let lane_change = lane_reference(self, k, lanes, now, inp.ego_change, inp.lane_change);

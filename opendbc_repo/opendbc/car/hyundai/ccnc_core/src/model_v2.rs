@@ -5,23 +5,20 @@
 //! and card's start (`hyundaicanfd_ccnc_points.model_schema_mismatch`) compare them with the schema pycapnp loads.
 //! A message this does not read exactly as pycapnp would gives None, and the map reads the Cap'n Proto objects.
 
-use std::cmp::Ordering;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFloat, PyList, PyTuple};
 
-use crate::display_filter::empty_object;
 use crate::guard;
 use crate::observe::Frame;
-use crate::lanes::interpolate;
-use crate::pymath::py_max;
 use ccnc_map::input::live_tracks::EVENT_DISCRIMINANT_OFFSET;
 use ccnc_map::input::model_v2::{
-    parse, parse_path, Line, Model, EVENT_MODEL_V2, EVENT_MODEL_V2_POINTER, LANE_LINES_POINTER, LANE_LINE_PROBS_POINTER,
+    parse, parse_path, Line, EVENT_MODEL_V2, EVENT_MODEL_V2_POINTER, LANE_LINES_POINTER, LANE_LINE_PROBS_POINTER,
     POSITION_POINTER, ROAD_EDGES_POINTER, XYZT_X_POINTER, XYZT_Y_POINTER, XYZT_Y_STD_POINTER,
 };
+pub(crate) use ccnc_map::radar::lanes::{numpy_interp, valid_curve, Curve, GeometryInput};
 
 fn floats<'py>(py: Python<'py>, values: &[f32]) -> PyResult<Bound<'py, PyList>> {
     PyList::new(py, values.iter().map(|&v| PyFloat::new(py, v as f64)))
@@ -40,8 +37,14 @@ pub fn _parse_model_for_test<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Optio
             }
             Ok(out)
         };
-        Ok(Some(PyTuple::new(py, [lines(&m.lane_lines)?.into_any(), floats(py, &m.lane_line_probs)?.into_any(),
-                                  lines(&m.road_edges)?.into_any()])?))
+        Ok(Some(PyTuple::new(
+            py,
+            [
+                lines(&m.lane_lines)?.into_any(),
+                floats(py, &m.lane_line_probs)?.into_any(),
+                lines(&m.road_edges)?.into_any(),
+            ],
+        )?))
     })
 }
 
@@ -62,52 +65,6 @@ pub fn model_v2_schema(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     Ok(d)
 }
 
-/// Python's `<` on two-float tuples: the first unequal element decides (NaN is unequal to everything).
-fn tuple_lt(a: &(f64, f64), b: &(f64, f64)) -> bool {
-    if a.0 != b.0 {
-        a.0 < b.0
-    } else {
-        a.1 < b.1
-    }
-}
-
-/// `sorted()` of two-float tuples. Without NaN the order is total and a stable sort gives Timsort's result; with a
-/// NaN it is not, and Python sorts them.
-fn sorted(py: Python<'_>, mut points: Vec<(f64, f64)>) -> PyResult<Vec<(f64, f64)>> {
-    if points.iter().any(|p| p.0.is_nan() || p.1.is_nan()) {
-        let list = PyList::new(py, &points)?;
-        list.sort()?;
-        return list.extract();
-    }
-    points.sort_by(|a, b| if tuple_lt(a, b) { Ordering::Less } else if tuple_lt(b, a) { Ordering::Greater } else { Ordering::Equal });
-    Ok(points)
-}
-
-/// `bisect_left(values, x)` on floats.
-fn bisect_left(values: &[f64], x: f64) -> usize {
-    let (mut lo, mut hi) = (0, values.len());
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        if values[mid] < x {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    lo
-}
-
-/// `[p for j, p in enumerate(points) if j == 0 or p[0] > points[j - 1][0] + .001]` as tuples.
-fn deduplicated<'py>(py: Python<'py>, points: &[(f64, f64)]) -> PyResult<Bound<'py, PyList>> {
-    let out = PyList::empty(py);
-    for (j, p) in points.iter().enumerate() {
-        if j == 0 || p.0 > points[j - 1].0 + 0.001 {
-            out.append(*p)?;
-        }
-    }
-    Ok(out)
-}
-
 static CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// For the parity test only: how many `update_lanes` calls updated the lanes from the bytes.
@@ -115,47 +72,6 @@ static CALLS: AtomicU64 = AtomicU64::new(0);
 pub fn _update_lanes_calls_for_test() -> u64 {
     CALLS.load(AtomicOrdering::Relaxed)
 }
-
-/// `_update_lanes(model, stamp, None, previous_placed)` on the message in `raw`, after the caller's
-/// `pose = self.pose_at(stamp)` (not None) and `pc, ps = math.cos(pose[2]), math.sin(pose[2])`. False, with nothing
-/// changed, where `parse` gives None: the caller then runs the Cap'n Proto path.
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-pub fn update_lanes<'py>(
-    _py: Python<'py>,
-    radar_map: &Bound<'py, PyAny>,
-    raw: &[u8],
-    px: f64,
-    py_: f64,
-    pc: f64,
-    ps: f64,
-    previous_placed: &Bound<'py, PyAny>,
-    boundary_type: &Bound<'py, PyAny>,
-) -> PyResult<bool> {
-    guard(|| {
-        let Some(model) = parse(raw) else {
-            return Ok(false);
-        };
-        CALLS.fetch_add(1, AtomicOrdering::Relaxed);
-        let lines = GeometryInput::from_raw(model);
-        refresh_lanes(
-            radar_map,
-            &lines,
-            Frame {
-                px,
-                py: py_,
-                c: pc,
-                s: ps,
-            },
-            previous_placed,
-            boundary_type,
-        )?;
-        Ok(true)
-    })
-}
-
-pub(crate) type Curve = (Vec<f64>, Vec<f64>);
-type Xy = (f64, f64);
 
 pub(crate) fn curve(line: &Bound<'_, PyAny>) -> PyResult<Curve> {
     let py = line.py();
@@ -172,254 +88,176 @@ pub(crate) fn read_path(md: &Bound<'_, PyAny>, raw: Option<&[u8]>) -> PyResult<(
     }
     let py = md.py();
     let position = md.getattr(intern!(py, "position"))?;
-    Ok((
-        curve(&position)?,
-        position.getattr(intern!(py, "yStd"))?.extract()?,
-    ))
+    Ok((curve(&position)?, position.getattr(intern!(py, "yStd"))?.extract()?))
 }
 
-#[derive(Default)]
-pub(crate) struct GeometryInput {
-    pub lines: Vec<Curve>,
-    pub probs: Vec<f64>,
-    pub edges: Vec<Curve>,
-}
-
-impl GeometryInput {
-    fn from_raw(model: Model) -> Self {
-        let convert = |line: Line| {
-            (
-                line.x.into_iter().map(f64::from).collect(),
-                line.y.into_iter().map(f64::from).collect(),
-            )
-        };
-        Self {
-            lines: model.lane_lines.into_iter().take(4).map(convert).collect(),
-            probs: model
-                .lane_line_probs
-                .into_iter()
-                .take(4)
-                .map(f64::from)
-                .collect(),
-            edges: model.road_edges.into_iter().take(2).map(convert).collect(),
-        }
+pub fn read_geometry(md: &Bound<'_, PyAny>, raw: Option<&[u8]>) -> PyResult<GeometryInput> {
+    if let Some(model) = raw.and_then(parse) {
+        return Ok(GeometryInput::from_raw(model));
     }
+    if md.is_none() {
+        return Ok(GeometryInput::default());
+    }
+    let py = md.py();
+    let read = |name, n| -> PyResult<Vec<Curve>> {
+        let Some(list) = md.getattr_opt(name)? else {
+            return Ok(Vec::new());
+        };
+        list.try_iter()?
+            .take(n)
+            .map(|line| {
+                let line = line?;
+                let x = line
+                    .getattr_opt(intern!(py, "x"))?
+                    .map_or(Ok(Vec::new()), |v| v.extract())?;
+                let y = line.getattr(intern!(py, "y"))?.extract()?;
+                Ok((x, y))
+            })
+            .collect()
+    };
+    let lanes = intern!(py, "laneLines");
+    let edges = intern!(py, "roadEdges");
+    let probs = md.getattr_opt(intern!(py, "laneLineProbs"))?;
+    Ok(GeometryInput {
+        lines: read(lanes, 4)?,
+        probs: probs.map_or(Ok(Vec::new()), |p| {
+            p.try_iter()?.take(4).map(|v| v?.extract()).collect()
+        })?,
+        edges: read(edges, 2)?,
+    })
+}
 
-    pub fn read(md: &Bound<'_, PyAny>, raw: Option<&[u8]>) -> PyResult<Self> {
-        if let Some(model) = raw.and_then(parse) {
-            return Ok(Self::from_raw(model));
-        }
-        if md.is_none() {
-            return Ok(Self::default());
-        }
-        let py = md.py();
-        let read = |name, n| -> PyResult<Vec<Curve>> {
-            let Some(list) = md.getattr_opt(name)? else {
-                return Ok(Vec::new());
+/// Prepare geometry from the current pose and ingest new model curves if available at their stamp.
+pub(crate) fn prepare(
+    map: &Bound<'_, PyAny>,
+    model: Option<(&GeometryInput, f64)>,
+    ego_change: bool,
+    boundary_type: &Bound<'_, PyAny>,
+) -> PyResult<bool> {
+    let state = crate::map_state::attach(map)?;
+    let mut state = state.try_borrow_mut()?;
+    if state.boundary_type.is_none() {
+        state.boundary_type = Some(boundary_type.clone().unbind());
+    }
+    let st = &mut state.st;
+    let frame = st.frame();
+    let previous = st.lane_cache.place(frame);
+    if let Some((model, stamp)) = model {
+        if let Some((px, py, angle)) = st.pose_at(stamp) {
+            let origin = Frame {
+                px,
+                py,
+                c: angle.cos(),
+                s: angle.sin(),
             };
-            list.try_iter()?
-                .take(n)
-                .map(|line| {
-                    let line = line?;
-                    let x = line
-                        .getattr_opt(intern!(py, "x"))?
-                        .map_or(Ok(Vec::new()), |v| v.extract())?;
-                    let y = line.getattr(intern!(py, "y"))?.extract()?;
-                    Ok((x, y))
-                })
-                .collect()
-        };
-        let lanes = intern!(py, "laneLines");
-        let edges = intern!(py, "roadEdges");
-        let probs = md.getattr_opt(intern!(py, "laneLineProbs"))?;
-        Ok(Self {
-            lines: read(lanes, 4)?,
-            probs: probs.map_or(Ok(Vec::new()), |p| {
-                p.try_iter()?.take(4).map(|v| v?.extract()).collect()
-            })?,
-            edges: read(edges, 2)?,
-        })
-    }
-
-    pub fn side_center(&self, side: usize, probability: f64) -> Option<f64> {
-        let (i, j) = if side == 0 { (1, 0) } else { (2, 3) };
-        if self.lines.len() < 4
-            || self.probs.len() < 4
-            || ![i, j]
-                .into_iter()
-                .all(|idx| self.probs[idx].is_finite() && self.probs[idx] >= probability)
-        {
-            return None;
+            let window = (map.getattr("MIN_X")?.extract()?, map.getattr("FAR_X")?.extract()?);
+            st.lane_cache
+                .refresh(model, origin, frame, &previous, window, ego_change);
+            return Ok(true);
         }
-        let (inner, outer) = (&self.lines[i], &self.lines[j]);
-        if ![inner, outer]
-            .into_iter()
-            .all(|p| valid_curve(p) && p.0[0] <= 20. && 20. <= p.0[p.0.len() - 1])
-        {
-            return None;
-        }
-        let (y, outer_y) = (numpy_interp(inner, 20.), numpy_interp(outer, 20.));
-        let width = if side == 0 { y - outer_y } else { outer_y - y };
-        let center = inner.1[0].abs() + width * 0.5;
-        ((2.3..=4.8).contains(&width) && center.is_finite()).then_some(center)
     }
+    Ok(false)
 }
 
-pub(crate) fn valid_curve((x, y): &Curve) -> bool {
-    x.len() >= 2
-        && x.len() == y.len()
-        && x.iter().chain(y).all(|p| p.is_finite())
-        && x.windows(2).all(|p| p[1] > p[0])
-}
-
-/// The slope-first interpolation used by numpy.interp for validated curves.
-pub(crate) fn numpy_interp((x, y): &Curve, at: f64) -> f64 {
-    if at.is_nan() {
-        return at;
-    }
-    let i = bisect_left(x, at);
-    if i >= x.len() {
-        return y[y.len() - 1];
-    }
-    if i == 0 || x[i] == at {
-        return y[i];
-    }
-    let j = i - 1;
-    let slope = (y[i] - y[j]) / (x[i] - x[j]);
-    let value = slope * (at - x[j]) + y[j];
-    if value.is_nan() {
-        let retry = slope * (at - x[i]) + y[i];
-        if retry.is_nan() && y[i] == y[j] {
-            return y[j];
-        }
-        return retry;
-    }
-    value
-}
-
-pub(crate) fn place_geometry<'py>(radar_map: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyDict>> {
-    let py = radar_map.py();
-    let frame = crate::observe::read_frame(radar_map)?;
-    let placed = PyDict::new(py);
-    let geometry = PyDict::new(py);
-    radar_map.setattr(intern!(py, "geometry"), &geometry)?;
-    let lanes = radar_map
-        .getattr(intern!(py, "lanes"))?
-        .cast_into::<PyDict>()?;
-    for (i, lane) in lanes.iter() {
-        let world: Vec<Xy> = lane.getattr(intern!(py, "points"))?.extract()?;
-        let local: Vec<Xy> = world.into_iter().map(|(x, y)| frame.to_ego(x, y)).collect();
-        placed.set_item(&i, PyList::new(py, &local)?)?;
-        geometry.set_item(&i, deduplicated(py, &sorted(py, local)?)?)?;
-    }
-    Ok(placed)
-}
-
-pub(crate) fn refresh_lanes<'py>(
-    m: &Bound<'py, PyAny>,
-    model: &GeometryInput,
-    origin: Frame,
-    previous_placed: &Bound<'py, PyAny>,
-    boundary_type: &Bound<'py, PyAny>,
+/// Python map entry point: gather its lane samples and pass them into the Rust cache.
+#[pyfunction]
+#[pyo3(signature = (map, model, stamp, curves, raw, boundary_type))]
+pub fn prepare_lanes(
+    map: &Bound<'_, PyAny>,
+    model: &Bound<'_, PyAny>,
+    stamp: f64,
+    curves: &Bound<'_, PyAny>,
+    raw: Option<&[u8]>,
+    boundary_type: &Bound<'_, PyAny>,
 ) -> PyResult<()> {
-    let py = m.py();
-    let (min_x, far_x): (f64, f64) = (
-        m.getattr(intern!(py, "MIN_X"))?.extract()?,
-        m.getattr(intern!(py, "FAR_X"))?.extract()?,
-    );
-    let ego_change = m.getattr(intern!(py, "ego_change"))?.is_truthy()?;
-    let frame = crate::observe::read_frame(m)?;
-    let (px, py_, pc, ps) = (origin.px, origin.py, origin.c, origin.s);
-    let lanes = m.getattr(intern!(py, "lanes"))?.cast_into::<PyDict>()?;
-    let geometry = m.getattr(intern!(py, "geometry"))?.cast_into::<PyDict>()?;
-    let weak = m.getattr(intern!(py, "weak"))?;
-    let to_ego = |(x, y)| frame.to_ego(x, y);
-    let count = model.lines.len().min(model.probs.len()).min(4);
-    let entries = (0..4)
-        .map(|i| (i < count).then(|| (&model.lines[i], model.probs[i])))
-        .chain(model.edges.iter().take(2).map(|edge| Some((edge, 1.))));
-    for (i, entry) in entries.enumerate() {
-        let Some((line, mut probability)) = entry else {
-            continue;
-        };
-        if !valid_curve(line) || !probability.is_finite() {
-            continue;
-        }
-        let n = line.0.len();
-        let coords: Vec<Xy> = line.0.iter().copied().zip(line.1.iter().copied()).collect();
-        let old = lanes.get_item(i)?;
-        if probability < 0.1 {
-            if !ego_change || i > 3 {
-                if let Some(old) = &old {
-                    let value: f64 = old.getattr(intern!(py, "probability"))?.extract()?;
-                    old.setattr(intern!(py, "probability"), value * 0.9)?;
-                }
-                continue;
-            }
-            probability = 0.1;
-            weak.call_method1(intern!(py, "add"), (i,))?;
+    guard(|| {
+        let mut from_bytes = false;
+        let input = if model.is_none() {
+            None
+        } else if let Some(model) = raw.filter(|_| curves.is_none()).and_then(parse) {
+            from_bytes = true;
+            Some(GeometryInput::from_raw(model))
         } else {
-            weak.call_method1(intern!(py, "discard"), (i,))?;
-        }
-        let first = bisect_left(&line.0, min_x).saturating_sub(1);
-        let last = (bisect_left(&line.0, far_x) + 1).min(n);
-        let world: Vec<(f64, f64)> = coords[first..last.max(first)]
-            .iter()
-            .map(|&(x, y)| (px + pc * x + ps * y, py_ + ps * x - pc * y))
-            .collect();
-        let placed: Vec<(f64, f64)> = world.iter().copied().map(to_ego).collect();
-        let local = sorted(py, placed.clone())?;
-        let previous_geometry: Vec<(f64, f64)> = match geometry.get_item(i)? {
-            Some(points) => points.extract()?,
-            None => Vec::new(),
-        };
-        let mut max_error: Option<f64> = None;
-        for &(x, y) in &local {
-            if (0. ..=30.).contains(&x) {
-                if let Some(previous) = interpolate(&previous_geometry, x) {
-                    let error = (y - previous).abs();
-                    max_error = Some(max_error.map_or(error, |m| py_max(m, error)));
-                    // max(errors)
+            let mut input = read_geometry(model, None)?;
+            if !curves.is_none() {
+                let read = |i| -> PyResult<Curve> {
+                    let line = curves.call1((model, i))?;
+                    if !line.get_item(2)?.is_truthy()? {
+                        return Ok(Curve::default());
+                    }
+                    Ok((
+                        line.get_item(0)?.call_method0("tolist")?.extract()?,
+                        line.get_item(1)?.call_method0("tolist")?.extract()?,
+                    ))
+                };
+                for (i, line) in input.lines.iter_mut().take(input.probs.len()).enumerate() {
+                    *line = read(i)?;
+                }
+                for (i, line) in input.edges.iter_mut().enumerate() {
+                    *line = read(i + 4)?;
                 }
             }
-        }
-        let consistent = match (&old, max_error) {
-            (Some(old), Some(e)) if e <= 0.35 => {
-                old.getattr(intern!(py, "consistent"))?.extract::<i64>()? + 1
-            }
-            _ => 1,
+            Some(input)
         };
-        let limit = local[0].0 - 0.1;
-        let mut behind: Vec<(Bound<'py, PyAny>, (f64, f64))> = Vec::new();
-        if let Some(old) = &old {
-            let old_points = old.getattr(intern!(py, "points"))?;
-            let old_ego = previous_placed.get_item(i)?;
-            for (point, ego) in old_points.try_iter()?.zip(old_ego.try_iter()?) {
-                let (point, ego) = (point?, ego?.extract::<(f64, f64)>()?);
-                if -5. <= ego.0 && ego.0 < limit {
-                    behind.push((point, ego));
-                }
-            }
-            behind.drain(..behind.len().saturating_sub(24));
+        let ego_change = map.getattr("ego_change")?.is_truthy()?;
+        if prepare(
+            map,
+            input.as_ref().map(|input| (input, stamp)),
+            ego_change,
+            boundary_type,
+        )? && from_bytes
+        {
+            CALLS.fetch_add(1, AtomicOrdering::Relaxed);
         }
-        let points = PyList::empty(py);
-        for (point, _) in &behind {
-            points.append(point)?;
+        Ok(())
+    })
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn update_lanes(
+    radar_map: &Bound<'_, PyAny>,
+    raw: &[u8],
+    px: f64,
+    py_: f64,
+    pc: f64,
+    ps: f64,
+    previous_placed: &Bound<'_, PyAny>,
+    boundary_type: &Bound<'_, PyAny>,
+) -> PyResult<bool> {
+    guard(|| {
+        let _ = previous_placed; // The attached cache reprojects the preceding lines itself.
+        let Some(state) = crate::map_state::attached(radar_map)? else {
+            return Ok(false);
+        };
+        let Some(model) = parse(raw) else { return Ok(false) };
+        let window = (
+            radar_map.getattr("MIN_X")?.extract()?,
+            radar_map.getattr("FAR_X")?.extract()?,
+        );
+        let changing = radar_map.getattr("ego_change")?.is_truthy()?;
+        let mut state = state.try_borrow_mut()?;
+        if state.boundary_type.is_none() {
+            state.boundary_type = Some(boundary_type.clone().unbind());
         }
-        for p in world.iter().take(40) {
-            points.append(*p)?;
-        }
-        let boundary = empty_object(boundary_type)?;
-        boundary.setattr(intern!(py, "points"), points)?;
-        boundary.setattr(intern!(py, "probability"), probability)?;
-        boundary.setattr(intern!(py, "consistent"), consistent.min(20))?;
-        lanes.set_item(i, boundary)?;
-        let ego: Vec<(f64, f64)> = behind
-            .iter()
-            .map(|(_, ego)| *ego)
-            .chain(placed.iter().take(40).copied())
-            .collect();
-        geometry.set_item(i, deduplicated(py, &sorted(py, ego)?)?)?;
-    }
-    Ok(())
+        let st = &mut state.st;
+        let frame = st.frame();
+        let previous = st.lane_cache.place(frame);
+        let origin = Frame {
+            px,
+            py: py_,
+            c: pc,
+            s: ps,
+        };
+        st.lane_cache.refresh(
+            &GeometryInput::from_raw(model),
+            origin,
+            frame,
+            &previous,
+            window,
+            changing,
+        );
+        CALLS.fetch_add(1, AtomicOrdering::Relaxed);
+        Ok(true)
+    })
 }

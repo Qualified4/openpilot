@@ -1,22 +1,11 @@
 //! Lane queries for the radar map.
 
-use super::state::{Error, Result};
+use super::state::{Error, Frame, InsertionMap, Result};
 use super::walls::BandData;
-use crate::pymath::{py_max, py_min};
+use std::borrow::Cow;
 
-pub trait LaneQuery {
-    /// `_lane(x, y, moving=moving, settled=settled)`: (slot, interior, distance past the line).
-    fn lane(&mut self, x: f64, y: f64, moving: bool, settled: bool) -> Result<(Option<i64>, bool, f64)>;
-    /// `_centre(x)`: ego's lane centre at x.
-    fn centre(&mut self, x: f64) -> Result<Option<f64>>;
-    /// The outer line of the side y is on, at x (`_settle`).
-    fn outer(&mut self, x: f64, y: f64) -> Result<Option<f64>>;
-    fn body_clear(&mut self, slot: i64, x: f64, y: f64, clearance: f64, far_side: f64) -> Result<bool>;
-    fn edge_room(&mut self, slot: i64, x: f64, room: f64) -> Result<bool>;
-    fn band_line(&mut self, x: f64, y: f64, odometer: f64, bin: f64, memory: f64) -> Result<bool>;
-    /// Whether the map has any lane geometry (`bool(self.geometry)`).
-    fn has_geometry(&mut self) -> Result<bool>;
-}
+use crate::input::model_v2::{Line as ModelLine, Model};
+use crate::pymath::{py_max, py_min};
 
 /// `interpolate(points, x)` (and its Cython twin): the line's y at x, or None outside it.
 pub fn interpolate(points: &[(f64, f64)], x: f64) -> Option<f64> {
@@ -43,9 +32,9 @@ pub fn interpolate(points: &[(f64, f64)], x: f64) -> Option<f64> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Line {
+pub struct Line<'a> {
     pub lane: Option<(f64, f64)>, // lanes[i]: (probability, consistent)
-    pub geometry: Option<Vec<(f64, f64)>>,
+    pub geometry: Option<Cow<'a, [(f64, f64)]>>,
 }
 
 #[derive(Clone, Debug)]
@@ -58,8 +47,8 @@ struct BandSpan {
 }
 
 #[derive(Clone, Debug)]
-pub struct Lanes {
-    lines: Vec<Line>,
+pub struct Lanes<'a> {
+    lines: [Line<'a>; 6],
     lane_offset: i64,
     pub model_fresh: bool,
     pub has_geometry: bool,
@@ -69,9 +58,9 @@ pub struct Lanes {
     bands: Vec<BandSpan>,
 }
 
-impl Lanes {
+impl<'a> Lanes<'a> {
     pub fn new(
-        lines: Vec<Line>,
+        lines: [Line<'a>; 6],
         lane_offset: i64,
         model_fresh: bool,
         has_geometry: bool,
@@ -105,7 +94,7 @@ impl Lanes {
             })
             .collect();
     }
-    fn line(&self, i: i64) -> Option<&Line> {
+    fn line(&self, i: i64) -> Option<&Line<'a>> {
         usize::try_from(i).ok().and_then(|i| self.lines.get(i))
     }
 
@@ -336,7 +325,7 @@ impl Lanes {
     }
 
     /// `_band_line(x, y)` with the bands of the previous update.
-    pub fn band_line(&mut self, x: f64, y: f64, odometer: f64, bin: f64, memory: f64) -> Result<bool> {
+    pub fn band_line(&self, x: f64, y: f64, odometer: f64, bin: f64, memory: f64) -> bool {
         for band in &self.bands {
             if y * band.sign as f64 <= 0.2 {
                 continue;
@@ -352,40 +341,287 @@ impl Lanes {
             let along = odometer + x;
             if let Some(base) = base {
                 if (y - base - band.offset).abs() <= bin && band.low - memory <= along && along <= band.high + memory {
-                    return Ok(true);
+                    return true;
                 }
             }
         }
-        Ok(false)
+        false
     }
 }
 
-impl LaneQuery for Lanes {
-    fn lane(&mut self, x: f64, y: f64, moving: bool, settled: bool) -> Result<(Option<i64>, bool, f64)> {
-        Lanes::lane(self, x, y, moving, settled, &[])
+pub type Curve = (Vec<f64>, Vec<f64>);
+pub type Xy = (f64, f64);
+
+#[derive(Clone, Debug)]
+pub struct Boundary {
+    pub points: Vec<Xy>,
+    pub probability: f64,
+    pub consistent: i64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LaneCache {
+    pub lines: InsertionMap<usize, Boundary>,
+    pub geometry: InsertionMap<usize, Vec<Xy>>,
+    weak: u8,
+}
+
+pub type Placed = [Option<Vec<Xy>>; 6];
+
+impl LaneCache {
+    pub fn weak_at(&self, i: usize) -> bool {
+        i < 4 && self.weak & (1 << i) != 0
     }
 
-    fn centre(&mut self, x: f64) -> Result<Option<f64>> {
-        Ok(Lanes::centre(self, x))
+    pub fn view(&self, offset: i64, model_fresh: bool, outer: (f64, f64), changing: bool) -> Lanes<'_> {
+        let lines = std::array::from_fn(|i| Line {
+            lane: self
+                .lines
+                .get(&i)
+                .map(|line| (line.probability, line.consistent as f64)),
+            geometry: self.geometry.get(&i).map(|points| Cow::Borrowed(points.as_slice())),
+        });
+        Lanes::new(lines, offset, model_fresh, !self.geometry.is_empty(), outer, changing)
     }
 
-    fn outer(&mut self, x: f64, y: f64) -> Result<Option<f64>> {
-        Lanes::outer(self, x, y)
+    /// Reproject the world points after advancing ego. Retain their order for the next model update.
+    pub fn place(&mut self, frame: Frame) -> Placed {
+        let mut placed: Placed = Default::default();
+        self.geometry = InsertionMap::default();
+        for (i, lane) in self.lines.iter() {
+            let local: Vec<_> = lane.points.iter().map(|&(x, y)| frame.to_ego(x, y)).collect();
+            self.geometry.insert(i, deduplicated(sorted(local.clone())));
+            placed[i] = Some(local);
+        }
+        placed
     }
 
-    fn body_clear(&mut self, slot: i64, x: f64, y: f64, clearance: f64, far_side: f64) -> Result<bool> {
-        Ok(Lanes::body_clear(self, slot, x, y, clearance, far_side))
+    /// Refresh model lines while retaining up to 24 real points behind the model's domain.
+    pub fn refresh(
+        &mut self,
+        model: &GeometryInput,
+        origin: Frame,
+        frame: Frame,
+        previous: &Placed,
+        window: (f64, f64),
+        ego_change: bool,
+    ) {
+        let (px, py, pc, ps) = (origin.px, origin.py, origin.c, origin.s);
+        let count = model.lines.len().min(model.probs.len()).min(4);
+        let entries = (0..4)
+            .map(|i| (i < count).then(|| (&model.lines[i], model.probs[i])))
+            .chain(model.edges.iter().take(2).map(|edge| Some((edge, 1.))));
+        for (i, entry) in entries.enumerate() {
+            let Some((line, mut probability)) = entry else { continue };
+            if !valid_curve(line) || !probability.is_finite() {
+                continue;
+            }
+            if probability < 0.1 {
+                if !ego_change || i > 3 {
+                    if let Some(old) = self.lines.get_mut(&i) {
+                        old.probability *= 0.9;
+                    }
+                    continue;
+                }
+                probability = 0.1;
+                self.weak |= 1 << i;
+            } else {
+                self.weak &= !(1 << i);
+            }
+            let first = bisect_left(&line.0, window.0).saturating_sub(1);
+            let last = (bisect_left(&line.0, window.1) + 1).min(line.0.len());
+            let world: Vec<Xy> = (first..last)
+                .map(|j| {
+                    let (x, y) = (line.0[j], line.1[j]);
+                    (px + pc * x + ps * y, py + ps * x - pc * y)
+                })
+                .collect();
+            let placed: Vec<_> = world.iter().map(|&(x, y)| frame.to_ego(x, y)).collect();
+            let local = sorted(placed.clone());
+            let Some(first) = local.first() else { continue };
+            let previous_geometry = self.geometry.get(&i).map_or(&[][..], Vec::as_slice);
+            let max_error = local
+                .iter()
+                .filter(|p| (0. ..=30.).contains(&p.0))
+                .filter_map(|&(x, y)| interpolate(previous_geometry, x).map(|previous| (y - previous).abs()))
+                .reduce(py_max);
+            let old = self.lines.get(&i);
+            let consistent = match (old, max_error) {
+                (Some(old), Some(error)) if error <= 0.35 => old.consistent + 1,
+                _ => 1,
+            };
+            let limit = first.0 - 0.1;
+            let mut behind: Vec<_> = match (old, &previous[i]) {
+                (Some(old), Some(old_ego)) => old
+                    .points
+                    .iter()
+                    .copied()
+                    .zip(old_ego.iter().copied())
+                    .filter(|(_, ego)| -5. <= ego.0 && ego.0 < limit)
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let behind = behind.split_off(behind.len().saturating_sub(24));
+            let points = behind
+                .iter()
+                .map(|&(point, _)| point)
+                .chain(world.into_iter().take(40))
+                .collect();
+            let ego = behind
+                .into_iter()
+                .map(|(_, ego)| ego)
+                .chain(placed.into_iter().take(40))
+                .collect();
+            self.lines.insert(
+                i,
+                Boundary {
+                    points,
+                    probability,
+                    consistent: consistent.min(20),
+                },
+            );
+            self.geometry.insert(i, deduplicated(sorted(ego)));
+        }
+    }
+}
+
+fn sort_key(a: Xy, b: Xy) -> std::cmp::Ordering {
+    use std::cmp::Ordering::Equal;
+    if a.0 != b.0 {
+        a.0.partial_cmp(&b.0).unwrap_or(Equal)
+    } else {
+        a.1.partial_cmp(&b.1).unwrap_or(Equal)
+    }
+}
+
+fn sorted(mut points: Vec<Xy>) -> Vec<Xy> {
+    // Normal model curves have a total order. Pathological floating point inputs can
+    // overflow the pose transform. Avoid Rust's total-order assumption in that case.
+    if points.iter().any(|p| p.0.is_nan() || p.1.is_nan()) {
+        // CPython's initial monotone run and stable binary insertion on these short lines.
+        let n = points.len();
+        let mut run = n.min(2);
+        if n > 1 {
+            let descending = sort_key(points[1], points[0]).is_lt();
+            while run < n && sort_key(points[run], points[run - 1]).is_lt() == descending {
+                run += 1;
+            }
+            if descending {
+                points[..run].reverse();
+            }
+        }
+        for i in run..n {
+            let (mut left, mut right) = (0, i);
+            while left < right {
+                let middle = (left + right) / 2;
+                if sort_key(points[i], points[middle]).is_lt() {
+                    right = middle;
+                } else {
+                    left = middle + 1;
+                }
+            }
+            points[left..=i].rotate_right(1);
+        }
+    } else {
+        points.sort_by(|a, b| sort_key(*a, *b));
+    }
+    points
+}
+
+fn deduplicated(points: Vec<Xy>) -> Vec<Xy> {
+    points
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(i, p)| (i == 0 || p.0 > points[i - 1].0 + 0.001).then_some(p))
+        .collect()
+}
+
+#[derive(Default)]
+pub struct GeometryInput {
+    pub lines: Vec<Curve>,
+    pub probs: Vec<f64>,
+    pub edges: Vec<Curve>,
+}
+
+impl GeometryInput {
+    pub fn from_raw(model: Model) -> Self {
+        let convert = |line: ModelLine| {
+            (
+                line.x.into_iter().map(f64::from).collect(),
+                line.y.into_iter().map(f64::from).collect(),
+            )
+        };
+        Self {
+            lines: model.lane_lines.into_iter().take(4).map(convert).collect(),
+            probs: model.lane_line_probs.into_iter().take(4).map(f64::from).collect(),
+            edges: model.road_edges.into_iter().take(2).map(convert).collect(),
+        }
     }
 
-    fn edge_room(&mut self, slot: i64, x: f64, room: f64) -> Result<bool> {
-        Ok(Lanes::edge_room(self, slot, x, room))
+    pub fn side_center(&self, side: usize, probability: f64) -> Option<f64> {
+        let (i, j) = if side == 0 { (1, 0) } else { (2, 3) };
+        if self.lines.len() < 4
+            || self.probs.len() < 4
+            || ![i, j]
+                .into_iter()
+                .all(|idx| self.probs[idx].is_finite() && self.probs[idx] >= probability)
+        {
+            return None;
+        }
+        let (inner, outer) = (&self.lines[i], &self.lines[j]);
+        if ![inner, outer]
+            .into_iter()
+            .all(|p| valid_curve(p) && p.0[0] <= 20. && 20. <= p.0[p.0.len() - 1])
+        {
+            return None;
+        }
+        let (y, outer_y) = (numpy_interp(inner, 20.), numpy_interp(outer, 20.));
+        let width = if side == 0 { y - outer_y } else { outer_y - y };
+        let center = inner.1[0].abs() + width * 0.5;
+        ((2.3..=4.8).contains(&width) && center.is_finite()).then_some(center)
     }
+}
 
-    fn band_line(&mut self, x: f64, y: f64, odometer: f64, bin: f64, memory: f64) -> Result<bool> {
-        Lanes::band_line(self, x, y, odometer, bin, memory)
-    }
+pub fn valid_curve((x, y): &Curve) -> bool {
+    x.len() >= 2 && x.len() == y.len() && x.iter().chain(y).all(|p| p.is_finite()) && x.windows(2).all(|p| p[1] > p[0])
+}
 
-    fn has_geometry(&mut self) -> Result<bool> {
-        Ok(self.has_geometry)
+/// The slope-first interpolation used by numpy.interp for validated curves.
+pub fn numpy_interp((x, y): &Curve, at: f64) -> f64 {
+    if at.is_nan() {
+        return at;
     }
+    let i = bisect_left(x, at);
+    if i >= x.len() {
+        return y[y.len() - 1];
+    }
+    if i == 0 || x[i] == at {
+        return y[i];
+    }
+    let j = i - 1;
+    let slope = (y[i] - y[j]) / (x[i] - x[j]);
+    let value = slope * (at - x[j]) + y[j];
+    if value.is_nan() {
+        let retry = slope * (at - x[i]) + y[i];
+        if retry.is_nan() && y[i] == y[j] {
+            return y[j];
+        }
+        return retry;
+    }
+    value
+}
+
+/// `bisect_left(values, x)` on floats.
+fn bisect_left(values: &[f64], x: f64) -> usize {
+    let (mut lo, mut hi) = (0, values.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if values[mid] < x {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
 }

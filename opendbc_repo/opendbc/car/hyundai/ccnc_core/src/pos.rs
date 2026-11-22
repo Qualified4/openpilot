@@ -8,7 +8,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 
 use crate::guard;
-use crate::lanes::LaneCache;
 
 use ccnc_map::pos::display_a::DisplayA;
 use ccnc_map::pos::display_b::DisplayB;
@@ -121,8 +120,9 @@ fn trace_list<'py>(state: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, PyLi
 fn build_frame(map: &Bound<'_, PyAny>, cs: &Bound<'_, PyAny>, followed: &[Vid]) -> PyResult<Option<FrameIn>> {
     let py = map.py();
     let state = crate::map_state::attach(map)?;
-    let Some(now) = state.try_borrow()?.st.now else { return Ok(None) };
-    let selected: [Option<i64>; 3] = map.getattr(intern!(py, "selected"))?.extract()?;
+    let state = state.try_borrow()?;
+    let Some(now) = state.st.now else { return Ok(None) };
+    let selected = state.st.selected;
     let usable = map.getattr(intern!(py, "usable"))?.is_truthy()?;
     let mut keys: Vec<Vid> = Vec::new();
     if usable {
@@ -131,11 +131,9 @@ fn build_frame(map: &Bound<'_, PyAny>, cs: &Bound<'_, PyAny>, followed: &[Vid]) 
     }
     keys.sort_unstable();
     keys.dedup();
-    let mut cache = LaneCache::new(map);
-    let lanes = cache.get()?;
-    let offset = lanes.lane_offset();
+    let offset = state.st.lane_offset;
+    let lanes = state.st.lane_cache.view(offset, false, (0., 0.), false);
     let mut objs = Vec::with_capacity(keys.len());
-    let state = state.try_borrow()?;
     for vid in keys {
         let (Some(o), Some(&(x, y))) = (state.st.objects.get(&vid), state.st.local.get(&vid)) else { continue };
         let lines = std::array::from_fn(|i| lanes.boundary(i as i64 + offset, x));

@@ -3,16 +3,15 @@
 
 use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyFloat, PyList, PySet, PyTuple};
+use pyo3::types::{PyDict, PyFloat, PyList, PyTuple};
 
 use crate::correct::correct_positions;
 use crate::display_filter;
 use crate::guard;
 use crate::map_state;
 use crate::model_v2::{
-    curve, numpy_interp, place_geometry, refresh_lanes, valid_curve, GeometryInput,
+    curve, numpy_interp, prepare, read_geometry, valid_curve, GeometryInput,
 };
-use crate::observe::Frame;
 use crate::pymath::{py_max, py_min, py_sum};
 use crate::{pos, rear, update};
 
@@ -191,13 +190,10 @@ fn update_ego_follow<'py>(
 fn map_reset(map: &Bound<'_, PyAny>) -> PyResult<()> {
     let py = map.py();
     map_state::attach(map)?.try_borrow_mut()?.reset();
-    for attr in ["lanes", "geometry", "evidence"] {
-        map.setattr(attr, PyDict::new(py))?;
-    }
+    map.setattr("evidence", PyDict::new(py))?;
     for attr in ["leads", "vision_leads"] {
         map.setattr(attr, PyList::empty(py))?;
     }
-    map.setattr("weak", PySet::empty(py)?)?;
     for attr in ["radar_stamp", "model_stamp", "raw", "model", "shown"] {
         map.setattr(attr, py.None())?;
     }
@@ -324,24 +320,15 @@ fn select<'py>(
     put!(map, "a_ego" => if acceleration.is_finite() { acceleration } else { 0. }, "holding" => holding, "stopped" => stopped,
         "blindspot" => blind, "lane_change" => changing, "ego_change" => changing, "evidence" => PyDict::new(py), "yaw_rate" => yaw);
     advance_pose(map, now, speed, yaw, holding)?;
-    let placed = place_geometry(map)?;
 
     let radar_time = get!(live, "radar_time");
     let radar_stamp: f64 = radar_time.extract()?;
     let model_time = get!(live, "model_time");
     let model_stamp: f64 = model_time.extract()?;
     let fresh_model = !md.is_none() && (0. ..=0.25).contains(&(now - model_stamp));
-    if fresh_model && !get!(map, "model_stamp").eq(&model_time)? && !md.is(&get!(map, "model")) {
-        let pose = state.try_borrow()?.st.pose_at(model_stamp);
-        if let Some((x, y, angle)) = pose {
-            let origin = Frame {
-                px: x,
-                py: y,
-                c: angle.cos(),
-                s: angle.sin(),
-            };
-            refresh_lanes(map, lines, origin, placed.as_any(), lane_type)?;
-        }
+    let refresh = fresh_model && !get!(map, "model_stamp").eq(&model_time)? && !md.is(&get!(map, "model"));
+    prepare(map, refresh.then_some((lines, model_stamp)), changing, lane_type)?;
+    if refresh {
         put!(map, "model" => md, "model_stamp" => &model_time);
     }
     let usable = !radar.is_none() && (0. ..=0.15).contains(&(now - radar_stamp));
@@ -614,7 +601,7 @@ fn update_map_display<'py>(
                 let model_lines = if model.is(md) {
                     None
                 } else {
-                    Some(GeometryInput::read(&model, None)?)
+                    Some(read_geometry(&model, None)?)
                 };
                 let m = model_lines.as_ref().unwrap_or(&lines);
                 let inner = if m.lines.len() >= 3 {
@@ -819,7 +806,7 @@ pub(crate) fn update_display<'py>(
             .as_ref()
             .map(|v| v.extract::<&[u8]>())
             .transpose()?;
-        let lines = GeometryInput::read(md, raw)?;
+        let lines = read_geometry(md, raw)?;
         let meta = optional_model_meta(md)?;
         let desire = meta
             .getattr_opt(intern!(py, "desire"))?

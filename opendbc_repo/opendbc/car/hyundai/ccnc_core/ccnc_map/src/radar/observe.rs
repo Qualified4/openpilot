@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use super::consts::Consts;
-use super::lanes::LaneQuery;
+use super::lanes::Lanes;
 use super::object::MapObjectData;
 use super::state::{Error, Frame, MapState, Result};
 use crate::pymath::{hypot, py_max, py_min, py_sum};
@@ -53,9 +53,9 @@ pub struct Measurement {
 }
 
 /// `_stable(obj)`.
-fn stable(o: &mut MapObjectData, lanes: &mut dyn LaneQuery, bridge_key: Option<i64>, k: &Consts) -> Result<()> {
+fn stable(o: &mut MapObjectData, lanes: &Lanes<'_>, bridge_key: Option<i64>, k: &Consts) -> Result<()> {
     let (stamp, x, y) = o.report.expect("set just before");
-    let centre = lanes.centre(x)?;
+    let centre = lanes.centre(x);
     // While bridged its reports are the merged track's: they would make the merged position look stable.
     let Some(centre) = centre.filter(|_| bridge_key != Some(o.key)) else {
         o.lateral_reports.clear();
@@ -90,7 +90,7 @@ fn stable(o: &mut MapObjectData, lanes: &mut dyn LaneQuery, bridge_key: Option<i
 }
 
 /// `_settle(obj, x, y, stamp)`.
-fn settle(o: &mut MapObjectData, lanes: &mut dyn LaneQuery, x: f64, y: f64, stamp: f64, k: &Consts) -> Result<()> {
+fn settle(o: &mut MapObjectData, lanes: &Lanes<'_>, x: f64, y: f64, stamp: f64, k: &Consts) -> Result<()> {
     let Some(outer) = lanes.outer(x, y)? else { return Ok(()) };
     if !o.motion_confirmed || (if y > 0. { y - outer } else { outer - y }) <= 0. {
         o.beyond = None;
@@ -131,7 +131,7 @@ pub fn observe(
     st: &mut MapState,
     k: &Consts,
     inp: ObserveIn,
-    lanes: &mut dyn LaneQuery,
+    lanes: &Lanes<'_>,
     ms: &[Measurement],
     mut assigned: Vec<Option<i64>>,
     mut reserved: Vec<i64>,
@@ -151,7 +151,7 @@ pub fn observe(
             let (ex, ey) = frame.to_ego(me.x, me.y);
             let distance = hypot(ex - bx, ey - by);
             if distance <= k.bridge_reconnect
-                && lanes.lane(ex, ey, true, false)?.0 == Some(0)
+                && lanes.lane(ex, ey, true, false, &[])?.0 == Some(0)
                 && best.is_none_or(|b| distance < b.0)
             {
                 best = Some((distance, i));
@@ -315,7 +315,7 @@ pub fn observe(
         let o = st.objects.get_mut(&key).expect("present");
         o.last_motion = (me.hc * o.vx + me.hs * o.vy, me.hc * o.vy - me.hs * o.vx);
         settle(o, lanes, ex, ey, stamp, k)?;
-        let (slot, interior, _) = lanes.lane(ex, ey, o.motion_confirmed, o.settled)?;
+        let (slot, interior, _) = lanes.lane(ex, ey, o.motion_confirmed, o.settled, &[])?;
         o.slot = slot;
         o.interior = interior;
         let side = matches!(slot, Some(1 | 2));
@@ -376,10 +376,10 @@ pub fn observe(
             && stamp - o.born >= 0.5
             && o.hits >= 7
             && o.tracked as f64 >= k.waiting_tracked
-            && lanes.body_clear(slot.unwrap_or(0), ex, ey, k.body_clearance, k.body_far_side)?
-            && lanes.edge_room(slot.unwrap_or(0), ex, k.waiting_edge_room)?
+            && lanes.body_clear(slot.unwrap_or(0), ex, ey, k.body_clearance, k.body_far_side)
+            && lanes.edge_room(slot.unwrap_or(0), ex, k.waiting_edge_room)
             && !crossing(o, frame, k.crossing_travel)
-            && !lanes.band_line(ex, ey, odometer, k.band_bin, k.band_memory)?
+            && !lanes.band_line(ex, ey, odometer, k.band_bin, k.band_memory)
         {
             o.admitted = true;
         }
@@ -392,7 +392,7 @@ pub fn observe(
         } else if o.interior {
             // Lane occupancy alone cannot distinguish a stopped vehicle from an obstacle.
             o.vehicle = if o.vehicle < 0.6 { py_min(0.45, o.vehicle + 0.12) } else { o.vehicle };
-        } else if o.stationary && lanes.has_geometry()? {
+        } else if o.stationary && lanes.has_geometry {
             o.vehicle = py_max(0., o.vehicle - 0.3);
         }
     }

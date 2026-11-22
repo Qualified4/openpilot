@@ -1571,13 +1571,18 @@ class CcncRadarMap:
       self.RUST.advance_state(self, now, v_ego, yaw_rate)
     else:
       self._advance(now, v_ego, yaw_rate)
-    previous_placed = self._geometry()
     radar_time = now if radar_time is None else radar_time
     model_time = now if model_time is None else model_time
-    if (model is not None and 0. <= now - model_time <= .25
-        and ((model_time != self.model_stamp) if self.model_stamp is not None else True)
-        and model is not self.model):
-      self._update_lanes(model, model_time, lane_curves, previous_placed, model_bytes)
+    refresh = (model is not None and 0. <= now - model_time <= .25
+               and ((model_time != self.model_stamp) if self.model_stamp is not None else True)
+               and model is not self.model)
+    if fused:
+      self.RUST.prepare_lanes(self, model if refresh else None, model_time, lane_curves, model_bytes, LaneBoundary)
+    else:
+      previous_placed = self._geometry()
+      if refresh:
+        self._update_lanes(model, model_time, lane_curves, previous_placed, model_bytes)
+    if refresh:
       self.model, self.model_stamp = model, model_time
     self.usable = live is not None and 0. <= now - radar_time <= .15
     if not fused:
@@ -1718,11 +1723,11 @@ if _native is not None:
 _RUST_FIELDS = frozenset(('pose', 'cos', 'sin', 'now', 'speed', 'odometer', 'poses', 'objects', 'local', 'next_id', 'created',
                           'evicted', 'range_removed', 'reports', 'jumps', 'walls', 'wall_geometry', 'bends', 'bands',
                           'band_points', 'band_early', 'selected', 'switched', 'absent', 'remembered', 'bridge', 'hold',
-                          'far_since', 'lane_return', 'lane_offset'))
+                          'far_since', 'lane_return', 'lane_offset', 'lanes', 'geometry', 'weak'))
 
 # The methods the one-call Rust update runs in Rust (and those they call), as this module defines them.
 _FUSED_NAMES = frozenset((
-  '_advance', 'pose_at', '_update_lane_reference', '_observe', '_measurements', '_associate', '_reconnect', '_stable', '_forget_lateral', '_settle',
+  '_advance', 'pose_at', '_geometry', '_update_lanes', '_update_lane_reference', '_observe', '_measurements', '_associate', '_reconnect', '_stable', '_forget_lateral', '_settle',
   '_lane', '_lane_view', '_model_changing', '_band_line', '_body_clear', '_edge_room', '_crossing', '_vision', '_walls', '_bend',
   '_bridge_walls', '_band_row', '_bands', '_in_range', '_radar_vehicle', '_approach_only', '_wall_outside', '_select',
   '_trail', '_behind_lead', '_ego_lines', '_centre', '_far_hold', '_bridge', '_bridged', '_stop_memory', 'to_ego', 'to_world'))

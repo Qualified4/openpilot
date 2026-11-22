@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use super::consts::Consts;
-use super::lanes::LaneQuery;
+use super::lanes::Lanes;
 use super::object::Ring;
 use super::observe::Measurement;
 use super::state::{Error, MapState, Result};
@@ -154,7 +154,7 @@ pub fn associate(
     st: &MapState,
     k: &Consts,
     inp: AssociateIn,
-    lanes: &mut dyn LaneQuery,
+    lanes: &Lanes<'_>,
     measurements: &[Measurement],
     stamp: f64,
 ) -> Result<Vec<(usize, i64)>> {
@@ -227,7 +227,7 @@ pub fn associate(
                 && hypot(ms.vx - o.vx, ms.vy - o.vy) <= 6.
             {
                 let (ex, ey) = frame.to_ego(ms.x, ms.y);
-                if lanes.lane(ex, ey, true, false)?.1 {
+                if lanes.lane(ex, ey, true, false, &[])?.1 {
                     continuations.push((i, index));
                 }
             }

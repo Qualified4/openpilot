@@ -49,6 +49,9 @@ pub const FIELDS: &[&str] = &[
     "far_since",
     "lane_return",
     "lane_offset",
+    "lanes",
+    "geometry",
+    "weak",
 ];
 
 /// A map error as the Python reference raises it.
@@ -58,6 +61,7 @@ pub fn py_err(error: Error) -> PyErr {
         Error::Type(message) => PyTypeError::new_err(message),
         Error::Index(message) => PyIndexError::new_err(message),
         Error::Key(key) => PyKeyError::new_err(key),
+        Error::Field(key) => PyKeyError::new_err(key),
         Error::Value(message) => PyValueError::new_err(message),
         Error::Overflow(message) => PyOverflowError::new_err(message),
     }
@@ -68,6 +72,7 @@ pub fn py_err(error: Error) -> PyErr {
 pub struct RadarMapState {
     pub st: MapState,
     pub structures: Structures,
+    pub boundary_type: Option<Py<PyAny>>,
 }
 
 /// The state attached to a map object, if it has one.
@@ -367,6 +372,34 @@ impl RadarMapState {
     #[getter]
     fn lane_offset(&self) -> i64 {
         self.st.lane_offset
+    }
+
+    #[getter]
+    fn lanes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let result = PyDict::new(py);
+        for (i, lane) in self.st.lane_cache.lines.iter() {
+            let boundary_type = self.boundary_type.as_ref().expect("a lane was observed");
+            let out = crate::display_filter::empty_object(boundary_type.bind(py))?;
+            out.setattr(intern!(py, "points"), PyList::new(py, &lane.points)?)?;
+            out.setattr(intern!(py, "probability"), lane.probability)?;
+            out.setattr(intern!(py, "consistent"), lane.consistent)?;
+            result.set_item(i, out)?;
+        }
+        Ok(result)
+    }
+
+    #[getter]
+    fn geometry<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let result = PyDict::new(py);
+        for (i, lane) in self.st.lane_cache.geometry.iter() {
+            result.set_item(i, PyList::new(py, lane)?)?;
+        }
+        Ok(result)
+    }
+
+    #[getter]
+    fn weak<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PySet>> {
+        PySet::new(py, (0..4).filter(|&i| self.st.lane_cache.weak_at(i)))
     }
 
     fn extend_observed_walls(&mut self, eligible: Vec<i64>) -> PyResult<()> {

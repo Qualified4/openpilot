@@ -9,7 +9,6 @@ use ccnc_map::input::live_tracks::parse;
 use ccnc_map::radar::state::{Observation, UpdateIn};
 
 use crate::guard;
-use crate::lanes;
 use crate::map_state::{attach, py_err};
 use crate::radar_map::{radar_points_inner, radar_points_raw, read_evidence};
 static CALLS: AtomicU64 = AtomicU64::new(0);
@@ -53,8 +52,7 @@ pub fn update<'py>(
         let k = crate::consts::read(m)?;
         let state = attach(m)?;
         let mut state = state.try_borrow_mut()?;
-        let crate::map_state::RadarMapState { st, structures } = &mut *state;
-        let mut lanes = lanes::read(m, Some((k.outer_narrow, k.outer_far, changing)), st.now)?;
+        let crate::map_state::RadarMapState { st, structures, .. } = &mut *state;
         let (points, pose) = match radar {
             Some((points, pose)) if observe => {
                 let points = match live_bytes.and_then(parse) {
@@ -88,6 +86,8 @@ pub fn update<'py>(
             yaw_rate: m.getattr(intern!(py, "yaw_rate"))?.extract()?,
             holding: m.getattr(intern!(py, "holding"))?.is_truthy()?,
             ego_change: m.getattr(intern!(py, "ego_change"))?.is_truthy()?,
+            model_stamp: m.getattr(intern!(py, "model_stamp"))?.extract()?,
+            model_changing: changing,
             lane_change: m.getattr(intern!(py, "lane_change"))?.is_truthy()?,
             blindspot: [blindspot.get_item(0)?.is_truthy()?, blindspot.get_item(1)?.is_truthy()?],
             leads: &leads,
@@ -96,7 +96,7 @@ pub fn update<'py>(
             select,
             usable: m.getattr(intern!(py, "usable"))?.is_truthy()?,
         };
-        let result = st.update(&k, &mut lanes, inp).map_err(py_err)?;
+        let result = st.update(&k, inp).map_err(py_err)?;
         m.setattr(intern!(py, "lane_change"), result.lane_change)?;
         structures.set_types(wall_type, band_type);
         structures.sync_bands(py, &st.bands, result.retired_bands)
