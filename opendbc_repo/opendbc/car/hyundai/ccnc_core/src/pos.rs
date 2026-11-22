@@ -16,6 +16,7 @@ mod display_a;
 mod display_b;
 
 use self::common::{Common, FrameIn, Obj, Vid};
+use self::display_a::DisplayA;
 use self::display_b::DisplayB;
 
 /// (vid, x, y, seen, report, lines) of an `Obj`, as the trace and the test entry carry it.
@@ -42,6 +43,7 @@ fn frame_tuple(f: &FrameIn) -> FrameTuple {
 #[derive(Default)]
 pub struct PosState {
     common: Common,
+    a: DisplayA,
     b: DisplayB,
     mode: i64,
 }
@@ -55,7 +57,7 @@ impl PosState {
         let drawn = if mode == 2 {
             self.b.draw(&self.common, &out, f.now)
         } else {
-            display_a::draw(&self.common, &out)
+            self.a.draw(&self.common, &out)
         };
         (out.assigned, drawn)
     }

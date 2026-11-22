@@ -1,5 +1,5 @@
 """Python reference of the redesigned CCNC front-slot display (ccnc_core src/pos.rs, pos/common.rs, display_a.rs,
-display_b.rs): CcncPosDisplayMode 1 draws display A, 2 display B. The device runs the Rust core; this repeats it
+display_b.rs): CcncPosDisplayMode 1 draws display A (estimate behind a distance-scaled backlash), 2 display B. The device runs the Rust core; this repeats it
 operation for operation on the same plain frames (the Rust trace or ``_pos_run_for_test``), so the two compare
 exactly. Keep both in step.
 
@@ -30,6 +30,8 @@ CROSS_HOLD = 2.0
 BAND_HOLD = 1.0
 ANIM_SPEED = 1.2
 REMAP = 1.2
+
+PLAY_PER_M = 0.0025
 
 
 def _clamp(v, lo, hi):
@@ -292,10 +294,30 @@ class Vehicle:
     self.goal = goal
 
 
+class DisplayA:
+  """display_a.rs: the estimate behind a backlash of PLAY_PER_M * x, per vid."""
+  def __init__(self):
+    self.shown = {}
+
+  def draw(self, tracks, assigned):
+    self.shown = {vid: v for vid, v in self.shown.items() if vid in tracks}
+    for vid in sorted(tracks):
+      y = tracks[vid].y
+      play = PLAY_PER_M * max(tracks[vid].x, 0.)
+      s = self.shown.get(vid, y)
+      if y - s > play:
+        s = y - play
+      elif s - y > play:
+        s = y + play
+      self.shown[vid] = s
+    return [None if vid is None else self.shown[vid] for vid in assigned]
+
+
 class PosState:
   def __init__(self):
     self.mode = 0
     self.common = Common()
+    self.a = DisplayA()
     self.vehicles = {}
 
   def run(self, mode, f):
@@ -315,7 +337,7 @@ class PosState:
           self.vehicles[vid] = Vehicle(view, tracks[vid].y, now)
       drawn = [None if vid is None else self.vehicles[vid].value for vid in assigned]
     else:
-      drawn = [None if vid is None else tracks[vid].y for vid in assigned]
+      drawn = self.a.draw(tracks, assigned)
     return assigned, drawn
 
 

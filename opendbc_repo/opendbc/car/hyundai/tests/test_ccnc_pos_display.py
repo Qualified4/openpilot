@@ -58,7 +58,7 @@ def test_jump_that_stays_is_followed_slowly():
   values = drawn_of(out)
   assert values[21] < 0.1
   assert 0.25 < values[20 + 35] < 0.45  # about one time constant
-  assert abs(values[-1] - 0.6) < 0.05
+  assert abs(values[-1] - 0.6) < 0.05 + ref.PLAY_PER_M * 30.
 
 
 def test_steady_move_is_followed():
@@ -80,11 +80,28 @@ def test_ego_rotation_is_not_a_jump():
   ys = [0.5 - x * rate * DT * i for i in range(40)]
   _, out = single(ys, x=x, yaw=rate, lines=(None,) * 4)
   values = drawn_of(out)
-  assert max(abs(v - y) for v, y in zip(values, ys, strict=True)) < 0.05
+  play = ref.PLAY_PER_M * x  # display A trails a steady sweep by its backlash
+  assert max(abs(v - y) for v, y in zip(values, ys, strict=True)) < 0.05 + play
   fixed = [v + x * rate * DT * i for i, v in enumerate(values)]
-  assert max(fixed) - min(fixed) < 0.05
+  assert max(fixed) - min(fixed) < 0.05 + play
   _, out = single(ys, x=x, yaw=None, lines=(None,) * 4)
   assert max(abs(v - y) for v, y in zip(drawn_of(out), ys, strict=True)) > 1.
+
+
+def test_a_backlash_hides_small_back_and_forth():
+  """At 40 m (0.1 m play) a 0.15 m back-and-forth every 0.2 s around a fixed car moves the drawn value at most by the
+  first half swing; a steady 0.5 m/s move afterwards is drawn at the same speed, trailing by the play."""
+  x = 40.
+  play = ref.PLAY_PER_M * x
+  wobble = [0.15 if (i // 4) % 2 else 0. for i in range(80)]
+  move = [0.15 + 0.5 * DT * i for i in range(1, 41)]
+  ys = wobble + move
+  _, out = single(ys, x=x, lines=(None,) * 4)
+  values = drawn_of(out)
+  assert max(values[:80]) - min(values[:80]) <= 0.15 - play + 1e-9
+  slope = (values[-1] - values[-11]) / (10 * DT)
+  assert abs(slope - 0.5) < 0.05
+  assert abs(values[-1] - ys[-1]) <= play + 0.1  # the play plus the estimate's own lag at 0.5 m/s
 
 
 def test_b_lane_change_after_hold_at_constant_speed():
@@ -205,4 +222,5 @@ def test_ego_lane_change_moves_cars_without_a_step(mode):
     steps = [abs(b - a) for a, b in zip(values, values[1:], strict=False)]
     assert max(steps) <= 1. * DT + ref.ANIM_SPEED * DT + 1e-6
   assert out[-1][0][0] == 2 and out[-1][0][1] == 1
-  assert drawn_of(out, 2)[-1] == pytest.approx(0., abs=0.05)
+  play = ref.PLAY_PER_M * 32. if mode == 1 else 0.  # display A stops trailing by its backlash
+  assert drawn_of(out, 2)[-1] == pytest.approx(0., abs=0.05 + play)
