@@ -2,6 +2,8 @@
 //! and the message byte readers. The `ccnc_core`
 //! extension and the `ccnc_mapd` process both call it.
 
+pub mod display;
+
 pub mod pos {
     pub mod common;
     pub mod display_a;
@@ -19,5 +21,6 @@ pub mod pymath;
 pub mod radar;
 
 pub mod rear;
+pub mod slots;
 pub mod vehicles;
 pub mod world;

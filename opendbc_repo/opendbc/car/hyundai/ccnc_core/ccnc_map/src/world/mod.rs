@@ -168,6 +168,10 @@ impl World {
         !self.invalid_motion
     }
 
+    pub(crate) fn radar_stamp(&self) -> Option<f64> {
+        self.last_radar
+    }
+
     pub(crate) fn radar_pose(&self, stamp: f64) -> PoseAt {
         self.pose.at(stamp - self.radar_lag)
     }

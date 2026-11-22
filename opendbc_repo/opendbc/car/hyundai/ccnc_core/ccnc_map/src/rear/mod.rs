@@ -6,6 +6,9 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::pymath::{py_max, py_min, py_sum};
 use crate::radar::{Error, MapState, Result};
+use crate::slots::{Observation, Slot as WorldSlot};
+use crate::vehicles::{Vehicle, MAX_VEHICLES};
+use crate::world::World;
 use side_flow::{Flow, Motion};
 
 /// Preserve the number type when a drawing copies an existing CAN field.
@@ -400,6 +403,170 @@ pub fn finish_map(
     let selected = objects.map(|o| o.map(|o| Identity(o.source, o.born)));
     let proven = [1, 2].map(|i| objects[i].is_some_and(|o| map.vehicle_proven(o, crossing_travel)));
     rear.update(k, input, selected, proven, slots)
+}
+
+pub struct WorldInput<'a> {
+    pub now: f64,
+    pub changing: bool,
+    pub can_valid: bool,
+    pub blind: [bool; 2],
+    pub vehicles: &'a [Vehicle],
+}
+
+#[derive(Default)]
+pub struct WorldRear {
+    state: RearState,
+    constants: Consts,
+    generation: u32,
+    radar_stamp: Option<f64>,
+}
+
+impl WorldRear {
+    /// Continue side vehicles through zero and apply the existing BSD/exit policy.
+    /// The map's front drawings already include Display A and must keep that lateral.
+    pub fn finish(
+        &mut self,
+        world: &World,
+        input: WorldInput<'_>,
+        slots: &mut [Option<WorldSlot>; 5],
+    ) -> Result<()> {
+        let context_changed = self.generation != world.generation();
+        self.generation = world.generation();
+        let now = input.now;
+        let ego = world.pose.at(now);
+        let width = world.lanes.width_at(ego.s);
+        let lateral = bsd_laterals(width, width);
+        let to_car = |vid| input.vehicles.iter().find(|car| car.vid == vid);
+        let front = [slots[0], slots[1], slots[2]].map(|slot| slot.and_then(|s| to_car(s.vid)));
+        let selected = front.map(|car| car.map(|car| Identity(i128::from(car.vid), car.born)));
+        let proven = [1, 2].map(|i| front[i].is_some_and(|car| car.flags.proven));
+        let mut samples = [(0, None); MAX_VEHICLES];
+        let mut count = 0;
+        let stamp = world.radar_stamp();
+        let radar = match stamp {
+            None => RadarInput::Missing,
+            Some(stamp) if context_changed || self.radar_stamp != Some(stamp) => {
+                for car in input
+                    .vehicles
+                    .iter()
+                    .filter(|car| car.seen_radar == stamp)
+                    .take(MAX_VEHICLES)
+                {
+                    if let Some(Observation { x, r, speed, .. }) =
+                        Observation::from_car(car, world, ego)
+                    {
+                        // Convert r to the existing policy's metre gates with a fixed lane width.
+                        samples[count] = (
+                            i128::from(car.vid),
+                            Some(Sample {
+                                x,
+                                y: -r * crate::pos::common::LANE_WIDTH,
+                                vrel: speed - world.pose.speed(),
+                                vlead: speed,
+                                vehicle: car.flags.proven,
+                            }),
+                        );
+                        count += 1;
+                    }
+                }
+                RadarInput::Points(&samples[..count])
+            }
+            Some(_) => RadarInput::Unchanged,
+        };
+        self.radar_stamp = stamp;
+        let mut sides = RearSlots::default();
+        for (i, side) in sides.iter_mut().enumerate() {
+            let (distance, y, detect) = slots[i + 1].map_or((0., 0., 0), |s| {
+                (
+                    s.distance as f64 * self.constants.scale,
+                    f64::from(s.lateral.abs()),
+                    i64::from(s.detect),
+                )
+            });
+            side.front = Slot {
+                distance: Some(Number::Float(distance)),
+                lateral: Some(Number::Float(y)),
+                detect: Some(Number::Integer(detect)),
+            };
+        }
+        self.state.update(
+            &self.constants,
+            Input {
+                now,
+                context_changed,
+                map_context: true,
+                changing: input.changing,
+                reverse: !world.accepts_radar(),
+                can_valid: input.can_valid,
+                ego: world.pose.speed(),
+                blind: input.blind,
+                lost: [false; 2],
+                rear_lateral: lateral,
+                radar,
+            },
+            selected,
+            proven,
+            &mut sides,
+        )?;
+
+        for (i, side) in self.state.sides.iter().enumerate() {
+            // Preserve measured rear slots. A live BSD signal supplies its own drawing.
+            if slots[i + 3].is_some() && !input.blind[i] {
+                continue;
+            }
+            let Some(drawn) = side
+                .flow
+                .rear
+                .as_ref()
+                .filter(|_| input.can_valid && world.accepts_radar())
+            else {
+                continue;
+            };
+            let vid = match drawn.key {
+                Some(side_flow::Key::Radar(Identity(vid, _))) => vid as u32,
+                _ => 0,
+            };
+            if vid != 0 {
+                if slots.iter().enumerate().any(|(index, s)| {
+                    index != i + 1 && index != i + 3 && s.is_some_and(|s| s.vid == vid)
+                }) {
+                    continue;
+                }
+                if slots[i + 1].is_some_and(|s| s.vid == vid) {
+                    if sides[i]
+                        .front
+                        .detect
+                        .is_some_and(|detect| detect.value() != 0.)
+                    {
+                        continue;
+                    }
+                    slots[i + 1] = None;
+                }
+            }
+            let y = if i == 0 {
+                drawn.y.value()
+            } else {
+                -drawn.y.value()
+            };
+            let kind = to_car(vid)
+                .and_then(|car| car.kind.filter(|_| car.link == crate::vehicles::Link::Sure));
+            slots[i + 3] = Some(WorldSlot {
+                vid,
+                distance: (drawn.x.value() / self.constants.scale) as f32,
+                lateral: y as f32,
+                detect: drawn.detect.value() as u8,
+                lane_coord_rel: (-y / width) as f32,
+                v_rel: side
+                    .rear
+                    .as_ref()
+                    .filter(|t| t.key.0 == i128::from(vid))
+                    .map_or(0., |t| t.vrel as f32),
+                kind: kind.map_or(0, |k| k.class),
+                kind_confirmed: kind.is_some_and(|k| k.confirmed_at.is_finite()),
+            });
+        }
+        Ok(())
+    }
 }
 
 impl RearState {

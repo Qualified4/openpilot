@@ -1,6 +1,6 @@
 //! Evaluate the new world geometry on the existing clean-map text exports.
 //!
-//! eval INPUT_DIR OUTPUT_DIR [--no-freeze] [--reference TRACE_DIR] [--gate body|shorter|conservative]
+//! eval INPUT_DIR OUTPUT_DIR [--no-freeze] [--reference TRACE_DIR] [--gate body|shorter|conservative] [--slots]
 //! By default, use the vehicle layer. A reference trace supplies the prototype's
 //! identities and reflection offsets to isolate the geometry as in Task 3.
 
@@ -10,7 +10,9 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use ccnc_map::input::model_v2::{Line, Model};
-use ccnc_map::vehicles::{LinkGates, Tracker};
+use ccnc_map::rear::{WorldInput, WorldRear};
+use ccnc_map::slots::Assigner;
+use ccnc_map::vehicles::{Flags, LinkGates, Tracker};
 use ccnc_map::world::{near_heading, World, MODEL_GRID, RADAR_LAG, STATUS_FROZEN};
 
 type Reference = BTreeMap<i64, BTreeMap<u32, (u32, f64)>>;
@@ -20,7 +22,7 @@ fn main() -> io::Result<()> {
     let usage = || {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "eval INPUT_DIR OUTPUT_DIR [--no-freeze] [--reference TRACE_DIR] [--gate body|shorter|conservative]",
+            "eval INPUT_DIR OUTPUT_DIR [--no-freeze] [--reference TRACE_DIR] [--gate body|shorter|conservative] [--slots]",
         )
     };
     let input = PathBuf::from(args.next().ok_or_else(usage)?);
@@ -28,9 +30,12 @@ fn main() -> io::Result<()> {
     let mut freeze = true;
     let mut reference = None;
     let mut gates = None;
+    let mut slots = false;
     while let Some(arg) = args.next() {
         if arg == "--no-freeze" {
             freeze = false;
+        } else if arg == "--slots" {
+            slots = true;
         } else if arg == "--reference" {
             reference = Some(PathBuf::from(args.next().ok_or_else(usage)?));
         } else if arg == "--gate" {
@@ -43,6 +48,9 @@ fn main() -> io::Result<()> {
         } else {
             return Err(usage());
         }
+    }
+    if slots && reference.is_some() {
+        return Err(usage());
     }
     fs::create_dir_all(&output)?;
     let mut files: Vec<_> = fs::read_dir(input)?.collect::<Result<_, _>>()?;
@@ -63,6 +71,7 @@ fn main() -> io::Result<()> {
                 freeze,
                 bindings.as_ref(),
                 gates,
+                slots,
             )?;
         }
     }
@@ -151,13 +160,22 @@ struct Replay<'a> {
     speed: f64,
     heading: f64,
     lead: i64,
+    lead_point: Option<(f64, f64, f64)>,
     blinker: bool,
     t: f64,
     points: Vec<(u32, f64, f64, f64)>,
     radar_frame: bool,
     tracker: Tracker,
+    display: Option<DisplayReplay>,
     reports: BTreeMap<u32, RadarReport>,
     coord: BTreeMap<u32, (f64, f64, u32)>,
+}
+
+struct DisplayReplay {
+    slots: BufWriter<File>,
+    assigner: Assigner,
+    rear: WorldRear,
+    raw_flags: BTreeMap<u32, Flags>,
 }
 
 impl Replay<'_> {
@@ -235,7 +253,21 @@ impl Replay<'_> {
         ego_u: f64,
     ) -> io::Result<()> {
         let mut prior = std::mem::take(&mut self.reports);
-        let cars = self.tracker.update(self.t, &self.points, &self.world);
+        self.tracker.update(self.t, &self.points, &self.world);
+        if let Some(display) = &mut self.display {
+            // The cached text has radar track state and motion class. The process
+            // supplies MapState's richer static qualification in the live path.
+            for (&rid, &flags) in &display.raw_flags {
+                if let Some(car) = self
+                    .tracker
+                    .vid_at(self.t, rid)
+                    .and_then(|vid| self.tracker.vehicle_mut(vid))
+                {
+                    car.flags = flags;
+                }
+            }
+        }
+        let cars = self.tracker.vehicles();
         let ego = self.world.pose.at(self.t);
         for car in cars.iter().filter(|car| car.seen_radar == self.t) {
             let Some(rid) = car.radar_id else { continue };
@@ -284,6 +316,49 @@ impl Replay<'_> {
         for (rid, p) in prior {
             p.end(events, rid)?;
         }
+        if let Some(display) = &mut self.display {
+            let now = self.t;
+            let lead = self
+                .lead_point
+                .filter(|&(t, _, _)| (0. ..=0.25).contains(&(now - t)))
+                .map(|(_, x, y)| (x, y));
+            let mut slots = display.assigner.update(now, cars, &self.world, lead);
+            display
+                .rear
+                .finish(
+                    &self.world,
+                    WorldInput {
+                        now,
+                        changing: self.world.status() & STATUS_FROZEN != 0,
+                        can_valid: true,
+                        blind: [false; 2],
+                        vehicles: cars,
+                    },
+                    &mut slots,
+                )
+                .map_err(|e| io::Error::other(format!("rear at {now}: {e:?}")))?;
+            for (index, slot) in slots.iter().enumerate() {
+                let Some(slot) = slot else { continue };
+                let rid = cars
+                    .iter()
+                    .find(|car| car.vid == slot.vid)
+                    .and_then(|car| car.radar_id)
+                    .unwrap_or(0);
+                writeln!(
+                    display.slots,
+                    "S {now:.4} {index} {} {rid} {:.4} {:.4} {} {:.5}",
+                    slot.vid, slot.distance, slot.lateral, slot.detect, slot.lane_coord_rel
+                )?;
+            }
+            for car in cars.iter().filter(|car| car.seen_radar == now) {
+                if let (Some(rid), Some(lateral)) =
+                    (car.radar_id, display.assigner.estimate_at(now, car.vid))
+                {
+                    writeln!(display.slots, "A {now:.4} {rid} {lateral:.4}")?;
+                }
+            }
+            display.raw_flags.clear();
+        }
         self.points.clear();
         Ok(())
     }
@@ -295,6 +370,7 @@ fn run(
     freeze: bool,
     reference: Option<&Reference>,
     gates: Option<LinkGates>,
+    slots: bool,
 ) -> io::Result<()> {
     let text = fs::read_to_string(input)?;
     // The existing C export includes interpolated yaw. Y records retain the
@@ -307,6 +383,16 @@ fn run(
         });
     let mut out = BufWriter::new(File::create(output)?);
     let mut events = BufWriter::new(File::create(output.with_extension("events"))?);
+    let display = if slots {
+        Some(DisplayReplay {
+            slots: BufWriter::new(File::create(output.with_extension("slots"))?),
+            assigner: Assigner::default(),
+            rear: WorldRear::default(),
+            raw_flags: BTreeMap::new(),
+        })
+    } else {
+        None
+    };
     let mut replay = Replay {
         world: World::new(RADAR_LAG, freeze),
         reference,
@@ -315,11 +401,13 @@ fn run(
         speed: 0.,
         heading: 0.,
         lead: -1,
+        lead_point: None,
         blinker: false,
         t: f64::NAN,
         points: Vec::new(),
         radar_frame: false,
         tracker: gates.map(Tracker::new).unwrap_or_default(),
+        display,
         reports: BTreeMap::new(),
         coord: BTreeMap::new(),
     };
@@ -373,6 +461,19 @@ fn run(
                     (number(&p, 2), number(&p, 3), number(&p, 4), number(&p, 5));
                 if number(&p, 9) == 0. && rid > 0. && x > 0. && x <= 200. && y.abs() <= 15. {
                     replay.points.push((rid as u32, x, y, speed));
+                    if let Some(display) = &mut replay.display {
+                        let tracked = number(&p, 10) >= 2.;
+                        let moving = number(&p, 11) == 2.;
+                        display.raw_flags.insert(
+                            rid as u32,
+                            Flags {
+                                motion_confirmed: moving,
+                                proven: moving && tracked,
+                                admitted: tracked,
+                                ..Flags::default()
+                            },
+                        );
+                    }
                 }
             }
             "S" => {
@@ -380,11 +481,9 @@ fn run(
                 replay.world.blinker(replay.blinker);
             }
             "D" => {
-                replay.lead = if number(&p, 2) > 0.5 {
-                    number(&p, 6) as i64
-                } else {
-                    -1
-                }
+                let detected = number(&p, 2) > 0.5;
+                replay.lead_point = detected.then(|| (t, number(&p, 3), number(&p, 4)));
+                replay.lead = if detected { number(&p, 6) as i64 } else { -1 }
             }
             _ => {}
         }
@@ -394,5 +493,8 @@ fn run(
         report.end(&mut events, rid)?;
     }
     events.flush()?;
+    if let Some(mut display) = replay.display {
+        display.slots.flush()?;
+    }
     out.flush()
 }

@@ -12,6 +12,16 @@ use super::common::{Common, FrameOut, Vid};
 /// Backlash per metre of distance (0.1 m at 40 m).
 pub const PLAY_PER_M: f64 = 0.0025;
 
+/// Update the drawing stored by the caller for this vid.
+pub(crate) fn backlash(shown: &mut f64, y: f64, x: f64) {
+    let play = PLAY_PER_M * x.max(0.);
+    if y - *shown > play {
+        *shown = y - play;
+    } else if *shown - y > play {
+        *shown = y + play;
+    }
+}
+
 #[derive(Default)]
 pub struct DisplayA {
     shown: BTreeMap<Vid, f64>,
@@ -21,14 +31,7 @@ impl DisplayA {
     pub fn draw(&mut self, common: &Common, out: &FrameOut) -> [Option<f64>; 3] {
         self.shown.retain(|vid, _| common.tracks.contains_key(vid));
         for (vid, track) in &common.tracks {
-            let y = track.y;
-            let play = PLAY_PER_M * track.x.max(0.);
-            let s = self.shown.entry(*vid).or_insert(y);
-            if y - *s > play {
-                *s = y - play;
-            } else if *s - y > play {
-                *s = y + play;
-            }
+            backlash(self.shown.entry(*vid).or_insert(track.y), track.y, track.x);
         }
         out.assigned.map(|vid| vid.map(|vid| self.shown[&vid]))
     }
