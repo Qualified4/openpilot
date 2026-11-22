@@ -21,7 +21,9 @@ def stub(path: Path, body: str) -> Path:
 def env(tmp_path):
   log = tmp_path / 'log'
   python = stub(tmp_path / 'python', f'echo "python $PWD $*" >> {log}\n')
-  e = dict(os.environ, STRIPNET_LAUNCH_STATE=str(tmp_path / 'state'))
+  (tmp_path / 'CcncExtendedDisplay').write_text('0')
+  (tmp_path / 'CcncStripNetRust').write_text('1')
+  e = dict(os.environ, STRIPNET_LAUNCH_STATE=str(tmp_path / 'state'), PARAMS_DIR=str(tmp_path), STRIPNET_STALL_S='2')
   return tmp_path, log, python, e
 
 
@@ -37,11 +39,27 @@ def test_missing_binary_runs_python_from_the_checkout_root(env):
   assert log.read_text().split() == ['python', str(ROOT), '-m', 'openpilot.selfdrive.carrot.lane_type.marking_daemon']
 
 
+def test_default_backend_is_python(env):
+  tmp, log, python, e = env
+  (tmp / 'CcncStripNetRust').write_text('0')
+  assert launch(e, python, stub(tmp / 'rust', 'exit 0\n')).wait(10) == 0
+  assert log.read_text().count('python') == 1 and not (tmp / 'state.failed').exists()
+
+
 def test_normal_exit_is_not_a_failure(env):
   tmp, log, python, e = env
   p = launch(e, python, stub(tmp / 'rust', 'exit 0\n'))
   assert p.wait(10) == 0
   assert not log.exists() and not (tmp / 'state.failed').exists()
+
+
+@pytest.mark.parametrize('body', ('exit 0\n', 'while :; do sleep 0.1; done\n'))
+def test_enabled_daemon_without_publication_falls_back(env, body):
+  tmp, log, python, e = env
+  (tmp / 'CcncExtendedDisplay').write_text('1')
+  assert launch(e, python, stub(tmp / 'rust', body)).wait(10) == 0
+  assert (tmp / 'state.failed').exists()
+  assert log.read_text().count('python') == 1
 
 
 def test_fast_crash_falls_back_and_stays_on_python(env):
