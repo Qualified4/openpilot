@@ -37,10 +37,10 @@ pub struct Flags {
     pub admitted: bool,
 }
 
-/// The two per-vehicle histories are inline, so births and handoffs never allocate.
+/// Bounded history with oldest-first iteration. Storage is only needed after the first sample.
 #[derive(Debug)]
 pub struct History<T, const N: usize> {
-    items: [T; N],
+    items: Option<Box<[T; N]>>,
     next: usize,
     len: usize,
 }
@@ -48,7 +48,7 @@ pub struct History<T, const N: usize> {
 impl<T: Copy + Default, const N: usize> Default for History<T, N> {
     fn default() -> Self {
         Self {
-            items: [T::default(); N],
+            items: None,
             next: 0,
             len: 0,
         }
@@ -56,14 +56,21 @@ impl<T: Copy + Default, const N: usize> Default for History<T, N> {
 }
 
 impl<T: Copy, const N: usize> History<T, N> {
-    fn push(&mut self, item: T) {
-        self.items[self.next] = item;
+    fn push(&mut self, item: T)
+    where
+        T: Default,
+    {
+        let items = self
+            .items
+            .get_or_insert_with(|| Box::new([T::default(); N]));
+        items[self.next] = item;
         self.next = (self.next + 1) % N;
         self.len = (self.len + 1).min(N);
     }
 
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = T> + '_ {
-        (N - self.len..N).map(|i| self.items[(self.next + i) % N])
+        let items = self.items.as_ref().map_or(&[][..], |items| &items[..]);
+        (N - self.len..N).map(|i| items[(self.next + i) % N])
     }
 }
 
@@ -110,7 +117,14 @@ impl Vehicle {
         }
     }
 
-    fn observe(&mut self, now: f64, sample: Sample, axes: Axes, world: &World) {
+    fn observe(
+        &mut self,
+        now: f64,
+        sample: Sample,
+        axes: Axes,
+        world: &World,
+        record_history: bool,
+    ) {
         let mut lateral_speed = 0.;
         if self.seen_radar.is_finite() {
             let dt = now - self.seen_radar;
@@ -125,7 +139,7 @@ impl Vehicle {
             }
             self.off = decay_reflection(offset, dt) as f32;
         }
-        if self.radar_id != Some(sample.id) {
+        if record_history && self.radar_id != Some(sample.id) {
             self.ids.push((now, sample.id));
         }
         self.radar_id = Some(sample.id);
@@ -135,7 +149,9 @@ impl Vehicle {
             (axes.cos * sample.speed - axes.sin * lateral_speed) as f32,
             (axes.sin * sample.speed + axes.cos * lateral_speed) as f32,
         );
-        self.hist.push((now, self.wx, self.wy));
+        if record_history {
+            self.hist.push((now, self.wx, self.wy));
+        }
 
         let ego = world.pose.at(now);
         let (x, y) = ego.to_ego(sample.wx, sample.wy);
@@ -157,6 +173,7 @@ impl Vehicle {
 
 pub struct Tracker {
     gates: LinkGates,
+    record_history: bool,
     cars: Vec<Vehicle>,
     next_vid: u32,
     generation: u32,
@@ -175,11 +192,20 @@ impl Tracker {
     pub fn new(gates: LinkGates) -> Self {
         Self {
             gates,
+            record_history: true,
             cars: Vec::with_capacity(MAX_VEHICLES),
             next_vid: 1,
             generation: 0,
             frames: History::default(),
             last_radar: f64::NEG_INFINITY,
+        }
+    }
+
+    /// The display consumes the current track state without historical ID lookups.
+    pub(crate) fn for_display() -> Self {
+        Self {
+            record_history: false,
+            ..Self::default()
         }
     }
 
@@ -211,7 +237,9 @@ impl Tracker {
             return &self.cars;
         }
         self.last_radar = now;
-        self.frames.push(now);
+        if self.record_history {
+            self.frames.push(now);
+        }
         self.cars
             .retain(|car| now - car.seen_radar.max(car.seen_vision) <= RETAIN);
         let pose = world.radar_pose(now);
@@ -238,7 +266,7 @@ impl Tracker {
                     continue;
                 }
                 if LinkGates::same_id(dt, axes.error(car, sample, dt)) {
-                    car.observe(now, sample, axes, world);
+                    car.observe(now, sample, axes, world, self.record_history);
                 } else {
                     split_ids[index] = car.radar_id;
                     car.radar_id = None;
@@ -261,7 +289,7 @@ impl Tracker {
             let link = match decision {
                 Decision::Handoff(i) => {
                     self.cars[i].link = Link::Sure;
-                    self.cars[i].observe(now, sample, axes, world);
+                    self.cars[i].observe(now, sample, axes, world, self.record_history);
                     continue;
                 }
                 Decision::Ambiguous => Link::Ambiguous,
@@ -270,7 +298,7 @@ impl Tracker {
             if self.cars.len() < MAX_VEHICLES {
                 let mut car = Vehicle::new(self.next_vid, now, link);
                 self.next_vid = self.next_vid.wrapping_add(1).max(1);
-                car.observe(now, sample, axes, world);
+                car.observe(now, sample, axes, world, self.record_history);
                 self.cars.push(car);
             }
         }

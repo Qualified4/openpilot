@@ -73,14 +73,16 @@ pub fn measure(
     let mut out = Vec::with_capacity(points.len());
     for p in points {
         let (x, y, speed) = (p.x, p.y, p.speed);
-        let recent = st.reports.entry(p.track, Ring::new);
-        let jumped = recent.iter().any(|(t, rx, ry)| {
-            let dt = stamp - t;
-            0. < dt && dt <= jump_time && (x - rx).abs() <= k.bridge_reconnect && (y - ry).abs() >= k.bridge_jump
-        });
-        recent.push((stamp, x, y));
-        if jumped {
-            st.jumps.insert(p.track, stamp);
+        if st.selection_history {
+            let recent = st.reports.entry(p.track, Ring::new);
+            let jumped = recent.iter().any(|(t, rx, ry)| {
+                let dt = stamp - t;
+                0. < dt && dt <= jump_time && (x - rx).abs() <= k.bridge_reconnect && (y - ry).abs() >= k.bridge_jump
+            });
+            recent.push((stamp, x, y));
+            if jumped {
+                st.jumps.insert(p.track, stamp);
+            }
         }
         if !(0. <= x && x <= k.far_x) || y.abs() > (if x <= k.max_x { k.max_y } else { k.far_y }) || speed.abs() > 100. {
             continue;

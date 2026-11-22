@@ -104,6 +104,11 @@ impl MapObjectData {
     /// `MapObject(key, source, x, y, vx, vy, born, seen)`: every other field at its default.
     #[allow(clippy::too_many_arguments)]
     pub fn new(key: i64, source: i128, x: f64, y: f64, vx: f64, vy: f64, born: f64, seen: f64) -> Self {
+        Self::with_history(key, source, x, y, vx, vy, born, seen, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_history(key: i64, source: i128, x: f64, y: f64, vx: f64, vy: f64, born: f64, seen: f64, selection_history: bool) -> Self {
         Self {
             key,
             source,
@@ -141,9 +146,9 @@ impl MapObjectData {
             beyond: None,
             settled: false,
             history: Ring::new(),
-            trail: Ring::new(),
+            trail: if selection_history { Ring::new() } else { Ring::default() },
             report: None,
-            lateral_reports: Ring::new(),
+            lateral_reports: if selection_history { Ring::new() } else { Ring::default() },
             calm_since: None,
             stable_y: None,
         }
@@ -151,6 +156,11 @@ impl MapObjectData {
 
     /// `MapObject(key, source, x, y, vx, vy, stamp, stamp, origin=(x, y))`: a new measured object.
     pub fn measured(key: i64, source: i128, x: f64, y: f64, vx: f64, vy: f64, stamp: f64) -> Self {
-        Self { origin: Some((x, y)), ..Self::new(key, source, x, y, vx, vy, stamp, stamp) }
+        Self::measured_with_history(key, source, x, y, vx, vy, stamp, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn measured_with_history(key: i64, source: i128, x: f64, y: f64, vx: f64, vy: f64, stamp: f64, selection_history: bool) -> Self {
+        Self { origin: Some((x, y)), ..Self::with_history(key, source, x, y, vx, vy, stamp, stamp, selection_history) }
     }
 }

@@ -163,7 +163,7 @@ mod tests {
         let model_size = std::fs::metadata(dir.join("modelV2")).unwrap().len();
         let raw_data_size = std::fs::metadata(dir.join("customReservedRawData2")).unwrap().len();
         assert_eq!(model_size - raw_data_size, 10 * 1024 * 1024 - 250 * 1024);
-        let event = crate::messages::raw_data_event(crate::daemon::EVENT_CUSTOM_RAW_2, 42, b"{\"type\":\"ccncLaneMarking\"}");
+        let event = crate::messages::raw_data_event(crate::messages::EVENT_CUSTOM_RAW_2, 42, b"{\"type\":\"ccncLaneMarking\"}");
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(publisher.send(&event));
         assert!(sub.poll(1000));

@@ -15,6 +15,7 @@ pub const EVENT_LIVE_CALIBRATION: u16 = 18;
 pub const EVENT_DEVICE_STATE: u16 = 5;
 pub const EVENT_ROAD_CAMERA_STATE: u16 = 1;
 pub const EVENT_RADAR_STATE: u16 = 12;
+pub const EVENT_CUSTOM_RAW_2: u16 = 153;
 
 pub const MODEL_FRAME_ID: usize = 0; // UInt32
 pub const MODEL_TIMESTAMP_EOF: usize = 2; // UInt64
@@ -216,7 +217,7 @@ mod tests {
         assert_eq!(field(&s, "Event", "valid")["default"].as_bool().unwrap(), EVENT_VALID.1);
         for (name, value) in [("modelV2", EVENT_MODEL_V2), ("carState", EVENT_CAR_STATE), ("liveCalibration", EVENT_LIVE_CALIBRATION),
                               ("deviceState", EVENT_DEVICE_STATE), ("roadCameraState", EVENT_ROAD_CAMERA_STATE),
-                              ("radarState", EVENT_RADAR_STATE), ("customReservedRawData2", crate::daemon::EVENT_CUSTOM_RAW_2)] {
+                              ("radarState", EVENT_RADAR_STATE), ("customReservedRawData2", EVENT_CUSTOM_RAW_2)] {
             assert_eq!(disc(name), value, "{name}");
             assert_eq!(off("Event", name), EVENT_UNION_POINTER, "{name}");
         }
@@ -302,11 +303,11 @@ mod tests {
 
     #[test]
     fn raw_data_event_reads_back() {
-        let bytes = raw_data_event(crate::daemon::EVENT_CUSTOM_RAW_2, 123, b"{\"a\":1}");
+        let bytes = raw_data_event(EVENT_CUSTOM_RAW_2, 123, b"{\"a\":1}");
         let m = Message::new(&bytes).unwrap();
         let root = m.root().unwrap();
         assert_eq!(root.u64(0, 0), 123);
-        assert_eq!(root.u16(EVENT_DISCRIMINANT, 0), crate::daemon::EVENT_CUSTOM_RAW_2);
+        assert_eq!(root.u16(EVENT_DISCRIMINANT, 0), EVENT_CUSTOM_RAW_2);
         assert!(root.bool(EVENT_VALID.0, EVENT_VALID.1));
         assert_eq!(framed_len_ok(&bytes), bytes.len());
     }

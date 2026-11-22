@@ -7,12 +7,15 @@
 //! KleidiCV's C API (feature `kleidicv`) or OpenCV's cv::remap with the KleidiCV HAL (feature `opencv`) — `native`.
 
 pub mod capnp;
+#[cfg(feature = "inference")]
 pub mod daemon;
 pub mod display;
 pub mod filter;
 pub mod messages;
+#[cfg(feature = "inference")]
 pub mod model;
 pub mod native;
+#[cfg(feature = "inference")]
 pub mod recogniser;
 pub mod result;
 pub mod strip;

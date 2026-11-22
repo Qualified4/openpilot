@@ -1,0 +1,285 @@
+//! One stream of cereal inputs for the world map, shared by the daemon and replay.
+
+use crate::cmap::MapOut;
+use crate::input::{
+    live_tracks::{self, EVENT_LIVE_TRACKS},
+    map_events::{CarState, Event, CAR_STATE, LIVE_POSE, RADAR_STATE},
+    model_v2::{self, EVENT_MODEL_V2},
+};
+use crate::radar::{
+    associate::RadarPoint,
+    consts::Consts,
+    lanes::GeometryInput,
+    state::{Observation, UpdateIn},
+    Frame, MapState, Range, Result,
+};
+use crate::rear::{WorldInput, WorldRear};
+use crate::slots::Assigner;
+use crate::vehicles::{Tracker, MAX_VEHICLES};
+use crate::world::{World, RADAR_LAG, STATUS_FROZEN};
+
+pub const STALE_NS: u64 = 250_000_000;
+const RADAR: Consts = Consts::map_process();
+
+fn seconds(t: u64) -> f64 {
+    t as f64 * 1e-9
+}
+
+fn fresh(now: u64, stamp: u64) -> bool {
+    now.checked_sub(stamp).is_some_and(|age| age <= STALE_NS)
+}
+
+pub struct Pipeline {
+    world: World,
+    radar: MapState,
+    tracker: Tracker,
+    slots: Assigner,
+    rear: WorldRear,
+    generation_base: u32,
+    radar_generation: u32,
+    last_tracks: Option<u64>,
+    tracks_valid: bool,
+    car: Option<(u64, CarState)>,
+    model_stamp: Option<u64>,
+    lead: Option<(u64, Option<(f64, f64)>)>,
+}
+
+impl Pipeline {
+    pub fn new(generation_base: u32) -> Self {
+        Self {
+            world: World::default(),
+            radar: MapState::for_observation(),
+            tracker: Tracker::for_display(),
+            slots: Assigner::default(),
+            rear: WorldRear::default(),
+            generation_base,
+            radar_generation: 0,
+            last_tracks: None,
+            tracks_valid: false,
+            car: None,
+            model_stamp: None,
+            lead: None,
+        }
+    }
+
+    fn empty(&self) -> MapOut {
+        MapOut {
+            radar_log_mono_time: self.last_tracks.unwrap_or(0),
+            generation: self.generation_base.wrapping_add(self.world.generation()),
+            status: self.world.status(),
+            ego_lane_coord: 0.,
+            slots: [None; 5],
+            valid: false,
+        }
+    }
+
+    /// Publish one invalidation when the last radar input times out, then let the topic go quiet.
+    pub fn expire(&mut self, now: u64) -> Option<MapOut> {
+        if !self.tracks_valid
+            || self
+                .last_tracks
+                .is_none_or(|stamp| fresh(now, stamp) || stamp > now)
+        {
+            return None;
+        }
+        self.tracks_valid = false;
+        self.world.reset();
+        self.sync_generation();
+        Some(self.empty())
+    }
+
+    fn sync_generation(&mut self) {
+        if self.radar_generation != self.world.generation() {
+            self.radar_generation = self.world.generation();
+            self.radar = MapState::for_observation();
+            self.model_stamp = None;
+        }
+    }
+
+    pub fn ingest(&mut self, bytes: &[u8]) -> Result<Option<MapOut>> {
+        let Some(event) = Event::read(bytes) else {
+            return Ok(None);
+        };
+        let stamp = event.stamp;
+        let now = seconds(stamp);
+        match event.which {
+            LIVE_POSE if event.valid => {
+                if let Some(yaw) = event.yaw() {
+                    self.world.live_pose(now, yaw);
+                }
+            }
+            CAR_STATE if self.car.is_none_or(|(last, _)| stamp > last) => {
+                let mut car = event.car_state().unwrap_or_default();
+                car.can_valid &= event.valid && car.speed.is_finite();
+                if car.can_valid {
+                    self.world.blinker(car.blinker);
+                    self.world.car_state(now, car.speed, car.reverse);
+                    self.sync_generation();
+                }
+                self.car = Some((stamp, car));
+            }
+            EVENT_MODEL_V2 if event.valid && self.model_stamp.is_none_or(|last| stamp > last) => {
+                if let Some(model) = model_v2::parse(bytes) {
+                    self.world.model_with_walls(now, &model, Some(&self.radar));
+                    let (px, py, heading) = self.radar.pose_at(now).unwrap_or(self.radar.pose);
+                    let (s, c) = heading.sin_cos();
+                    let frame = self.radar.frame();
+                    let previous = self.radar.lane_cache.place(frame);
+                    self.radar.lane_cache.refresh(
+                        &GeometryInput::from_raw(model),
+                        Frame { px, py, c, s },
+                        frame,
+                        &previous,
+                        (RADAR.min_x, RADAR.far_x),
+                        self.world.status() & STATUS_FROZEN != 0,
+                    );
+                    self.model_stamp = Some(stamp);
+                }
+            }
+            RADAR_STATE => {
+                if self.lead.is_none_or(|(last, _)| stamp >= last) {
+                    self.lead = Some((stamp, event.valid.then(|| event.lead()).flatten()));
+                }
+            }
+            EVENT_LIVE_TRACKS if self.last_tracks.is_none_or(|last| stamp > last) => {
+                if self.last_tracks.is_some_and(|last| !fresh(stamp, last)) && self.tracks_valid {
+                    self.world.reset();
+                    self.sync_generation();
+                }
+                self.last_tracks = Some(stamp);
+                if let Some(points) = event.valid.then(|| live_tracks::parse(bytes)).flatten() {
+                    self.tracks_valid = true;
+                    return self.update_radar(stamp, points).map(Some);
+                }
+                return Ok(Some(self.empty()));
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    fn update_radar(&mut self, stamp: u64, input: Vec<live_tracks::RawPoint>) -> Result<MapOut> {
+        let Some((_, car)) = self
+            .car
+            .filter(|(stamp_car, car)| car.can_valid && fresh(stamp, *stamp_car))
+        else {
+            return Ok(self.empty());
+        };
+        if !self.world.accepts_radar() {
+            return Ok(self.empty());
+        }
+        let now = seconds(stamp);
+        self.world.radar(now);
+        self.sync_generation();
+        let lead = self
+            .lead
+            .filter(|(t, _)| fresh(stamp, *t))
+            .and_then(|(_, lead)| lead);
+        let mut tracks = Vec::with_capacity(input.len().min(MAX_VEHICLES));
+        let mut measured = Vec::with_capacity(tracks.capacity());
+        for point in input.iter().filter(|p| p.source == 0).take(MAX_VEHICLES) {
+            let (x, y, v_rel) = (
+                f64::from(point.d_rel),
+                f64::from(point.y_rel),
+                f64::from(point.v_rel),
+            );
+            let Ok(id) = u32::try_from(point.track_id) else {
+                continue;
+            };
+            if id == 0 || !(0. ..=200.).contains(&x) || !y.is_finite() || !v_rel.is_finite() {
+                continue;
+            }
+            if x > 0. && y.abs() <= 15. {
+                tracks.push((id, x, y, v_rel));
+            }
+            if point.measured {
+                measured.push(RadarPoint {
+                    track: i128::from(id),
+                    x,
+                    y,
+                    speed: v_rel,
+                    moving: point.motion_state == 2,
+                    tracked: point.track_state == 2,
+                });
+            }
+        }
+        let yaw = self.world.yaw_at(now).unwrap_or(0.);
+        let changing = self.world.status() & STATUS_FROZEN != 0;
+        self.radar.advance(
+            now,
+            car.speed,
+            yaw,
+            car.standstill,
+            None,
+            Range {
+                min_x: RADAR.min_x,
+                keep_x: RADAR.keep_x,
+                max_y: RADAR.max_y,
+                far_x: RADAR.far_x,
+                far_y: RADAR.far_y,
+            },
+        );
+        self.radar.lane_cache.place(self.radar.frame());
+        let (x, y, heading) = self
+            .radar
+            .pose_at(now - RADAR_LAG)
+            .or_else(|| self.radar.poses.front().map(|(_, pose)| pose))
+            .unwrap_or(self.radar.pose);
+        let (sin, cos) = heading.sin_cos();
+        self.radar.update(
+            &RADAR,
+            UpdateIn {
+                radar: Some(Observation {
+                    points: &measured,
+                    stamp: now,
+                    pose: Some((x, y, cos, sin)),
+                    evidence: &Default::default(),
+                }),
+                radar_stamp: Some(now),
+                a_ego: if car.accel.is_finite() { car.accel } else { 0. },
+                yaw_rate: yaw,
+                holding: car.standstill,
+                ego_change: changing,
+                model_stamp: self.model_stamp.map(seconds),
+                model_changing: changing,
+                lane_change: changing,
+                blindspot: car.blind,
+                leads: lead.as_slice(),
+                vision_leads: &[],
+                vision: &[],
+                select: false,
+                usable: true,
+            },
+        )?;
+        let cars = self.radar.update_vehicles(
+            &mut self.tracker,
+            now,
+            &tracks,
+            &self.world,
+            RADAR.crossing_travel,
+        );
+        let mut slots = self.slots.update(now, cars, &self.world, lead);
+        let ego = self.world.u_ego();
+        self.rear.finish(
+            &self.world,
+            WorldInput {
+                now,
+                changing,
+                can_valid: true,
+                blind: car.blind,
+                vehicles: cars,
+            },
+            &mut slots,
+        )?;
+        Ok(if ego.is_finite() {
+            MapOut {
+                ego_lane_coord: ego as f32,
+                slots,
+                valid: true,
+                ..self.empty()
+            }
+        } else {
+            self.empty()
+        })
+    }
+}

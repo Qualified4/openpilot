@@ -140,6 +140,13 @@ pub fn observe(
     let now = st.now.expect("advanced before observing");
     let (holding, odometer, a_ego, frame) = (inp.holding, st.odometer, inp.a_ego, st.frame());
     let bridge_key = inp.bridge.map(|b| b.0);
+    let selection_history = st.selection_history;
+    let norm: fn(f64, f64) -> f64 = if selection_history {
+        hypot
+    } else {
+        // For bounded radar distances, the Euclidean norm cannot overflow.
+        |x, y| (x * x + y * y).sqrt()
+    };
 
     // _reconnect: a bridged FF object continues with a new report near its bridged position in ego's lane.
     if let Some((key, bx, by)) = inp.bridge.filter(|b| !reserved.contains(&b.0)) {
@@ -216,7 +223,10 @@ pub fn observe(
                         }
                     }
                 }
-                st.objects.insert(key, MapObjectData::measured(key, me.source, me.x, me.y, me.vx, me.vy, stamp));
+                let object = MapObjectData::measured_with_history(
+                    key, me.source, me.x, me.y, me.vx, me.vy, stamp, selection_history,
+                );
+                st.objects.insert(key, object);
                 st.created += 1;
                 key
             }
@@ -239,7 +249,9 @@ pub fn observe(
         o.explained = me.explained;
         let (rx, ry) = frame.to_ego(me.x, me.y);
         o.report = Some((stamp, rx, ry));
-        stable(o, lanes, bridge_key, k)?;
+        if selection_history {
+            stable(o, lanes, bridge_key, k)?;
+        }
         o.tracked += me.tracked as i64;
         o.radar_moving = o.radar_moving || me.radar_moving;
         if me.doppler != 0 {
@@ -268,11 +280,17 @@ pub fn observe(
         if o.history.len() >= 4 && span >= 0.15 {
             let last = o.history.back().expect("appended above");
             let (dx, dy) = (last.1 - first.1, last.2 - first.2);
-            let net = hypot(dx, dy);
-            let steps: Vec<f64> =
-                o.history.iter().zip(o.history.iter().skip(1)).map(|(a, b)| hypot(b.1 - a.1, b.2 - a.2)).collect();
-            let path = py_sum(steps.iter().copied()).expect("four or more reports");
-            let longest = steps.iter().copied().reduce(py_max).unwrap_or(0.);
+            let net = norm(dx, dy);
+            let steps = o.history.iter().zip(o.history.iter().skip(1))
+                .map(|(a, b)| norm(b.1 - a.1, b.2 - a.2));
+            let (path, longest) = if selection_history {
+                let steps: Vec<_> = steps.collect();
+                let path = py_sum(steps.iter().copied()).expect("four or more reports");
+                let longest = steps.iter().copied().reduce(py_max).unwrap_or(0.);
+                (path, longest)
+            } else {
+                steps.fold((0., 0.), |(path, longest), step| (path + step, py_max(longest, step)))
+            };
             let coherent = net > 0.10 && net >= 0.8 * path && longest <= 0.7 * path;
             if k.displacement_evidence
                 && coherent
@@ -386,7 +404,7 @@ pub fn observe(
         if o.motion_confirmed {
             o.vehicle = py_max(0.8, o.vehicle);
             let (x, y) = (o.x, o.y);
-            if o.trail.back().is_none_or(|(tx, ty)| hypot(x - tx, y - ty) >= k.trail_step) {
+            if selection_history && o.trail.back().is_none_or(|(tx, ty)| hypot(x - tx, y - ty) >= k.trail_step) {
                 o.trail.push((x, y));
             }
         } else if o.interior {

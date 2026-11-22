@@ -3,6 +3,10 @@ import sys
 import platform
 import importlib.util
 
+from capnp import KjException
+
+from opendbc.car.hyundai.ccnc_capability import hda1_cluster_supported
+
 from openpilot.cereal import car
 from openpilot.common.params import Params
 from openpilot.common.api import comma_connect_enabled
@@ -100,6 +104,25 @@ def enable_ccnc_lane_type(started, params, CP: car.CarParams) -> bool:
   from openpilot.selfdrive.carrot.lane_type.marking import mode_of
   return started and bool(mode_of(params, CP))
 
+CCNC_MAPD_FAILED = "/dev/shm/ccnc_mapd.failed"
+
+def enable_ccnc_mapd(started: bool, params: Params, CP: car.CarParams) -> bool:
+  if not started or not params.get_bool("CcncMapProcess") or not params.get_bool("CcncExtendedDisplay"):
+    return False
+  if params.get_int("CcncPosDisplayMode") != 1 or os.path.exists(CCNC_MAPD_FAILED):
+    return False
+  # A live fingerprint can veto stale persistent vehicle data.
+  if CP.brand and not hda1_cluster_supported(CP):
+    return False
+  raw = params.get("CarParamsPersistent")
+  if not raw:
+    return False
+  try:
+    with car.CarParams.from_bytes(raw) as persistent:
+      return hda1_cluster_supported(persistent)
+  except (KjException, TypeError, ValueError):
+    return False
+
 def cluster_hud_active(params: Params) -> bool:
   try:
     return params.get_int("ClusterHud") == 1
@@ -170,6 +193,7 @@ procs = [
   PythonProcess("lateral_maneuversd", "openpilot.tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "openpilot.selfdrive.carrot.radar.radard_dpath", only_onroad),
   PythonProcess("radarcan", "openpilot.selfdrive.carrot.radar.radarcan", only_onroad),
+  NativeProcess("ccnc_mapd", "openpilot/selfdrive/carrot/ccnc_mapd", ["./mapd_launch.sh"], enable_ccnc_mapd),
   PythonProcess("hardwared", "openpilot.system.hardware.hardwared", always_run),
   PythonProcess("modem", "openpilot.system.hardware.tici.modem", always_run, enabled=TICI and HARDWARE.get_device_type() != "tici"),
   PythonProcess("tombstoned", "openpilot.system.tombstoned", always_run, enabled=not PC),

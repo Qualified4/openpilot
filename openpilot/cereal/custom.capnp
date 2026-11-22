@@ -224,7 +224,26 @@ struct CarrotNaviMedia @0xf35cc4560bbf6ec2 {
 	payload @14 :Data;
 }
 
+# CcncMap, published by ccnc_mapd at the liveTracks cadence.
 struct CustomReserved3 @0xda96579883444c35 {
+  radarLogMonoTime @0 :UInt64;
+  generation @1 :UInt32;
+  status @2 :UInt8;  # bits: frozen, no live pose, map unknown, blinker
+  egoLaneCoord @3 :Float32;
+  slots @4 :List(Slot);  # FF, LF, RF, LR, RR.
+  valid @5 :Bool;
+
+  struct Slot {
+    vid @0 :UInt32;
+    distance @1 :Float32;
+    lateral @2 :Float32;
+    detect @3 :UInt8;
+    laneCoordRel @4 :Float32;
+    vRel @5 :Float32;
+    kind @6 :UInt8;
+    kindConfirmed @7 :Bool;
+    present @8 :Bool;  # BSD can fill a slot without a vehicle ID.
+  }
 }
 
 struct CustomReserved4 @0x80ae746ee2596b11 {

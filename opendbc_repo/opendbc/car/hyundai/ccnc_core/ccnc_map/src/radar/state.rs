@@ -159,6 +159,7 @@ pub struct Updated {
 
 #[derive(Clone, Debug)]
 pub struct MapState {
+    pub(super) selection_history: bool,
     pub pose: Pose,
     pub cos: f64,
     pub sin: f64,
@@ -207,6 +208,7 @@ impl Default for MapState {
 impl MapState {
     pub fn new() -> Self {
         Self {
+            selection_history: true,
             pose: (0., 0., 0.),
             cos: 1.,
             sin: 0.,
@@ -242,6 +244,11 @@ impl MapState {
         }
     }
 
+    /// The world map uses the radar's observation and wall stages with its own slot selector.
+    pub(crate) fn for_observation() -> Self {
+        Self { selection_history: false, ..Self::new() }
+    }
+
     pub fn frame(&self) -> Frame {
         Frame {
             px: self.pose.0,
@@ -269,13 +276,16 @@ impl MapState {
         crossing_travel: f64,
     ) -> &'a [Vehicle] {
         tracker.update(stamp, points, world);
+        let mut reports = HashMap::with_capacity(points.len());
+        for object in self.objects.values() {
+            if object.report.is_some_and(|(t, _, _)| t == stamp) {
+                // A later object key wins when both objects report the same radar ID.
+                reports.insert(object.source, object);
+            }
+        }
         for car in tracker.vehicles_mut().iter_mut().filter(|car| car.seen_radar == stamp) {
-            let Some(id) = car.radar_id else {
-                continue;
-            };
-            let object = self.objects.values().rev().find(|object| {
-                object.source == i128::from(id) && object.report.is_some_and(|(t, _, _)| t == stamp)
-            });
+            let Some(id) = car.radar_id else { continue };
+            let object = reports.get(&i128::from(id)).copied();
             car.flags = object.map_or_else(Flags::default, |object| Flags {
                 motion_confirmed: object.motion_confirmed,
                 stationary: object.stationary,

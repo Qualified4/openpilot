@@ -2,7 +2,9 @@
 //! and the message byte readers. The `ccnc_core`
 //! extension and the `ccnc_mapd` process both call it.
 
+pub mod cmap;
 pub mod display;
+pub mod pipeline;
 
 pub mod pos {
     pub mod common;
@@ -13,7 +15,9 @@ pub mod pos {
 }
 
 pub mod input {
+    pub mod framing;
     pub mod live_tracks;
+    pub mod map_events;
     pub mod model_v2;
 }
 

@@ -235,7 +235,7 @@ impl World {
         self.invalid_motion = false;
     }
 
-    fn yaw_at(&self, t: f64) -> Option<f64> {
+    pub(crate) fn yaw_at(&self, t: f64) -> Option<f64> {
         self.yaw
             .filter(|(stamp, _)| (0. ..=LIVE_POSE_MAX_AGE).contains(&(t - stamp)))
             .map(|(_, yaw)| yaw)

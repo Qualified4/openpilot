@@ -1,6 +1,7 @@
 //! Evaluate the new world geometry on the existing clean-map text exports.
 //!
 //! eval INPUT_DIR OUTPUT_DIR [--no-freeze] [--reference TRACE_DIR] [--gate body|shorter|conservative] [--slots]
+//! eval --events CACHED_EVENTS... compares the production daemon to the library on ccnc_mapd inputs.
 //! By default, use the vehicle layer. A reference trace supplies the prototype's
 //! identities and reflection offsets to isolate the geometry as in Task 3.
 
@@ -26,6 +27,9 @@ fn main() -> io::Result<()> {
         )
     };
     let input = PathBuf::from(args.next().ok_or_else(usage)?);
+    if input == Path::new("--events") {
+        return eval_events(args.map(PathBuf::from));
+    }
     let output = PathBuf::from(args.next().ok_or_else(usage)?);
     let mut freeze = true;
     let mut reference = None;
@@ -76,6 +80,54 @@ fn main() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Evaluate exactly the cached cereal events that the daemon can consume.
+fn eval_events(paths: impl Iterator<Item = PathBuf>) -> io::Result<()> {
+    use ccnc_map::{input::framing, pipeline::Pipeline};
+
+    let mut out = BufWriter::new(io::stdout().lock());
+    let mut frame = Vec::new();
+    for path in paths {
+        let mut pipeline = Pipeline::new(0);
+        let mut reader = BufReader::new(File::open(path)?);
+        while framing::next(&mut reader, &mut frame)? {
+            let result = pipeline
+                .ingest(&frame)
+                .map_err(|err| io::Error::other(format!("{err:?}")))?;
+            if let Some(map) = result {
+                write!(
+                    out,
+                    "{} {} {} {} {}",
+                    map.radar_log_mono_time,
+                    map.generation,
+                    map.status,
+                    map.ego_lane_coord.to_bits(),
+                    u8::from(map.valid)
+                )?;
+                for slot in map.slots {
+                    if let Some(slot) = slot {
+                        write!(
+                            out,
+                            " {} {} {} {} {} {} {} {}",
+                            slot.vid,
+                            slot.distance.to_bits(),
+                            slot.lateral.to_bits(),
+                            slot.detect,
+                            slot.lane_coord_rel.to_bits(),
+                            slot.v_rel.to_bits(),
+                            slot.kind,
+                            u8::from(slot.kind_confirmed)
+                        )?;
+                    } else {
+                        write!(out, " 0")?;
+                    }
+                }
+                writeln!(out)?;
+            }
+        }
+    }
+    out.flush()
 }
 
 fn fields(line: &str) -> Vec<&str> {

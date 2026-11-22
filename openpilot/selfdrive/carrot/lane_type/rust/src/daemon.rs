@@ -12,7 +12,7 @@ use crate::recogniser::{Frame, Recogniser};
 use crate::result::SideResult;
 use crate::strip::{LineF64, Nv12};
 
-pub const EVENT_CUSTOM_RAW_2: u16 = 153;
+pub use crate::messages::EVENT_CUSTOM_RAW_2;
 pub const PACKET_TYPE: &str = "ccncLaneMarking";
 pub const PACKET_VERSION: u64 = 1;
 pub const FRAME_BUFFER: usize = 3;
