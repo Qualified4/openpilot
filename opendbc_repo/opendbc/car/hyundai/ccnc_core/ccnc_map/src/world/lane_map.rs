@@ -11,6 +11,9 @@ const BIN_COUNT: usize = 70;
 const BOUNDARY_COUNT: usize = 8;
 const PENDING_CAPACITY: usize = 512;
 const NEAR: f64 = 25.;
+const EXTRAPOLATION_BINS: i64 = 12;
+const MAX_CURVE_EXTENSION: f64 = 45.;
+const MAX_CURVE_COEFFICIENT: f64 = 0.0007;
 
 type Point = (f64, f64);
 
@@ -66,7 +69,7 @@ impl Boundary {
         self.bins.iter().flatten().map(|b| b.index).max()
     }
 
-    /// Interpolate between nearby bins, or extend the last 10–30 m direction.
+    /// Interpolate between nearby bins, using a curvature fit for long forward extensions.
     fn point(&self, s: f64) -> Option<(Point, Point)> {
         let index = bin_number(s);
         let bins = || self.bins.iter().flatten();
@@ -94,10 +97,83 @@ impl Boundary {
             return None;
         }
         let f = (s / BIN_M - a.index as f64) / (b.index - a.index) as f64;
-        Some((
-            (a.point.0 + f * dx, a.point.1 + f * dy),
-            (dx / len, dy / len),
-        ))
+        let linear = (a.point.0 + f * dx, a.point.1 + f * dy);
+        let tangent = (dx / len, dy / len);
+        if after.is_none() {
+            // Close to the mapped road, retain its tangent. Blend in the curvature farther ahead.
+            let distance = s - b.index as f64 * BIN_M;
+            let weight = ((distance - NEAR) / NEAR).clamp(0., 1.);
+            if weight > 0. {
+                if let Some((curve, direction)) = self.extrapolate(s, b) {
+                    let mix = |a, b| a + weight * (b - a);
+                    let (ux, uy): Point =
+                        (mix(tangent.0, direction.0), mix(tangent.1, direction.1));
+                    let length = ux.hypot(uy);
+                    if length >= 1e-3 {
+                        return Some((
+                            (mix(linear.0, curve.0), mix(linear.1, curve.1)),
+                            (ux / length, uy / length),
+                        ));
+                    }
+                }
+            }
+        }
+        Some((linear, tangent))
+    }
+
+    fn extrapolate(&self, s: f64, edge: &Bin) -> Option<(Point, Point)> {
+        // A single short segment amplifies lane-point error at long range.
+        // Fit all samples in the last 24 m and bound the amount of curvature carried forward.
+        let mut moments = [0.; 5];
+        let (mut mx, mut my) = ([0.; 3], [0.; 3]);
+        let mut span = 0;
+        for bin in self.bins.iter().flatten() {
+            let offset = bin.index - edge.index;
+            if offset.abs() > EXTRAPOLATION_BINS {
+                continue;
+            }
+            span = span.max(offset.abs());
+            let offset = offset as f64 * BIN_M;
+            let mut power = 1.;
+            for k in 0..5 {
+                moments[k] += power;
+                if k < 3 {
+                    mx[k] += power * (bin.point.0 - edge.point.0);
+                    my[k] += power * (bin.point.1 - edge.point.1);
+                }
+                power *= offset;
+            }
+        }
+        let [n, a, b, c, d] = moments;
+        let linear_det = n * b - a * a;
+        if span < 5 || linear_det <= 1e-6 {
+            return None;
+        }
+        let quadratic_det = n * (b * d - c * c) - a * (a * d - c * b) + b * (a * c - b * b);
+        let s = s - edge.index as f64 * BIN_M;
+        let curve_s = s.clamp(-MAX_CURVE_EXTENSION, MAX_CURVE_EXTENSION);
+        let quadratic_slope = (n * c - a * b) / linear_det;
+        let fit = |[p, q, r]: [f64; 3]| {
+            let slope = (n * q - a * p) / linear_det;
+            let curve = if n >= 5. && quadratic_det > 1e-6 {
+                (n * (b * r - q * c) - a * (a * r - q * b) + p * (a * c - b * b)) / quadratic_det
+            } else {
+                0.
+            };
+            let curve = curve.clamp(-MAX_CURVE_COEFFICIENT, MAX_CURVE_COEFFICIENT);
+            let position = slope * s + curve * (curve_s * (2. * s - curve_s) - quadratic_slope * s);
+            let tangent = slope + curve * (2. * curve_s - quadratic_slope);
+            (position, tangent)
+        };
+        let (x, dx) = fit(mx);
+        let (y, dy) = fit(my);
+        let length = dx.hypot(dy);
+        (length >= 1e-3).then(|| {
+            (
+                (edge.point.0 + x, edge.point.1 + y),
+                (dx / length, dy / length),
+            )
+        })
     }
 
     fn lateral(&self, s: f64, p: Point) -> Option<f64> {
@@ -377,11 +453,24 @@ impl LaneMap {
                 .iter()
                 .flatten()
                 .any(|&v| v != best && count(v) == winning_votes);
-            if !tied && best != self.offset {
+            // A lane split can move one line by a lane width. A second line must support a renumber.
+            if !tied && winning_votes >= 2 && best != self.offset {
                 self.offset = best;
                 self.renumbers += 1;
             }
         }
+    }
+
+    pub(super) fn camera_ego(&self, model: &Model) -> Option<f64> {
+        if !model.lane_line_probs.get(1..3)?.iter().all(|&p| p > 0.4) {
+            return None;
+        }
+        let left = line_at(model.lane_lines.get(1)?, 0.)?;
+        let right = line_at(model.lane_lines.get(2)?, 0.)?;
+        let width = left - right;
+        (1.8..=5.5)
+            .contains(&width)
+            .then(|| f64::from(self.offset) + 1. + left / width)
     }
 
     pub fn coord(&self, s: f64, p: Point) -> Option<f64> {
@@ -490,4 +579,24 @@ fn wall_at(wall: &[Point], x: f64) -> Option<f64> {
     }
     let (&(a, y), &(b, z)) = (wall.get(i - 1)?, wall.get(i)?);
     (b > a).then(|| y + (z - y) * (x - a) / (b - a))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boundary_extends_a_curve_past_its_last_observation() {
+        let mut boundary = Boundary::default();
+        for index in 0..=12 {
+            let s = index as f64 * BIN_M;
+            boundary.observe(index, (s, 0.0005 * s * s), s, false);
+        }
+        let ((_, near_y), _) = boundary.point(30.).unwrap();
+        assert!((near_y - 0.402).abs() < 1e-9);
+        let ((far_x, far_y), (dx, dy)) = boundary.point(74.).unwrap();
+        assert!((far_x - 74.).abs() < 1e-9);
+        assert!((far_y - 2.7255).abs() < 1e-9);
+        assert!((dy / dx - 0.069).abs() < 1e-9);
+    }
 }

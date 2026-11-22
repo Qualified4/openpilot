@@ -27,6 +27,7 @@ pub struct World {
     last_model: Option<f64>,
     last_radar: Option<f64>,
     u_ego: Option<(f64, f64)>,
+    camera_lane_bias: f64,
     generation: u32,
     radar_lag: f64,
     freeze_enabled: bool,
@@ -58,6 +59,7 @@ impl World {
             last_model: None,
             last_radar: None,
             u_ego: None,
+            camera_lane_bias: 0.,
             generation: 0,
             radar_lag,
             freeze_enabled,
@@ -122,6 +124,21 @@ impl World {
             self.no_live_pose,
             walls,
         );
+        self.camera_lane_bias = 0.;
+        if !self.lane_change.frozen() {
+            let at = self.pose.at(t);
+            if let Some((camera, world)) = self
+                .lanes
+                .camera_ego(model)
+                .zip(self.lanes.coord(at.s, (at.x, at.y)))
+            {
+                // Use the near camera observation to correct drift within the matched lane.
+                let bias = camera - world;
+                if bias.abs() <= 0.25 {
+                    self.camera_lane_bias = 0.8 * bias;
+                }
+            }
+        }
         self.last_model = Some(t);
         self.update_lane(t);
     }
@@ -173,6 +190,7 @@ impl World {
         self.last_model = None;
         self.last_radar = None;
         self.u_ego = None;
+        self.camera_lane_bias = 0.;
         self.generation = self.generation.wrapping_add(1);
         self.invalid_motion = false;
     }
@@ -198,6 +216,15 @@ impl World {
         let at = self.pose.at(t);
         let coordinate = self.lanes.coord(at.s, (at.x, at.y));
         self.u_ego = coordinate.map(|u| {
+            let u = if !self.lane_change.frozen()
+                && self
+                    .last_model
+                    .is_some_and(|last| (0. ..INPUT_GAP).contains(&(t - last)))
+            {
+                u + self.camera_lane_bias
+            } else {
+                u
+            };
             let u = if let Some((last, prior)) = self.u_ego {
                 // Crossing a bin seam must not turn a geometry error into an
                 // implausible lateral movement of the ego car.
