@@ -15,6 +15,7 @@ use stripnet::recogniser::Recogniser;
 use stripnet::strip::Nv12;
 
 const PARAM_CHECK: Duration = Duration::from_secs(1);
+const CEREAL_OPEN_ATTEMPTS: usize = 3;
 const SERVICES: [&str; 6] = ["modelV2", "liveCalibration", "carState", "deviceState", "roadCameraState", "radarState"];
 
 fn monotonic_ns() -> i64 {
@@ -35,6 +36,24 @@ extern "C" {
 
 fn enabled(params: &std::path::Path) -> bool {
     std::fs::read(params.join("CcncExtendedDisplay")).is_ok_and(|v| v.first() == Some(&b'1'))
+}
+
+fn open_cereal(params: &std::path::Path) -> anyhow::Result<Option<(Vec<Sub>, Pub)>> {
+    for attempt in 1..=CEREAL_OPEN_ATTEMPTS {
+        if !enabled(params) {
+            return Ok(None);
+        }
+        let subs: Option<Vec<_>> = SERVICES.iter().map(|s| Sub::new(s, false)).collect();
+        if let Some(subs) = subs {
+            if let Some(publisher) = Pub::new("customReservedRawData2") {
+                return Ok(Some((subs, publisher)));
+            }
+        }
+        if attempt < CEREAL_OPEN_ATTEMPTS {
+            std::thread::sleep(PARAM_CHECK);
+        }
+    }
+    anyhow::bail!("StripNet cereal queues unavailable after {CEREAL_OPEN_ATTEMPTS} attempts")
 }
 
 fn main() -> anyhow::Result<()> {
@@ -68,8 +87,7 @@ fn main() -> anyhow::Result<()> {
     if !stripnet::tail::pin_cpus(cpus) {
         eprintln!("CCNC lane marking: CPU mask {cpus:#x} refused, affinity unchanged");
     }
-    let subs: Vec<Sub> = SERVICES.iter().map(|s| Sub::new(s, false).expect("subscribe")).collect();
-    let publisher = Pub::new("customReservedRawData2").expect("publish");
+    let Some((subs, publisher)) = open_cereal(&params)? else { return Ok(()) };
     let client = Vipc::new("camerad", VISION_STREAM_ROAD, false);
     let mut frames: FrameBuffer<VipcFrame> = FrameBuffer::default();
     let mut daemon = Daemon::new(Recogniser::new(model));

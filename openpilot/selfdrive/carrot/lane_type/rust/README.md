@@ -5,6 +5,9 @@ process_config starts `stripnet_launch.sh`, which runs `prebuilt/linux-$(uname -
 `marking_daemon.py` when that binary is missing (PC) or the Rust process fails (non-zero exit within 60 s of its start,
 or the 3rd crash since boot; marker `/dev/shm/ccnc_lane_type_rust.failed`, cleared by a reboot).
 
+Building the `ipc` feature uses `python3` to generate the shared cereal service table. The daemon opens queues with
+the declared sizes and retries startup if a queue is unavailable or has a different size.
+
 Device binary (committed, no build on the device; rebuild after any change under `src/`, `ipc/`, `native/`):
 
 ```sh

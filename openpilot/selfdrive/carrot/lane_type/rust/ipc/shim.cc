@@ -1,10 +1,39 @@
 // C ABI over msgq / VisionIPC (msgq_repo) for the Rust daemon (src/ipc.rs). Thin: no logic beyond the calls.
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 
 #include "msgq/ipc.h"
+#include "msgq/msgq.h"
 #include "msgq/visionipc/visionipc_client.h"
+#include "services.h"
+
+static size_t cereal_queue_size(const char *name) {
+  const auto service = services.find(name);
+  if (service == services.end()) return 0;
+  const size_t size = service->second.queue_size;
+
+  // An older process may have left a differently sized queue. Opening it would resize
+  // the file behind any already mapped peers. Use the same path convention as msgq_new_queue.
+#ifdef __APPLE__
+  std::string path = "/tmp/msgq_";
+#else
+  std::string path = "/dev/shm/msgq_";
+#endif
+  if (const char *prefix = std::getenv("OPENPILOT_PREFIX")) path += std::string(prefix) + '/';
+  path += name;
+  struct stat info;
+  if (stat(path.c_str(), &info) != 0) return errno == ENOENT ? size : 0;
+  if (static_cast<size_t>(info.st_size) == size + sizeof(msgq_header_t)) return size;
+
+  std::fprintf(stderr, "StripNet: %s queue is %lld bytes, expected %zu\n", name,
+               static_cast<long long>(info.st_size), size + sizeof(msgq_header_t));
+  return 0;
+}
 
 extern "C" {
 
@@ -17,8 +46,10 @@ struct sn_frame {
 };
 
 sn_sub *sn_sub_new(const char *service, int conflate) {
+  const size_t size = cereal_queue_size(service);
+  if (size == 0) return nullptr;
   Context *ctx = Context::create();
-  SubSocket *sock = SubSocket::create(ctx, service, "127.0.0.1", conflate != 0, true);
+  SubSocket *sock = SubSocket::create(ctx, service, "127.0.0.1", conflate != 0, true, size);
   if (sock == nullptr) { delete ctx; return nullptr; }
   Poller *poller = Poller::create({sock});
   return new sn_sub{ctx, sock, poller, nullptr};
@@ -39,8 +70,10 @@ const uint8_t *sn_sub_recv(sn_sub *s, size_t *len) {
 void sn_sub_free(sn_sub *s) { delete s->last; delete s->poller; delete s->sock; delete s->ctx; delete s; }
 
 sn_pub *sn_pub_new(const char *service) {
+  const size_t size = cereal_queue_size(service);
+  if (size == 0) return nullptr;
   Context *ctx = Context::create();
-  PubSocket *sock = PubSocket::create(ctx, service, true);
+  PubSocket *sock = PubSocket::create(ctx, service, true, size);
   if (sock == nullptr) { delete ctx; return nullptr; }
   return new sn_pub{ctx, sock};
 }
