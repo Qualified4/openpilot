@@ -33,8 +33,9 @@ ANIM_SPEED = 1.2
 REMAP = 1.2
 
 PLAY_PER_M = 0.0025
-HEADING_GAIN = 0.8
+FF_PLAY_PER_M = 0.00325
 HEADING_TAU = 0.3
+HEADING_DEADBAND = 0.006
 
 
 def _clamp(v, lo, hi):
@@ -298,8 +299,7 @@ class Vehicle:
 
 
 class DisplayA:
-  """display_a.rs: the estimate with HEADING_GAIN * x times the low-passed road heading taken out, behind a backlash
-  of PLAY_PER_M * x, per vid."""
+  """display_a.rs: remove the low-passed road heading after a soft deadband, then apply distance-scaled backlash."""
   def __init__(self):
     self.shown = {}
     self.last_heading = None
@@ -312,10 +312,11 @@ class DisplayA:
     h, t0 = self.heading if self.heading is not None else (raw, now)
     h = h + (raw - h) * min(max(now - t0, 0.) / HEADING_TAU, 1.)
     self.heading = (h, now)
-    head = HEADING_GAIN * h
+    head = math.copysign(max(abs(h) - HEADING_DEADBAND, 0.), h)
     for vid in sorted(tracks):
       y = tracks[vid].y - tracks[vid].x * head
-      play = PLAY_PER_M * max(tracks[vid].x, 0.)
+      play_per_m = FF_PLAY_PER_M if vid == assigned[0] else PLAY_PER_M
+      play = play_per_m * max(tracks[vid].x, 0.)
       s = self.shown.get(vid, y)
       if y - s > play:
         s = y - play
