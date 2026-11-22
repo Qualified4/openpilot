@@ -821,7 +821,7 @@ pub(crate) fn update_display<'py>(
         let values_162 = template(cs, "ccnc_0x162")?;
         let values_1ea = template(cs, "adrv_0x1ea")?;
         if let (Some(values), Some(map)) = (&values_162, &process) {
-            cmap::apply_slots(values, map, state)?;
+            cmap::apply_slots(values, map)?;
         }
         let panel_attr = intern!(py, "_rust_panel");
         let mut display_state = state.getattr_opt(panel_attr)?.map_or(

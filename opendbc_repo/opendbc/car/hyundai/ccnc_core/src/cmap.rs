@@ -116,21 +116,8 @@ pub(crate) fn from_card(
     Ok(output)
 }
 
-pub(crate) fn apply_slots(
-    values: &Bound<'_, PyDict>,
-    map: &MapOut,
-    state: &Bound<'_, PyAny>,
-) -> PyResult<()> {
-    let py = values.py();
-    let generation = intern!(py, "_cmap_generation");
-    let current = state.getattr_opt(generation)?;
-    if current.is_none_or(|value| value.extract::<u32>().ok() != Some(map.generation)) {
-        let panel = intern!(py, "_rust_panel");
-        if state.hasattr(panel)? {
-            state.delattr(panel)?;
-        }
-        state.setattr(generation, map.generation)?;
-    }
+/// Every slot is rewritten from the message, so a new generation leaves nothing of the old one behind.
+pub(crate) fn apply_slots(values: &Bound<'_, PyDict>, map: &MapOut) -> PyResult<()> {
     for (index, ([distance, lateral, detect], slot)) in FRONT_FIELDS
         .into_iter()
         .chain(REAR_FIELDS)
@@ -165,14 +152,10 @@ pub(crate) fn apply_slots(
 }
 
 #[pyfunction]
-pub(crate) fn apply_cmap(
-    values_162: &Bound<'_, PyDict>,
-    msg: &[u8],
-    state: &Bound<'_, PyAny>,
-) -> PyResult<()> {
+pub(crate) fn apply_cmap(values_162: &Bound<'_, PyDict>, msg: &[u8]) -> PyResult<()> {
     guard(|| {
         if let Some(map) = valid_map(msg) {
-            apply_slots(values_162, &map, state)?;
+            apply_slots(values_162, &map)?;
         }
         Ok(())
     })

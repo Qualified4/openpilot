@@ -2,12 +2,15 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 
+import pytest
+
 from openpilot.cereal import messaging
 from openpilot.common.params import Params
 from opendbc.can import CANPacker
 from opendbc.car.hyundai import ccnc_core_loader, hyundaicanfd as canfd
 from opendbc.car.hyundai.tests.test_ccnc_extended_display import templates
 from opendbc.car.hyundai.tests.test_ccnc_extension import display  # noqa: F401
+from opendbc.car.hyundai.tests.test_ccnc_lane_marking import marking
 
 NS = 1_000_000_000
 TICK = NS // 20
@@ -30,7 +33,7 @@ def test_fresh_message_uses_process():
   core = ccnc_core_loader.load()
   assert core.MapLink().use_process(NS, packet(NS), NS)
   values = {}
-  core.apply_cmap(values, packet(NS), SimpleNamespace())
+  core.apply_cmap(values, packet(NS))
   assert (values["FF_DETECT"], values["FF_DISTANCE"], values["FF_LATERAL"]) == (4, 16., -1.25)
 
 
@@ -60,18 +63,55 @@ def test_recover_only_after_5s_stable():
   assert not link.use_process(8 * NS, packet(8 * NS), 8 * NS)
 
 
-def test_generation_change_resets_animation():
+def test_generation_change_drops_the_old_slots():
   core = ccnc_core_loader.load()
-  panel = object()
-  state = SimpleNamespace()
   values = {}
-  core.apply_cmap(values, packet(NS), state)
-  state._rust_panel = panel
-  core.apply_cmap(values, packet(NS + TICK), state)
-  assert state._rust_panel is panel
-  core.apply_cmap(values, packet(NS + 2 * TICK, generation=2, occupied=False), state)
-  assert not hasattr(state, "_rust_panel")
+  core.apply_cmap(values, packet(NS))
+  assert values["FF_DETECT"] == 4
+  core.apply_cmap(values, packet(NS + TICK, generation=2, occupied=False))
   assert all(values[name] == 0 for name in ("FF_DETECT", "FF_DISTANCE", "FF_LATERAL"))
+
+
+@pytest.mark.parametrize("map_process", (False, True))
+def test_lane_lines_do_not_depend_on_the_map(display, monkeypatch, map_process):  # noqa: F811
+  """The recognised lane lines stay as with the map off while the map resets, goes missing, is late or invalid, and returns."""
+  params, cs, send = display
+  params.update(CcncExtendedDisplay=True, CcncPosDisplayMode=1, CcncMapProcess=map_process)
+  templates(cs)
+  cs.modelV2.meta.laneChangeAvailableLeft = cs.modelV2.meta.laneChangeAvailableRight = False
+  clock = SimpleNamespace(now=NS)
+  monkeypatch.setattr(canfd, "time", SimpleNamespace(monotonic_ns=lambda: clock.now, monotonic=lambda: clock.now / NS))
+  recognised = marking(left=("solid", "yellow"), right=("dashed", "white"))
+
+  def map_input(t, now):
+    if t < .5:
+      return packet(now), now
+    if t < 1.:
+      return packet(now, generation=2), now  # the map reset itself
+    if t < 1.3:
+      return None, None  # nothing received
+    if t < 1.6:
+      return packet(now - NS // 2, generation=2), now - NS // 2  # late
+    if t < 1.9:
+      return packet(now, generation=2, valid=False), now
+    return packet(now, generation=3), now  # back after the 5 s recovery, reset again meanwhile
+
+  using = {}
+  for step in range(150):
+    t = step / 20
+    clock.now = NS + step * TICK
+    # The recogniser has no fresh result on the frames where the map changes; the display keeps its last one.
+    quiet = t == .5 or 1. <= t < 1.1 or 6.8 <= t < 7.2
+    cs.ccnc_lane_marking = None if quiet else recognised
+    cs.ccnc_map_bytes = map_input(t, clock.now)
+    values = dict(send(step * 5))["ADRV_0x161"]
+    assert (values["LANELINE_LEFT"], values["LANELINE_RIGHT"]) == (4, 8), t
+    link = getattr(canfd.ccnc_extension.state, "_rust_map_link", None)
+    using[t] = link is not None and link.using_process
+  if map_process:
+    assert [using[t] for t in (.45, .95, 1.2, 1.5, 1.8, 3., 6.8, 7.4)] == [True, True, False, False, False, False, False, True]
+  else:
+    assert not any(using.values())
 
 
 def test_extended_display_off_byte_identical(display):  # noqa: F811
