@@ -231,8 +231,8 @@ class CcncRadarMap:
                  ('RF_DETECT_DISTANCE', 'RF_DETECT_LATERAL', 'RF_DETECT'))
 
   # The Rust core runs the map update when it loads: _advance in one call, and the rest of the map
-  # (_update_lane_reference, _observe, _vision, _walls, _bands, _select) in another. Ego's pose, the objects and the radar
-  # id history (_RUST_FIELDS) are then kept in the map's Rust state (ccnc_core.RadarMapState, attached on the first
+  # (_update_lane_reference, _observe, _vision, _walls, _bands, _select) in another. The pose, objects, radar history, walls, bands and selection
+  # (_RUST_FIELDS) are then kept in the map's Rust state (ccnc_core.RadarMapState, attached on the first
   # update): they leave the instance, and reading one gives a copy from the state (__getattr__; objects as the Rust
   # MapObject class, same fields). None, or a subclass or instance that replaces one of those methods (_FUSED below),
   # runs the Python loops below on the dataclass above (kept as the reference; a subclass or test sets None to force
@@ -1601,8 +1601,6 @@ class CcncRadarMap:
         self.raw, self.radar_stamp = live, radar_time
       self.RUST.update(self, observe, radar, radar_time, self.leads, self.vision_leads, vision, self._model_changing(), select, Wall, Band,
                        live_bytes)
-      if not select:
-        self.selected = (None, None, None)
     else:
       measured = set()
       if observe:
@@ -1615,8 +1613,8 @@ class CcncRadarMap:
         self._select()
       else:
         self.selected = (None, None, None)
-    if not self.usable:
-      self.selected = (None, None, None)
+      if not self.usable:
+        self.selected = (None, None, None)
     return tuple(self.objects.get(k) for k in self.selected)
 
   def display_values(self, values):
@@ -1654,7 +1652,10 @@ class CcncRadarMap:
         values[detect] = 0
       elif len(matches) == 1:
         selected[-1] = matches[0].key
-    self.selected = tuple(selected)
+    if '_rust_state' in self.__dict__:
+      self._rust_state.selected = tuple(selected)
+    else:
+      self.selected = tuple(selected)
     return values
 
   def extend_observed_walls(self, eligible):
@@ -1664,6 +1665,9 @@ class CcncRadarMap:
     supplied by the existing vehicle admission/vision/stop-memory protections.
     No predicted observation extends a wall, and anchors never chase a point.
     """
+    if '_rust_state' in self.__dict__:
+      self._rust_state.extend_observed_walls(list(eligible))
+      return
     for wall in self.walls:
       geometry = sorted((self.to_ego(*anchor), key, anchor) for key, anchor in zip(wall.members, wall.points))
       if len(geometry) < 3:
@@ -1712,7 +1716,9 @@ if _native is not None:
 
 # The CcncRadarMap fields a map whose update runs in Rust keeps in its Rust state (ccnc_core map_state.rs FIELDS).
 _RUST_FIELDS = frozenset(('pose', 'cos', 'sin', 'now', 'speed', 'odometer', 'poses', 'objects', 'local', 'next_id', 'created',
-                          'evicted', 'range_removed', 'reports', 'jumps'))
+                          'evicted', 'range_removed', 'reports', 'jumps', 'walls', 'wall_geometry', 'bends', 'bands',
+                          'band_points', 'band_early', 'selected', 'switched', 'absent', 'remembered', 'bridge', 'hold',
+                          'far_since', 'lane_return', 'lane_offset'))
 
 # The methods the one-call Rust update runs in Rust (and those they call), as this module defines them.
 _FUSED_NAMES = frozenset((

@@ -5,23 +5,28 @@
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 
+use super::associate::{associate, measure, AssociateIn, Ego, Evidence, RadarPoint};
+use super::consts::Consts;
+use super::lanes::Lanes;
 use super::object::{MapObjectData, Ring};
+use super::observe::{observe, ObserveIn};
+use super::select::{lane_reference, vision, Bridge, Selector};
+use super::walls::{self, BandData, BandPoint, IntSet, WallData};
 
 /// A failure of the map update, as the Python reference raises it (the extension turns it into that exception).
 #[derive(Debug)]
 pub enum Error {
     ZeroDivision(&'static str),
     Index(&'static str),
+    Type(&'static str),
     Key(i64),
     Value(&'static str),
     Overflow(&'static str),
-    /// An error of a caller's callback (the lane queries of the extension), handed back as it was.
-    External(Box<dyn std::any::Any + Send + Sync>),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// A dict with Python's insertion order, for keys that are set again (they keep their place) and never removed.
+/// A dict with Python's insertion order. Updating an existing key keeps its place.
 #[derive(Clone, Debug)]
 pub struct InsertionMap<K, V> {
     order: Vec<K>,
@@ -30,7 +35,10 @@ pub struct InsertionMap<K, V> {
 
 impl<K, V> Default for InsertionMap<K, V> {
     fn default() -> Self {
-        Self { order: Vec::new(), values: HashMap::new() }
+        Self {
+            order: Vec::new(),
+            values: HashMap::new(),
+        }
     }
 }
 
@@ -51,6 +59,24 @@ impl<K: Copy + Eq + Hash, V> InsertionMap<K, V> {
             self.order.push(key);
         }
         self.values.entry(key).or_insert_with(default)
+    }
+
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.values.get_mut(key)
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = K> + '_ {
+        self.order.iter().copied()
+    }
+
+    pub fn retain(&mut self, mut keep: impl FnMut(K, &V) -> bool) {
+        self.order.retain(|key| {
+            let keep = keep(*key, &self.values[key]);
+            if !keep {
+                self.values.remove(key);
+            }
+            keep
+        });
     }
 
     pub fn len(&self) -> usize {
@@ -78,7 +104,10 @@ pub struct Frame {
 impl Frame {
     pub fn to_ego(self, x: f64, y: f64) -> (f64, f64) {
         let (c, s) = (self.c, self.s);
-        (c * (x - self.px) + s * (y - self.py), -s * (x - self.px) + c * (y - self.py))
+        (
+            c * (x - self.px) + s * (y - self.py),
+            -s * (x - self.px) + c * (y - self.py),
+        )
     }
 }
 
@@ -92,6 +121,35 @@ pub struct Range {
     pub max_y: f64,
     pub far_x: f64,
     pub far_y: f64,
+}
+
+pub struct Observation<'a> {
+    pub points: &'a [RadarPoint],
+    pub stamp: f64,
+    /// The interpolated radar pose (x, y, cos, sin).
+    pub pose: Option<(f64, f64, f64, f64)>,
+    pub evidence: &'a HashMap<i128, Evidence>,
+}
+
+pub struct UpdateIn<'a> {
+    pub radar: Option<Observation<'a>>,
+    pub radar_stamp: Option<f64>,
+    pub a_ego: f64,
+    pub yaw_rate: f64,
+    pub holding: bool,
+    pub ego_change: bool,
+    pub lane_change: bool,
+    pub blindspot: [bool; 2],
+    pub leads: &'a [(f64, f64)],
+    pub vision_leads: &'a [(f64, f64, Option<f64>)],
+    pub vision: &'a [(f64, f64)],
+    pub select: bool,
+    pub usable: bool,
+}
+
+pub struct Updated {
+    pub lane_change: bool,
+    pub retired_bands: Vec<BandData>,
 }
 
 #[derive(Clone, Debug)]
@@ -115,6 +173,23 @@ pub struct MapState {
     pub reports: InsertionMap<i128, Ring<(f64, f64, f64), 4>>,
     /// Radar id -> stamp of its last lateral jump.
     pub jumps: InsertionMap<i128, f64>,
+    pub walls: Vec<WallData>,
+    pub wall_geometry: Vec<Vec<(f64, f64)>>,
+    pub bends: Vec<(i64, f64, f64)>,
+    pub bands: Vec<BandData>,
+    pub band_points: InsertionMap<i64, BandPoint>,
+    pub band_early: IntSet,
+    pub(super) next_band: u64,
+    pub selected: [Option<i64>; 3],
+    pub switched: [Option<f64>; 3],
+    pub absent: [Option<f64>; 3],
+    pub remembered: [bool; 3],
+    pub bridge: Option<Bridge>,
+    /// The FF object's last report inside ego's lane: (key, lateral, centred, speed).
+    pub hold: Option<(i64, f64, bool, f64)>,
+    pub far_since: Option<(i64, f64)>,
+    pub lane_return: Option<f64>,
+    pub lane_offset: i64,
 }
 
 impl Default for MapState {
@@ -141,11 +216,32 @@ impl MapState {
             range_removed: 0,
             reports: InsertionMap::default(),
             jumps: InsertionMap::default(),
+            walls: Default::default(),
+            wall_geometry: Default::default(),
+            bends: Default::default(),
+            bands: Default::default(),
+            band_points: Default::default(),
+            band_early: Default::default(),
+            next_band: Default::default(),
+            selected: Default::default(),
+            switched: Default::default(),
+            absent: Default::default(),
+            remembered: Default::default(),
+            bridge: Default::default(),
+            hold: Default::default(),
+            far_since: Default::default(),
+            lane_return: Default::default(),
+            lane_offset: Default::default(),
         }
     }
 
     pub fn frame(&self) -> Frame {
-        Frame { px: self.pose.0, py: self.pose.1, c: self.cos, s: self.sin }
+        Frame {
+            px: self.pose.0,
+            py: self.pose.1,
+            c: self.cos,
+            s: self.sin,
+        }
     }
 
     /// `self.local[key]`.
@@ -161,14 +257,110 @@ impl MapState {
         self.objects.get_mut(&key).ok_or(Error::Key(key))
     }
 
+    /// Update the legacy map from prepared inputs after advancing ego and placing the model lines.
+    pub fn update(&mut self, k: &Consts, lanes: &mut Lanes, inp: UpdateIn<'_>) -> Result<Updated> {
+        let now = self.now.ok_or(Error::Value("map not advanced"))?;
+        let frame = self.frame();
+        let lane_change = lane_reference(self, k, lanes, now, inp.ego_change, inp.lane_change);
+        let measured = if let Some(radar) = inp.radar {
+            let ego = Ego {
+                a_ego: inp.a_ego,
+                yaw_rate: inp.yaw_rate,
+                speed: self.speed,
+            };
+            let measurements = radar.pose.map_or_else(Vec::new, |pose| {
+                measure(
+                    self,
+                    k,
+                    ego,
+                    inp.leads,
+                    &|track| radar.evidence.get(&track).copied(),
+                    radar.points,
+                    radar.stamp,
+                    pose,
+                )
+            });
+            let association = AssociateIn {
+                holding: inp.holding,
+                lane_change,
+                selected: self.selected,
+            };
+            let pairs = associate(self, k, association, lanes, &measurements, radar.stamp)?;
+            let mut assigned = vec![None; measurements.len()];
+            let mut reserved = Vec::with_capacity(pairs.len());
+            for (index, key) in pairs {
+                assigned[index] = Some(key);
+                reserved.push(key);
+            }
+            let observation = ObserveIn {
+                holding: inp.holding,
+                a_ego: inp.a_ego,
+                bridge: self.bridge.map(|b| (b.key, b.x, b.y)),
+            };
+            lanes.read_bands(&self.bands);
+            observe(
+                self,
+                k,
+                observation,
+                lanes,
+                &measurements,
+                assigned,
+                reserved,
+                radar.stamp,
+            )?
+            .into_iter()
+            .collect()
+        } else {
+            IntSet::default()
+        };
+
+        vision(self, now, inp.vision)?;
+        let retired_bands = walls::update(self, k, now, lanes, &measured)?;
+        if inp.select {
+            Selector {
+                st: self,
+                k,
+                lanes,
+                frame,
+                now,
+                vision_leads: inp.vision_leads,
+                holding: inp.holding,
+                lane_change,
+                usable: inp.usable,
+                radar_stamp: inp.radar_stamp,
+                blindspot: inp.blindspot,
+            }
+            .select()?;
+        }
+        if !inp.select || !inp.usable {
+            self.selected = [None; 3];
+        }
+        Ok(Updated {
+            lane_change,
+            retired_bands,
+        })
+    }
+
     /// `_advance`: move ego's pose by `speed` and `yaw` since the last update, then each object, rebuild `local` and
     /// drop the objects out of range (except the bridged one). Returns (dt, distance).
-    pub fn advance(&mut self, now: f64, speed: f64, yaw: f64, holding: bool, bridged: Option<i64>, k: Range) -> (f64, f64) {
+    pub fn advance(
+        &mut self,
+        now: f64,
+        speed: f64,
+        yaw: f64,
+        holding: bool,
+        bridged: Option<i64>,
+        k: Range,
+    ) -> (f64, f64) {
         let dt = self.now.map_or(0., |last| now - last);
         let (x, y, angle) = self.pose;
         let distance = 0.5 * (speed + self.speed) * dt;
         let middle = angle + 0.5 * yaw * dt;
-        self.pose = (x + distance * middle.cos(), y + distance * middle.sin(), angle + yaw * dt);
+        self.pose = (
+            x + distance * middle.cos(),
+            y + distance * middle.sin(),
+            angle + yaw * dt,
+        );
         self.cos = self.pose.2.cos();
         self.sin = self.pose.2.sin();
         self.now = Some(now);
@@ -195,7 +387,12 @@ impl MapState {
             o.x += o.vx * dt;
             o.y += o.vy * dt;
             // A stationary remembered vehicle can still depart outside radar coverage.
-            o.uncertainty += (if o.stationary { 0.08 } else { 0.35 + 0.3 * (now - o.seen) }) * dt + 0.002 * distance.abs();
+            o.uncertainty += (if o.stationary {
+                0.08
+            } else {
+                0.35 + 0.3 * (now - o.seen)
+            }) * dt
+                + 0.002 * distance.abs();
             o.vision = false;
             let (x, y) = frame.to_ego(o.x, o.y);
             self.local.insert(key, (x, y));

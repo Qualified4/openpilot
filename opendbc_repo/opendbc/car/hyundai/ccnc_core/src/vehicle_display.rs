@@ -190,51 +190,31 @@ fn update_ego_follow<'py>(
 /// `reset()`: the Python attributes as `__init__` sets them and the Rust state as new.
 fn map_reset(map: &Bound<'_, PyAny>) -> PyResult<()> {
     let py = map.py();
-    map_state::attach(map)?.try_borrow_mut()?.st = ccnc_map::radar::MapState::new();
-    for attr in ["band_points", "lanes", "geometry", "evidence"] {
+    map_state::attach(map)?.try_borrow_mut()?.reset();
+    for attr in ["lanes", "geometry", "evidence"] {
         map.setattr(attr, PyDict::new(py))?;
     }
-    for attr in [
-        "walls",
-        "wall_geometry",
-        "bends",
-        "bands",
-        "leads",
-        "vision_leads",
-    ] {
+    for attr in ["leads", "vision_leads"] {
         map.setattr(attr, PyList::empty(py))?;
     }
-    for attr in ["band_early", "weak"] {
-        map.setattr(attr, PySet::empty(py)?)?;
-    }
-    map.setattr("lane_offset", 0)?;
-    for attr in [
-        "radar_stamp",
-        "model_stamp",
-        "raw",
-        "model",
-        "lane_return",
-        "hold",
-        "bridge",
-        "far_since",
-        "shown",
-    ] {
+    map.setattr("weak", PySet::empty(py)?)?;
+    for attr in ["radar_stamp", "model_stamp", "raw", "model", "shown"] {
         map.setattr(attr, py.None())?;
     }
     for attr in ["usable", "holding", "stopped", "lane_change", "ego_change"] {
         map.setattr(attr, false)?;
     }
-    put!(map, "a_ego" => 0., "yaw_rate" => 0., "selected" => (py.None(), py.None(), py.None()),
-        "switched" => (py.None(), py.None(), py.None()), "absent" => (py.None(), py.None(), py.None()),
-        "blindspot" => (false, false), "remembered" => PyList::new(py, [false; 3])?, "generation" => py.get_type::<PyAny>().call0()?);
+    put!(map, "a_ego" => 0., "yaw_rate" => 0., "blindspot" => (false, false), "generation" => py.get_type::<PyAny>().call0()?);
     Ok(())
 }
 
 
 /// `_advance(now, speed, yaw)` on the map's Rust state.
 fn advance_pose(map: &Bound<'_, PyAny>, now: f64, speed: f64, yaw: f64, holding: bool) -> PyResult<()> {
-    let (bridged, range) = (map_state::bridge_key(map)?, map_state::range(map)?);
-    map_state::attach(map)?.try_borrow_mut()?.st.advance(now, speed, yaw, holding, bridged, range);
+    let range = map_state::range(map)?;
+    let state = map_state::attach(map)?;
+    let st = &mut state.try_borrow_mut()?.st;
+    st.advance(now, speed, yaw, holding, st.bridge.map(|bridge| bridge.key), range);
     Ok(())
 }
 
@@ -414,9 +394,6 @@ fn select<'py>(
         band_type,
         bytes,
     )?;
-    if !usable {
-        map.setattr(intern!(py, "selected"), (py.None(), py.None(), py.None()))?;
-    }
     Ok(())
 }
 

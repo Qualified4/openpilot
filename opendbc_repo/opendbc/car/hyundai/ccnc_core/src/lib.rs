@@ -57,8 +57,8 @@ fn _math_for_test(name: &str, values: Vec<f64>) -> PyResult<Vec<f64>> {
         let f: fn(f64) -> PyResult<f64> = match name {
             "degrees" => |x| Ok(pymath::degrees(x)),
             "radians" => |x| Ok(pymath::radians(x)),
-            "acos" => pymath::acos,
-            "cos" => pymath::cos,
+            "acos" => |x| pymath::acos(x).map_err(map_state::py_err),
+            "cos" => |x| pymath::cos(x).map_err(map_state::py_err),
             _ => return Err(pyo3::exceptions::PyValueError::new_err(name.to_owned())),
         };
         values.into_iter().map(f).collect()
@@ -75,9 +75,10 @@ fn _lane_for_test(
     settled: bool,
 ) -> PyResult<(Option<i64>, bool, f64)> {
     guard(|| {
-        lanes::LaneCache::new(radar_map)
-            .get()?
-            .lane(x, y, moving, settled, &[])
+        let mut view = lanes::LaneCache::new(radar_map);
+        let lanes = view.get()?;
+        lanes.changing = radar_map.call_method0("_model_changing")?.is_truthy()?;
+        lanes.lane(x, y, moving, settled, &[]).map_err(map_state::py_err)
     })
 }
 
@@ -115,7 +116,7 @@ fn _associate_for_test<'py>(
         let mut lanes = lanes::LaneCache::new(radar_map);
         let pairs = {
             let state = state.try_borrow()?;
-            associate(&state.st, &k, inp, &mut lanes, &ms, stamp).map_err(map_state::py_err)?
+            associate(&state.st, &k, inp, lanes.get()?, &ms, stamp).map_err(map_state::py_err)?
         };
         let out = pyo3::types::PyDict::new(py);
         for (i, key) in pairs {

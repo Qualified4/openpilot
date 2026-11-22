@@ -5,17 +5,20 @@
 //! copies: `objects` is a dict of `MapObject` copies, `local`, `reports` and `jumps` are dicts. Rust code borrows the
 //! state directly. A map that runs the Python reference path never gets one.
 
-use pyo3::exceptions::{PyIndexError, PyKeyError, PyOverflowError, PyRuntimeError, PyValueError, PyZeroDivisionError};
+use pyo3::exceptions::{
+    PyIndexError, PyKeyError, PyOverflowError, PyRuntimeError, PyTypeError, PyValueError, PyZeroDivisionError,
+};
 use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList, PySet, PyTuple};
 
 use ccnc_map::radar::{Error, MapObjectData, MapState, Range};
 
 use crate::map_object::{ring_state, MapObject};
+use crate::walls::Structures;
 
 /// The `CcncRadarMap` attributes the state keeps (also `_RUST_FIELDS` in hyundaicanfd_ccnc_radar_map.py).
-pub const FIELDS: [&str; 15] = [
+pub const FIELDS: &[&str] = &[
     "pose",
     "cos",
     "sin",
@@ -31,39 +34,51 @@ pub const FIELDS: [&str; 15] = [
     "range_removed",
     "reports",
     "jumps",
+    "walls",
+    "wall_geometry",
+    "bends",
+    "bands",
+    "band_points",
+    "band_early",
+    "selected",
+    "switched",
+    "absent",
+    "remembered",
+    "bridge",
+    "hold",
+    "far_since",
+    "lane_return",
+    "lane_offset",
 ];
 
 /// A map error as the Python reference raises it.
 pub fn py_err(error: Error) -> PyErr {
     match error {
         Error::ZeroDivision(message) => PyZeroDivisionError::new_err(message),
+        Error::Type(message) => PyTypeError::new_err(message),
         Error::Index(message) => PyIndexError::new_err(message),
         Error::Key(key) => PyKeyError::new_err(key),
         Error::Value(message) => PyValueError::new_err(message),
         Error::Overflow(message) => PyOverflowError::new_err(message),
-        Error::External(inner) => match inner.downcast::<PyErr>() {
-            Ok(error) => *error,
-            Err(_) => PyRuntimeError::new_err("ccnc_map callback failed"),
-        },
     }
-}
-
-/// A Python error raised inside a map stage's callback, handed through the stage unchanged.
-pub fn external(error: PyErr) -> Error {
-    Error::External(Box::new(error))
 }
 
 #[pyclass(module = "ccnc_core", name = "RadarMapState")]
 #[derive(Default)]
 pub struct RadarMapState {
     pub st: MapState,
+    pub structures: Structures,
 }
 
 /// The state attached to a map object, if it has one.
 pub fn attached<'py>(radar_map: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, RadarMapState>>> {
     let py = radar_map.py();
-    let Ok(dict) = radar_map.getattr(intern!(py, "__dict__")) else { return Ok(None) };
-    let Ok(dict) = dict.cast_into::<PyDict>() else { return Ok(None) };
+    let Ok(dict) = radar_map.getattr(intern!(py, "__dict__")) else {
+        return Ok(None);
+    };
+    let Ok(dict) = dict.cast_into::<PyDict>() else {
+        return Ok(None);
+    };
     match dict.get_item(intern!(py, "_rust_state"))? {
         Some(state) if !state.is_none() => Ok(Some(state.cast_into::<RadarMapState>()?)),
         _ => Ok(None),
@@ -79,11 +94,13 @@ pub fn attach<'py>(radar_map: &Bound<'py, PyAny>) -> PyResult<Bound<'py, RadarMa
     let py = radar_map.py();
     let dict = radar_map.getattr(intern!(py, "__dict__"))?.cast_into::<PyDict>()?;
     if dict.get_item(intern!(py, "now"))?.is_some_and(|now| !now.is_none()) {
-        return Err(PyRuntimeError::new_err("the map was updated in Python; reset it before a Rust update"));
+        return Err(PyRuntimeError::new_err(
+            "the map was updated in Python; reset it before a Rust update",
+        ));
     }
     let state = Bound::new(py, RadarMapState::default())?;
     dict.set_item(intern!(py, "_rust_state"), &state)?;
-    for name in FIELDS {
+    for &name in FIELDS {
         if dict.contains(name)? {
             dict.del_item(name)?;
         }
@@ -104,25 +121,16 @@ pub fn range(radar_map: &Bound<'_, PyAny>) -> PyResult<Range> {
     })
 }
 
-/// `self.bridge['key']` (None without a bridge).
-pub fn bridge_key(radar_map: &Bound<'_, PyAny>) -> PyResult<Option<i64>> {
-    let py = radar_map.py();
-    let bridge = radar_map.getattr(intern!(py, "bridge"))?;
-    if bridge.is_truthy()? {
-        Ok(Some(bridge.get_item(intern!(py, "key"))?.extract()?))
-    } else {
-        Ok(None)
-    }
-}
-
 /// `_advance(now, speed, yaw)` of a map whose update runs in Rust: ego's pose and the objects, in its state.
 #[pyfunction]
 pub fn advance_state(radar_map: &Bound<'_, PyAny>, now: f64, speed: f64, yaw: f64) -> PyResult<()> {
     crate::guard(|| {
         let py = radar_map.py();
         let holding = radar_map.getattr(intern!(py, "holding"))?.is_truthy()?;
-        let (bridged, range) = (bridge_key(radar_map)?, range(radar_map)?);
-        attach(radar_map)?.try_borrow_mut()?.st.advance(now, speed, yaw, holding, bridged, range);
+        let range = range(radar_map)?;
+        let state = attach(radar_map)?;
+        let st = &mut state.try_borrow_mut()?.st;
+        st.advance(now, speed, yaw, holding, st.bridge.map(|bridge| bridge.key), range);
         Ok(())
     })
 }
@@ -138,7 +146,10 @@ pub fn to_py<'py>(py: Python<'py>, o: &MapObjectData) -> PyResult<Bound<'py, Map
     Bound::new(py, MapObject::from_data(o.clone()))
 }
 
-fn ring_deque<'py, T, const N: usize>(py: Python<'py>, ring: &ccnc_map::radar::Ring<T, N>) -> PyResult<Bound<'py, PyAny>>
+fn ring_deque<'py, T, const N: usize>(
+    py: Python<'py>,
+    ring: &ccnc_map::radar::Ring<T, N>,
+) -> PyResult<Bound<'py, PyAny>>
 where
     T: Copy + for<'a> IntoPyObject<'a>,
 {
@@ -153,8 +164,8 @@ impl RadarMapState {
     }
 
     /// Back to a new map's state.
-    fn reset(&mut self) {
-        self.st = MapState::new();
+    pub fn reset(&mut self) {
+        *self = Self::default();
     }
 
     #[getter]
@@ -264,6 +275,104 @@ impl RadarMapState {
         Ok(out)
     }
 
+    #[getter]
+    fn walls<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        self.structures.walls(py, &self.st.walls)
+    }
+
+    #[getter]
+    fn wall_geometry(&self) -> Vec<Vec<(f64, f64)>> {
+        self.st.wall_geometry.clone()
+    }
+
+    #[getter]
+    fn bends(&self) -> Vec<(i64, f64, f64)> {
+        self.st.bends.clone()
+    }
+
+    #[getter]
+    fn bands<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        self.structures.bands(py, &self.st.bands)
+    }
+
+    #[getter]
+    fn band_points<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        for (key, value) in self.st.band_points.iter() {
+            out.set_item(key, *value)?;
+        }
+        Ok(out)
+    }
+
+    #[getter]
+    fn band_early<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PySet>> {
+        PySet::new(py, self.st.band_early.iter())
+    }
+
+    #[getter]
+    fn selected<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(py, self.st.selected)
+    }
+
+    #[setter]
+    fn set_selected(&mut self, selected: [Option<i64>; 3]) {
+        self.st.selected = selected;
+    }
+
+    #[getter]
+    fn switched<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(py, self.st.switched)
+    }
+
+    #[getter]
+    fn absent<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(py, self.st.absent)
+    }
+
+    #[getter]
+    fn remembered(&self) -> Vec<bool> {
+        self.st.remembered.to_vec()
+    }
+
+    #[getter]
+    fn bridge<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(bridge) = self.st.bridge else { return Ok(None) };
+        let out = PyDict::new(py);
+        out.set_item(intern!(py, "key"), bridge.key)?;
+        out.set_item(intern!(py, "start"), bridge.start)?;
+        out.set_item(intern!(py, "x"), bridge.x)?;
+        out.set_item(intern!(py, "y"), bridge.y)?;
+        out.set_item(intern!(py, "dx"), bridge.dx)?;
+        out.set_item(intern!(py, "speed"), bridge.speed)?;
+        out.set_item(intern!(py, "cause"), bridge.cause)?;
+        out.set_item(intern!(py, "kind"), bridge.kind)?;
+        Ok(Some(out))
+    }
+
+    #[getter]
+    fn hold(&self) -> Option<(i64, f64, bool, f64)> {
+        self.st.hold
+    }
+
+    #[getter]
+    fn far_since(&self) -> Option<(i64, f64)> {
+        self.st.far_since
+    }
+
+    #[getter]
+    fn lane_return(&self) -> Option<f64> {
+        self.st.lane_return
+    }
+
+    #[getter]
+    fn lane_offset(&self) -> i64 {
+        self.st.lane_offset
+    }
+
+    fn extend_observed_walls(&mut self, eligible: Vec<i64>) -> PyResult<()> {
+        ccnc_map::radar::walls::extend_observed(&mut self.st, &eligible).map_err(py_err)
+    }
+
     /// Puts a copy of a `MapObject` in the map (and its ego-frame position, if given): for tests that build a scene.
     #[pyo3(signature = (obj, local=None))]
     fn put_object(&mut self, obj: &Bound<'_, MapObject>, local: Option<(f64, f64)>) -> PyResult<()> {
@@ -281,7 +390,7 @@ impl RadarMapState {
     fn snapshot<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyDict>> {
         let py = slf.py();
         let out = PyDict::new(py);
-        for name in FIELDS {
+        for &name in FIELDS {
             let value = slf.getattr(name)?;
             if name == "objects" {
                 let objects = PyDict::new(py);

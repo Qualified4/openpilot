@@ -1,6 +1,6 @@
 """The Rust radar map update gives the same bits as the Python reference, on the real map class: the one-call update
 (_update_lane_reference, _observe, _vision, _walls, _bands, _select in one Rust call, _advance in another). The Rust path
-keeps ego's pose, the objects and the radar id history in the map's Rust state (ccnc_core.RadarMapState), the Python
+keeps pose, objects, radar id history, walls, bands and selection in the map's Rust state (ccnc_core.RadarMapState), the Python
 path in its attributes and the dataclass; both are compared as their fields (dataclass vars(), Rust __getstate__()). A
 subclass that replaces one of those methods runs the Python reference."""
 from collections import Counter
@@ -573,6 +573,7 @@ def run(seed, maps, frames=FRAMES):
   variants = random.Random(seed + 9000)
   walls, bands, early, sizes = [], [], set(), {}
   previous = (None, None, None)
+  previous_bands = [[] for _ in maps]
   core = CcncRadarMap.RUST
   calls = core._update_calls_for_test()
   lanes_calls = core._update_lanes_calls_for_test()
@@ -606,6 +607,11 @@ def run(seed, maps, frames=FRAMES):
                lane_change=300 <= frame < 330, live_bytes=raw if getattr(m, 'bytes_input', False) else None,
                model_bytes=model_raw if getattr(m, 'model_bytes_input', False) else None)
     first = maps[0]
+    current_bands = [list(m.bands) for m in maps]
+    retained = [[next((i for i, old in enumerate(before) if band is old), None) for band in after]
+                for before, after in zip(previous_bands, current_bands, strict=True)]
+    assert all(indexes == retained[0] for indexes in retained[1:]), (seed, frame, retained)
+    previous_bands = current_bands
     for other in maps[1:]:
       if hasattr(other, 'log'):  # Both record their stages' results.
         assert len(other.log) == len(first.log), (seed, frame)

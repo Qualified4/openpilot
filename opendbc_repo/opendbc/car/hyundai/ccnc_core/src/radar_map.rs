@@ -12,8 +12,6 @@ use pyo3::types::PyDict;
 use ccnc_map::input::live_tracks::RawPoint;
 use ccnc_map::radar::associate::{Evidence, RadarPoint};
 
-use crate::map_state::py_err;
-
 static DEQUE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
 /// `collections.deque`.
@@ -21,11 +19,6 @@ pub(crate) fn deque(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     Ok(DEQUE
         .get_or_try_init(py, || -> PyResult<_> { Ok(py.import("collections")?.getattr("deque")?.unbind()) })?
         .bind(py))
-}
-
-/// `math.floor(v)` for the grid cell of a finite coordinate.
-pub(crate) fn floor(v: f64) -> PyResult<i64> {
-    ccnc_map::radar::associate::floor(v).map_err(py_err)
 }
 
 /// The front radar's measured points with finite values, in input order: what `_measurements` reads of

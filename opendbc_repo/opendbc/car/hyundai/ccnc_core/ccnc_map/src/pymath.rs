@@ -130,3 +130,28 @@ pub fn degrees(x: f64) -> f64 {
 pub fn radians(x: f64) -> f64 {
     x * (std::f64::consts::PI / 180.0)
 }
+
+/// CPython `math_1` raises a domain error for a NaN result from a non-NaN input.
+fn math_1(x: f64, result: f64) -> crate::radar::Result<f64> {
+    if result.is_nan() && !x.is_nan() {
+        return Err(crate::radar::Error::Value("math domain error"));
+    }
+    Ok(result)
+}
+
+pub fn acos(x: f64) -> crate::radar::Result<f64> {
+    math_1(x, x.acos())
+}
+
+pub fn cos(x: f64) -> crate::radar::Result<f64> {
+    math_1(x, x.cos())
+}
+
+/// CPython `round(x, digits)` rounds the binary float to the nearest decimal at
+/// this precision (ties to even), then converts that decimal back to a float.
+pub fn round_decimal(x: f64, digits: usize) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    format!("{x:.digits$}").parse().expect("formatted finite float")
+}
