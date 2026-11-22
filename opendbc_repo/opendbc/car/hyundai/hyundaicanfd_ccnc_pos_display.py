@@ -1,4 +1,4 @@
-"""Python reference of the redesigned CCNC front-slot display (ccnc_core src/pos.rs, pos/common.rs, display_a.rs,
+"""Python reference of the redesigned CCNC front-slot display (ccnc_core src/pos.rs, ccnc_map/src/pos/common.rs, display_a.rs,
 display_b.rs): CcncPosDisplayMode 1 draws display A (estimate behind a distance-scaled backlash), 2 display B. The device runs the Rust core; this repeats it
 operation for operation on the same plain frames (the Rust trace or ``_pos_run_for_test``), so the two compare
 exactly. Keep both in step.

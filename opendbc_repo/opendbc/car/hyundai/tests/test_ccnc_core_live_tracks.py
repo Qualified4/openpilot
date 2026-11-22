@@ -1,4 +1,4 @@
-"""The Rust reader of liveTracks message bytes (ccnc_core/src/live_tracks.rs) against pycapnp: its schema constants
+"""The Rust reader of liveTracks message bytes (ccnc_core/ccnc_map/src/input/live_tracks.rs) against pycapnp: its schema constants
 against the schema pycapnp loads, the points it reads against pycapnp reading the same bytes, field by field and bit by
 bit, and bytes it cannot read exactly as pycapnp giving None (the caller then reads the objects), never a panic or a
 wrong value. Also the display's two uses: the copy `hyundaicanfd_ccnc_points.snapshot` makes, and the map's points."""

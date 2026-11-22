@@ -19,11 +19,17 @@ fn collect_sources(dir: &Path, paths: &mut Vec<String>) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
-    let mut paths = vec!["Cargo.toml".into(), "Cargo.lock".into(), "build.rs".into()];
-    for watched in paths.iter().map(String::as_str).chain(["src"]) {
+    let mut paths = vec![
+        "Cargo.toml".into(),
+        "Cargo.lock".into(),
+        "build.rs".into(),
+        "ccnc_map/Cargo.toml".into(),
+    ];
+    for watched in paths.iter().map(String::as_str).chain(["src", "ccnc_map/src"]) {
         println!("cargo:rerun-if-changed={watched}");
     }
     collect_sources(Path::new("src"), &mut paths)?;
+    collect_sources(Path::new("ccnc_map/src"), &mut paths)?;
     paths.sort_unstable();
 
     // Keep in sync with _source_hash in ccnc_core_loader.py.

@@ -11,13 +11,9 @@ use crate::guard;
 use crate::lanes::LaneCache;
 use crate::map_object::MapObject;
 
-mod common;
-mod display_a;
-mod display_b;
-
-use self::common::{Common, FrameIn, Obj, Vid};
-use self::display_a::DisplayA;
-use self::display_b::DisplayB;
+use ccnc_map::pos::display_a::DisplayA;
+use ccnc_map::pos::display_b::DisplayB;
+use ccnc_map::pos::{Common, FrameIn, Obj, Vid};
 
 /// (vid, x, y, seen, report, lines) of an `Obj`, as the trace and the test entry carry it.
 type ObjTuple = (i64, f64, f64, f64, Option<(f64, f64, f64)>, [Option<f64>; 4]);

@@ -1,4 +1,4 @@
-"""The Rust reader of modelV2 message bytes (ccnc_core/src/model_v2.rs) against pycapnp: its schema constants against
+"""The Rust reader of modelV2 message bytes (ccnc_core/ccnc_map/src/input/model_v2.rs) against pycapnp: its schema constants against
 the schema pycapnp loads, the lane lines, their probabilities and the road edges it reads against pycapnp reading the
 same bytes, bit by bit, and bytes it cannot read exactly as pycapnp giving None (the map then reads the objects), never
 a panic or a wrong value. The lane update itself is compared on the map in test_ccnc_core_radar_map.py."""

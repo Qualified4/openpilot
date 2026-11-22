@@ -16,7 +16,7 @@ use crate::consts::Consts;
 use crate::guard;
 use crate::lanes::LaneCache;
 use crate::observe::{observe_core, Measurement, State};
-use crate::live_tracks::parse;
+use ccnc_map::input::live_tracks::parse;
 use crate::radar_map::{associate_rows, measure, pair, radar_points_inner, radar_points_raw, Ego};
 use crate::select::{lane_reference, read_selected, vision, Selector};
 use crate::walls::{bands_core, walls_core};

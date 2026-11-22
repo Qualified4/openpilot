@@ -16,7 +16,7 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 use crate::consts::Consts;
 use crate::guard;
 use crate::lanes::LaneCache;
-use crate::live_tracks::RawPoint;
+use ccnc_map::input::live_tracks::RawPoint;
 use crate::map_object::MapObject;
 use crate::observe::Frame;
 use crate::pymath::{hypot, py_max, py_min};
@@ -68,7 +68,7 @@ pub struct RadarPoints {
 #[pyfunction]
 #[pyo3(signature = (points, live_bytes=None))]
 pub fn radar_points(py: Python<'_>, points: &Bound<'_, PyAny>, live_bytes: Option<&[u8]>) -> PyResult<RadarPoints> {
-    guard(|| match live_bytes.and_then(crate::live_tracks::parse) {
+    guard(|| match live_bytes.and_then(ccnc_map::input::live_tracks::parse) {
         Some(parsed) => radar_points_raw(py, &parsed),
         None => radar_points_inner(py, points),
     })

@@ -21,9 +21,14 @@ dependencies = [
 name = "ccnc_core"
 version = "0.1.0"
 dependencies = [
+ "ccnc_map",
  "pyo3",
  "sha2",
 ]
+
+[[package]]
+name = "ccnc_map"
+version = "0.1.0"
 
 [[package]]
 name = "cfg-if"

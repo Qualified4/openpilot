@@ -8,7 +8,11 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+ccnc_map = { path = "ccnc_map" }
 pyo3 = { version = "0.27.2", features = ["abi3-py312", "extension-module"] }
 
 [build-dependencies]
 sha2 = "0.10.9"
+
+[workspace]
+members = ["ccnc_map"]

@@ -17,69 +17,11 @@ use crate::guard;
 use crate::observe::Frame;
 use crate::lanes::interpolate;
 use crate::pymath::py_max;
-use crate::live_tracks::{data_bytes, Message, Struct, EVENT_DISCRIMINANT_OFFSET};
-
-/// `Event`: the modelV2 member of the union.
-pub const EVENT_MODEL_V2: u16 = 73;
-pub const EVENT_MODEL_V2_POINTER: usize = 0;
-/// `ModelDataV2` pointer indices.
-pub const POSITION_POINTER: usize = 0; // XYZTData
-pub const LANE_LINES_POINTER: usize = 4; // List(XYZTData)
-pub const LANE_LINE_PROBS_POINTER: usize = 5; // List(Float32)
-pub const ROAD_EDGES_POINTER: usize = 6; // List(XYZTData)
-/// `XYZTData` pointer indices, all List(Float32).
-pub const XYZT_X_POINTER: usize = 0;
-pub const XYZT_Y_POINTER: usize = 1;
-pub const XYZT_Y_STD_POINTER: usize = 5;
-
-/// Floats and list elements read from one message at most: overlapping pointers could otherwise make a small message
-/// read as a huge one (messaging reads without a traversal limit; this gives None instead).
-const READ_LIMIT: usize = 1 << 24;
-
-pub struct Line {
-    pub x: Vec<f32>,
-    pub y: Vec<f32>,
-}
-
-pub struct Model {
-    pub lane_lines: Vec<Line>,
-    pub lane_line_probs: Vec<f32>,
-    pub road_edges: Vec<Line>,
-}
-
-fn model_root<'a>(message: &Message<'a>) -> Option<Struct<'a>> {
-    let event = message.read_struct(0, 0)?;
-    if u16::from_le_bytes(data_bytes(event.data, EVENT_DISCRIMINANT_OFFSET * 2)) != EVENT_MODEL_V2 {
-        return None;
-    }
-    message.struct_pointer(&event, EVENT_MODEL_V2_POINTER)
-}
-
-/// laneLines, laneLineProbs and roadEdges of a modelV2 Event message, or None where this does not read them exactly
-/// as pycapnp.
-pub fn parse(bytes: &[u8]) -> Option<Model> {
-    let message = Message::new(bytes)?;
-    let model = model_root(&message)?;
-    let mut read = 0usize;
-    let mut lines = |index: usize| -> Option<Vec<Line>> {
-        let elements = message.struct_elements(&model, index)?;
-        read += elements.len();
-        let mut out = Vec::with_capacity(elements.len());
-        for e in &elements {
-            let line = Line { x: message.f32_list(e, XYZT_X_POINTER)?, y: message.f32_list(e, XYZT_Y_POINTER)? };
-            read += line.x.len() + line.y.len();
-            if read > READ_LIMIT {
-                return None;
-            }
-            out.push(line);
-        }
-        Some(out)
-    };
-    let lane_lines = lines(LANE_LINES_POINTER)?;
-    let road_edges = lines(ROAD_EDGES_POINTER)?;
-    let lane_line_probs = message.f32_list(&model, LANE_LINE_PROBS_POINTER)?;
-    Some(Model { lane_lines, lane_line_probs, road_edges })
-}
+use ccnc_map::input::live_tracks::EVENT_DISCRIMINANT_OFFSET;
+use ccnc_map::input::model_v2::{
+    parse, parse_path, Line, Model, EVENT_MODEL_V2, EVENT_MODEL_V2_POINTER, LANE_LINES_POINTER, LANE_LINE_PROBS_POINTER,
+    POSITION_POINTER, ROAD_EDGES_POINTER, XYZT_X_POINTER, XYZT_Y_POINTER, XYZT_Y_STD_POINTER,
+};
 
 fn floats<'py>(py: Python<'py>, values: &[f32]) -> PyResult<Bound<'py, PyList>> {
     PyList::new(py, values.iter().map(|&v| PyFloat::new(py, v as f64)))
@@ -225,18 +167,6 @@ pub(crate) fn curve(line: &Bound<'_, PyAny>) -> PyResult<Curve> {
 
 /// Read the display curvature's position samples. A reader without matching raw bytes uses its fields.
 pub(crate) fn read_path(md: &Bound<'_, PyAny>, raw: Option<&[u8]>) -> PyResult<(Curve, Vec<f64>)> {
-    let parse_path = |raw: &[u8]| {
-        let message = Message::new(raw)?;
-        let model = model_root(&message)?;
-        let position = message.struct_pointer(&model, POSITION_POINTER)?;
-        let read = |index| {
-            Some(message.f32_list(&position, index)?.into_iter().map(f64::from).collect())
-        };
-        Some((
-            (read(XYZT_X_POINTER)?, read(XYZT_Y_POINTER)?),
-            read(XYZT_Y_STD_POINTER)?,
-        ))
-    };
     if let Some(path) = raw.and_then(parse_path) {
         return Ok(path);
     }
