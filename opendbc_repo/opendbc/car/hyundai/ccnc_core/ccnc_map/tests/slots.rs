@@ -103,28 +103,25 @@ fn ff_slides_to_lf_on_ego_right_change() {
 }
 
 #[test]
-fn straddle_goes_to_side_slot() {
+fn straddling_car_belongs_to_the_lane_containing_its_center() {
     let world = road();
     let slots = Assigner::default().update(0., &[vehicle(&world, 1, 0., 40., 0.4)], &world, None);
     assert_eq!(
         slots.map(|s| s.map(|s| s.vid)),
-        [None, None, Some(1), None, None]
+        [Some(1), None, None, None, None]
     );
 }
 
 #[test]
-fn slot_change_needs_0_3s_inside_0_4() {
+fn slot_changes_as_soon_as_the_center_clears_the_boundary_margin() {
     let world = road();
     let mut assigner = Assigner::default();
     for (t, r, expected) in [
         (0., 0., FF),
-        (0.1, 0.59, FF),
-        (0.5, 0.61, FF),
-        (0.75, 0.61, FF),
-        (0.76, 0.59, FF),
-        (0.8, 0.61, FF),
-        (1.09, 0.61, FF),
-        (1.1, 0.61, RF),
+        (0.05, 0.51, FF),
+        (0.10, 0.53, RF),
+        (0.15, 0.49, RF),
+        (0.20, 0.47, FF),
     ] {
         let slots = assigner.update(t, &[vehicle(&world, 1, t, 40., r)], &world, None);
         assert_eq!(
@@ -136,16 +133,10 @@ fn slot_change_needs_0_3s_inside_0_4() {
 }
 
 #[test]
-fn pingpong_hold_1s() {
+fn a_returning_closer_vid_can_take_the_slot_immediately() {
     let world = road();
     let mut assigner = Assigner::default();
-    for (t, x, expected) in [
-        (0., 20., 1),
-        (0.51, 40., 2),
-        (1.02, 20., 2),
-        (1.50, 20., 2),
-        (1.51, 20., 1),
-    ] {
+    for (t, x, expected) in [(0., 20., 1), (0.05, 40., 2), (0.10, 20., 1)] {
         let cars = [vehicle(&world, 1, t, x, 0.), vehicle(&world, 2, t, 30., 0.)];
         let slots = assigner.update(t, &cars, &world, None);
         assert_eq!(slots[FF].unwrap().vid, expected, "t={t}");
@@ -153,19 +144,19 @@ fn pingpong_hold_1s() {
 }
 
 #[test]
-fn lead_one_goes_to_ff() {
+fn lead_one_wins_a_close_ff_competition() {
     let world = road();
     let mut assigner = Assigner::default();
     let cars = [
-        vehicle(&world, 1, 0., 20., 0.),
-        vehicle(&world, 2, 0., 40., -0.4),
+        vehicle(&world, 1, 0., 40., 0.),
+        vehicle(&world, 2, 0., 40.5, -0.4),
     ];
     assert_eq!(assigner.update(0., &cars, &world, None)[FF].unwrap().vid, 1);
     let cars = [
-        vehicle(&world, 1, 0.05, 20., 0.),
-        vehicle(&world, 2, 0.05, 40., -0.4),
+        vehicle(&world, 1, 0.05, 40., 0.),
+        vehicle(&world, 2, 0.05, 40.5, -0.4),
     ];
-    let slots = assigner.update(0.05, &cars, &world, Some((40., 0.9)));
+    let slots = assigner.update(0.05, &cars, &world, Some((40.5, 1.4)));
     assert_eq!(
         slots.map(|s| s.map(|s| s.vid)),
         [Some(2), None, None, None, None]
@@ -173,24 +164,43 @@ fn lead_one_goes_to_ff() {
 }
 
 #[test]
-fn vid_kept_0_5s() {
+fn lead_one_respects_lane_and_range() {
     let world = road();
-    let mut assigner = Assigner::default();
-    for (t, x, seen, expected) in [(0., 20., 0., 1), (0.49, 40., 0., 1), (0.51, 40., 0., 2)] {
+    for (distance, r) in [(40., 0.), (20.5, 1.)] {
         let cars = [
-            vehicle(&world, 1, seen, x, 0.),
-            vehicle(&world, 2, t, 30., 0.),
+            vehicle(&world, 1, 0., 20., 0.),
+            vehicle(&world, 2, 0., distance, r),
         ];
-        assert_eq!(
-            assigner.update(t, &cars, &world, None)[FF].unwrap().vid,
-            expected
-        );
+        let slots = Assigner::default().update(0., &cars, &world, Some((distance, -3.5 * r)));
+        assert_eq!(slots[FF].unwrap().vid, 1);
     }
 }
 
 #[test]
+fn a_new_radar_frame_replaces_an_unseen_owner() {
+    let mut world = road();
+    let mut assigner = Assigner::default();
+    world.radar(0.);
+    let old = vehicle(&world, 1, 0., 20., 0.);
+    let slots = assigner.update(0.02, std::slice::from_ref(&old), &world, None);
+    assert_eq!(slots[FF].unwrap().vid, 1);
+
+    world.radar(0.05);
+    let cars = [old, vehicle(&world, 2, 0.05, 30., 0.)];
+    let slots = assigner.update(0.07, &cars, &world, None);
+    assert_eq!(slots[FF].unwrap().vid, 2);
+}
+
+#[test]
 fn u_step_limited_to_0_1_lane() {
-    let world = road();
+    let mut world = World::default();
+    let mut narrow = model(0., 0., 0.);
+    for line in &mut narrow.lane_lines {
+        for y in &mut line.y {
+            *y *= 2. / 3.5;
+        }
+    }
+    world.model(0., &narrow);
     let mut tracker = Tracker::default();
     let before = tracker.update(0., &[(1, 40., 0., 0.)], &world)[0].u;
     // A larger coordinate innovation that is within the same-ID door.
@@ -200,14 +210,30 @@ fn u_step_limited_to_0_1_lane() {
 }
 
 #[test]
-fn near_car_under_5m_uses_ego_lane_lateral() {
+fn unmapped_near_car_uses_ego_lane_lateral() {
     let world = road();
     let mut near = vehicle(&world, 1, 0., 4.9, 0.);
     near.wy = -3.5;
+    near.u = f32::NAN;
     let slots = Assigner::default().update(0., &[near], &world, None);
     let shown = slots[RF].unwrap();
     assert!((shown.lane_coord_rel - 1.).abs() < 1e-6);
     assert!((shown.lateral + 3.5).abs() < 1e-6);
+}
+
+#[test]
+fn mapped_car_keeps_the_same_lateral_across_5m() {
+    let world = road();
+    let mut assigner = Assigner::default();
+    let mut previous = None;
+    for (t, x) in [(0., 5.1), (0.05, 4.9)] {
+        let mut car = vehicle(&world, 1, t, x, 1.);
+        car.wy = -1.8;
+        let slots = assigner.update(t, &[car], &world, None);
+        let lateral = slots[RF].unwrap().lateral;
+        assert_eq!(lateral, previous.unwrap_or(lateral));
+        previous = Some(lateral);
+    }
 }
 
 #[test]

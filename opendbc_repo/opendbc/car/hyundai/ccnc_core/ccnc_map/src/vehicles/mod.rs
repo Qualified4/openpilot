@@ -143,7 +143,9 @@ impl Vehicle {
             world.vehicle_lane_coord(now, ego.s + x, ego.to_world(x, y - f64::from(self.off)))
         {
             self.u = if self.u.is_finite() {
-                self.u + (0.25 * (u as f32 - self.u)).clamp(-0.1, 0.1)
+                // Filter the vehicle coordinate only. Ego lane movement is
+                // subtracted at display time and keeps its own bandwidth.
+                self.u + (0.17 * (u as f32 - self.u)).clamp(-0.1, 0.1)
             } else {
                 u as f32
             };
