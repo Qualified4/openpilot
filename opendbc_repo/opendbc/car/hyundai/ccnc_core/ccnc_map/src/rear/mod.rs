@@ -5,7 +5,7 @@ pub mod side_flow;
 use std::collections::{HashMap, VecDeque};
 
 use crate::pymath::{py_max, py_min, py_sum};
-use crate::radar::{observe::crossing, Error, MapState, Result};
+use crate::radar::{Error, MapState, Result};
 use side_flow::{Flow, Motion};
 
 /// Preserve the number type when a drawing copies an existing CAN field.
@@ -398,14 +398,7 @@ pub fn finish_map(
 ) -> Result<()> {
     let objects = map.selected.map(|key| key.and_then(|key| map.objects.get(&key)));
     let selected = objects.map(|o| o.map(|o| Identity(o.source, o.born)));
-    let proven = [1, 2].map(|i| {
-        objects[i].is_some_and(|o| {
-            !o.structure
-                && !o.superseded
-                && (o.radar_moving || o.doppler_confirmed)
-                && !crossing(o, map.frame(), crossing_travel)
-        })
-    });
+    let proven = [1, 2].map(|i| objects[i].is_some_and(|o| map.vehicle_proven(o, crossing_travel)));
     rear.update(k, input, selected, proven, slots)
 }
 

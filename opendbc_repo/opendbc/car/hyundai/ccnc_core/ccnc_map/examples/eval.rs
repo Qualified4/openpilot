@@ -1,8 +1,8 @@
 //! Evaluate the new world geometry on the existing clean-map text exports.
 //!
-//! eval INPUT_DIR OUTPUT_DIR [--no-freeze] [--reference TRACE_DIR]
-//! The optional reference supplies the prototype's vid and reflection offset
-//! so a comparison isolates geometry from vehicle tracking (Task 4).
+//! eval INPUT_DIR OUTPUT_DIR [--no-freeze] [--reference TRACE_DIR] [--gate body|shorter|conservative]
+//! By default, use the vehicle layer. A reference trace supplies the prototype's
+//! identities and reflection offsets to isolate the geometry as in Task 3.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -10,6 +10,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use ccnc_map::input::model_v2::{Line, Model};
+use ccnc_map::vehicles::{LinkGates, Tracker};
 use ccnc_map::world::{near_heading, World, MODEL_GRID, RADAR_LAG, STATUS_FROZEN};
 
 type Reference = BTreeMap<i64, BTreeMap<u32, (u32, f64)>>;
@@ -19,18 +20,26 @@ fn main() -> io::Result<()> {
     let usage = || {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "eval INPUT_DIR OUTPUT_DIR [--no-freeze] [--reference TRACE_DIR]",
+            "eval INPUT_DIR OUTPUT_DIR [--no-freeze] [--reference TRACE_DIR] [--gate body|shorter|conservative]",
         )
     };
     let input = PathBuf::from(args.next().ok_or_else(usage)?);
     let output = PathBuf::from(args.next().ok_or_else(usage)?);
     let mut freeze = true;
     let mut reference = None;
+    let mut gates = None;
     while let Some(arg) = args.next() {
         if arg == "--no-freeze" {
             freeze = false;
         } else if arg == "--reference" {
             reference = Some(PathBuf::from(args.next().ok_or_else(usage)?));
+        } else if arg == "--gate" {
+            gates = Some(match args.next().as_deref().and_then(|s| s.to_str()) {
+                Some("body") => LinkGates::BODY,
+                Some("shorter") => LinkGates::SHORTER,
+                Some("conservative") => LinkGates::CONSERVATIVE,
+                _ => return Err(usage()),
+            });
         } else {
             return Err(usage());
         }
@@ -53,6 +62,7 @@ fn main() -> io::Result<()> {
                 &output.join(name).with_extension("trace"),
                 freeze,
                 bindings.as_ref(),
+                gates,
             )?;
         }
     }
@@ -115,6 +125,24 @@ impl CamRef {
     }
 }
 
+struct RadarReport {
+    stamp: f64,
+    vid: u32,
+    x: f64,
+    y: f64,
+    v_rel: f64,
+}
+
+impl RadarReport {
+    fn end(&self, events: &mut impl Write, id: u32) -> io::Result<()> {
+        writeln!(
+            events,
+            "E {:.4} {id} {} {:.2} {:.3} {:.3}",
+            self.stamp, self.vid, self.x, self.y, self.v_rel
+        )
+    }
+}
+
 struct Replay<'a> {
     world: World,
     reference: Option<&'a Reference>,
@@ -125,13 +153,19 @@ struct Replay<'a> {
     lead: i64,
     blinker: bool,
     t: f64,
-    points: Vec<(u32, f64, f64)>,
+    points: Vec<(u32, f64, f64, f64)>,
+    radar_frame: bool,
+    tracker: Tracker,
+    reports: BTreeMap<u32, RadarReport>,
     coord: BTreeMap<u32, (f64, f64, u32)>,
 }
 
 impl Replay<'_> {
-    fn flush(&mut self, out: &mut impl Write) -> io::Result<()> {
-        if self.points.is_empty() {
+    fn flush(&mut self, out: &mut impl Write, events: &mut impl Write) -> io::Result<()> {
+        if !std::mem::take(&mut self.radar_frame) {
+            return Ok(());
+        }
+        if self.reference.is_some() && self.points.is_empty() {
             return Ok(());
         }
         let generation = self.world.generation();
@@ -156,14 +190,16 @@ impl Replay<'_> {
             self.blinker as u8
         )?;
         let ego = self.world.pose.at(self.t);
+        if self.reference.is_none() {
+            return self.flush_vehicles(out, events, u);
+        }
         let reference = self.reference.and_then(|r| r.get(&time_key(self.t)));
         self.coord.retain(|_, (t, _, _)| self.t - *t <= 2.);
-        for (rid, dx, dy) in self.points.drain(..) {
-            let (vid, off) = match (self.reference, reference.and_then(|r| r.get(&rid).copied())) {
-                (_, Some((vid, off))) => (vid, if off.is_finite() { off } else { 0. }),
-                (None, _) => (rid, 0.),
-                _ => continue,
+        for (rid, dx, dy, _) in self.points.drain(..) {
+            let Some((vid, off)) = reference.and_then(|r| r.get(&rid).copied()) else {
+                continue;
             };
+            let off = if off.is_finite() { off } else { 0. };
             let (wx, wy) = self.world.radar_point_world(self.t, dx, dy);
             let (x, y) = ego.to_ego(wx, wy);
             let Some(road) =
@@ -191,9 +227,75 @@ impl Replay<'_> {
         }
         Ok(())
     }
+
+    fn flush_vehicles(
+        &mut self,
+        out: &mut impl Write,
+        events: &mut impl Write,
+        ego_u: f64,
+    ) -> io::Result<()> {
+        let mut prior = std::mem::take(&mut self.reports);
+        let cars = self.tracker.update(self.t, &self.points, &self.world);
+        let ego = self.world.pose.at(self.t);
+        for car in cars.iter().filter(|car| car.seen_radar == self.t) {
+            let Some(rid) = car.radar_id else { continue };
+            let Some(&(_, dx, dy, v_rel)) = self.points.iter().find(|p| p.0 == rid) else {
+                continue;
+            };
+            let vid = car.vid;
+            let previous = prior.remove(&rid);
+            if previous.as_ref().is_none_or(|p| p.vid != vid) {
+                if let Some(p) = previous {
+                    p.end(events, rid)?;
+                }
+                let mut ids = car.ids.iter().rev();
+                let from = if ids.next().is_some_and(|(t, _)| t == self.t) {
+                    ids.next().map_or(-1, |(_, old)| i64::from(old))
+                } else {
+                    -1
+                };
+                writeln!(
+                    events,
+                    "B {:.4} {rid} {vid} {from} {dx:.2} {dy:.3} {v_rel:.3}",
+                    self.t
+                )?;
+            }
+            self.reports.insert(
+                rid,
+                RadarReport {
+                    stamp: self.t,
+                    vid,
+                    x: dx,
+                    y: dy,
+                    v_rel,
+                },
+            );
+            let (x, y) = ego.to_ego(f64::from(car.wx), f64::from(car.wy));
+            let r = f64::from(car.u) - ego_u;
+            if (-5. ..=80.).contains(&x) && r.abs() < 2.5 {
+                let off = car.off;
+                writeln!(
+                    out,
+                    "V {:.4} {vid} {rid} {x:.2} {y:.3} {r:.4} {off:.3}",
+                    self.t
+                )?;
+            }
+        }
+        for (rid, p) in prior {
+            p.end(events, rid)?;
+        }
+        self.points.clear();
+        Ok(())
+    }
 }
 
-fn run(input: &Path, output: &Path, freeze: bool, reference: Option<&Reference>) -> io::Result<()> {
+fn run(
+    input: &Path,
+    output: &Path,
+    freeze: bool,
+    reference: Option<&Reference>,
+    gates: Option<LinkGates>,
+) -> io::Result<()> {
     let text = fs::read_to_string(input)?;
     // The existing C export includes interpolated yaw. Y records retain the
     // original livePose times in newer exports and allow dropouts in replay.
@@ -204,6 +306,7 @@ fn run(input: &Path, output: &Path, freeze: bool, reference: Option<&Reference>)
             yaw.is_finite() && yaw != 0.
         });
     let mut out = BufWriter::new(File::create(output)?);
+    let mut events = BufWriter::new(File::create(output.with_extension("events"))?);
     let mut replay = Replay {
         world: World::new(RADAR_LAG, freeze),
         reference,
@@ -215,6 +318,9 @@ fn run(input: &Path, output: &Path, freeze: bool, reference: Option<&Reference>)
         blinker: false,
         t: f64::NAN,
         points: Vec::new(),
+        radar_frame: false,
+        tracker: gates.map(Tracker::new).unwrap_or_default(),
+        reports: BTreeMap::new(),
         coord: BTreeMap::new(),
     };
     for line in text.lines() {
@@ -224,7 +330,7 @@ fn run(input: &Path, output: &Path, freeze: bool, reference: Option<&Reference>)
             continue;
         }
         if t != replay.t {
-            replay.flush(&mut out)?;
+            replay.flush(&mut out, &mut events)?;
             replay.t = t;
         }
         match p[0] {
@@ -262,9 +368,11 @@ fn run(input: &Path, output: &Path, freeze: bool, reference: Option<&Reference>)
                 replay.world.model(t, &model);
             }
             "T" => {
-                let (rid, x, y) = (number(&p, 2), number(&p, 3), number(&p, 4));
+                replay.radar_frame = true;
+                let (rid, x, y, speed) =
+                    (number(&p, 2), number(&p, 3), number(&p, 4), number(&p, 5));
                 if number(&p, 9) == 0. && rid > 0. && x > 0. && x <= 200. && y.abs() <= 15. {
-                    replay.points.push((rid as u32, x, y));
+                    replay.points.push((rid as u32, x, y, speed));
                 }
             }
             "S" => {
@@ -281,6 +389,10 @@ fn run(input: &Path, output: &Path, freeze: bool, reference: Option<&Reference>)
             _ => {}
         }
     }
-    replay.flush(&mut out)?;
+    replay.flush(&mut out, &mut events)?;
+    for (rid, report) in replay.reports {
+        report.end(&mut events, rid)?;
+    }
+    events.flush()?;
     out.flush()
 }

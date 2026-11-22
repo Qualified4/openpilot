@@ -98,6 +98,10 @@ impl Pose {
         self.history.back().copied().unwrap_or_default()
     }
 
+    pub(crate) fn speed(&self) -> f64 {
+        self.speed
+    }
+
     pub fn to_world(&self, x: f64, y: f64) -> (f64, f64) {
         self.current().to_world(x, y)
     }

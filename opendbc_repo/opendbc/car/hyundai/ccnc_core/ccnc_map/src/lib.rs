@@ -19,4 +19,5 @@ pub mod pymath;
 pub mod radar;
 
 pub mod rear;
+pub mod vehicles;
 pub mod world;

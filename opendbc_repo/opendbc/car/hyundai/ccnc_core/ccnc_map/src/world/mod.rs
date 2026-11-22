@@ -161,7 +161,15 @@ impl World {
     }
 
     pub fn radar_point_world(&self, stamp: f64, x: f64, y: f64) -> (f64, f64) {
-        self.pose.at(stamp - self.radar_lag).to_world(x, y)
+        self.radar_pose(stamp).to_world(x, y)
+    }
+
+    pub(crate) fn accepts_radar(&self) -> bool {
+        !self.invalid_motion
+    }
+
+    pub(crate) fn radar_pose(&self, stamp: f64) -> PoseAt {
+        self.pose.at(stamp - self.radar_lag)
     }
 
     /// Locate a world-space radar point after lateral reflection correction.

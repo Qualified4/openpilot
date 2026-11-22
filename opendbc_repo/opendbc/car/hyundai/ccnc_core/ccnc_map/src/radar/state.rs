@@ -9,9 +9,11 @@ use super::associate::{associate, measure, AssociateIn, Ego, Evidence, RadarPoin
 use super::consts::Consts;
 use super::lanes::{LaneCache, Lanes};
 use super::object::{MapObjectData, Ring};
-use super::observe::{observe, ObserveIn};
+use super::observe::{crossing, observe, ObserveIn};
 use super::select::{lane_reference, vision, Bridge, Selector};
 use super::walls::{self, BandData, BandPoint, IntSet, WallData};
+use crate::vehicles::{Flags, Tracker, Vehicle};
+use crate::world::World;
 
 /// A failure of the map update, as the Python reference raises it (the extension turns it into that exception).
 #[derive(Debug)]
@@ -247,6 +249,42 @@ impl MapState {
             c: self.cos,
             s: self.sin,
         }
+    }
+
+    /// The existing radar proof used for both the map vehicles and the side display.
+    pub(crate) fn vehicle_proven(&self, object: &MapObjectData, crossing_travel: f64) -> bool {
+        !object.structure
+            && !object.superseded
+            && (object.radar_moving || object.doppler_confirmed)
+            && !crossing(object, self.frame(), crossing_travel)
+    }
+
+    /// Populate the world-map vehicle layer after updating the radar's object and wall state.
+    pub fn update_vehicles<'a>(
+        &self,
+        tracker: &'a mut Tracker,
+        stamp: f64,
+        points: &[(u32, f64, f64, f64)],
+        world: &World,
+        crossing_travel: f64,
+    ) -> &'a [Vehicle] {
+        tracker.update(stamp, points, world);
+        for car in tracker.vehicles_mut().iter_mut().filter(|car| car.seen_radar == stamp) {
+            let Some(id) = car.radar_id else {
+                continue;
+            };
+            let object = self.objects.values().rev().find(|object| {
+                object.source == i128::from(id) && object.report.is_some_and(|(t, _, _)| t == stamp)
+            });
+            car.flags = object.map_or_else(Flags::default, |object| Flags {
+                motion_confirmed: object.motion_confirmed,
+                stationary: object.stationary,
+                structure: object.structure,
+                proven: self.vehicle_proven(object, crossing_travel),
+                admitted: object.admitted,
+            });
+        }
+        tracker.vehicles()
     }
 
     /// `self.local[key]`.

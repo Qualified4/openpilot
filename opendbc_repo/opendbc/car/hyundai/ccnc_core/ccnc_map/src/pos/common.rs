@@ -13,6 +13,14 @@ use std::collections::BTreeMap;
 pub const JUMP: f64 = 0.3;
 /// The time constant over which the drawn centre absorbs a jump (DESIGN 11.1: 1.5-2 s).
 pub const ABSORB_TAU: f64 = 1.75;
+
+pub(crate) fn reflection_jump(step: f64, gap: f64) -> bool {
+    step.abs() > JUMP * (gap / 0.05).max(1.)
+}
+
+pub(crate) fn decay_reflection(offset: f64, dt: f64) -> f64 {
+    offset - offset * (dt / ABSORB_TAU).min(1.)
+}
 /// Measurement noise at distance d is NOISE_BASE + NOISE_SLOPE * d (E2), the steady gain GAIN_REF / that, clipped.
 pub const NOISE_BASE: f64 = 0.06;
 pub const NOISE_SLOPE: f64 = 0.004;
@@ -97,9 +105,8 @@ impl Track {
         if let Some((stamp, rx, ry)) = o.report {
             if stamp > self.stamp {
                 let gap = if self.stamp.is_finite() { stamp - self.stamp } else { 0.05 };
-                let limit = JUMP * (gap / 0.05).max(1.);
                 let jump = ry - self.p;
-                if jump.abs() > limit {
+                if reflection_jump(jump, gap) {
                     self.b += jump;
                     self.m += jump;
                 } else {
@@ -110,7 +117,7 @@ impl Track {
                 self.x = rx;
             }
         }
-        self.b -= self.b * (dt / ABSORB_TAU).min(1.);
+        self.b = decay_reflection(self.b, dt);
         self.y = self.m - self.b;
         self.now = now;
     }
