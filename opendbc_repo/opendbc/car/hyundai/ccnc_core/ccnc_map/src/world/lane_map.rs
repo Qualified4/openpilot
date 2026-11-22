@@ -244,6 +244,68 @@ fn usable_lane(model: &Model, i: usize) -> Option<&Line> {
     model.lane_lines.get(i)
 }
 
+pub(super) struct CameraLanes {
+    pub(super) stamp: f64,
+    pose: PoseAt,
+    points: [[f32; MODEL_GRID.len()]; 4],
+}
+
+impl CameraLanes {
+    pub(super) fn observe(model: &Model, pose: PoseAt, stamp: f64) -> Option<Self> {
+        if !model.lane_line_probs.get(1..3)?.iter().all(|&p| p >= 0.4) {
+            return None;
+        }
+        let points = std::array::from_fn(|i| {
+            let line = usable_lane(model, i);
+            MODEL_GRID.map(|x| {
+                line.and_then(|l| line_at(l, f64::from(x)))
+                    .map_or(f32::NAN, |p| p as f32)
+            })
+        });
+        Some(Self {
+            stamp,
+            pose,
+            points,
+        })
+    }
+
+    pub(super) fn coord(&self, point: Point) -> Option<f64> {
+        let (x, y) = self.pose.to_ego(point.0, point.1);
+        if !(-2. ..=80.).contains(&x) {
+            return None;
+        }
+        let x = x.max(0.);
+        let next = MODEL_GRID.partition_point(|&s| f64::from(s) < x);
+        let sample = |i: usize| {
+            let b = f64::from(self.points[i][next]);
+            let x1 = f64::from(MODEL_GRID[next]);
+            if x == x1 {
+                return b;
+            }
+            let a = f64::from(self.points[i][next - 1]);
+            let x0 = f64::from(MODEL_GRID[next - 1]);
+            a + (b - a) * (x - x0) / (x1 - x0)
+        };
+        let (left, right) = (sample(1), sample(2));
+        let width = left - right;
+        if !(1.8..=5.5).contains(&width) {
+            return None;
+        }
+        if y > left {
+            let w = sample(0) - left;
+            if (1.8..=5.5).contains(&w) {
+                return Some(1. + (left - y) / w);
+            }
+        } else if y < right {
+            let w = right - sample(3);
+            if (1.8..=5.5).contains(&w) {
+                return Some(2. + (right - y) / w);
+            }
+        }
+        Some(1. + (left - y) / width)
+    }
+}
+
 /// The quadratic fit to the centre of the inner lines gives heading and curvature at x = 0.
 pub fn near_heading(model: &Model) -> Option<(f64, f64)> {
     let (left, right) = (model.lane_lines.get(1)?, model.lane_lines.get(2)?);
@@ -532,6 +594,15 @@ impl LaneMap {
             .iter()
             .find_map(|i| width(self.offset + i))
             .unwrap_or(LANE_WIDTH)
+    }
+
+    pub(super) fn camera_weight(&self, s: f64, u: f64) -> f64 {
+        let left = u.floor() as i32;
+        let last = |id| self.bound(id).and_then(Boundary::last);
+        // When either boundary still has observations at this range, prefer the world map.
+        last(left).zip(last(left + 1)).map_or(0., |(a, b)| {
+            ((s - a.max(b) as f64 * BIN_M) / NEAR).clamp(0., 1.)
+        })
     }
 
     fn bound(&self, id: i32) -> Option<&Boundary> {

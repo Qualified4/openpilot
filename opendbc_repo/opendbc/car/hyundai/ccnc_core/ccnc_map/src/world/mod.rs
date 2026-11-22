@@ -9,6 +9,7 @@ pub use lane_map::{near_heading, LaneMap, MODEL_GRID};
 pub use pose::{Pose, PoseAt};
 
 use crate::{input::model_v2::Model, radar::MapState};
+use lane_map::CameraLanes;
 
 pub const RADAR_LAG: f64 = 0.2;
 pub const STATUS_FROZEN: u8 = 1;
@@ -28,6 +29,7 @@ pub struct World {
     last_radar: Option<f64>,
     u_ego: Option<(f64, f64)>,
     camera_lane_bias: f64,
+    camera_lanes: Option<CameraLanes>,
     generation: u32,
     radar_lag: f64,
     freeze_enabled: bool,
@@ -60,6 +62,7 @@ impl World {
             last_radar: None,
             u_ego: None,
             camera_lane_bias: 0.,
+            camera_lanes: None,
             generation: 0,
             radar_lag,
             freeze_enabled,
@@ -124,6 +127,7 @@ impl World {
             self.no_live_pose,
             walls,
         );
+        self.camera_lanes = CameraLanes::observe(model, self.pose.at(t), t);
         self.camera_lane_bias = 0.;
         if !self.lane_change.frozen() {
             let at = self.pose.at(t);
@@ -160,6 +164,29 @@ impl World {
         self.pose.at(stamp - self.radar_lag).to_world(x, y)
     }
 
+    /// Locate a world-space radar point after lateral reflection correction.
+    pub fn vehicle_lane_coord(&self, t: f64, s: f64, point: (f64, f64)) -> Option<f64> {
+        let mapped = self.lanes.coord(s, point)?;
+        if self.lane_change.frozen() {
+            return Some(mapped);
+        }
+        let weight = self.lanes.camera_weight(s, mapped);
+        let Some(camera) = self
+            .camera_lanes
+            .as_ref()
+            .filter(|c| weight > 0. && (0. ..INPUT_GAP).contains(&(t - c.stamp)))
+        else {
+            return Some(mapped);
+        };
+        let ego = self.pose.at(t);
+        let camera_offset = camera
+            .coord(point)
+            .zip(camera.coord((ego.x, ego.y)))
+            .map(|(car, near)| self.u_ego() + car - near - mapped)
+            .filter(|delta| delta.abs() <= 0.5);
+        Some(mapped + weight * camera_offset.unwrap_or(0.))
+    }
+
     pub fn u_ego(&self) -> f64 {
         self.u_ego.map_or(f64::NAN, |(_, u)| u)
     }
@@ -191,6 +218,7 @@ impl World {
         self.last_radar = None;
         self.u_ego = None;
         self.camera_lane_bias = 0.;
+        self.camera_lanes = None;
         self.generation = self.generation.wrapping_add(1);
         self.invalid_motion = false;
     }

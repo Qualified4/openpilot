@@ -166,7 +166,10 @@ impl Replay<'_> {
             };
             let (wx, wy) = self.world.radar_point_world(self.t, dx, dy);
             let (x, y) = ego.to_ego(wx, wy);
-            let Some(road) = self.world.lanes.coord(ego.s + x, ego.to_world(x, y - off)) else {
+            let Some(road) =
+                self.world
+                    .vehicle_lane_coord(self.t, ego.s + x, ego.to_world(x, y - off))
+            else {
                 continue;
             };
             let estimate = self.coord.entry(vid).or_insert((self.t, road, 0));

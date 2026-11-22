@@ -52,6 +52,32 @@ fn car_r(w: &World, t: f64, x: f64, y: f64) -> f64 {
     w.lanes.coord(w.pose.current().s + x, (wx, wy)).unwrap() - w.u_ego()
 }
 
+#[test]
+fn vehicle_lane_uses_fresh_camera_beyond_mapped_boundaries() {
+    let mut world = World::default();
+    world.model(0., &model(0., 0., 0.));
+
+    let mut distant_shift = model(0., 0., 0.);
+    for line in &mut distant_shift.lane_lines {
+        for (&x, y) in line.x.iter().zip(&mut line.y) {
+            if x > 25. {
+                *y -= 0.7;
+            }
+        }
+    }
+    world.model(0.05, &distant_shift);
+    let far = (50., 0.);
+    let near = (15., 0.);
+    let mapped_far = world.lanes.coord(50., far);
+    let updated_far = world.vehicle_lane_coord(0.05, 50., far);
+    assert!((updated_far.unwrap() - mapped_far.unwrap() - 0.2).abs() < 1e-4);
+    assert_eq!(
+        world.vehicle_lane_coord(0.05, 15., near),
+        world.lanes.coord(15., near)
+    );
+    assert_eq!(world.vehicle_lane_coord(0.31, 50., far), mapped_far);
+}
+
 fn update(world: &mut World, step: u32, lost_after: f64) -> Option<(f64, [f64; 2])> {
     let t = f64::from(step) * 0.01;
     let (y, heading, yaw) = ego_path(t);
