@@ -138,7 +138,7 @@ pub(crate) fn apply_slots(
         .enumerate()
     {
         let (x, y, code) = slot.map_or((0., 0., 0), |slot| {
-            // The map has already applied Display A's lateral deadband.
+            // The map has already computed Display A's lateral position.
             let signed_y = f64::from(slot.lateral);
             let y = match index {
                 0 => -signed_y,

@@ -1,13 +1,13 @@
 //! Assign FF, LF, RF, LR, RR from the reflection-corrected world lane coordinate.
 
 use crate::display::{draw_road_frame, HeadingTerm};
-use crate::pos::common::{LANE_WIDTH, LEAD_GATE_X, LEAD_GATE_Y};
+use crate::pos::common::{Track, LANE_WIDTH, LEAD_GATE_X, LEAD_GATE_Y};
 use crate::vehicles::{Link, Vehicle, MAX_VEHICLES};
 use crate::world::{PoseAt, World};
 
 const INNER_RADIUS: f64 = 0.48;
 const OBSERVATION_MAX_AGE: f64 = 0.15;
-const LEAD_PREFERENCE_M: f32 = 1.0;
+const FF_PREFERENCE_M: f32 = 1.0;
 const EPS: f64 = 1e-9;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,6 +55,7 @@ struct Drawing {
     shown: Option<f64>,
     detect: u8,
     seen: f64,
+    radar: Option<Track>,
 }
 
 impl Drawing {
@@ -65,6 +66,7 @@ impl Drawing {
             shown: None,
             detect: 1,
             seen: now,
+            radar: None,
         }
     }
 
@@ -94,6 +96,7 @@ fn slot_index(x: f64, lane: i8) -> Option<usize> {
 pub struct Assigner {
     generation: u32,
     drawings: Vec<Drawing>,
+    previous_ff: Option<u32>,
 }
 
 impl Default for Assigner {
@@ -101,6 +104,7 @@ impl Default for Assigner {
         Self {
             generation: 0,
             drawings: Vec::with_capacity(MAX_VEHICLES),
+            previous_ff: None,
         }
     }
 }
@@ -126,6 +130,7 @@ impl Assigner {
         if self.generation != world.generation() {
             self.generation = world.generation();
             self.drawings.clear();
+            self.previous_ff = None;
         }
         if !now.is_finite() || !world.accepts_radar() || !world.u_ego().is_finite() {
             return [None; 5];
@@ -133,6 +138,7 @@ impl Assigner {
         self.drawings.retain(|d| now - d.seen <= 2.);
         let ego = world.pose.at(now);
         let radar = world.radar_pose(now);
+        let yaw = world.yaw_at(now);
         let radar_stamp = world.radar_stamp().unwrap_or(now);
         let current = |stamp: f64| {
             stamp + EPS >= radar_stamp && (0. ..=OBSERVATION_MAX_AGE).contains(&(now - stamp))
@@ -158,6 +164,8 @@ impl Assigner {
                 .map(|(_, _, vid)| vid)
         });
 
+        // Keep a qualifying FF across small distance changes when no lead matches.
+        let preferred_ff = followed.or(self.previous_ff);
         let mut best: [Option<Slot>; 5] = [None; 5];
         for car in vehicles {
             if !current(car.seen_radar.max(car.seen_vision)) {
@@ -177,7 +185,39 @@ impl Assigner {
             let drawing = &mut self.drawings[i];
             drawing.seen = now;
             drawing.observe_lane(r);
-            let lateral = draw_road_frame(&mut drawing.shown, x, r);
+            let v_rel = speed - world.pose.speed();
+            let opening_gap = ((v_rel - 0.5) / 1.5).clamp(0., 1.);
+            let mut lateral_target = -LANE_WIDTH * r;
+            if x >= 0. && car.radar_id.is_some() && current(car.seen_radar) {
+                let (rx, ry) = radar.to_ego(f64::from(car.wx), f64::from(car.wy));
+                let report = (now, rx, ry);
+                let track = drawing.radar.get_or_insert_with(|| Track::new(now, report));
+                track.step(Some(report), now, yaw);
+
+                // Use the map for slot selection and the long-range drawing. A close,
+                // current report also constrains changes from the fitted lane position.
+                let weight = (0.7 + opening_gap * (1. - 0.7)) * ((40. - rx) / 12.).clamp(0., 1.);
+                // Keep full reflection compensation at low speed. At traffic speed,
+                // release less of the offset as the radar weight rises.
+                let release = (0.75 - opening_gap * (0.75 - 0.5))
+                    * ((speed - 6.) / 2.).clamp(0., 1.);
+                let radar_y = track.y + release * track.b;
+                lateral_target += weight * (radar_y - lateral_target);
+            }
+            let distance = x.abs();
+            let near = ((40. - distance) / 12.).clamp(0., 1.);
+            let play_distance = if drawing.lane == 0 {
+                // Close and mid-range FF have enough noise to cross a 0.1 m CAN step.
+                let extra = 18. * ((x - 10.) / 8.).clamp(0., 1.) * near;
+                distance * (1. + 0.3 * near) + extra
+            } else {
+                distance
+            };
+            let lateral = draw_road_frame(
+                &mut drawing.shown,
+                play_distance,
+                -lateral_target / LANE_WIDTH,
+            );
             if !eligible(car) {
                 continue;
             }
@@ -187,7 +227,6 @@ impl Assigner {
             if slot != 0 && speed < -1. / 3.6 {
                 continue;
             }
-            let v_rel = speed - world.pose.speed();
             if v_rel > 2. {
                 drawing.detect = 1;
             } else if v_rel < -1. {
@@ -208,11 +247,9 @@ impl Assigner {
                 kind: kind.map_or(0, |k| k.class),
                 kind_confirmed: kind.is_some_and(|k| k.confirmed_at.is_finite()),
             };
-            // A matched lead can settle a close FF competition without moving
-            // a vehicle to another lane or hiding a clearly nearer vehicle.
             let rank = |s: Slot| {
-                let advantage = if slot == 0 && followed == Some(s.vid) {
-                    LEAD_PREFERENCE_M
+                let advantage = if slot == 0 && preferred_ff == Some(s.vid) {
+                    FF_PREFERENCE_M
                 } else {
                     0.
                 };
@@ -222,6 +259,7 @@ impl Assigner {
                 best[slot] = Some(candidate);
             }
         }
+        self.previous_ff = best[0].map(|s| s.vid);
         wide_rules(&mut best);
         best
     }

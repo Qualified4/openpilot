@@ -87,8 +87,7 @@ pub struct Track {
 }
 
 impl Track {
-    fn new(o: &Obj, now: f64) -> Self {
-        let (stamp, x, m) = o.report.unwrap_or((f64::NEG_INFINITY, o.x, o.y));
+    pub(crate) fn new(now: f64, (stamp, x, m): (f64, f64, f64)) -> Self {
         Track { x, p: m, m, b: 0., y: m, stamp, now }
     }
 
@@ -97,14 +96,14 @@ impl Track {
         (GAIN_REF / noise).clamp(GAIN_MIN, GAIN_MAX)
     }
 
-    fn step(&mut self, o: &Obj, now: f64, yaw: Option<f64>) {
+    pub(crate) fn step(&mut self, report: Option<(f64, f64, f64)>, now: f64, yaw: Option<f64>) {
         let dt = (now - self.now).max(0.);
         if let Some(yaw) = yaw {
             let turn = self.x * yaw * dt;
             self.m -= turn;
             self.p -= turn;
         }
-        if let Some((stamp, rx, ry)) = o.report {
+        if let Some((stamp, rx, ry)) = report {
             if stamp > self.stamp {
                 let gap = if self.stamp.is_finite() { stamp - self.stamp } else { 0.05 };
                 let jump = ry - self.p;
@@ -237,9 +236,10 @@ impl Common {
         self.tracks.retain(|vid, _| objs.contains_key(vid));
         for (&vid, o) in &objs {
             match self.tracks.get_mut(&vid) {
-                Some(track) => track.step(o, f.now, f.yaw),
+                Some(track) => track.step(o.report, f.now, f.yaw),
                 None => {
-                    self.tracks.insert(vid, Track::new(o, f.now));
+                    let report = o.report.unwrap_or((f64::NEG_INFINITY, o.x, o.y));
+                    self.tracks.insert(vid, Track::new(f.now, report));
                 }
             }
         }
