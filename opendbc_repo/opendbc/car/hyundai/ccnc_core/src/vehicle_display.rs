@@ -8,13 +8,13 @@ use pyo3::types::{PyDict, PyFloat, PyList, PySet, PyTuple};
 use crate::correct::correct_positions;
 use crate::display_filter;
 use crate::guard;
-use crate::map_object::MapObject;
+use crate::map_state;
 use crate::model_v2::{
     curve, numpy_interp, place_geometry, refresh_lanes, valid_curve, GeometryInput,
 };
-use crate::observe::{self, Frame};
+use crate::observe::Frame;
 use crate::pymath::{py_max, py_min, py_sum};
-use crate::{pos, radar_map, rear, update};
+use crate::{pos, rear, update};
 
 macro_rules! get {
     ($object:expr, $name:literal) => {
@@ -187,18 +187,11 @@ fn update_ego_follow<'py>(
     Ok(())
 }
 
+/// `reset()`: the Python attributes as `__init__` sets them and the Rust state as new.
 fn map_reset(map: &Bound<'_, PyAny>) -> PyResult<()> {
     let py = map.py();
-    for attr in [
-        "objects",
-        "band_points",
-        "lanes",
-        "geometry",
-        "local",
-        "evidence",
-        "reports",
-        "jumps",
-    ] {
+    map_state::attach(map)?.try_borrow_mut()?.st = ccnc_map::radar::MapState::new();
+    for attr in ["band_points", "lanes", "geometry", "evidence"] {
         map.setattr(attr, PyDict::new(py))?;
     }
     for attr in [
@@ -214,11 +207,8 @@ fn map_reset(map: &Bound<'_, PyAny>) -> PyResult<()> {
     for attr in ["band_early", "weak"] {
         map.setattr(attr, PySet::empty(py)?)?;
     }
-    for attr in ["created", "evicted", "range_removed", "lane_offset"] {
-        map.setattr(attr, 0)?;
-    }
+    map.setattr("lane_offset", 0)?;
     for attr in [
-        "now",
         "radar_stamp",
         "model_stamp",
         "raw",
@@ -234,66 +224,18 @@ fn map_reset(map: &Bound<'_, PyAny>) -> PyResult<()> {
     for attr in ["usable", "holding", "stopped", "lane_change", "ego_change"] {
         map.setattr(attr, false)?;
     }
-    put!(map, "pose" => (0., 0., 0.), "cos" => 1., "sin" => 0., "speed" => 0., "odometer" => 0., "a_ego" => 0., "yaw_rate" => 0.,
-        "poses" => radar_map::deque(py)?.call1(((), 64))?, "next_id" => 1, "selected" => (py.None(), py.None(), py.None()),
+    put!(map, "a_ego" => 0., "yaw_rate" => 0., "selected" => (py.None(), py.None(), py.None()),
         "switched" => (py.None(), py.None(), py.None()), "absent" => (py.None(), py.None(), py.None()),
         "blindspot" => (false, false), "remembered" => PyList::new(py, [false; 3])?, "generation" => py.get_type::<PyAny>().call0()?);
     Ok(())
 }
 
-type Pose = (f64, f64, f64);
 
-fn pose_at(map: &Bound<'_, PyAny>, stamp: f64, now: f64, pose: Pose) -> PyResult<Option<Pose>> {
-    let mut previous: Option<(f64, Pose)> = None;
-    for current in get!(map, "poses").try_iter()? {
-        let (t, current): (f64, Pose) = current?.extract()?;
-        if previous.is_none() && stamp < t - 1e-6 {
-            return Ok(None);
-        }
-        let (previous_time, previous_pose) = previous.unwrap_or((t, current));
-        if t >= stamp {
-            let dt = t - previous_time;
-            let f = if dt > 0. {
-                (stamp - previous_time) / dt
-            } else {
-                0.
-            };
-            let interpolate = |a, b| a + f * (b - a);
-            return Ok(Some((
-                interpolate(previous_pose.0, current.0),
-                interpolate(previous_pose.1, current.1),
-                interpolate(previous_pose.2, current.2),
-            )));
-        }
-        previous = Some((t, current));
-    }
-    Ok((previous.is_some() && stamp <= now + 1e-6).then_some(pose))
-}
-
-fn advance_pose(
-    map: &Bound<'_, PyAny>,
-    now: f64,
-    previous_time: Option<f64>,
-    speed: f64,
-    yaw: f64,
-) -> PyResult<Pose> {
-    let py = map.py();
-    let dt = previous_time.map_or(0., |t| now - t);
-    let previous_speed: f64 = get!(map, "speed").extract()?;
-    let (x, y, angle): Pose = get!(map, "pose").extract()?;
-    let distance = 0.5 * (speed + previous_speed) * dt;
-    let middle = angle + 0.5 * yaw * dt;
-    let pose = (
-        x + distance * middle.cos(),
-        y + distance * middle.sin(),
-        angle + yaw * dt,
-    );
-    let odometer: f64 = get!(map, "odometer").extract()?;
-    put!(map, "pose" => pose, "cos" => pose.2.cos(), "sin" => pose.2.sin(), "now" => now, "speed" => speed,
-        "odometer" => odometer + distance.abs());
-    get!(map, "poses").call_method1(intern!(py, "append"), ((now, pose),))?;
-    observe::advance(py, map, dt, distance)?;
-    Ok(pose)
+/// `_advance(now, speed, yaw)` on the map's Rust state.
+fn advance_pose(map: &Bound<'_, PyAny>, now: f64, speed: f64, yaw: f64, holding: bool) -> PyResult<()> {
+    let (bridged, range) = (map_state::bridge_key(map)?, map_state::range(map)?);
+    map_state::attach(map)?.try_borrow_mut()?.st.advance(now, speed, yaw, holding, bridged, range);
+    Ok(())
 }
 
 #[derive(Default)]
@@ -372,7 +314,8 @@ fn select<'py>(
         _ => f64::NAN,
     };
     let ego: f64 = get!(out, "vEgo").extract()?;
-    let previous_time: Option<f64> = get!(map, "now").extract()?;
+    let state = map_state::attach(map)?;
+    let previous_time: Option<f64> = state.try_borrow()?.st.now;
     let reverse = enum_name(&out, intern!(py, "gearShifter"), "")? == "reverse";
     if ![now, ego, yaw].iter().all(|v| v.is_finite())
         || reverse
@@ -400,7 +343,7 @@ fn select<'py>(
     let changing = model_desire(md)? || signal;
     put!(map, "a_ego" => if acceleration.is_finite() { acceleration } else { 0. }, "holding" => holding, "stopped" => stopped,
         "blindspot" => blind, "lane_change" => changing, "ego_change" => changing, "evidence" => PyDict::new(py), "yaw_rate" => yaw);
-    let pose = advance_pose(map, now, previous_time, speed, yaw)?;
+    advance_pose(map, now, speed, yaw, holding)?;
     let placed = place_geometry(map)?;
 
     let radar_time = get!(live, "radar_time");
@@ -409,7 +352,8 @@ fn select<'py>(
     let model_stamp: f64 = model_time.extract()?;
     let fresh_model = !md.is_none() && (0. ..=0.25).contains(&(now - model_stamp));
     if fresh_model && !get!(map, "model_stamp").eq(&model_time)? && !md.is(&get!(map, "model")) {
-        if let Some((x, y, angle)) = pose_at(map, model_stamp, now, pose)? {
+        let pose = state.try_borrow()?.st.pose_at(model_stamp);
+        if let Some((x, y, angle)) = pose {
             let origin = Frame {
                 px: x,
                 py: y,
@@ -432,7 +376,8 @@ fn select<'py>(
     let observe =
         usable && !radar.is(&get!(map, "raw")) && last_radar.is_none_or(|last| radar_stamp > last);
     let observed = if observe {
-        let observed = match pose_at(map, radar_stamp, now, pose)? {
+        let pose = state.try_borrow()?.st.pose_at(radar_stamp);
+        let observed = match pose {
             Some((x, y, angle)) => Some((get!(radar, "points"), (x, y, angle.cos(), angle.sin()))),
             None => None,
         };
@@ -509,11 +454,12 @@ fn draw_front<'py>(
     assigned: Option<[Option<i64>; 3]>,
 ) -> PyResult<()> {
     let py = map.py();
-    let objects = get!(map, "objects").cast_into::<PyDict>()?;
-    let local = get!(map, "local").cast_into::<PyDict>()?;
+    let map_state = map_state::attach(map)?;
+    let map_state = map_state.try_borrow()?;
+    let st = &map_state.st;
     let selected = get!(map, "selected");
-    let speed: f64 = get!(map, "speed").extract()?;
-    let frame = Frame::read(map)?;
+    let speed = st.speed;
+    let frame = st.frame();
     let usable = get!(map, "usable").is_truthy()?;
     let bridge = get!(map, "bridge");
     let detectors = [
@@ -523,23 +469,21 @@ fn draw_front<'py>(
     ];
     let centers = [get!(state, "lf_center"), get!(state, "rf_center")];
     for (slot, [distance, lateral, detect]) in FRONT_FIELDS.into_iter().enumerate() {
-        let key = match assigned {
-            Some(keys) => keys[slot].into_pyobject(py)?.into_any(),
-            None => selected.get_item(slot)?,
+        let key: Option<i64> = match assigned {
+            Some(keys) => keys[slot],
+            None => selected.get_item(slot)?.extract()?,
         };
-        let pair = if usable {
-            objects.get_item(&key)?.zip(local.get_item(&key)?)
-        } else {
-            None
+        let pair = match key {
+            Some(key) if usable => st.objects.get(&key).zip(st.local.get(&key)),
+            _ => None,
         };
-        let Some((object, position)) = pair else {
+        let Some((object, &(x, y))) = pair else {
             values.set_item(detect, 0)?;
             continue;
         };
-        let (x, y): (f64, f64) = position.extract()?;
-        let object = object.cast::<MapObject>()?.try_borrow()?;
-        let bridged =
-            slot == 0 && !bridge.is_none() && bridge.get_item(intern!(py, "key"))?.eq(&key)?;
+        let bridged = slot == 0
+            && !bridge.is_none()
+            && bridge.get_item(intern!(py, "key"))?.extract::<Option<i64>>()? == key;
         let forward: f64 = if bridged {
             bridge.get_item(intern!(py, "speed"))?.extract()?
         } else {

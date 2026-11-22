@@ -2,31 +2,37 @@
 //! `_behind_lead`, `_trail`, `_wall_outside`, `_far_hold`, `_bridge`, `_bridged`, `_approach_only`, `_ego_lines`,
 //! `_centre`) for the one-call update (hyundaicanfd_ccnc_radar_map.py).
 //!
-//! The Python methods stay the reference. The map's state stays in its Python attributes: each value is read where
-//! the Python code reads it and written where the Python code writes it, so that the next stage (and the next update)
-//! sees what the Python path would leave. Tuple comparisons in `min()` follow Python: the first unequal element
+//! The Python methods stay the reference. The objects, their ego-frame positions and the radar id history are the
+//! map's Rust state; the rest of the map stays in its Python attributes: each value is read where the Python code
+//! reads it and written where the Python code writes it, so that the next stage (and the next update) sees what the
+//! Python path would leave. Tuple comparisons in `min()` follow Python: the first unequal element
 //! decides with `<`, and `min()` keeps the first of equal items.
+
+use std::collections::HashMap;
 
 use pyo3::exceptions::{PyKeyError, PyTypeError};
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString, PyTuple};
 
+use ccnc_map::radar::{MapObjectData as MapObject, MapState};
+
 use crate::consts::Consts;
 use crate::lanes::{interpolate, Lanes};
-use crate::map_object::MapObject;
+use crate::map_state::py_err;
 use crate::observe::{crossing, forget, Frame};
 use crate::pymath::{hypot, py_max};
 
 type Xy = (f64, f64);
 
 /// `self.local[key]`.
-fn local_xy(local: &Bound<'_, PyDict>, key: i64) -> PyResult<Xy> {
-    local.get_item(key)?.ok_or_else(|| PyKeyError::new_err(key))?.extract()
+fn local_xy(st: &MapState, key: i64) -> PyResult<Xy> {
+    st.local_xy(key).map_err(py_err)
 }
 
-fn object<'py>(objects: &Bound<'py, PyDict>, key: i64) -> PyResult<Bound<'py, MapObject>> {
-    objects.get_item(key)?.ok_or_else(|| PyKeyError::new_err(key))?.cast_into::<MapObject>().map_err(PyErr::from)
+/// `self.objects[key]`.
+fn object(st: &MapState, key: i64) -> PyResult<&MapObject> {
+    st.object(key).map_err(py_err)
 }
 
 /// `self.selected` of the previous update.
@@ -109,31 +115,26 @@ pub(crate) fn lane_reference(
 }
 
 /// `_vision(model)` with the model's leads as (x, y): the nearest fresh object to each lead is a vision-seen vehicle.
-pub(crate) fn vision(objects: &Bound<'_, PyDict>, local: &Bound<'_, PyDict>, now: f64, leads: &[Xy]) -> PyResult<()> {
+pub(crate) fn vision(st: &mut MapState, now: f64, leads: &[Xy]) -> PyResult<()> {
     for &(x, y) in leads {
         if !x.is_finite() || !y.is_finite() {
             continue;
         }
-        let mut best: Option<(f64, Bound<'_, MapObject>)> = None;
-        for value in objects.values() {
-            let obj = value.cast_into::<MapObject>()?;
-            let (key, seen) = {
-                let o = obj.try_borrow()?;
-                (o.key, o.seen)
-            };
-            if now - seen > 0.15 {
+        let mut best: Option<(f64, i64)> = None;
+        for o in st.objects.values() {
+            if now - o.seen > 0.15 {
                 continue;
             }
-            let (px, py) = local_xy(local, key)?;
+            let (px, py) = local_xy(st, o.key)?;
             if (px - x).abs() <= py_max(3., 0.2 * x) && (py - y).abs() <= 1.2 {
                 let distance = hypot(px - x, py - y);
                 if best.as_ref().is_none_or(|b| distance < b.0) {
-                    best = Some((distance, obj));
+                    best = Some((distance, o.key));
                 }
             }
         }
-        if let Some((_, obj)) = best {
-            let mut o = obj.try_borrow_mut()?;
+        if let Some((_, key)) = best {
+            let o = st.objects.get_mut(&key).expect("found above");
             o.vision = true;
             o.vehicle = py_max(0.8, o.vehicle);
             o.vision_seen = true;
@@ -171,6 +172,7 @@ type Hold<'py> = (Bound<'py, PyAny>, bool, Bound<'py, PyAny>);
 /// `_select()` and what it calls, on one update's state.
 pub(crate) struct Selector<'a, 'py> {
     pub m: &'a Bound<'py, PyAny>,
+    pub st: &'a mut MapState,
     pub k: &'a Consts,
     pub lanes: &'a mut Lanes<'py>,
     pub frame: Frame,
@@ -178,14 +180,12 @@ pub(crate) struct Selector<'a, 'py> {
     pub now: f64,
     pub now_obj: &'a Bound<'py, PyAny>,
     pub vision_leads: &'a [(f64, f64, Option<f64>)],
-    pub objects: Bound<'py, PyDict>,
-    pub local: Bound<'py, PyDict>,
     pub previous: [Option<i64>; 3],
     pub holding: bool,
     pub lane_change: bool,
     pub usable: bool,
     pub radar_stamp: Option<f64>,
-    pub jumps: Bound<'py, PyDict>,
+    pub jumps: HashMap<i128, f64>,
 }
 
 impl<'py> Selector<'_, 'py> {
@@ -195,15 +195,7 @@ impl<'py> Selector<'_, 'py> {
 
     /// `self.jumps.get(source, -math.inf)`.
     fn jumped_at(&self, source: i128) -> PyResult<f64> {
-        match self.jumps.get_item(source)? {
-            Some(stamp) => stamp.extract(),
-            None => Ok(f64::NEG_INFINITY),
-        }
-    }
-
-    /// The wall lines' y at x, for `_lane(respect_walls=True)`.
-    fn walls_at(&self, x: f64) -> Vec<f64> {
-        self.walls.iter().filter_map(|points| interpolate(points, x)).collect()
+        Ok(self.jumps.get(&source).copied().unwrap_or(f64::NEG_INFINITY))
     }
 
     pub fn select(&mut self) -> PyResult<()> {
@@ -211,10 +203,8 @@ impl<'py> Selector<'_, 'py> {
         let k = self.k;
         let mut groups: [Vec<Candidate>; 3] = Default::default();
         let mut far: Option<(f64, i64)> = None; // The displayed FF object beyond FF_FAR_X, not in ego's lane slot.
-        for value in self.objects.values() {
-            let obj = value.cast_into::<MapObject>()?;
-            let o = obj.try_borrow()?;
-            let (x, y) = local_xy(&self.local, o.key)?;
+        for o in self.st.objects.values() {
+            let (x, y) = local_xy(self.st, o.key)?;
             // Ordinary candidates are fresh measurements or a short prediction of one.
             if self.now - o.seen > k.prediction_hold + 1e-6 {
                 continue;
@@ -230,7 +220,7 @@ impl<'py> Selector<'_, 'py> {
             {
                 continue;
             }
-            let walls = self.walls_at(x);
+            let walls: Vec<f64> = self.walls.iter().filter_map(|points| interpolate(points, x)).collect();
             let (mut slot, _, mut centre_distance) = self.lanes.lane(x, y, o.motion_confirmed, o.settled, &walls)?;
             if slot != Some(0)
                 && Some(o.key) == self.previous[0]
@@ -248,7 +238,7 @@ impl<'py> Selector<'_, 'py> {
             }
             let Some(slot) = slot else { continue };
             // The direction of its last real measurement, never the zeroed velocity of an unseen object.
-            if slot != 0 && (o.last_motion.0 < -1. / 3.6 || approach_only(&o)) {
+            if slot != 0 && (o.last_motion.0 < -1. / 3.6 || approach_only(o)) {
                 continue; // Opposing traffic stays in the map, outside same-direction side slots.
             }
             if o.structure || (!o.motion_confirmed && !o.vision && wall_outside(self.walls, x, y)) {
@@ -269,7 +259,7 @@ impl<'py> Selector<'_, 'py> {
         for (slot, mut candidates) in groups.into_iter().enumerate() {
             if slot != 0 {
                 if let Some(lead) = selected[0] {
-                    let lead_x = local_xy(&self.local, lead)?.0;
+                    let lead_x = local_xy(self.st, lead)?.0;
                     // A bridged FF object measured beside ego's lane stays FF, not a side vehicle as well.
                     let mut kept = Vec::with_capacity(candidates.len());
                     for c in candidates {
@@ -286,7 +276,7 @@ impl<'py> Selector<'_, 'py> {
                 let line_usable = self.lanes.usable(outer);
                 let mut adjacent = Vec::new();
                 for &c in &candidates {
-                    let (x, y) = local_xy(&self.local, c.2)?;
+                    let (x, y) = local_xy(self.st, c.2)?;
                     let outer_valid = line_usable && self.lanes.at(outer, x).is_some();
                     let base = self.lanes.at(inner, x);
                     if outer_valid || base.is_none_or(|base| sign * (y - base) <= k.outer_far) {
@@ -369,13 +359,9 @@ impl<'py> Selector<'_, 'py> {
     ) -> PyResult<(Option<i64>, Option<Bound<'py, PyAny>>)> {
         let k = self.k;
         let Some(current) = self.previous[slot] else { return Ok((choice, None)) };
-        let Some(obj) = self.objects.get_item(current)? else { return Ok((choice, None)) };
-        let obj = obj.cast_into::<MapObject>()?;
-        let (born, structure, seen, sideways) = {
-            let o = obj.try_borrow()?;
-            (o.born, o.structure, o.seen, self.frame.c * o.vy - self.frame.s * o.vx)
-        };
-        let x = local_xy(&self.local, current)?.0;
+        let Some(o) = self.st.objects.get(&current) else { return Ok((choice, None)) };
+        let (born, structure, seen, sideways) = (o.born, o.structure, o.seen, self.frame.c * o.vy - self.frame.s * o.vx);
+        let x = local_xy(self.st, current)?.0;
         if choice == Some(current)
             || self.lane_change
             || self.m.getattr(intern!(self.py(), "lane_offset"))?.is_truthy()?
@@ -434,8 +420,8 @@ impl<'py> Selector<'_, 'py> {
     /// `_behind_lead(key, slot, lead_x)`.
     fn behind_lead(&self, key: i64, slot: i64, lead_x: f64) -> PyResult<bool> {
         let k = self.k;
-        let obj = object(&self.objects, key)?;
-        let (x, y) = local_xy(&self.local, key)?;
+        let obj = object(self.st, key)?;
+        let (x, y) = local_xy(self.st, key)?;
         if x <= lead_x + k.lead_beyond {
             return Ok(false);
         }
@@ -448,7 +434,7 @@ impl<'py> Selector<'_, 'py> {
                 return Ok(true);
             }
         }
-        let offsets = self.trail(&*obj.try_borrow()?)?;
+        let offsets = self.trail(obj)?;
         Ok(offsets.len() >= 2 && offsets[1..].iter().fold(offsets[0], |m, &v| py_max(m, v)) <= k.trail_room)
     }
 
@@ -461,7 +447,7 @@ impl<'py> Selector<'_, 'py> {
                 self.lane_change
                     || !self.m.getattr(intern!(py, "bridge"))?.is_none()
                     || match normal {
-                        Some(normal) => local_xy(&self.local, normal)?.0 <= far.0,
+                        Some(normal) => local_xy(self.st, normal)?.0 <= far.0,
                         None => false,
                     }
             }
@@ -482,16 +468,13 @@ impl<'py> Selector<'_, 'py> {
     }
 
     /// `_bridge(normal)`.
-    fn bridge(&self, normal: Option<i64>) -> PyResult<Option<i64>> {
+    fn bridge(&mut self, normal: Option<i64>) -> PyResult<Option<i64>> {
         let py = self.py();
         let kept = self.bridged(normal)?;
         let Some(key) = normal.filter(|_| kept == normal) else { return Ok(kept) };
         // Record where the FF object was last reported inside ego's lane, unless that report is part of a jump.
-        let obj = object(&self.objects, key)?;
-        let (report, source, vx, vy) = {
-            let o = obj.try_borrow()?;
-            (o.report, o.source, o.vx, o.vy)
-        };
+        let o = object(self.st, key)?;
+        let (report, source, vx, vy) = (o.report, o.source, o.vx, o.vy);
         if let Some((stamp, x, y)) = report {
             if Some(stamp) == self.radar_stamp && self.now - self.jumped_at(source)? > self.k.bridge_jump_time + 1e-6 {
                 let (left, right) = self.lanes.ego_lines(x);
@@ -524,40 +507,38 @@ impl<'py> Selector<'_, 'py> {
     }
 
     /// `_bridged(normal)`.
-    fn bridged(&self, normal: Option<i64>) -> PyResult<Option<i64>> {
+    fn bridged(&mut self, normal: Option<i64>) -> PyResult<Option<i64>> {
         let py = self.py();
         let k = self.k;
         let bridge = self.m.getattr(intern!(py, "bridge"))?;
         let key: Option<i64> =
             if bridge.is_truthy()? { bridge.get_item(intern!(py, "key"))?.extract()? } else { self.previous[0] };
-        let obj = match key {
-            Some(key) => self.objects.get_item(key)?.map(|o| o.cast_into::<MapObject>()).transpose()?,
-            None => None,
-        };
+        let found = key.is_some_and(|key| self.st.objects.contains_key(&key));
         self.m.setattr(intern!(py, "bridge"), py.None())?;
-        if let Some(obj) = &obj {
-            if !bridge.is_none() && normal == key {
-                forget(&mut *obj.try_borrow_mut()?, self.frame.c, self.frame.s); // Back in ego's lane on its own reports.
-            }
+        if found && !bridge.is_none() && normal == key {
+            let o = self.st.objects.get_mut(&key.expect("found")).expect("found");
+            forget(o, self.frame.c, self.frame.s); // Back in ego's lane on its own reports.
         }
-        let Some(obj) = obj.filter(|_| normal != key && !self.lane_change && self.usable) else { return Ok(normal) };
+        if !(found && normal != key && !self.lane_change && self.usable) {
+            return Ok(normal);
+        }
         let key = key.expect("an object was found");
         let (start, x0, dx, speed, cause);
         if bridge.is_none() {
             // A lost report, a report that jumped sideways, or one that crossed the lane line slowly.
-            let o = obj.try_borrow()?;
+            let o = object(self.st, key)?;
             let unseen = Some(o.seen) != self.radar_stamp;
             let radar_stamp = self
                 .radar_stamp
                 .ok_or_else(|| PyTypeError::new_err("unsupported operand type(s) for -: 'NoneType' and 'float'"))?;
             let jumped = radar_stamp - self.jumped_at(o.source)? <= k.prediction_hold + 1e-6;
-            let crossed = matches!(o.slot, Some(1 | 2)) && !o.structure && local_xy(&self.local, key)?.0 <= k.bridge_drift_x;
+            let crossed = matches!(o.slot, Some(1 | 2)) && !o.structure && local_xy(self.st, key)?.0 <= k.bridge_drift_x;
             if !(unseen || jumped || crossed) {
                 return Ok(normal);
             }
             cause = PyString::new(py, if unseen { "lost" } else if jumped { "jump" } else { "drift" }).into_any();
             start = self.now_obj.clone();
-            x0 = local_xy(&self.local, key)?.0;
+            x0 = local_xy(self.st, key)?.0;
             dx = None;
             speed = match self.hold_of(key)? {
                 Some((_, _, speed)) => speed.extract::<f64>()?,
@@ -590,14 +571,14 @@ impl<'py> Selector<'_, 'py> {
         let dx = dx.unwrap_or(x0 - vision_x);
         let x = vision_x + dx;
         if let Some(normal) = normal {
-            if local_xy(&self.local, normal)?.0 <= x + py_max(3., 0.2 * x) {
+            if local_xy(self.st, normal)?.0 <= x + py_max(3., 0.2 * x) {
                 return Ok(Some(normal)); // A nearer measured vehicle takes FF; only a farther one cannot.
             }
         }
         let hold = self.hold_of(key)?;
         let centre = self.lanes.centre(x).unwrap_or(0.);
         let (stable_y, seen) = {
-            let o = obj.try_borrow()?;
+            let o = object(self.st, key)?;
             (o.stable_y, o.seen)
         };
         let y = match (stable_y, hold) {
@@ -612,7 +593,7 @@ impl<'py> Selector<'_, 'py> {
                 }
             }
         };
-        self.local.set_item(key, (x, y))?;
+        self.st.local.insert(key, (x, y));
         let state = PyDict::new(py);
         state.set_item(intern!(py, "key"), key)?;
         state.set_item(intern!(py, "start"), start)?;
@@ -630,10 +611,8 @@ impl<'py> Selector<'_, 'py> {
     fn stop_memory(&self, slot: usize) -> PyResult<Option<i64>> {
         let k = self.k;
         let mut best: Option<(bool, f64, i64)> = None;
-        for value in self.objects.values() {
-            let obj = value.cast_into::<MapObject>()?;
-            let o = obj.try_borrow()?;
-            let (x, _) = local_xy(&self.local, o.key)?;
+        for o in self.st.objects.values() {
+            let (x, _) = local_xy(self.st, o.key)?;
             if o.slot != Some(slot as i64)
                 || o.departed
                 || o.superseded
@@ -652,12 +631,12 @@ impl<'py> Selector<'_, 'py> {
             let alongside =
                 lateral.abs() <= 0.6 && (0. ..=3.).contains(&forward) && self.now - o.seen <= k.memory_moving_hold;
             if !(resting || alongside)
-                || crossing(&o, self.frame, k.crossing_travel)
+                || crossing(o, self.frame, k.crossing_travel)
                 || (!o.motion_confirmed && (o.tracked as f64) < k.memory_tracked)
             {
                 continue;
             }
-            if approach_only(&o) {
+            if approach_only(o) {
                 continue;
             }
             let candidate = (Some(o.key) != self.previous[slot], x.abs(), o.key);

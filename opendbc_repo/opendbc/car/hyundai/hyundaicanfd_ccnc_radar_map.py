@@ -230,11 +230,13 @@ class CcncRadarMap:
                  ('LF_DETECT_DISTANCE', 'LF_DETECT_LATERAL', 'LF_DETECT'),
                  ('RF_DETECT_DISTANCE', 'RF_DETECT_LATERAL', 'RF_DETECT'))
 
-  # The Rust core runs the map update when it loads, on its own MapObject class (same fields): _advance's objects in one
-  # call, and the rest of the map (_update_lane_reference, _observe, _vision, _walls, _bands, _select) in another. A
-  # subclass or instance that replaces one of those methods (_FUSED below) gets the stages one by one instead, as their
-  # own methods. None runs the Python loops below on the dataclass above (kept as the reference; a subclass or test
-  # sets None to force them).
+  # The Rust core runs the map update when it loads: _advance in one call, and the rest of the map
+  # (_update_lane_reference, _observe, _vision, _walls, _bands, _select) in another. Ego's pose, the objects and the radar
+  # id history (_RUST_FIELDS) are then kept in the map's Rust state (ccnc_core.RadarMapState, attached on the first
+  # update): they leave the instance, and reading one gives a copy from the state (__getattr__; objects as the Rust
+  # MapObject class, same fields). None, or a subclass or instance that replaces one of those methods (_FUSED below),
+  # runs the Python loops below on the dataclass above (kept as the reference; a subclass or test sets None to force
+  # them).
   RUST = ccnc_core_loader.load()
 
   def __init__(self):
@@ -284,7 +286,15 @@ class CcncRadarMap:
     self.shown = None  # DISPLAY_HYSTERESIS only: per front slot (key, drawn lateral).
 
   def reset(self):
+    self.__dict__.pop('_rust_state', None)
     self.__init__()
+
+  def __getattr__(self, name):
+    # Only for a field the map's Rust state keeps: an ordinary attribute is found before this runs.
+    state = self.__dict__.get('_rust_state')
+    if state is not None and name in _RUST_FIELDS:
+      return getattr(state, name)
+    raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
   @staticmethod
   def to_world(x, y, pose):
@@ -319,9 +329,6 @@ class CcncRadarMap:
     self.now, self.speed = now, speed
     self.odometer += abs(distance)
     self.poses.append((now, self.pose))
-    if self.RUST is not None:
-      self.RUST.advance(self, dt, distance)
-      return
     for obj in self.objects.values():
       if not self.holding:
         obj.admitted = False
@@ -598,9 +605,6 @@ class CcncRadarMap:
     pose = self.pose_at(stamp)
     if pose is None:
       return []
-    if self.RUST is not None:
-      return self.RUST.measurements(self, self.RUST.radar_points(live.points), stamp, pose[0], pose[1],
-                                    math.cos(pose[2]), math.sin(pose[2]))
     measurements = []
     c, s = math.cos(pose[2]), math.sin(pose[2])
     for p in live.points:
@@ -649,8 +653,6 @@ class CcncRadarMap:
     return measurements
 
   def _associate(self, measurements, stamp):
-    if self.RUST is not None:
-      return self.RUST.associate(self, self.RUST.associate_input(self, measurements, stamp), stamp)
     # Bounded sparse neighborhood search; do not compare every remembered point.
     grid = {}
     age = self.now - stamp
@@ -758,9 +760,6 @@ class CcncRadarMap:
 
   def _forget_lateral(self, obj):
     """Drop the reports and sideways speed a bridged object took from the vehicle its track merged with."""
-    if self.RUST is not None:
-      self.RUST.forget_lateral(obj, self.cos, self.sin)
-      return
     obj.history.clear()
     forward = self.cos * obj.vx + self.sin * obj.vy
     obj.vx, obj.vy = forward * self.cos, forward * self.sin
@@ -768,8 +767,6 @@ class CcncRadarMap:
   def _observe(self, live, stamp):
     measurements = self._measurements(live, stamp)
     assignments = self._associate(measurements, stamp)
-    if self.RUST is not None:
-      return self.RUST.observe(self, measurements, assignments, stamp)
     self._reconnect(measurements, assignments)
     reserved = set(assignments.values())
     measured_keys = set()
@@ -926,12 +923,6 @@ class CcncRadarMap:
         obj.vision_seen = True
 
   def _walls(self, measured):
-    if self.RUST is not None:
-      # The rows for _bands stay in Rust; the bends come back unrounded, and round() stays Python's.
-      rows, bends = self.RUST.walls(self, measured, Wall)
-      self.bends = [(key, round(angle, 1), round(gap, 2)) for key, angle, gap in bends]
-      self._bands(rows, measured, None)
-      return
     self.bends = []  # (key, degrees, gap) joined this cycle through a bend, for inspection.
     for obj in self.objects.values():
       obj.structure = False
@@ -1064,9 +1055,6 @@ class CcncRadarMap:
     return sorted(points)
 
   def _bands(self, candidates, measured, inside):
-    if self.RUST is not None:
-      self.RUST.bands(self, candidates, measured, Band)  # candidates: the Rust _walls rows, with their inside set.
-      return
     lines = {}
     for sign, order in ((1, (1, 0)), (-1, (2, 3))):
       for i in order:
@@ -1578,7 +1566,11 @@ class CcncRadarMap:
     # track message. A live build would carry the class on each RadarPoint as motionState.
     self.evidence = evidence or {}
     self.yaw_rate = yaw_rate
-    self._advance(now, v_ego, yaw_rate)
+    fused = self.RUST is not None and self._fusable()
+    if fused:
+      self.RUST.advance_state(self, now, v_ego, yaw_rate)
+    else:
+      self._advance(now, v_ego, yaw_rate)
     previous_placed = self._geometry()
     radar_time = now if radar_time is None else radar_time
     model_time = now if model_time is None else model_time
@@ -1588,7 +1580,6 @@ class CcncRadarMap:
       self._update_lanes(model, model_time, lane_curves, previous_placed, model_bytes)
       self.model, self.model_stamp = model, model_time
     self.usable = live is not None and 0. <= now - radar_time <= .15
-    fused = self.RUST is not None and self._fusable()
     if not fused:
       self._update_lane_reference()
     self.leads = [(lead.x[0] - 1.52, -lead.y[0]) for lead in getattr(model, 'leadsV3', ())
@@ -1604,7 +1595,7 @@ class CcncRadarMap:
                 ] if model is not None and 0. <= now - model_time <= .25 else []
       radar = None
       if observe:
-        pose = self.pose_at(radar_time)
+        pose = self.RUST.state_pose_at(self, radar_time)
         if pose is not None:
           radar = live.points, (pose[0], pose[1], math.cos(pose[2]), math.sin(pose[2]))
         self.raw, self.radar_stamp = live, radar_time
@@ -1719,9 +1710,13 @@ if _native is not None:
   CcncRadarMap._geometry = _native.geometry
   CcncRadarMap._lane_view = _native.lane_view
 
+# The CcncRadarMap fields a map whose update runs in Rust keeps in its Rust state (ccnc_core map_state.rs FIELDS).
+_RUST_FIELDS = frozenset(('pose', 'cos', 'sin', 'now', 'speed', 'odometer', 'poses', 'objects', 'local', 'next_id', 'created',
+                          'evicted', 'range_removed', 'reports', 'jumps'))
+
 # The methods the one-call Rust update runs in Rust (and those they call), as this module defines them.
 _FUSED_NAMES = frozenset((
-  '_update_lane_reference', '_observe', '_measurements', '_associate', '_reconnect', '_stable', '_forget_lateral', '_settle',
+  '_advance', 'pose_at', '_update_lane_reference', '_observe', '_measurements', '_associate', '_reconnect', '_stable', '_forget_lateral', '_settle',
   '_lane', '_lane_view', '_model_changing', '_band_line', '_body_clear', '_edge_room', '_crossing', '_vision', '_walls', '_bend',
   '_bridge_walls', '_band_row', '_bands', '_in_range', '_radar_vehicle', '_approach_only', '_wall_outside', '_select',
   '_trail', '_behind_lead', '_ego_lines', '_centre', '_far_hold', '_bridge', '_bridged', '_stop_memory', 'to_ego', 'to_world'))

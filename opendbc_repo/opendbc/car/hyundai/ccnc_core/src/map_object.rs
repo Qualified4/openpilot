@@ -4,73 +4,35 @@
 //! path keeps using. A deque field reads as a tuple copy, so Python code that tries to change one in place fails
 //! loudly instead of changing a copy.
 
-use std::collections::VecDeque;
-
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
 use crate::radar_map::deque;
 
-/// `collections.deque(maxlen=N)`: appending to a full ring drops the oldest item.
-#[derive(Clone, Debug, Default)]
-pub struct Ring<T, const N: usize>(VecDeque<T>);
+pub use ccnc_map::radar::Ring;
+use ccnc_map::radar::MapObjectData;
 
-impl<T: Copy, const N: usize> Ring<T, N> {
-    pub fn push(&mut self, item: T) {
-        if self.0.len() == N {
-            self.0.pop_front();
-        }
-        self.0.push_back(item);
-    }
+/// A ring as a tuple copy.
+pub fn ring_tuple<'py, T, const N: usize>(py: Python<'py>, ring: &Ring<T, N>) -> PyResult<Bound<'py, PyTuple>>
+where
+    T: Copy + for<'a> IntoPyObject<'a>,
+{
+    PyTuple::new(py, ring.iter())
+}
 
-    pub fn clear(&mut self) {
-        self.0.clear();
-    }
+/// A ring as the Python field holds it: `deque(items, maxlen=N)`.
+pub fn ring_state<'py, T, const N: usize>(py: Python<'py>, ring: &Ring<T, N>) -> PyResult<Bound<'py, PyAny>>
+where
+    T: Copy + for<'a> IntoPyObject<'a>,
+{
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("maxlen", N)?;
+    deque(py)?.call((ring_tuple(py, ring)?,), Some(&kwargs))
+}
 
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn front(&self) -> Option<T> {
-        self.0.front().copied()
-    }
-
-    pub fn back(&self) -> Option<T> {
-        self.0.back().copied()
-    }
-
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = T> + Clone + '_ {
-        self.0.iter().copied()
-    }
-
-    fn from_items(items: Option<Vec<T>>) -> Self {
-        let mut ring = Self(VecDeque::with_capacity(N));
-        for item in items.into_iter().flatten() {
-            ring.push(item);
-        }
-        ring
-    }
-
-    fn tuple<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>>
-    where
-        T: for<'a> IntoPyObject<'a>,
-    {
-        PyTuple::new(py, self.iter())
-    }
-
-    fn state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>>
-    where
-        T: for<'a> IntoPyObject<'a>,
-    {
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("maxlen", N)?;
-        deque(py)?.call((self.tuple(py)?,), Some(&kwargs))
-    }
+fn ring<T: Copy, const N: usize>(items: Option<Vec<T>>) -> Ring<T, N> {
+    Ring::from_items(items.into_iter().flatten())
 }
 
 #[pyclass(module = "ccnc_core", name = "MapObject")]
@@ -155,15 +117,98 @@ pub struct MapObject {
 }
 
 impl MapObject {
-    /// `MapObject(key, source, x, y, vx, vy, stamp, stamp, origin=(x, y))`: a new measured object.
-    pub fn measured(key: i64, source: i128, x: f64, y: f64, vx: f64, vy: f64, stamp: f64) -> Self {
-        let mut obj = Self::new(
-            key, source, x, y, vx, vy, stamp, stamp, 1, 0.2, 0., 0.25, false, false, false, false, None, false, 0.,
-            0., false, 0, false, 0, false, None, false, (0., 0.), None, false, false, None, 0, None, false, None,
-            None, None, None, None, None,
-        );
-        obj.origin = Some((x, y));
-        obj
+    /// A Python copy of a map object of the Rust map state.
+    pub fn from_data(d: MapObjectData) -> Self {
+        Self {
+            key: d.key,
+            source: d.source,
+            x: d.x,
+            y: d.y,
+            vx: d.vx,
+            vy: d.vy,
+            born: d.born,
+            seen: d.seen,
+            hits: d.hits,
+            existence: d.existence,
+            vehicle: d.vehicle,
+            uncertainty: d.uncertainty,
+            motion_confirmed: d.motion_confirmed,
+            stationary: d.stationary,
+            vision: d.vision,
+            structure: d.structure,
+            slot: d.slot,
+            interior: d.interior,
+            drift: d.drift,
+            explained: d.explained,
+            radar_moving: d.radar_moving,
+            doppler: d.doppler,
+            doppler_confirmed: d.doppler_confirmed,
+            forward_samples: d.forward_samples,
+            vision_seen: d.vision_seen,
+            doppler_recent: d.doppler_recent,
+            admitted: d.admitted,
+            last_motion: d.last_motion,
+            origin: d.origin,
+            departed: d.departed,
+            superseded: d.superseded,
+            ahead_of: d.ahead_of,
+            tracked: d.tracked,
+            beyond: d.beyond,
+            settled: d.settled,
+            history: d.history,
+            trail: d.trail,
+            report: d.report,
+            lateral_reports: d.lateral_reports,
+            calm_since: d.calm_since,
+            stable_y: d.stable_y,
+        }
+    }
+
+    /// The object as the Rust map state keeps it.
+    pub fn data(&self) -> MapObjectData {
+        MapObjectData {
+            key: self.key.clone(),
+            source: self.source.clone(),
+            x: self.x.clone(),
+            y: self.y.clone(),
+            vx: self.vx.clone(),
+            vy: self.vy.clone(),
+            born: self.born.clone(),
+            seen: self.seen.clone(),
+            hits: self.hits.clone(),
+            existence: self.existence.clone(),
+            vehicle: self.vehicle.clone(),
+            uncertainty: self.uncertainty.clone(),
+            motion_confirmed: self.motion_confirmed.clone(),
+            stationary: self.stationary.clone(),
+            vision: self.vision.clone(),
+            structure: self.structure.clone(),
+            slot: self.slot.clone(),
+            interior: self.interior.clone(),
+            drift: self.drift.clone(),
+            explained: self.explained.clone(),
+            radar_moving: self.radar_moving.clone(),
+            doppler: self.doppler.clone(),
+            doppler_confirmed: self.doppler_confirmed.clone(),
+            forward_samples: self.forward_samples.clone(),
+            vision_seen: self.vision_seen.clone(),
+            doppler_recent: self.doppler_recent.clone(),
+            admitted: self.admitted.clone(),
+            last_motion: self.last_motion.clone(),
+            origin: self.origin.clone(),
+            departed: self.departed.clone(),
+            superseded: self.superseded.clone(),
+            ahead_of: self.ahead_of.clone(),
+            tracked: self.tracked.clone(),
+            beyond: self.beyond.clone(),
+            settled: self.settled.clone(),
+            history: self.history.clone(),
+            trail: self.trail.clone(),
+            report: self.report.clone(),
+            lateral_reports: self.lateral_reports.clone(),
+            calm_since: self.calm_since.clone(),
+            stable_y: self.stable_y.clone(),
+        }
     }
 }
 
@@ -247,7 +292,7 @@ impl MapObject {
             doppler_confirmed,
             forward_samples,
             vision_seen,
-            doppler_recent: Ring::from_items(doppler_recent),
+            doppler_recent: ring(doppler_recent),
             admitted,
             last_motion,
             origin,
@@ -257,10 +302,10 @@ impl MapObject {
             tracked,
             beyond,
             settled,
-            history: Ring::from_items(history),
-            trail: Ring::from_items(trail),
+            history: ring(history),
+            trail: ring(trail),
             report,
-            lateral_reports: Ring::from_items(lateral_reports),
+            lateral_reports: ring(lateral_reports),
             calm_since,
             stable_y,
         }
@@ -268,12 +313,12 @@ impl MapObject {
 
     #[getter]
     fn doppler_recent<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        self.doppler_recent.tuple(py)
+        ring_tuple(py, &self.doppler_recent)
     }
 
     #[setter]
     fn set_doppler_recent(&mut self, items: Vec<f64>) {
-        self.doppler_recent = Ring::from_items(Some(items));
+        self.doppler_recent = Ring::from_items(items);
     }
 
     #[getter]
@@ -288,32 +333,32 @@ impl MapObject {
 
     #[getter]
     fn history<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        self.history.tuple(py)
+        ring_tuple(py, &self.history)
     }
 
     #[setter]
     fn set_history(&mut self, items: Vec<(f64, f64, f64, f64)>) {
-        self.history = Ring::from_items(Some(items));
+        self.history = Ring::from_items(items);
     }
 
     #[getter]
     fn trail<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        self.trail.tuple(py)
+        ring_tuple(py, &self.trail)
     }
 
     #[setter]
     fn set_trail(&mut self, items: Vec<(f64, f64)>) {
-        self.trail = Ring::from_items(Some(items));
+        self.trail = Ring::from_items(items);
     }
 
     #[getter]
     fn lateral_reports<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        self.lateral_reports.tuple(py)
+        ring_tuple(py, &self.lateral_reports)
     }
 
     #[setter]
     fn set_lateral_reports(&mut self, items: Vec<(f64, f64)>) {
-        self.lateral_reports = Ring::from_items(Some(items));
+        self.lateral_reports = Ring::from_items(items);
     }
 
     /// The dataclass's `vars()`: every field in declaration order, deque fields as `deque(..., maxlen=N)`. The names
@@ -345,7 +390,7 @@ impl MapObject {
         d.set_item(intern!(py, "doppler_confirmed"), self.doppler_confirmed)?;
         d.set_item(intern!(py, "forward_samples"), self.forward_samples)?;
         d.set_item(intern!(py, "vision_seen"), self.vision_seen)?;
-        d.set_item(intern!(py, "doppler_recent"), self.doppler_recent.state(py)?)?;
+        d.set_item(intern!(py, "doppler_recent"), ring_state(py, &self.doppler_recent)?)?;
         d.set_item(intern!(py, "admitted"), self.admitted)?;
         d.set_item(intern!(py, "last_motion"), self.last_motion)?;
         d.set_item(intern!(py, "origin"), self.origin)?;
@@ -355,10 +400,10 @@ impl MapObject {
         d.set_item(intern!(py, "tracked"), self.tracked)?;
         d.set_item(intern!(py, "beyond"), self.beyond)?;
         d.set_item(intern!(py, "settled"), self.settled)?;
-        d.set_item(intern!(py, "history"), self.history.state(py)?)?;
-        d.set_item(intern!(py, "trail"), self.trail.state(py)?)?;
+        d.set_item(intern!(py, "history"), ring_state(py, &self.history)?)?;
+        d.set_item(intern!(py, "trail"), ring_state(py, &self.trail)?)?;
         d.set_item(intern!(py, "report"), self.report)?;
-        d.set_item(intern!(py, "lateral_reports"), self.lateral_reports.state(py)?)?;
+        d.set_item(intern!(py, "lateral_reports"), ring_state(py, &self.lateral_reports)?)?;
         d.set_item(intern!(py, "calm_since"), self.calm_since)?;
         d.set_item(intern!(py, "stable_y"), self.stable_y)?;
         Ok(d)

@@ -150,6 +150,74 @@ fn object_fields<'py>(obj: &Bound<'py, PyAny>) -> PyResult<(Bound<'py, PyAny>, B
     Ok((obj.getattr(intern!(py, "key"))?, obj.getattr(intern!(py, "born"))?, obj.getattr(intern!(py, "seen"))?))
 }
 
+/// The map's objects: its Rust state, or the `objects` and `local` dicts of a map without one (the reference
+/// map, or a test's stand-in).
+enum Objects<'py> {
+    Rust(Bound<'py, crate::map_state::RadarMapState>),
+    Py(Bound<'py, PyDict>, Bound<'py, PyAny>),
+}
+
+type Fields<'py> = (Bound<'py, PyAny>, Bound<'py, PyAny>, Bound<'py, PyAny>, f64, f64);
+
+impl<'py> Objects<'py> {
+    fn read(tracker: &Bound<'py, PyAny>) -> PyResult<Self> {
+        let py = tracker.py();
+        if let Some(state) = crate::map_state::attached(tracker)? {
+            return Ok(Self::Rust(state));
+        }
+        Ok(Self::Py(tracker.getattr(intern!(py, "objects"))?.cast_into()?, tracker.getattr(intern!(py, "local"))?))
+    }
+
+    /// `{key: (born, round(seen * 100))}` of every object, in dict order.
+    fn observations(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let observations = PyDict::new(py);
+        match self {
+            Self::Rust(state) => {
+                for (key, o) in &state.try_borrow()?.st.objects {
+                    let scaled = PyFloat::new(py, o.seen * 100.).into_any();
+                    observations.set_item(key, (o.born, py_round(py, &scaled)?))?;
+                }
+            }
+            Self::Py(objects, _) => {
+                for obj in objects.values() {
+                    let (key, born, seen) = object_fields(&obj)?;
+                    let scaled = match seen.cast::<PyFloat>() {
+                        Ok(s) => PyFloat::new(py, s.value() * 100.).into_any(),
+                        Err(_) => seen.mul(100.)?,
+                    };
+                    observations.set_item(key, (born, py_round(py, &scaled)?))?;
+                }
+            }
+        }
+        Ok(observations)
+    }
+
+    /// `objects.get(key)`: its key, born, seen and `local[key]`.
+    fn get(&self, py: Python<'py>, key: &Bound<'py, PyAny>) -> PyResult<Option<Fields<'py>>> {
+        match self {
+            Self::Rust(state) => {
+                let Some(key) = key.extract::<Option<i64>>()? else { return Ok(None) };
+                let state = state.try_borrow()?;
+                let Some(o) = state.st.objects.get(&key) else { return Ok(None) };
+                let (x, y) = state.st.local.get(&key).copied().ok_or_else(|| PyKeyError::new_err(key))?;
+                Ok(Some((
+                    key.into_pyobject(py)?.into_any(),
+                    PyFloat::new(py, o.born).into_any(),
+                    PyFloat::new(py, o.seen).into_any(),
+                    x,
+                    y,
+                )))
+            }
+            Self::Py(objects, local) => {
+                let Some(obj) = objects.get_item(key)? else { return Ok(None) };
+                let (key, born, seen) = object_fields(&obj)?;
+                let (x, y): (f64, f64) = local.get_item(&key)?.extract()?;
+                Ok(Some((key, born, seen, x, y)))
+            }
+        }
+    }
+}
+
 /// Python `round(value)` of a float: half to even, as an int (ValueError for NaN, OverflowError for infinity).
 fn py_round<'py>(py: Python<'py>, value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
     if let Ok(v) = value.cast::<PyFloat>() {
@@ -270,17 +338,8 @@ fn correct<'py>(
     align_time: f64,
     handover_time: f64,
 ) -> PyResult<()> {
-    let objects = tracker.getattr(intern!(py, "objects"))?;
-    let objects = objects.cast::<PyDict>()?;
-    let observations = PyDict::new(py);
-    for obj in objects.values() {
-        let (key, born, seen) = object_fields(&obj)?;
-        let scaled = match seen.cast::<PyFloat>() {
-            Ok(s) => PyFloat::new(py, s.value() * 100.).into_any(),
-            Err(_) => seen.mul(100.)?,
-        };
-        observations.set_item(key, (born, py_round(py, &scaled)?))?;
-    }
+    let objects = Objects::read(tracker)?;
+    let observations = objects.observations(py)?;
     update_centers(correction, centers, frame, &observations)?;
     let filters = PyDict::new(py);
 
@@ -312,7 +371,6 @@ fn correct<'py>(
     };
     let live_aligned = live.getattr(intern!(py, "aligned"))?;
     let live_filters = live.getattr(intern!(py, "filters"))?;
-    let local = tracker.getattr(intern!(py, "local"))?;
     let selected = tracker.getattr(intern!(py, "selected"))?;
     let remembered = tracker.getattr(intern!(py, "remembered"))?;
     let slot_fields = tracker.getattr(intern!(py, "SLOT_FIELDS"))?;
@@ -321,12 +379,10 @@ fn correct<'py>(
     for (slot, fields) in slot_fields.try_iter()?.enumerate() {
         let fields = fields?;
         let (distance, lateral, detect): (Bound<'py, PyAny>, Bound<'py, PyAny>, Bound<'py, PyAny>) = fields.extract()?;
-        let Some(obj) = objects.get_item(item(&selected, slot)?)? else { continue };
+        let Some((key, born, seen, x, y)) = objects.get(py, &item(&selected, slot)?)? else { continue };
         if !values.get_item(&detect)?.is_truthy()? {
             continue;
         }
-        let (key, born, seen) = object_fields(&obj)?;
-        let (x, y): (f64, f64) = local.get_item(&key)?.extract()?;
         let mut output: f64;
         if item(&remembered, slot)?.is_truthy()? {
             let saved = tracks.call_method1(intern!(py, "get"), (&key,))?;

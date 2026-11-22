@@ -13,13 +13,13 @@ use std::collections::{HashMap, HashSet};
 use pyo3::exceptions::{PyIndexError, PyKeyError, PyOverflowError, PyZeroDivisionError};
 use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PySet, PyString, PyTuple};
+use pyo3::types::{PyDict, PyList, PySet, PyTuple};
 
 use crate::consts::Consts;
+use ccnc_map::radar::MapState;
+
 use crate::display_filter::empty_object;
-use crate::guard;
-use crate::lanes::{interpolate, LaneCache, Lanes};
-use crate::map_object::MapObject;
+use crate::lanes::{interpolate, Lanes};
 use crate::observe::Frame;
 use crate::pymath::{acos, cos, degrees, hypot, py_max, py_min, py_sum, radians};
 use crate::radar_map::floor;
@@ -29,10 +29,6 @@ type Candidate = (f64, f64, i64); // (*local[key], key)
 type BandPoint = (i64, i64, f64, f64, f64, bool); // (sign, reference, road distance, offset, odometer, inside)
 type RowPoint = (f64, f64, i64, bool); // (road distance, offset, key, inside)
 type Bend = (i64, f64, f64); // (key, degrees, gap) before Python's round
-
-fn attr_f64(obj: &Bound<'_, PyAny>, name: &Bound<'_, PyString>) -> PyResult<f64> {
-    obj.getattr(name)?.extract()
-}
 
 fn index_error() -> PyErr {
     PyIndexError::new_err("list index out of range")
@@ -139,9 +135,8 @@ impl<V> Ordered<V> {
     }
 }
 
-/// What `_walls` and `_bands` read of one map object (and `local[key]`), and the object itself for `structure`.
+/// What `_walls` and `_bands` read of one map object (and `local[key]`).
 struct Obj {
-    obj: Py<MapObject>,
     x: f64,
     y: f64,
     local: Option<Xy>,
@@ -174,7 +169,6 @@ fn local(objs: &HashMap<i64, Obj>, key: i64) -> PyResult<Xy> {
 
 /// The rows `_walls` hands to `_bands`: `candidates`, `inside`, and the objects as `_walls` read them (no Python
 /// code runs between the two).
-#[pyclass(frozen, module = "ccnc_core")]
 pub struct WallRows {
     candidates: Vec<Candidate>,
     inside: HashSet<i64>,
@@ -209,24 +203,6 @@ fn sort_keys(keys: impl Iterator<Item = i64>, mut f: impl FnMut(i64) -> PyResult
     Ok(keyed.into_iter().map(|(k, _)| k).collect())
 }
 
-/// `_walls(measured)` up to its `_bands` call: writes `walls`, `wall_geometry` and `structure`, and returns the rows
-/// for `bands` and the bends as (key, degrees, gap) before Python's `round`.
-#[pyfunction]
-pub fn walls<'py>(
-    py: Python<'py>,
-    radar_map: &Bound<'py, PyAny>,
-    measured: &Bound<'py, PyAny>,
-    wall_type: &Bound<'py, PyAny>,
-) -> PyResult<(WallRows, Vec<Bend>)> {
-    guard(|| {
-        let k = Consts::read(radar_map)?;
-        let now = attr_f64(radar_map, intern!(py, "now"))?;
-        let frame = Frame::read(radar_map)?;
-        let (rows, bends, _) = walls_core(py, radar_map, &k, now, frame, measured, wall_type)?;
-        Ok((rows, bends))
-    })
-}
-
 /// `measured` as Rust keys, and whether it is truthy.
 fn read_measured(measured: &Bound<'_, PyAny>) -> PyResult<HashSet<i64>> {
     let mut out = HashSet::new();
@@ -241,6 +217,7 @@ fn read_measured(measured: &Bound<'_, PyAny>) -> PyResult<HashSet<i64>> {
 pub(crate) fn walls_core<'py>(
     py: Python<'py>,
     radar_map: &Bound<'py, PyAny>,
+    st: &mut MapState,
     k: &Consts,
     now: f64,
     frame: Frame,
@@ -252,18 +229,12 @@ pub(crate) fn walls_core<'py>(
     let any_measured = measured_obj.is_truthy()?;
 
     // Every object's structure is cleared; what the rest reads of it is kept.
-    let objects = m.getattr(intern!(py, "objects"))?.cast_into::<PyDict>()?;
-    let local_dict = m.getattr(intern!(py, "local"))?.cast_into::<PyDict>()?;
-    let mut order = Vec::with_capacity(objects.len());
-    let mut objs = HashMap::with_capacity(objects.len());
-    for (key, value) in objects.iter() {
-        let key: i64 = key.extract()?;
-        let bound = value.cast_into::<MapObject>()?;
+    let mut order = Vec::with_capacity(st.objects.len());
+    let mut objs = HashMap::with_capacity(st.objects.len());
+    for (&key, o) in st.objects.iter_mut() {
         let info = {
-            let mut o = bound.try_borrow_mut()?;
             o.structure = false;
             Obj {
-                obj: bound.clone().unbind(),
                 x: o.x,
                 y: o.y,
                 local: None,
@@ -278,7 +249,7 @@ pub(crate) fn walls_core<'py>(
                 vision_seen: o.vision_seen,
             }
         };
-        let info = Obj { local: local_dict.get_item(key)?.map(|xy| xy.extract()).transpose()?, ..info };
+        let info = Obj { local: st.local.get(&key).copied(), ..info };
         order.push(key);
         objs.insert(key, info);
     }
@@ -441,8 +412,8 @@ pub(crate) fn walls_core<'py>(
     let mut lines = Vec::with_capacity(walls.len());
     for wall in &walls {
         for key in &wall.members {
-            if let Some(o) = objs.get(key) {
-                o.obj.bind(py).try_borrow_mut()?.structure = true;
+            if objs.contains_key(key) {
+                st.objects.get_mut(key).expect("an object of this update").structure = true;
             }
         }
         let drawing = empty_object(wall_type)?;
@@ -630,28 +601,12 @@ impl BandData<'_> {
     }
 }
 
-/// `_bands(candidates, measured, inside)` with the rows `walls` returned.
-#[pyfunction]
-pub fn bands<'py>(
-    py: Python<'py>,
-    radar_map: &Bound<'py, PyAny>,
-    rows: &WallRows,
-    measured: &Bound<'py, PyAny>,
-    band_type: &Bound<'py, PyAny>,
-) -> PyResult<()> {
-    guard(|| {
-        let k = Consts::read(radar_map)?;
-        let odometer = attr_f64(radar_map, intern!(py, "odometer"))?;
-        let mut cache = LaneCache::new(radar_map);
-        bands_core(py, radar_map, &k, odometer, cache.get()?, rows, measured, band_type, None)
-    })
-}
-
 /// `_bands`; the band geometry it appends to `wall_geometry` is also appended to `geometry` if given.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bands_core<'py>(
     py: Python<'py>,
     radar_map: &Bound<'py, PyAny>,
+    st: &mut MapState,
     k: &Consts,
     odometer: f64,
     lanes: &Lanes<'_>,
@@ -707,7 +662,7 @@ pub(crate) fn bands_core<'py>(
             band_points.insert(key.extract()?, value.extract()?);
         }
         let band_early = m.getattr(intern!(py, "band_early"))?;
-        band_early.call_method1(intern!(py, "intersection_update"), (m.getattr(intern!(py, "objects"))?,))?;
+        band_early.call_method1(intern!(py, "intersection_update"), (PyList::new(py, st.objects.keys().copied())?,))?;
         let mut early = Vec::new();
         for key in band_early.try_iter()? {
             let key: i64 = key?.extract()?;
@@ -932,7 +887,7 @@ pub(crate) fn bands_core<'py>(
         for key in band.members.keys() {
             if let Some(o) = objs.get(&key) {
                 if !o.vision && !o.radar_vehicle {
-                    o.obj.bind(py).try_borrow_mut()?.structure = true;
+                    st.objects.get_mut(&key).expect("an object of this update").structure = true;
                 }
             }
         }

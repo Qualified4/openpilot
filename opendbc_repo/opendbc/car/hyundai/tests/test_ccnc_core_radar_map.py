@@ -1,14 +1,15 @@
 """The Rust radar map update gives the same bits as the Python reference, on the real map class: the one-call update
-(_update_lane_reference, _observe, _vision, _walls, _bands, _select in one Rust call, _advance's objects in another), and
-the stage-by-stage Rust path a subclass that replaces one of those methods gets. The Rust path keeps its objects in the
-Rust MapObject class, the Python path in the dataclass; both are compared as their fields (dataclass vars(), Rust
-__getstate__())."""
+(_update_lane_reference, _observe, _vision, _walls, _bands, _select in one Rust call, _advance in another). The Rust path
+keeps ego's pose, the objects and the radar id history in the map's Rust state (ccnc_core.RadarMapState), the Python
+path in its attributes and the dataclass; both are compared as their fields (dataclass vars(), Rust __getstate__()). A
+subclass that replaces one of those methods runs the Python reference."""
 from collections import Counter
 from collections import deque
 import functools
 import importlib.util
 import math
 import operator
+import os
 import pickle
 import random
 import struct
@@ -69,10 +70,13 @@ RECORDER = ('log', 'counts', 'associating', 'selecting')
 
 
 def state(m):
-  # Not the recorder's own attributes: only the Python path and the stage-by-stage Rust path record.
-  out = {k: v for k, v in vars(m).items() if k not in ('generation', 'raw', 'model') + RECORDER}
-  out['objects'] = {k: fields(o) for k, o in m.objects.items()}
-  return out
+  # Not the recorder's own attributes: only the Python path records. The fields a Rust map keeps in its Rust state are
+  # read from it (copies); the names are sorted, as the two keep them in different orders.
+  out = {k: v for k, v in vars(m).items() if k not in ('generation', 'raw', 'model', '_rust_state') + RECORDER}
+  for name in radar_map._RUST_FIELDS:
+    out[name] = getattr(m, name)
+  out['objects'] = {k: fields(o) for k, o in out['objects'].items()}
+  return dict(sorted(out.items()))
 
 
 class Recorder:
@@ -207,7 +211,7 @@ class PythonLanesMap(Recorder, CcncRadarMap):
 
 
 class StepRustMap(Recorder, CcncRadarMap):
-  """The stage-by-stage Rust path, which the recorder's methods select."""
+  """A map whose methods the recorder replaces: it runs the Python reference, though the Rust core is loaded."""
 
 
 class PythonMap(Recorder, CcncRadarMap):
@@ -222,9 +226,15 @@ def rust_core():
   return core
 
 
-def test_replaced_methods_select_the_stage_by_stage_path():
+def test_replaced_methods_select_the_python_path():
   assert RustMap()._fusable() and CcncRadarMap()._fusable()
   assert not StepRustMap()._fusable() and not PythonMap()._fusable()
+
+  class Advance(CcncRadarMap):
+    def _advance(self, *args):
+      return super()._advance(*args)
+
+  assert not Advance()._fusable()
 
   class Lane(CcncRadarMap):
     def _lane(self, *args, **kwargs):
@@ -651,7 +661,7 @@ def run(seed, maps, frames=FRAMES):
   stats['evicted'] = first.evicted
   for name in COUNTS:
     stats[name] = sum(m.counts[name] for m in maps if m.RUST is None)
-  assert all(m.counts['lane_checks'] == 0 for m in maps if m.RUST is not None and hasattr(m, 'counts'))
+  assert all(m.counts['lane_checks'] == 0 for m in maps if m.RUST is not None and m._fusable() and hasattr(m, 'counts'))
   # Every update of a map without replaced methods ran as one Rust call (the scenarios never reset the map).
   stats['one_call'] = core._update_calls_for_test() - calls
   # Every frame's new model updated the lanes of each map given its bytes, in Rust.
@@ -694,8 +704,11 @@ def test_model_bytes_input_gives_the_same_bits(seed):
 
 
 @pytest.mark.parametrize('seed', (1, 2, 11, 19))  # Stopping (stop memory), a lead (bridge), crowded, many short rows.
-def test_stage_by_stage_rust_path_gives_the_same_bits(seed):
+def test_replaced_methods_run_the_python_reference(seed):
   stats = run(seed, [PythonMap(), StepRustMap()])
+  m = StepRustMap()
+  m.update(None, None, 1000., 0., yaw_rate=0.)
+  assert '_rust_state' not in vars(m) and isinstance(m.objects, dict)
   assert stats['calls'] > 0 and stats['one_call'] == 0
 
 
@@ -744,12 +757,18 @@ def test_missing_module_runs_the_python_loops(monkeypatch):
 
 
 def objects_at(m, positions):
-  m.now, m.cos, m.sin = 10., 1., 0.
-  cls = MapObject if m.RUST is None else m.RUST.MapObject
+  # A Rust map's objects are its Rust state's: they are put there, not in the copies its attributes give.
+  rust = m.RUST is not None and m._fusable()
+  target = m.RUST.attach_state(m) if rust else m
+  target.now, target.cos, target.sin = 10., 1., 0.
+  cls = m.RUST.MapObject if rust else MapObject
   for key, (x, y, source) in enumerate(positions, 1):
-    m.objects[key] = cls(key, source, x, y, 0., 0., 9., 9.95, report=(9.95, x, y), motion_confirmed=key % 2 == 0,
-                               drift=.01 * (key % 3))
-    m.local[key] = (x, y)
+    obj = cls(key, source, x, y, 0., 0., 9., 9.95, report=(9.95, x, y), motion_confirmed=key % 2 == 0, drift=.01 * (key % 3))
+    if rust:
+      target.put_object(obj, (x, y))
+    else:
+      m.objects[key] = obj
+      m.local[key] = (x, y)
 
 
 @pytest.mark.parametrize('sign', (1., -1.))
@@ -766,7 +785,7 @@ def test_grid_edges_and_equal_scores(sign):
   for m in maps:
     objects_at(m, positions)
   for stamp in (10., 9.99, 9.9):
-    results = [m._associate(measurements, stamp) for m in maps]
+    results = [maps[0]._associate(measurements, stamp), maps[1].RUST._associate_for_test(maps[1], measurements, stamp)]
     assert bits(results[0]) == bits(results[1]) and results[0], stamp
 
 
@@ -880,3 +899,53 @@ def test_waiting_admission_needs_room_to_the_road_edge(monkeypatch, room, rule, 
   for m in maps:
     objects = [obj for obj in m.objects.values() if obj.slot == 2]
     assert objects and any(obj.admitted for obj in objects) == admitted
+
+
+REPLAY_CACHE = os.environ.get('CCNC_REPLAY_CACHE', '/home/orca/.orca/bots/pilo/work/pos-redesign-20261121/out23/cache')
+REPLAY_SEGMENT = '00000468--c7459c0c5a--37'  # STAGE23 scene segment: turns, lane changes, a lead.
+
+
+def replay_frames(limit):
+  """(now, liveTracks, its bytes, its time, modelV2, its bytes, its time, vEgo) at each carState message of the recorded
+  segment once both inputs arrived: the map updates at every car state with the latest radar and model messages."""
+  path = os.path.join(REPLAY_CACHE, REPLAY_SEGMENT + '.capnp')
+  if not os.path.exists(path):
+    pytest.skip(f'replay cache {path} not found (set CCNC_REPLAY_CACHE)')
+  with open(path, 'rb') as f:
+    events = list(log.Event.read_multiple_bytes(f.read(), traversal_limit_in_words=2**50))
+  live = model = None
+  for event in events:
+    kind = event.which()
+    now = event.logMonoTime * 1e-9
+    if kind == 'modelV2':
+      model = event.modelV2, event.as_builder().to_bytes(), now
+    elif kind == 'liveTracks':
+      live = event.liveTracks, event.as_builder().to_bytes(), now
+    elif kind == 'carState' and live is not None and model is not None:
+      yield now, *live, *model, float(event.carState.vEgo)
+      limit -= 1
+      if limit == 0:
+        return
+
+
+def test_rust_state_snapshot_matches_python_reference():
+  # 2,000 recorded car state frames (20 s) through the Python reference and a Rust map: after every update the Rust state's
+  # snapshot is the Python map's fields (objects as the dataclass's vars()), and the rest of the map is the same too.
+  python, rust = PythonMap(), RustMap()
+  frames = updates = observed = 0
+  for now, live, live_raw, radar_time, md, md_raw, model_time, v_ego in replay_frames(2000):
+    for m in (python, rust):
+      m.update(live, md, now, v_ego, radar_time=radar_time, model_time=model_time,
+               live_bytes=live_raw if m is rust else None, model_bytes=md_raw if m is rust else None)
+    frames += 1
+    if '_rust_state' not in vars(rust):
+      continue  # Reset this frame (an input gap): neither map has state.
+    updates += 1
+    snapshot = rust._rust_state.snapshot()
+    reference = {name: getattr(python, name) for name in snapshot}
+    reference['objects'] = {k: vars(o) for k, o in python.objects.items()}
+    assert same(snapshot, reference), (frames, now)
+    assert same(state(rust), state(python)), (frames, now)
+    observed += bool(python.objects)
+    python.log.clear()
+  assert frames == 2000 and updates > 1900 and observed > 1000, (frames, updates, observed)

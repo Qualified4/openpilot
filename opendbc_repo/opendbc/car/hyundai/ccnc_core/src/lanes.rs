@@ -65,21 +65,23 @@ pub struct LaneCache<'a, 'py> {
     radar_map: &'a Bound<'py, PyAny>,
     lanes: Option<Lanes<'py>>,
     preset: Option<(f64, f64, bool)>, // (OUTER_NARROW, OUTER_FAR, _model_changing()) read by the caller
+    now: Option<f64>,                 // the map's `now`, read from the map when None
 }
 
 impl<'a, 'py> LaneCache<'a, 'py> {
     pub fn new(radar_map: &'a Bound<'py, PyAny>) -> Self {
-        Self { radar_map, lanes: None, preset: None }
+        Self { radar_map, lanes: None, preset: None, now: None }
     }
 
     /// The one-call update's snapshot: its constants and the model's lane change state come from the caller.
-    pub fn preset(radar_map: &'a Bound<'py, PyAny>, outer_narrow: f64, outer_far: f64, changing: bool) -> Self {
-        Self { radar_map, lanes: None, preset: Some((outer_narrow, outer_far, changing)) }
+    /// `now` is the map's: its state may be borrowed while the snapshot is made.
+    pub fn preset(radar_map: &'a Bound<'py, PyAny>, outer_narrow: f64, outer_far: f64, changing: bool, now: f64) -> Self {
+        Self { radar_map, lanes: None, preset: Some((outer_narrow, outer_far, changing)), now: Some(now) }
     }
 
     pub fn get(&mut self) -> PyResult<&mut Lanes<'py>> {
         if self.lanes.is_none() {
-            self.lanes = Some(Lanes::read(self.radar_map, self.preset)?);
+            self.lanes = Some(Lanes::read(self.radar_map, self.preset, self.now)?);
         }
         Ok(self.lanes.as_mut().unwrap())
     }
@@ -90,7 +92,7 @@ fn attr_f64(obj: &Bound<'_, PyAny>, name: &Bound<'_, pyo3::types::PyString>) -> 
 }
 
 impl<'py> Lanes<'py> {
-    fn read(m: &Bound<'py, PyAny>, preset: Option<(f64, f64, bool)>) -> PyResult<Self> {
+    fn read(m: &Bound<'py, PyAny>, preset: Option<(f64, f64, bool)>, now: Option<f64>) -> PyResult<Self> {
         let py = m.py();
         let lanes = m.getattr(intern!(py, "lanes"))?;
         let lanes = lanes.cast::<PyDict>()?;
@@ -115,7 +117,14 @@ impl<'py> Lanes<'py> {
         let model_fresh = if model_stamp.is_none() {
             false
         } else {
-            let age = attr_f64(m, intern!(py, "now"))? - model_stamp.extract::<f64>()?;
+            let now = match now {
+                Some(now) => now,
+                None => match crate::map_state::attached(m)? {
+                    Some(state) => state.try_borrow()?.st.now.ok_or_else(|| PyValueError::new_err("map not advanced"))?,
+                    None => attr_f64(m, intern!(py, "now"))?,
+                },
+            };
+            let age = now - model_stamp.extract::<f64>()?;
             (0. ..=0.25).contains(&age)
         };
         let (outer_narrow, outer_far, changing) = match preset {
@@ -407,5 +416,39 @@ impl<'py> Lanes<'py> {
             }
         }
         Ok(false)
+    }
+}
+
+fn lane_err(error: PyErr) -> ccnc_map::radar::Error {
+    crate::map_state::external(error)
+}
+
+impl ccnc_map::radar::lanes::LaneQuery for LaneCache<'_, '_> {
+    fn lane(&mut self, x: f64, y: f64, moving: bool, settled: bool) -> ccnc_map::radar::Result<(Option<i64>, bool, f64)> {
+        self.get().and_then(|l| l.lane(x, y, moving, settled, &[])).map_err(lane_err)
+    }
+
+    fn centre(&mut self, x: f64) -> ccnc_map::radar::Result<Option<f64>> {
+        self.get().map(|l| l.centre(x)).map_err(lane_err)
+    }
+
+    fn outer(&mut self, x: f64, y: f64) -> ccnc_map::radar::Result<Option<f64>> {
+        self.get().and_then(|l| l.outer(x, y)).map_err(lane_err)
+    }
+
+    fn body_clear(&mut self, slot: i64, x: f64, y: f64, clearance: f64, far_side: f64) -> ccnc_map::radar::Result<bool> {
+        self.get().map(|l| l.body_clear(slot, x, y, clearance, far_side)).map_err(lane_err)
+    }
+
+    fn edge_room(&mut self, slot: i64, x: f64, room: f64) -> ccnc_map::radar::Result<bool> {
+        self.get().map(|l| l.edge_room(slot, x, room)).map_err(lane_err)
+    }
+
+    fn band_line(&mut self, x: f64, y: f64, odometer: f64, bin: f64, memory: f64) -> ccnc_map::radar::Result<bool> {
+        self.get().and_then(|l| l.band_line(x, y, odometer, bin, memory)).map_err(lane_err)
+    }
+
+    fn has_geometry(&mut self) -> ccnc_map::radar::Result<bool> {
+        self.get().map(|l| l.has_geometry).map_err(lane_err)
     }
 }

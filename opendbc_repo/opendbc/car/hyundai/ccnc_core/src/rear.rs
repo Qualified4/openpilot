@@ -9,7 +9,7 @@ use pyo3::types::{PyDict, PyInt, PyList, PyString, PyTuple};
 use crate::display_filter::{self, reset as reset_filter};
 use crate::guard;
 use crate::map_object::MapObject;
-use crate::observe::{crossing, Frame};
+use crate::observe::crossing;
 use crate::pymath::{py_max, py_min, py_sum};
 
 type Record<'py> = Bound<'py, PyDict>;
@@ -1121,6 +1121,19 @@ fn map_selection<'py>(
     key: &Bound<'py, PyAny>,
 ) -> PyResult<(Bound<'py, PyAny>, bool)> {
     let py = tracker.py();
+    if let Some(state) = crate::map_state::attached(tracker)? {
+        let state = state.try_borrow()?;
+        let Some(o) = key.extract::<Option<i64>>()?.and_then(|key| state.st.objects.get(&key)) else {
+            return Ok((py.None().into_bound(py), false));
+        };
+        let identity = (o.source, o.born).into_pyobject(py)?.into_any();
+        let proven = index > 0
+            && !o.structure
+            && !o.superseded
+            && (o.radar_moving || o.doppler_confirmed)
+            && !crossing(o, state.st.frame(), attr!(tracker, "CROSSING_TRAVEL").extract::<f64>()?);
+        return Ok((identity, proven));
+    }
     let objects = attr!(tracker, "objects").cast_into::<PyDict>()?;
     let Some(object) = objects.get_item(key)? else {
         return Ok((py.None().into_bound(py), false));
@@ -1135,10 +1148,10 @@ fn map_selection<'py>(
         && (attr!(object, "radar_moving").is_truthy()?
             || attr!(object, "doppler_confirmed").is_truthy()?)
     {
-        let frame = Frame::read(tracker)?;
+        let frame = crate::observe::read_frame(tracker)?;
         let travel = attr!(tracker, "CROSSING_TRAVEL").extract::<f64>()?;
         proven = if let Ok(object) = object.cast::<MapObject>() {
-            !crossing(&*object.try_borrow()?, frame, travel)
+            !crossing(&object.try_borrow()?.data(), frame, travel)
         } else {
             // The map's reference class exposes the same fields.
             let origin = attr!(object, "origin");

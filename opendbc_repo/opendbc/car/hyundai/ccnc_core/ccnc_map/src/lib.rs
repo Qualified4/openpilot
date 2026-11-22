@@ -1,4 +1,5 @@
-//! The CCNC map's computation without Python: the position display and the message byte readers. The `ccnc_core`
+//! The CCNC map's computation without Python: the radar map state and its observation stages, the position display
+//! and the message byte readers. The `ccnc_core`
 //! extension and the `ccnc_mapd` process both call it.
 
 pub mod pos {
@@ -13,3 +14,6 @@ pub mod input {
     pub mod live_tracks;
     pub mod model_v2;
 }
+
+pub mod pymath;
+pub mod radar;

@@ -299,7 +299,7 @@ pub(crate) fn numpy_interp((x, y): &Curve, at: f64) -> f64 {
 
 pub(crate) fn place_geometry<'py>(radar_map: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyDict>> {
     let py = radar_map.py();
-    let frame = Frame::read(radar_map)?;
+    let frame = crate::observe::read_frame(radar_map)?;
     let placed = PyDict::new(py);
     let geometry = PyDict::new(py);
     radar_map.setattr(intern!(py, "geometry"), &geometry)?;
@@ -328,7 +328,7 @@ pub(crate) fn refresh_lanes<'py>(
         m.getattr(intern!(py, "FAR_X"))?.extract()?,
     );
     let ego_change = m.getattr(intern!(py, "ego_change"))?.is_truthy()?;
-    let frame = Frame::read(m)?;
+    let frame = crate::observe::read_frame(m)?;
     let (px, py_, pc, ps) = (origin.px, origin.py, origin.c, origin.s);
     let lanes = m.getattr(intern!(py, "lanes"))?.cast_into::<PyDict>()?;
     let geometry = m.getattr(intern!(py, "geometry"))?.cast_into::<PyDict>()?;

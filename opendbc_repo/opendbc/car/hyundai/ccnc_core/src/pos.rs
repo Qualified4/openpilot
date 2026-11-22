@@ -5,11 +5,10 @@
 
 use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::PyList;
 
 use crate::guard;
 use crate::lanes::LaneCache;
-use crate::map_object::MapObject;
 
 use ccnc_map::pos::display_a::DisplayA;
 use ccnc_map::pos::display_b::DisplayB;
@@ -121,10 +120,9 @@ fn trace_list<'py>(state: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, PyLi
 /// reset this update (no clock yet); the map then shows nothing.
 fn build_frame(map: &Bound<'_, PyAny>, cs: &Bound<'_, PyAny>, followed: &[Vid]) -> PyResult<Option<FrameIn>> {
     let py = map.py();
-    let Some(now): Option<f64> = map.getattr(intern!(py, "now"))?.extract()? else { return Ok(None) };
+    let state = crate::map_state::attach(map)?;
+    let Some(now) = state.try_borrow()?.st.now else { return Ok(None) };
     let selected: [Option<i64>; 3] = map.getattr(intern!(py, "selected"))?.extract()?;
-    let objects = map.getattr(intern!(py, "objects"))?.cast_into::<PyDict>()?;
-    let local = map.getattr(intern!(py, "local"))?.cast_into::<PyDict>()?;
     let usable = map.getattr(intern!(py, "usable"))?.is_truthy()?;
     let mut keys: Vec<Vid> = Vec::new();
     if usable {
@@ -137,10 +135,9 @@ fn build_frame(map: &Bound<'_, PyAny>, cs: &Bound<'_, PyAny>, followed: &[Vid]) 
     let lanes = cache.get()?;
     let offset = lanes.lane_offset();
     let mut objs = Vec::with_capacity(keys.len());
+    let state = state.try_borrow()?;
     for vid in keys {
-        let (Some(object), Some(position)) = (objects.get_item(vid)?, local.get_item(vid)?) else { continue };
-        let (x, y): (f64, f64) = position.extract()?;
-        let o = object.cast::<MapObject>()?.try_borrow()?;
+        let (Some(o), Some(&(x, y))) = (state.st.objects.get(&vid), state.st.local.get(&vid)) else { continue };
         let lines = std::array::from_fn(|i| lanes.boundary(i as i64 + offset, x));
         objs.push(Obj { vid, x, y, seen: o.seen, report: o.report, lines });
     }

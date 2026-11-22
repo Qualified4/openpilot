@@ -7,6 +7,7 @@ mod display_filter;
 mod lanes;
 mod live_tracks;
 mod map_object;
+mod map_state;
 mod model_v2;
 mod observe;
 mod position_correction;
@@ -80,24 +81,60 @@ fn _lane_for_test(
     })
 }
 
+/// The Rust state of a map whose update runs in Rust (`map_state::attach`): made on first use.
+#[pyfunction]
+fn attach_state<'py>(radar_map: &Bound<'py, PyAny>) -> PyResult<Bound<'py, map_state::RadarMapState>> {
+    guard(|| map_state::attach(radar_map))
+}
+
+/// For the parity test only: `_associate(measurements, stamp)` of the map's Rust state, as {measurement index: key}.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+fn _associate_for_test<'py>(
+    radar_map: &Bound<'py, PyAny>,
+    measurements: Vec<(i128, f64, f64, f64, f64, f64, f64, f64, bool, i32, bool)>,
+    stamp: f64,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    guard(|| {
+        use ccnc_map::radar::associate::{associate, AssociateIn};
+        use ccnc_map::radar::observe::Measurement;
+        let py = radar_map.py();
+        let k = consts::read(radar_map)?;
+        let inp = AssociateIn {
+            holding: radar_map.getattr("holding")?.is_truthy()?,
+            lane_change: radar_map.getattr("lane_change")?.is_truthy()?,
+            selected: select::read_selected(radar_map)?,
+        };
+        let ms: Vec<Measurement> = measurements
+            .into_iter()
+            .map(|(source, x, y, vx, vy, explained, hc, hs, radar_moving, doppler, tracked)| Measurement {
+                source, x, y, vx, vy, explained, hc, hs, radar_moving, doppler, tracked,
+            })
+            .collect();
+        let state = map_state::attach(radar_map)?;
+        let mut lanes = lanes::LaneCache::new(radar_map);
+        let pairs = {
+            let state = state.try_borrow()?;
+            associate(&state.st, &k, inp, &mut lanes, &ms, stamp).map_err(map_state::py_err)?
+        };
+        let out = pyo3::types::PyDict::new(py);
+        for (i, key) in pairs {
+            out.set_item(i, key)?;
+        }
+        Ok(out)
+    })
+}
+
 #[pymodule]
 fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(source_hash, module)?)?;
     module.add_function(wrap_pyfunction!(abi_version, module)?)?;
     module.add_function(wrap_pyfunction!(_panic_for_test, module)?)?;
-    module.add_class::<radar_map::RadarPoints>()?;
-    module.add_class::<radar_map::AssociateInput>()?;
-    module.add_function(wrap_pyfunction!(radar_map::radar_points, module)?)?;
-    module.add_function(wrap_pyfunction!(radar_map::measurements, module)?)?;
-    module.add_function(wrap_pyfunction!(radar_map::associate_input, module)?)?;
-    module.add_function(wrap_pyfunction!(radar_map::associate, module)?)?;
     module.add_class::<map_object::MapObject>()?;
-    module.add_function(wrap_pyfunction!(observe::observe, module)?)?;
-    module.add_function(wrap_pyfunction!(observe::advance, module)?)?;
-    module.add_function(wrap_pyfunction!(observe::forget_lateral, module)?)?;
-    module.add_class::<walls::WallRows>()?;
-    module.add_function(wrap_pyfunction!(walls::walls, module)?)?;
-    module.add_function(wrap_pyfunction!(walls::bands, module)?)?;
+    module.add_class::<map_state::RadarMapState>()?;
+    module.add_function(wrap_pyfunction!(attach_state, module)?)?;
+    module.add_function(wrap_pyfunction!(map_state::advance_state, module)?)?;
+    module.add_function(wrap_pyfunction!(map_state::state_pose_at, module)?)?;
     module.add_function(wrap_pyfunction!(update::update, module)?)?;
     module.add_function(wrap_pyfunction!(update::_update_calls_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(live_tracks::live_tracks_copy, module)?)?;
@@ -113,6 +150,7 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_sum_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_math_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(_lane_for_test, module)?)?;
+    module.add_function(wrap_pyfunction!(_associate_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(correct::correct_positions, module)?)?;
     module.add_function(wrap_pyfunction!(correct::_position_apply_for_test, module)?)?;
     module.add_function(wrap_pyfunction!(rear::_update_rear_for_test, module)?)?;
