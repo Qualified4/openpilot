@@ -21,21 +21,21 @@ use self::display_b::DisplayB;
 
 /// (vid, x, y, seen, report, lines) of an `Obj`, as the trace and the test entry carry it.
 type ObjTuple = (i64, f64, f64, f64, Option<(f64, f64, f64)>, [Option<f64>; 4]);
-type FrameTuple = (f64, Option<f64>, [Option<i64>; 3], Option<(f64, f64)>, Vec<ObjTuple>);
+type FrameTuple = (f64, Option<f64>, [Option<i64>; 3], Option<(f64, f64)>, Vec<ObjTuple>, Option<f64>);
 type OutTuple = ([Option<i64>; 3], [Option<f64>; 3]);
 
 fn frame_from(t: FrameTuple) -> FrameIn {
-    let (now, yaw, selected, lead, objs) = t;
+    let (now, yaw, selected, lead, objs, heading) = t;
     let objs = objs
         .into_iter()
         .map(|(vid, x, y, seen, report, lines)| Obj { vid, x, y, seen, report, lines })
         .collect();
-    FrameIn { now, yaw, selected, lead, objs }
+    FrameIn { now, yaw, selected, lead, objs, heading }
 }
 
 fn frame_tuple(f: &FrameIn) -> FrameTuple {
     let objs = f.objs.iter().map(|o| (o.vid, o.x, o.y, o.seen, o.report, o.lines)).collect();
-    (f.now, f.yaw, f.selected, f.lead, objs)
+    (f.now, f.yaw, f.selected, f.lead, objs, f.heading)
 }
 
 /// The display's memory across updates, kept on the extension state as `_rust_pos`.
@@ -57,7 +57,7 @@ impl PosState {
         let drawn = if mode == 2 {
             self.b.draw(&self.common, &out, f.now)
         } else {
-            self.a.draw(&self.common, &out)
+            self.a.draw(&self.common, &out, f)
         };
         (out.assigned, drawn)
     }
@@ -148,7 +148,49 @@ fn build_frame(map: &Bound<'_, PyAny>, cs: &Bound<'_, PyAny>, followed: &[Vid]) 
         let lines = std::array::from_fn(|i| lanes.boundary(i as i64 + offset, x));
         objs.push(Obj { vid, x, y, seen: o.seen, report: o.report, lines });
     }
-    Ok(Some(FrameIn { now, yaw: yaw_rate(cs)?, selected: if usable { selected } else { [None; 3] }, lead: lead_one(cs)?, objs }))
+    let heading = road_heading(lanes, offset);
+    Ok(Some(FrameIn { now, yaw: yaw_rate(cs)?, selected: if usable { selected } else { [None; 3] }, lead: lead_one(cs)?, objs, heading }))
+}
+
+/// The road's heading in the ego frame (left +): the slope at x = 0 of a quadratic fit to the midline of ego's
+/// inner lines at 0-30 m, where the lane is 1.8-5.5 m wide; None with fewer than four such points.
+fn road_heading(lanes: &crate::lanes::Lanes<'_>, offset: i64) -> Option<f64> {
+    let mut s = [0f64; 5];
+    let mut t = [0f64; 3];
+    let mut n = 0;
+    for x in [0., 5., 10., 15., 20., 30.] {
+        let (Some(a), Some(b)) = (lanes.boundary(offset + 1, x), lanes.boundary(offset + 2, x)) else { continue };
+        if !(1.8..=5.5).contains(&(a - b)) {
+            continue;
+        }
+        let y = 0.5 * (a + b);
+        let mut xp = 1.;
+        for k in 0..5 {
+            s[k] += xp;
+            if k < 3 {
+                t[k] += xp * y;
+            }
+            xp *= x;
+        }
+        n += 1;
+    }
+    if n < 4 {
+        return None;
+    }
+    let m = [[s[0], s[1], s[2]], [s[1], s[2], s[3]], [s[2], s[3], s[4]]];
+    let det = |m: [[f64; 3]; 3]| {
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    };
+    let d = det(m);
+    if d.abs() < 1e-9 {
+        return None;
+    }
+    let mut q = m;
+    for r in 0..3 {
+        q[r][1] = t[r];
+    }
+    Some((det(q) / d).atan())
 }
 
 /// Mode 0 with a `_pos_trace` list (replay only): record the input the redesigned display would get, nothing else.

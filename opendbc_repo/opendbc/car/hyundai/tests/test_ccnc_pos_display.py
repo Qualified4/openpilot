@@ -17,8 +17,8 @@ def obj(vid, x, y, now, lines=LINES, report=True):
   return (vid, x, y, now, (now, x, y) if report else None, lines)
 
 
-def frame(now, objs, selected, yaw=None, lead=None):
-  return (now, yaw, tuple(selected), lead, list(objs))
+def frame(now, objs, selected, yaw=None, lead=None, heading=None):
+  return (now, yaw, tuple(selected), lead, list(objs), heading)
 
 
 def run_both(mode, frames):
@@ -29,11 +29,12 @@ def run_both(mode, frames):
   return rust
 
 
-def single(ys, x=30., yaw=None, mode=1, selected=(1, None, None), lead=None, lines=LINES):
+def single(ys, x=30., yaw=None, mode=1, selected=(1, None, None), lead=None, lines=LINES, heading=None):
   frames = []
   for i, y in enumerate(ys):
     now = i * DT
-    frames.append(frame(now, [obj(1, x, y, now, lines)], selected, yaw(now) if callable(yaw) else yaw, lead))
+    h = heading(now) if callable(heading) else heading
+    frames.append(frame(now, [obj(1, x, y, now, lines)], selected, yaw(now) if callable(yaw) else yaw, lead, h))
   return frames, run_both(mode, frames)
 
 
@@ -86,6 +87,24 @@ def test_ego_rotation_is_not_a_jump():
   assert max(fixed) - min(fixed) < 0.05 + play
   _, out = single(ys, x=x, yaw=None, lines=(None,) * 4)
   assert max(abs(v - y) for v, y in zip(drawn_of(out), ys, strict=True)) > 1.
+
+
+def test_a_takes_the_road_heading_out():
+  """Ego turns 0.03 rad towards a new lane (0.03 rad/s for 1 s) before it moves sideways: a car 40 m ahead in its own
+  lane moves 1.2 m right in the ego frame. A draws it HEADING_GAIN of the way back, after the heading low-pass;
+  without a heading it draws the ego-frame value. The heading is held over frames that carry none."""
+  x, rate = 40., 0.03
+  turn = lambda now: min(max(now - 1., 0.), 1.)
+  th = -rate
+  ys = [x * th * turn(i * DT) for i in range(70)]
+  yaw = lambda now: rate if 1. < now <= 2. else 0.
+  heading = lambda now: None if 2.5 < now < 2.8 else th * turn(now)
+  _, out = single(ys, x=x, yaw=yaw, lines=(None,) * 4, heading=heading)
+  play = ref.PLAY_PER_M * x
+  values = drawn_of(out)
+  assert values[-1] == pytest.approx(x * th * (1. - ref.HEADING_GAIN), abs=play + 0.01)
+  _, out = single(ys, x=x, yaw=yaw, lines=(None,) * 4)
+  assert drawn_of(out)[-1] == pytest.approx(x * th, abs=play + 0.01)
 
 
 def test_a_backlash_hides_small_back_and_forth():
@@ -191,7 +210,8 @@ def test_rust_matches_python_on_random_frames(mode):
     if objs and rng.random() < 0.3:
       o = rng.choice(objs)
       lead = (o[1] + rng.uniform(-1, 1), o[2])
-    frames.append(frame(now, objs, selected, yaw, lead))
+    heading = None if rng.random() < 0.2 else rng.uniform(-0.05, 0.05)
+    frames.append(frame(now, objs, selected, yaw, lead, heading))
   out = run_both(mode, frames)
   assert any(a != [None, None, None] for a, _ in out)
   assert all(d is None or math.isfinite(d) for _, ds in out for d in ds)
