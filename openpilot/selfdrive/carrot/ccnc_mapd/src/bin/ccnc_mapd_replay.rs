@@ -32,9 +32,10 @@ unsafe impl GlobalAlloc for RetainedHeap {
 fn main() -> io::Result<()> {
     let mut paths = std::env::args_os().skip(1).peekable();
     let bench = paths.next_if(|arg| arg == "--bench").is_some();
+    let chain = paths.next_if(|arg| arg == "--chain").is_some();
     if paths.peek().is_none() {
         return Err(io::Error::other(
-            "usage: ccnc_mapd_replay [--bench] CACHE.capnp ...",
+            "usage: ccnc_mapd_replay [--bench] [--chain] CACHE.capnp ...",
         ));
     }
 
@@ -43,13 +44,20 @@ fn main() -> io::Result<()> {
     let mut times = Vec::new();
     let mut max_state = 0;
     let mut valid = 0;
+    let mut pipeline = None;
+    let mut baseline = None;
     for path in paths {
         let mut reader = BufReader::new(File::open(path)?);
         let buffers = |frame: &Vec<u8>, times: &Vec<u128>| {
             frame.capacity() + times.capacity() * std::mem::size_of::<u128>()
         };
-        let base = HEAP_BYTES.load(Relaxed) - buffers(&frame, &times);
-        let mut pipeline = Pipeline::new(0);
+        if !chain {
+            pipeline = None;
+            baseline = None;
+        }
+        let base =
+            *baseline.get_or_insert_with(|| HEAP_BYTES.load(Relaxed) - buffers(&frame, &times));
+        let pipeline = pipeline.get_or_insert_with(|| Pipeline::new(0));
         while framing::next(&mut reader, &mut frame)? {
             let start = bench.then(Instant::now);
             let result = pipeline
@@ -71,7 +79,7 @@ fn main() -> io::Result<()> {
                 let heap = HEAP_BYTES
                     .load(Relaxed)
                     .saturating_sub(base + buffer_growth);
-                max_state = max_state.max(std::mem::size_of_val(&pipeline) + heap);
+                max_state = max_state.max(std::mem::size_of_val(pipeline) + heap);
             }
         }
     }

@@ -109,7 +109,7 @@ CCNC_MAPD_FAILED = "/dev/shm/ccnc_mapd.failed"
 def enable_ccnc_mapd(started: bool, params: Params, CP: car.CarParams) -> bool:
   if not started or not params.get_bool("CcncMapProcess") or not params.get_bool("CcncExtendedDisplay"):
     return False
-  if params.get_int("CcncPosDisplayMode") != 1 or os.path.exists(CCNC_MAPD_FAILED):
+  if params.get("CcncPosDisplayMode") != 1 or os.path.exists(CCNC_MAPD_FAILED):
     return False
   # A live fingerprint can veto stale persistent vehicle data.
   if CP.brand and not hda1_cluster_supported(CP):

@@ -1348,14 +1348,20 @@ def _ccnc_display_options(CP, CS, frame, override):
   supported = hda1_cluster_supported(CP)
   if not hasattr(create_ccnc_messages, '_display_options') or frame % 100 == 0:
     params = Params()
-    pos_mode = params.get("CcncPosDisplayMode")
-    create_ccnc_messages._display_options = (supported and params.get_bool("CcncExtendedDisplay"),
-                                             bool(params.get_int("CcncTrafficBackground")), pos_mode if pos_mode in (1, 2) else 0)
-  requested, traffic_background, pos_mode = create_ccnc_messages._display_options
+    pos_mode = params.get("CcncPosDisplayMode") if supported else 0
+    create_ccnc_messages._display_options = (
+      supported and params.get_bool("CcncExtendedDisplay"), bool(params.get_int("CcncTrafficBackground")),
+      pos_mode if pos_mode in (1, 2) else 0, pos_mode == 1 and params.get_bool("CcncMapProcess"),
+    )
+  requested, traffic_background, pos_mode, map_process = create_ccnc_messages._display_options
   # Internal comparison switch of the Rust front-slot display (0 existing, 1 display A, 2 display B); not a setting.
   ccnc_extension.state.pos_display_mode = pos_mode
   enabled = (requested if override is None else override) and supported and (
     CS.adrv_0x161 is not None and CS.ccnc_0x162 is not None)
+  state = ccnc_extension.state
+  state.ccnc_map_process = enabled and map_process
+  if not state.ccnc_map_process:
+    state.__dict__.pop("_rust_map_link", None)
   return (True, 2, True, True, True, 1, 3, traffic_background) if enabled else (
     False, 0, False, False, False, 0, ccnc_extension.CURVATURE_SOURCE_DEFAULT, traffic_background)
 
@@ -1414,8 +1420,10 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
                   paddle_mode, _stop_go_background if traffic_background else None,
                   (bool(left_lane_warning), bool(right_lane_warning), canfd_debug > 0))
         map_inputs = ccnc_radar_map.display_inputs()
-      built = native_display.update_display(CS, md, frame, inputs, ccnc_extension.state,
-                                            ccnc_extension._CcncRadarPositionFilter, map_inputs, lead_filter)
+      state = ccnc_extension.state
+      args = (CS, md, frame, inputs, state, ccnc_extension._CcncRadarPositionFilter, map_inputs, lead_filter)
+      built = (native_display.update_display(*args, process_now_ns=inputs[2] if inputs else time.monotonic_ns())
+               if getattr(state, "ccnc_map_process", False) else native_display.update_display(*args))
       native_ok = True
     except Exception:
       ccnc_radar_map.display_failed()

@@ -13,7 +13,7 @@ use crate::model_v2::{
     curve, numpy_interp, prepare, read_geometry, valid_curve, GeometryInput,
 };
 use crate::pymath::{py_max, py_min, py_sum};
-use crate::{pos, rear, update};
+use crate::{cmap, pos, rear, update};
 
 macro_rules! get {
     ($object:expr, $name:literal) => {
@@ -384,13 +384,13 @@ fn select<'py>(
     Ok(())
 }
 
-const FRONT_FIELDS: [[&str; 3]; 3] = [
+pub(crate) const FRONT_FIELDS: [[&str; 3]; 3] = [
     ["FF_DISTANCE", "FF_LATERAL", "FF_DETECT"],
     ["LF_DETECT_DISTANCE", "LF_DETECT_LATERAL", "LF_DETECT"],
     ["RF_DETECT_DISTANCE", "RF_DETECT_LATERAL", "RF_DETECT"],
 ];
 
-const REAR_FIELDS: [[&str; 3]; 2] = [
+pub(crate) const REAR_FIELDS: [[&str; 3]; 2] = [
     ["LR_DETECT_DISTANCE", "LR_DETECT_LATERAL", "LR_DETECT"],
     ["RR_DETECT_DISTANCE", "RR_DETECT_LATERAL", "RR_DETECT"],
 ];
@@ -549,6 +549,7 @@ fn update_map_display<'py>(
     wall_type: &Bound<'py, PyAny>,
     band_type: &Bound<'py, PyAny>,
     position_filter: &Bound<'py, PyAny>,
+    mode: i64,
 ) -> PyResult<Bound<'py, PyDict>> {
     guard(|| {
         let py = cs.py();
@@ -565,7 +566,6 @@ fn update_map_display<'py>(
                 display_filter::fixed(filter, PyFloat::new(py, center).as_any())?;
             }
         }
-        let mode = pos::mode(state)?;
         if mode != 0 {
             // DESIGN 10: the position-correction path and the lateral hysteresis are bypassed in modes 1 and 2.
             let (assigned, drawn) = pos::assign_and_draw(&map, cs, state, mode)?;
@@ -775,7 +775,7 @@ fn template<'py>(cs: &Bound<'py, PyAny>, name: &str) -> PyResult<Template<'py>> 
 
 /// The lead filter advances at 100 Hz. Only ticks with display inputs build CCNC fields.
 #[pyfunction]
-#[pyo3(signature = (cs, md, frame, inputs, state, position_filter, map, lead_filter))]
+#[pyo3(signature = (cs, md, frame, inputs, state, position_filter, map, lead_filter, *, process_now_ns=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_display<'py>(
     cs: &Bound<'py, PyAny>,
@@ -786,8 +786,13 @@ pub(crate) fn update_display<'py>(
     position_filter: &Bound<'py, PyAny>,
     map: Option<MapConfiguration<'py>>,
     lead_filter: Option<&Bound<'py, PyAny>>,
+    process_now_ns: Option<u64>,
 ) -> PyResult<Option<Display<'py>>> {
     guard(|| {
+        let process = match process_now_ns {
+            Some(now) => cmap::from_card(cs, state, now)?,
+            None => None,
+        };
         let lead = stock_lead(cs)?;
         let Some(inputs) = inputs else {
             if let Some(filter) = lead_filter {
@@ -815,6 +820,9 @@ pub(crate) fn update_display<'py>(
         let values_161 = template(cs, "adrv_0x161")?;
         let values_162 = template(cs, "ccnc_0x162")?;
         let values_1ea = template(cs, "adrv_0x1ea")?;
+        if let (Some(values), Some(map)) = (&values_162, &process) {
+            cmap::apply_slots(values, map, state)?;
+        }
         let panel_attr = intern!(py, "_rust_panel");
         let mut display_state = state.getattr_opt(panel_attr)?.map_or(
             Ok(panel::DisplayState::default()),
@@ -858,23 +866,17 @@ pub(crate) fn update_display<'py>(
             }
         }
         if let Some(values) = &values_162 {
-            let (live, lanes, walls, bands) = map.ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("missing CCNC radar map state")
-            })?;
-            let fields = update_map_display(
-                values,
-                cs,
-                md,
-                frame,
-                &lines,
-                &live,
-                state,
-                &lanes,
-                &walls,
-                &bands,
-                position_filter,
-            )?;
-            values.update(fields.as_mapping())?;
+            if process.is_none() {
+                let (live, lanes, walls, bands) = map.ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err("missing CCNC radar map state")
+                })?;
+                let mode = if process_now_ns.is_some() { 0 } else { pos::mode(state)? };
+                let fields = update_map_display(
+                    values, cs, md, frame, &lines, &live, state, &lanes, &walls, &bands,
+                    position_filter, mode,
+                )?;
+                values.update(fields.as_mapping())?;
+            }
             panel::draw_162(values, cs, inputs.8)?;
         }
         if let Some(values) = &values_1ea {

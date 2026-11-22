@@ -1,6 +1,7 @@
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
+mod cmap;
 mod consts;
 mod correct;
 mod display_filter;
@@ -129,6 +130,8 @@ fn ccnc_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(source_hash, module)?)?;
     module.add_function(wrap_pyfunction!(abi_version, module)?)?;
     module.add_function(wrap_pyfunction!(_panic_for_test, module)?)?;
+    module.add_class::<cmap::MapLink>()?;
+    module.add_function(wrap_pyfunction!(cmap::apply_cmap, module)?)?;
     module.add_class::<map_object::MapObject>()?;
     module.add_class::<map_state::RadarMapState>()?;
     module.add_function(wrap_pyfunction!(attach_state, module)?)?;

@@ -132,6 +132,26 @@ class CarSubMaster(messaging.SubMaster):
     return self._model_v2[1] if self._pass_model_bytes and model_v2 is self._model_v2[0] else None
 
 
+class CcncMapSubMaster(messaging.SubMaster):
+  """Keep the latest CcncMap Event for Rust. A bad packet expires it immediately."""
+
+  def __init__(self):
+    super().__init__(['customReserved3'])
+    self.latest = (None, None)
+
+  def update(self, timeout: int = 0) -> None:
+    try:
+      super().update(timeout)
+    except Exception:
+      self.latest = (None, None)
+
+  def update_msgs(self, cur_time, msgs):
+    super().update_msgs(cur_time, msgs)
+    for msg in msgs:
+      if msg is not None:
+        self.latest = (msg.as_builder().to_bytes(), msg.logMonoTime) if msg.valid and msg.customReserved3.valid else (None, None)
+
+
 class Car:
   CI: CarInterfaceBase
   CP: car.CarParams
@@ -141,6 +161,7 @@ class Car:
     self.sm = CarSubMaster(['pandaStates', 'carControl', 'onroadEvents', 'carrotMan', 'longitudinalPlan',
                            'radarState', 'modelV2', 'drivingModelData', 'customReservedRawData0', 'customReservedRawData2', 'liveTracks',
                            'liveParameters', 'livePose', 'selfdriveState', 'lateralPlan'])
+    self.ccnc_map_sm = CcncMapSubMaster()
     self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'customReservedRawData1'])
 
     self.can_rcv_cum_timeout_counter = 0
@@ -314,6 +335,8 @@ class Car:
       self.params.put_nonblocking("CanParserResult", can_result)
 
     self.sm.update(0)
+    self.ccnc_map_sm.update()
+    self.CI.CS.ccnc_map_bytes = self.ccnc_map_sm.latest
     sm_done_ns = time.monotonic_ns()
     if self.CP.brand == "tesla":
       signal_now = can_list[-1][0] if REPLAY and can_list else time.clock_gettime_ns(getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC))
