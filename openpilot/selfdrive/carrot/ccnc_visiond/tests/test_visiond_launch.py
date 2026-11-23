@@ -1,3 +1,4 @@
+import hashlib
 from itertools import count
 import os
 from pathlib import Path
@@ -15,8 +16,69 @@ LAUNCH = Path(__file__).resolve().parents[1] / "visiond_launch.sh"
 def launcher(tmp_path):
   binary = tmp_path / "visiond"
   state = tmp_path / "ccnc_visiond"
-  env = {**os.environ, "VISIOND_LAUNCH_BIN": str(binary), "VISIOND_LAUNCH_STATE": str(state)}
+  env = {**os.environ, "VISIOND_LAUNCH_BIN": str(binary), "VISIOND_LAUNCH_STATE": str(state),
+         "VISIOND_LAUNCH_ASSETS": str(tmp_path / "assets"), "VISIOND_LAUNCH_MANIFEST": str(tmp_path / "assets.sha256")}
   return binary, state, env
+
+
+ASSET_NAMES = ("yolox_tiny_dyn.onnx", "libonnxruntime.so.1.32.0")
+
+
+def make_assets(tmp_path, names=ASSET_NAMES):
+  """Stand-in asset files and a manifest with their sha256, as the launcher reads them."""
+  assets = tmp_path / "assets"
+  assets.mkdir(exist_ok=True)
+  lines = []
+  for name in names:
+    data = f"not really {name}\n".encode()
+    (assets / name).write_bytes(data)
+    lines.append(f"{hashlib.sha256(data).hexdigest()}  {name}\n")
+  (tmp_path / "assets.sha256").write_text("".join(lines))
+  return assets
+
+
+def test_manifest_lists_the_launcher_assets():
+  manifest = LAUNCH.parent / "assets.sha256"
+  rows = [line.split() for line in manifest.read_text().splitlines() if line.strip()]
+  assert tuple(name for _, name in rows) == ASSET_NAMES
+  assert all(len(digest) == 64 and int(digest, 16) >= 0 for digest, _ in rows)
+  assert "ORT_LIB=" + ASSET_NAMES[1] in LAUNCH.read_text()
+
+
+def run_env_dump(binary, env, tmp_path):
+  dump = tmp_path / "env"
+  make_binary(binary, f"echo \"halt=${{CCNC_VISIOND_HALT-unset}}\" > '{dump}'\n"
+                      f"echo \"assets=$CCNC_VISIOND_ASSETS\" >> '{dump}'\necho \"ort=$ORT_DYLIB_PATH\" >> '{dump}'\nexit 0\n")
+  assert subprocess.run([LAUNCH], env=env, timeout=10).returncode == 0
+  return dict(line.split("=", 1) for line in dump.read_text().splitlines())
+
+
+def test_matching_assets_start_without_halt(launcher, tmp_path):
+  binary, state, env = launcher
+  assets = make_assets(tmp_path)
+  got = run_env_dump(binary, {**env, "CCNC_VISIOND_HALT": "left over"}, tmp_path)
+  assert got == {"halt": "unset", "assets": str(assets), "ort": str(assets / ASSET_NAMES[1])}
+  assert not state.with_suffix(".failed").exists()
+
+
+@pytest.mark.parametrize("damage", ["missing", "changed", "no manifest"])
+def test_unusable_assets_halt_the_process(launcher, tmp_path, damage):
+  binary, state, env = launcher
+  assets = make_assets(tmp_path)
+  if damage == "missing":
+    (assets / ASSET_NAMES[0]).unlink()
+    reason = f"missing {assets / ASSET_NAMES[0]}"
+  elif damage == "changed":
+    (assets / ASSET_NAMES[1]).write_bytes(b"other bytes")
+    reason = f"sha256 of {assets / ASSET_NAMES[1]} is {hashlib.sha256(b'other bytes').hexdigest()}, expected "
+  else:
+    (tmp_path / "assets.sha256").unlink()
+    reason = f"no manifest {tmp_path / 'assets.sha256'}"
+  got = run_env_dump(binary, env, tmp_path)
+  assert got["halt"].startswith(reason), got
+  # A halt is not a crash: the launcher starts the process, which stays alive and says why.
+  assert not state.with_suffix(".failed").exists()
+  assert not state.with_suffix(".crashes").exists()
 
 
 def make_binary(binary, script):
@@ -101,21 +163,33 @@ def test_enable_ccnc_visiond_conditions(tmp_path, monkeypatch):
   stored_bytes = {id(hda1): hda1.to_bytes(), id(hda2): hda2.to_bytes()}
   cases = count()
 
-  def make_params(value=None, display=True, persistent=hda1):
+  def make_params(value=None, display=True, persistent=hda1, map_process=True, pos_mode=1):
     params = Params(str(tmp_path / str(next(cases))))
     assert params.get_default_value("CcncVisionProcess") == 0
     if value is not None:
       with open(params.get_param_path("CcncVisionProcess"), "wb") as out:
         out.write(value)
     params.put_bool("CcncExtendedDisplay", display)
+    params.put_bool("CcncMapProcess", map_process)
+    params.put("CcncPosDisplayMode", pos_mode)
     if persistent is not None:
       params.put("CarParamsPersistent", stored_bytes[id(persistent)])
     return params
 
   failed = tmp_path / "visiond.failed"
   monkeypatch.setattr(process_config, "CCNC_VISIOND_FAILED", failed)
+  map_failed = tmp_path / "mapd.failed"
+  monkeypatch.setattr(process_config, "CCNC_MAPD_FAILED", map_failed)
   enabled = process_config.enable_ccnc_visiond
   cp = car.CarParams.new_message()
+  # Its only reader is ccnc_mapd: on with CcncVisionProcess=1 and CcncMapProcess=1 only.
+  for vision, map_process in ((b"1", True), (b"1", False), (b"0", True), (b"0", False)):
+    assert enabled(True, make_params(vision, map_process=map_process), cp) == (vision == b"1" and map_process), (vision, map_process)
+  # The map process's other conditions hold for the camera too.
+  assert not enabled(True, make_params(b"1", pos_mode=2), cp)
+  map_failed.touch()
+  assert not enabled(True, make_params(b"1"), cp)
+  map_failed.unlink()
   assert enabled(True, make_params(b"1"), cp)
   assert enabled(True, make_params(b"1"), hda1)
   assert not enabled(False, make_params(b"1"), cp)
@@ -134,15 +208,25 @@ BUILT = LAUNCH.parent / "target/release/ccnc_visiond"
 
 
 @pytest.mark.skipif(not BUILT.is_file(), reason="needs cargo build --release")
-def test_missing_onnxruntime_halts_without_crash(launcher, tmp_path):
-  # The default build has only ort, so without CCNC_VISIOND_ENGINE it loads onnxruntime, finds none and halts.
+@pytest.mark.parametrize("assets_present", [False, True])
+def test_unusable_assets_halt_without_crash(launcher, tmp_path, assets_present):
+  # Missing assets: the launcher's reason. Present with the listed hashes but not a real onnxruntime: loading fails.
   _, state, env = launcher
   prefix = f"visiond-launch-{os.getpid()}-{time.monotonic_ns()}"
   shm = Path("/dev/shm") / f"msgq_{prefix}"
   shm.mkdir()
-  env.pop("CCNC_VISIOND_ENGINE", None)
-  env.update(VISIOND_LAUNCH_BIN=str(BUILT), OPENPILOT_PREFIX=prefix, CCNC_VISIOND_ASSETS=str(tmp_path),
-             ORT_DYLIB_PATH=str(tmp_path / "missing" / "libonnxruntime.so"))
+  for name in ("CCNC_VISIOND_ENGINE", "CCNC_VISIOND_ASSETS", "ORT_DYLIB_PATH", "CCNC_VISIOND_HALT"):
+    env.pop(name, None)
+  env.update(VISIOND_LAUNCH_BIN=str(BUILT), OPENPILOT_PREFIX=prefix)
+  assets = tmp_path / "assets"
+  if assets_present:
+    make_assets(tmp_path)
+    reason = f"load: loading {assets / ASSET_NAMES[1]}"
+  else:
+    make_assets(tmp_path)
+    for name in ASSET_NAMES:
+      (assets / name).unlink()
+    reason = f"assets: missing {assets / ASSET_NAMES[0]}"
   halted = state.with_suffix(".halted")
   try:
     with subprocess.Popen([LAUNCH], env=env, start_new_session=True, stderr=subprocess.DEVNULL) as proc:
@@ -150,7 +234,7 @@ def test_missing_onnxruntime_halts_without_crash(launcher, tmp_path):
         deadline = time.monotonic() + 5
         while not halted.exists() and time.monotonic() < deadline:
           time.sleep(0.02)
-        assert halted.read_text().startswith(f"load: loading {tmp_path / 'missing' / 'libonnxruntime.so'}")
+        assert halted.read_text().startswith(reason), halted.read_text()
         time.sleep(0.3)
         assert proc.poll() is None
         proc.send_signal(signal.SIGTERM)

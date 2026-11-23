@@ -7,6 +7,8 @@
 //! * `CCNC_VISIOND_ASSETS`: directory with `yolox_tiny_dyn.onnx` (default `assets`).
 //! * `CCNC_VISIOND_ENGINE`: `ort` (default) or `tract` when built with the `tract` feature.
 //! * `ORT_DYLIB_PATH`: libonnxruntime.so for the `ort` backend.
+//! * `CCNC_VISIOND_HALT`: set by the launcher when the assets are missing or their sha256 differs. The process
+//!   halts with this reason instead of loading anything.
 //! * `CCNC_VISIOND_FIXED_MAPS`: replay checks only. Directory with `map_vL.bin` and `map_vR.bin` used for every
 //!   frame instead of liveCalibration, which is then not needed.
 
@@ -169,6 +171,9 @@ fn run() -> io::Result<()> {
     // Every message is looked at: one with bad values is dropped, the one before it still counts.
     let calibration = open(Sub::new(CALIBRATION_SERVICE, false), CALIBRATION_SERVICE)?;
     let publisher = open(Pub::new(ccnc_vision_msg::SERVICE), ccnc_vision_msg::SERVICE)?;
+    if let Some(reason) = std::env::var_os("CCNC_VISIOND_HALT") {
+        return halt("assets", anyhow::anyhow!(reason.to_string_lossy().into_owned()), &publisher);
+    }
     let assets = PathBuf::from(std::env::var("CCNC_VISIOND_ASSETS").unwrap_or_else(|_| "assets".into()));
     let loaded = detect::Detector::load(&assets, &engine_name()).and_then(|mut detector| {
         if let Some(dir) = std::env::var_os("CCNC_VISIOND_FIXED_MAPS") {

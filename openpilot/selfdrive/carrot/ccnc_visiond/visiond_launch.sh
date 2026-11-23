@@ -5,6 +5,12 @@ STATE=${VISIOND_LAUNCH_STATE:-/dev/shm/ccnc_visiond}
 FAST_S=${VISIOND_LAUNCH_FAST_S:-60}
 CRASHES=3
 
+# The model and aarch64 onnxruntime (47 MB) are not in the repository. They are copied to the device once and
+# checked against assets.sha256 here at every start.
+ASSETS=${VISIOND_LAUNCH_ASSETS:-/data/ccnc_visiond}
+MANIFEST=${VISIOND_LAUNCH_MANIFEST:-$PWD/assets.sha256}
+ORT_LIB=libonnxruntime.so.1.32.0
+
 [[ ! -e "$STATE.failed" ]] || exit 0
 # A process that could not load its model, onnxruntime or maps stays alive and writes the reason here. This is not a crash.
 rm -f "$STATE.halted"
@@ -12,6 +18,36 @@ if [[ ! -x "$BIN" ]]; then
   echo "no binary $BIN" > "$STATE.failed"
   exit 0
 fi
+
+# Prints why the assets cannot be used, nothing when every file has its listed sha256.
+asset_problem() {
+  local sum name got
+  if [[ ! -r $MANIFEST ]]; then
+    echo "no manifest $MANIFEST"
+    return
+  fi
+  while read -r sum name; do
+    [[ -n $sum ]] || continue
+    if [[ ! -f $ASSETS/$name ]]; then
+      echo "missing $ASSETS/$name"
+      return
+    fi
+    got=$(sha256sum "$ASSETS/$name" 2>&1) || { echo "sha256sum $ASSETS/$name: $got"; return; }
+    got=${got%% *}
+    if [[ $got != "$sum" ]]; then
+      echo "sha256 of $ASSETS/$name is $got, expected $sum"
+      return
+    fi
+  done < "$MANIFEST"
+}
+# The process halts on its own with this reason (status message and .halted), as it does when loading fails.
+problem=$(asset_problem)
+if [[ -n $problem ]]; then
+  export CCNC_VISIOND_HALT="$problem"
+else
+  unset CCNC_VISIOND_HALT
+fi
+export CCNC_VISIOND_ASSETS="$ASSETS" ORT_DYLIB_PATH="$ASSETS/$ORT_LIB"
 
 start=$SECONDS
 stopping=0
