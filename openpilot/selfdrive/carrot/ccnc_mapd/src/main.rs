@@ -97,7 +97,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Err(Skipped::NeedsGeometry(calib)) => {
                         if let Some(builder) = geometry.as_mut() {
                             builder.request(calib);
-                            waiting.retain(|(_, other)| other.side != frame.side);
+                            waiting.retain(|(_, other)| other.view != frame.view);
                             waiting.push((stamp, frame));
                         }
                     }

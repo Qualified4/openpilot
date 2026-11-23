@@ -1,7 +1,7 @@
 //! One camera frame to boxes of one side view: NV12 to BGR, night correction, side view, YOLOX.
 //! The steps and constants are those of the offline runner's wide configuration with a 416x320 input.
 
-use crate::{engine, gate::Side, night::Clahe, nv12::Layout, pre, remap, wcam, yolox};
+use crate::{engine, gate::Target, night::Clahe, nv12::Layout, pre, remap, wcam, yolox};
 use anyhow::{Context, Result};
 use ccnc_vision_msg::Calibration;
 use std::path::Path;
@@ -11,11 +11,13 @@ pub const MODEL: &str = "yolox_tiny_dyn.onnx";
 /// Map files for `Detector::fixed_maps` (replay checks against maps made offline).
 pub const MAPS: [&str; 2] = ["map_vL.bin", "map_vR.bin"];
 pub const THREADS: usize = 2;
-/// Detector input height and width. A 512x384 side view fills 416x312 of it.
-const INPUT: [usize; 2] = [320, 416];
-/// One box per detector output row at most: the 8/16/32 stride grids of the input (2730 rows).
+/// Side view detector input height and width. A 512x384 side view fills 416x312 of it.
+const SIDE_INPUT: [usize; 2] = [320, 416];
+/// Full wide frame detector input height and width (1344x760 -> 416x235 inside 416x416).
+const RAW_INPUT: [usize; 2] = [416, 416];
+/// One box per detector output row at most: the 8/16/32 stride grids of the largest input (3549 rows for 416x416).
 #[cfg(test)]
-pub const MAX_BOXES: usize = (INPUT[0] / 8) * (INPUT[1] / 8) + (INPUT[0] / 16) * (INPUT[1] / 16) + (INPUT[0] / 32) * (INPUT[1] / 32);
+pub const MAX_BOXES: usize = (RAW_INPUT[0] / 8) * (RAW_INPUT[1] / 8) + (RAW_INPUT[0] / 16) * (RAW_INPUT[1] / 16) + (RAW_INPUT[0] / 32) * (RAW_INPUT[1] / 32);
 const NUM_CLASSES: usize = 80;
 const KEEP_SCORE: f32 = 0.05;
 const NMS_IOU: f32 = 0.45;
@@ -51,7 +53,7 @@ fn is_night(image: &pre::Img) -> bool {
 impl Detector {
     pub fn load(assets: &Path, engine: &str) -> Result<Self> {
         let model = assets.join(MODEL).to_string_lossy().into_owned();
-        let engine = engine::open(engine, &model, [1, 3, INPUT[0], INPUT[1]], THREADS)?;
+        let engine = engine::open(engine, &model, [1, 3, SIDE_INPUT[0], SIDE_INPUT[1]], THREADS)?;
         Ok(Self { engine, views: None, fixed: false })
     }
 
@@ -84,22 +86,25 @@ impl Detector {
         self.fixed
     }
 
-    pub fn run(&mut self, layout: Layout, nv12: &[u8], side: Side) -> Result<Found> {
+    pub fn run(&mut self, layout: Layout, nv12: &[u8], target: Target) -> Result<Found> {
         let Some(views) = &self.views else { anyhow::bail!("no side views yet") };
         let mut frame = layout.to_bgr(nv12)?;
         let night = is_night(&frame);
         if night {
             CLAHE.apply(&mut frame);
         }
-        let view = remap::remap_linear(&frame, &views.maps[side as usize]);
         let calibration = views.calibration;
-        let [height, width] = INPUT;
-        let (input, ratio) = pre::letterbox(&view, height, width, None);
+        let ([height, width], image) = match target {
+            Target::Left => (SIDE_INPUT, remap::remap_linear(&frame, &views.maps[0])),
+            Target::Right => (SIDE_INPUT, remap::remap_linear(&frame, &views.maps[1])),
+            Target::Raw => (RAW_INPUT, frame),
+        };
+        let (input, ratio) = pre::letterbox(&image, height, width, None);
         let (_, mut out) = self.engine.run([1, 3, height, width], pre::to_chw_raw(&input))?;
         yolox::grid_decode(&mut out, NUM_CLASSES, height, width);
         let candidates = yolox::candidates(&out, NUM_CLASSES, KEEP_SCORE);
         let keep = yolox::nms(&candidates, KEEP_SCORE, NMS_IOU);
-        Ok(Found { night, boxes: yolox::to_image(&candidates, &keep, ratio, view.w, view.h), calibration })
+        Ok(Found { night, boxes: yolox::to_image(&candidates, &keep, ratio, image.w, image.h), calibration })
     }
 }
 

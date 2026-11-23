@@ -143,7 +143,7 @@ impl Pipeline {
 
     /// One CcncVision frame that reached the map at `stamp` (its logMonoTime). The decision shows from the next
     /// radar update on. `Skipped::NeedsGeometry` asks for `set_vision_geometry`; the frame is not used.
-    pub fn vision(&mut self, stamp: u64, frame: &vision::Frame) -> std::result::Result<vision::Stepped, vision::Skipped> {
+    pub fn vision(&mut self, stamp: u64, frame: &vision::Frame) -> std::result::Result<Option<vision::Stepped>, vision::Skipped> {
         let t = frame.time_ns;
         let (Some(tracks), Some(&v_ego)) = (self.tracks_at.at(t), self.speed_at.at(t)) else {
             return Err(vision::Skipped::NoInputs);

@@ -2,16 +2,17 @@
 
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use ccnc_map::vision::{Box, Calib, Frame, Geometry, Side};
+use ccnc_map::vision::{Box, Calib, Frame, FrameView, Geometry, Side};
 use ccnc_vision_msg::{Status, View};
 
 /// A frame result of a CcncVision Event, with the Event's logMonoTime. The frame's time is `frameMonoTime`, on
 /// liveTracks' clock; `timestampSof` (the camera's CLOCK_BOOTTIME) is not used. Status messages give None.
 pub fn frame(bytes: &[u8]) -> Option<(u64, Frame)> {
     let (stamp, out) = ccnc_vision_msg::decode(bytes)?;
-    let side = match (out.status, out.view) {
-        (Status::Frame, View::SideL) => Side::Left,
-        (Status::Frame, View::SideR) => Side::Right,
+    let view = match (out.status, out.view) {
+        (Status::Frame, View::SideL) => FrameView::Side(Side::Left),
+        (Status::Frame, View::SideR) => FrameView::Side(Side::Right),
+        (Status::Frame, View::Full) => FrameView::Raw,
         _ => return None,
     };
     let c = out.calibration;
@@ -22,7 +23,7 @@ pub fn frame(bytes: &[u8]) -> Option<(u64, Frame)> {
         .iter()
         .map(|b| Box { xyxy: b.xyxy.map(f64::from), confidence: f64::from(b.confidence), class_id: b.class_id })
         .collect();
-    Some((stamp, Frame { time_ns: out.frame_mono_time, side, calibration: [a, b, d, e, f, g, c.height], boxes }))
+    Some((stamp, Frame { time_ns: out.frame_mono_time, view, calibration: [a, b, d, e, f, g, c.height], boxes }))
 }
 
 /// Builds `Geometry` (about 50 ms on M8) on its own thread, as a normal thread at nice 19: the map's SCHED_FIFO
@@ -97,8 +98,10 @@ mod tests {
     fn status_messages_are_not_frames() {
         let resting = ccnc_vision_msg::encode(&message(Status::Resting, View::SideL, 0, 0), 1);
         assert!(frame(&resting).is_none());
-        let other = ccnc_vision_msg::encode(&message(Status::Frame, View::Full, 5, 5), 1);
-        assert!(frame(&other).is_none());
+        let cropped = ccnc_vision_msg::encode(&message(Status::Frame, View::CropFront, 5, 5), 1);
+        assert!(frame(&cropped).is_none());
+        let raw = ccnc_vision_msg::encode(&message(Status::Frame, View::Full, 5, 5), 1);
+        assert_eq!(frame(&raw).unwrap().1.view, FrameView::Raw);
     }
 
     #[test]

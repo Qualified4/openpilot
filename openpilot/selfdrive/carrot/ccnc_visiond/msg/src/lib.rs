@@ -12,9 +12,14 @@ pub const SERVICE: &str = "customReserved4";
 /// `Event` union member numbers (the discriminant value at 16-bit offset 4 of the data section).
 pub const EVENT_LIVE_CALIBRATION: u16 = 18;
 pub const EVENT_CAR_STATE: u16 = 21;
+pub const EVENT_CCNC_MAP: u16 = 108;
 pub const EVENT_CCNC_VISION: u16 = 109;
 /// `LiveCalibrationData.Status.calibrated`.
 pub const CAL_STATUS_CALIBRATED: u16 = 1;
+// CcncMap (customReserved3) layout, matching ccnc_map::cmap::schema().
+const MAP_VALID_BIT: usize = 104;
+const MAP_SLOT_PRESENT_BIT: usize = 113;
+const MAP_SLOT_VISION_BYTE: usize = 15;
 
 const EVENT_WORDS: usize = 2;
 const EVENT_DISCRIMINANT_BYTE: usize = 8;
@@ -261,6 +266,26 @@ pub fn live_calibration(bytes: &[u8]) -> Option<LiveCalibration> {
     })
 }
 
+/// Whether a valid CcncMap (`customReserved3`) Event currently has a camera-backed front side car (LF or RF:
+/// `present && vision != 0`). Used by `ccnc_visiond` to insert full-frame raw inference only while a front side
+/// car is shown, enabling LR/RR two-car splits without slowing side-view detection when no side car is shown.
+pub fn map_front_vision_on(bytes: &[u8]) -> Option<bool> {
+    let message = Message::new(bytes)?;
+    let event = message.root()?;
+    if event.u16_at(EVENT_DISCRIMINANT_BYTE) != EVENT_CCNC_MAP || event.bit(EVENT_INVALID_BIT) {
+        return None;
+    }
+    let map = message.struct_pointer(&event, 0)?;
+    if !map.bit(MAP_VALID_BIT) {
+        return Some(false);
+    }
+    let slots = message.struct_list(&map, 0)?;
+    let on = [1usize, 2].into_iter().any(|i| {
+        slots.get(i).is_some_and(|s| s.bit(MAP_SLOT_PRESENT_BIT) && s.u8_at(MAP_SLOT_VISION_BYTE) != 0)
+    });
+    Some(on)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,5 +425,54 @@ mod tests {
         assert_eq!(car_state_speed(&car_state_event(EVENT_CAR_STATE, false, 2.5)), None);
         assert_eq!(car_state_speed(&car_state_event(EVENT_CCNC_VISION, true, 2.5)), None);
         assert_eq!(car_state_speed(&[]), None);
+    }
+
+    fn ccnc_map_event(event_valid: bool, map_valid: bool, slots_cfg: [(bool, u8); 5]) -> Vec<u8> {
+        // Root pointer, Event (2w, 1p), CcncMap (3w, 1p), inline-composite list of 5 Slots (3w, 0p).
+        const MAP_START: usize = 5;
+        const LIST_START: usize = 9;
+        const WORDS: usize = LIST_START + 1 + 5 * 3;
+        let mut bytes = vec![0u8; WORDS * 8];
+        put(&mut bytes, 4, ((WORDS - 1) as u32).to_le_bytes());
+        put(&mut bytes, 8, struct_pointer(EVENT_WORDS, 1).to_le_bytes());
+        put(&mut bytes, 16 + EVENT_DISCRIMINANT_BYTE, EVENT_CCNC_MAP.to_le_bytes());
+        bytes[16 + EVENT_INVALID_BIT / 8] = u8::from(!event_valid) << (EVENT_INVALID_BIT % 8);
+        put(&mut bytes, 16 + EVENT_WORDS * 8, struct_pointer(3, 1).to_le_bytes());
+        if map_valid {
+            bytes[MAP_START * 8 + MAP_VALID_BIT / 8] |= 1 << (MAP_VALID_BIT % 8);
+        }
+        let list_ptr = 1u64 | (7 << 32) | ((5 * 3) as u64) << 35;
+        put(&mut bytes, (MAP_START + 3) * 8, list_ptr.to_le_bytes());
+        let list_tag = struct_pointer(3, 0) | (5u64 << 2);
+        put(&mut bytes, LIST_START * 8, list_tag.to_le_bytes());
+        for (i, (present, vision)) in slots_cfg.into_iter().enumerate() {
+            let start = (LIST_START + 1 + i * 3) * 8;
+            if present {
+                bytes[start + MAP_SLOT_PRESENT_BIT / 8] |= 1 << (MAP_SLOT_PRESENT_BIT % 8);
+            }
+            bytes[start + MAP_SLOT_VISION_BYTE] = vision;
+        }
+        bytes
+    }
+
+    #[test]
+    fn map_front_vision_reads_lf_and_rf_vision_slots() {
+        let none = [(false, 0); 5];
+        assert_eq!(map_front_vision_on(&ccnc_map_event(true, true, none)), Some(false));
+        // Radar-only LF/RF (vision == 0) does not trigger raw.
+        let radar_lf = [(false, 0), (true, 0), (true, 0), (true, 1), (true, 2)];
+        assert_eq!(map_front_vision_on(&ccnc_map_event(true, true, radar_lf)), Some(false));
+        // Camera-only LF (vision == 1) or camera-confirmed RF (vision == 2) triggers raw.
+        let cam_lf = [(false, 0), (true, 1), (false, 0), (false, 0), (false, 0)];
+        assert_eq!(map_front_vision_on(&ccnc_map_event(true, true, cam_lf)), Some(true));
+        let cam_rf = [(false, 0), (false, 0), (true, 2), (false, 0), (false, 0)];
+        assert_eq!(map_front_vision_on(&ccnc_map_event(true, true, cam_rf)), Some(true));
+        // Invalid map or non-present slot does not trigger raw.
+        assert_eq!(map_front_vision_on(&ccnc_map_event(true, false, cam_lf)), Some(false));
+        let absent_lf = [(false, 0), (false, 1), (false, 0), (false, 0), (false, 0)];
+        assert_eq!(map_front_vision_on(&ccnc_map_event(true, true, absent_lf)), Some(false));
+        // Invalid Event or wrong discriminant returns None.
+        assert_eq!(map_front_vision_on(&ccnc_map_event(false, true, cam_lf)), None);
+        assert_eq!(map_front_vision_on(&encode(&sample(0), 1)), None);
     }
 }

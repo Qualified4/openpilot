@@ -35,6 +35,7 @@ use stripnet::ipc::{Pub, Sub};
 
 const SPEED_SERVICE: &str = "carState";
 const CALIBRATION_SERVICE: &str = "liveCalibration";
+const MAP_SERVICE: &str = "customReserved3";
 const CAMERA_SERVER: &str = "camerad";
 /// Sleep while the speed keeps the detector off.
 const IDLE: Duration = Duration::from_millis(100);
@@ -170,6 +171,8 @@ fn run() -> io::Result<()> {
     let speed = open(Sub::new(SPEED_SERVICE, true), SPEED_SERVICE)?;
     // Every message is looked at: one with bad values is dropped, the one before it still counts.
     let calibration = open(Sub::new(CALIBRATION_SERVICE, false), CALIBRATION_SERVICE)?;
+    // CcncMap (conflated): tells visiond when LF or RF has a camera-backed car so raw is inserted conditionally.
+    let map_sub = open(Sub::new(MAP_SERVICE, true), MAP_SERVICE)?;
     let publisher = open(Pub::new(ccnc_vision_msg::SERVICE), ccnc_vision_msg::SERVICE)?;
     if let Some(reason) = std::env::var_os("CCNC_VISIOND_HALT") {
         return halt("assets", anyhow::anyhow!(reason.to_string_lossy().into_owned()), &publisher);
@@ -200,6 +203,11 @@ fn run() -> io::Result<()> {
                 gate.speed(v_ego, clock_ns(libc::CLOCK_MONOTONIC));
             }
         }
+        for bytes in map_sub.drain() {
+            if let Some(front_on) = ccnc_vision_msg::map_front_vision_on(&bytes) {
+                gate.front_vision(front_on, clock_ns(libc::CLOCK_MONOTONIC));
+            }
+        }
         for bytes in calibration.drain() {
             let Some(message) = ccnc_vision_msg::live_calibration(&bytes) else { continue };
             match calib.update(&message) {
@@ -222,7 +230,7 @@ fn run() -> io::Result<()> {
             gate::Phase::Closed => {
                 camera.discard();
                 let status = if ready { Status::Resting } else { Status::NotCalibrated };
-                quiet.report(&publisher, status, gate.next_side().view(), latest)?;
+                quiet.report(&publisher, status, gate.next_target().view(), latest)?;
                 sleep(IDLE);
                 continue;
             }
@@ -246,7 +254,7 @@ fn run() -> io::Result<()> {
             if camera.connected() {
                 sleep(FRAME_WAIT);
             } else {
-                quiet.report(&publisher, Status::NoCamera, gate.next_side().view(), latest)?;
+                quiet.report(&publisher, Status::NoCamera, gate.next_target().view(), latest)?;
                 sleep(IDLE);
             }
             continue;
@@ -257,13 +265,13 @@ fn run() -> io::Result<()> {
                 eprintln!("ccnc_visiond: wide camera frame {}x{}, the lens model is for {}x{}; frames are not processed", size.0, size.1, wcam::WIDE_SIZE.0, wcam::WIDE_SIZE.1);
             }
             wrong_size = Some(size);
-            quiet.report(&publisher, Status::UnsupportedCamera, gate.next_side().view(), latest)?;
+            quiet.report(&publisher, Status::UnsupportedCamera, gate.next_target().view(), latest)?;
             sleep(IDLE);
             continue;
         }
         wrong_size = None;
-        let side = gate.take_side();
-        let found = match detector.run(frame.layout, &frame.nv12, side) {
+        let target = gate.take_target(clock_ns(libc::CLOCK_MONOTONIC));
+        let found = match detector.run(frame.layout, &frame.nv12, target) {
             Ok(found) => {
                 failures = 0;
                 found
@@ -287,7 +295,7 @@ fn run() -> io::Result<()> {
             frame_id: frame.frame_id,
             timestamp_sof: frame.timestamp_sof,
             frame_mono_time: frame_mono_time(frame.timestamp_sof, boot_now, mono_now),
-            view: side.view(),
+            view: target.view(),
             processing_ms: started.elapsed().as_secs_f32() * 1000.0,
             night_corrected: found.night,
             calibration,
@@ -376,8 +384,9 @@ mod tests {
         std::env::set_var("OPENPILOT_PREFIX", prefix);
         let _speed = Sub::new(SPEED_SERVICE, true).unwrap();
         let _calibration = Sub::new(CALIBRATION_SERVICE, false).unwrap();
+        let _map = Sub::new(MAP_SERVICE, true).unwrap();
         let _publisher = Pub::new(ccnc_vision_msg::SERVICE).unwrap();
-        let services = [SPEED_SERVICE, CALIBRATION_SERVICE, ccnc_vision_msg::SERVICE];
+        let services = [SPEED_SERVICE, CALIBRATION_SERVICE, MAP_SERVICE, ccnc_vision_msg::SERVICE];
         let expected = cereal_queue_sizes(&services);
         for (name, queue_size) in services.into_iter().zip(expected) {
             assert_eq!(fs::metadata(path.join(name)).unwrap().len(), HEADER_BYTES + queue_size, "{name}");

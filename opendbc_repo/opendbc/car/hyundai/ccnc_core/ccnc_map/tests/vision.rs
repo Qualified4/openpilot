@@ -1,7 +1,7 @@
 //! The wide camera's side cars on the map slots (`ccnc_map::vision`).
 
 use ccnc_map::slots::{Slot, VISION_CONFIRMS, VISION_NONE, VISION_ONLY};
-use ccnc_map::vision::{Box, Context, Frame, Geometry, Side, Skipped, SlotState, Stepped, Track, Vision, HOLD_S, LATE_S, VISION_VID};
+use ccnc_map::vision::{Box, Context, Frame, FrameView, Geometry, Side, Skipped, SlotState, Stepped, Track, Vision, HOLD_S, LATE_S, RAW_HOLD_S, VISION_VID};
 use ccnc_map::world::PoseAt;
 
 const FIXTURE: &str = include_str!("fixtures/wide_rules_c1.txt");
@@ -80,13 +80,22 @@ fn frame_of(scene: &Scene, fr: &FixtureFrame) -> Frame {
     let view = if scene.side == Side::Left { "vL" } else { "vR" };
     Frame {
         time_ns: fr.t_ns,
-        side: scene.side,
+        view: FrameView::Side(scene.side),
         calibration: scene.calibration,
         boxes: fr.boxes.iter().filter(|(v, _)| v == view).map(|(_, b)| *b).collect(),
     }
 }
 
-fn step(vision: &mut Vision, frame: &Frame, arrival: f64, fr: &FixtureFrame) -> Result<Stepped, Skipped> {
+fn raw_frame_of(scene: &Scene, fr: &FixtureFrame, time_ns: u64) -> Frame {
+    Frame {
+        time_ns,
+        view: FrameView::Raw,
+        calibration: scene.calibration,
+        boxes: fr.boxes.iter().filter(|(v, _)| v == "raw").map(|(_, b)| *b).collect(),
+    }
+}
+
+fn step_raw(vision: &mut Vision, frame: &Frame, arrival: f64, fr: &FixtureFrame) -> Result<Option<Stepped>, Skipped> {
     let context = Context { v_ego: fr.v, tracks: &fr.tracks, lprob: fr.lprob.as_deref(), slots: fr.slots, guard: fr.guard };
     match vision.frame(frame, arrival, &context, PoseAt::default()) {
         Err(Skipped::NeedsGeometry(calib)) => {
@@ -95,6 +104,10 @@ fn step(vision: &mut Vision, frame: &Frame, arrival: f64, fr: &FixtureFrame) -> 
         }
         other => other,
     }
+}
+
+fn step(vision: &mut Vision, frame: &Frame, arrival: f64, fr: &FixtureFrame) -> Result<Stepped, Skipped> {
+    step_raw(vision, frame, arrival, fr).map(|opt| opt.expect("side frame returns Stepped"))
 }
 
 fn seconds(t_ns: u64) -> f64 {
@@ -242,4 +255,48 @@ fn camera_car_follows_the_ego_motion_since_its_frame() {
     // 1 m forward since the frame: the car is 1 m closer.
     vision.apply(now, 0., PoseAt { x: 1., ..PoseAt::default() }, &mut slots);
     assert!((f64::from(slots[index].unwrap().distance) - (x - 1.)).abs() < 1e-5);
+}
+
+#[test]
+fn raw_frame_combines_with_side_frame_and_expires_after_raw_hold() {
+    let scene = scenes().into_iter().find(|s| s.index == 25).expect("scene 25");
+    // Scene 25 has a front car in raw and a rear car in vR; feeding fresh raw boxes before vR enables RR.
+    let mut vision = Vision::default();
+    let mut rear_on = 0;
+    for fr in &scene.frames {
+        let raw_t = fr.t_ns.saturating_sub(600_000_000);
+        let raw = raw_frame_of(&scene, fr, raw_t);
+        if !raw.boxes.is_empty() {
+            assert!(step_raw(&mut vision, &raw, seconds(raw_t) + 0.7, fr).unwrap().is_none());
+        }
+        let stepped = step(&mut vision, &frame_of(&scene, fr), seconds(fr.t_ns) + 0.6, fr).unwrap();
+        if stepped.out.rear.display_on {
+            rear_on += 1;
+        }
+    }
+    if scene.frames.iter().any(|fr| fr.boxes.iter().any(|(v, _)| v == "raw")) {
+        assert!(rear_on > 0, "fresh raw + side should enable rear slot on scene 25");
+    }
+
+    // Stale raw (> RAW_HOLD_S older than the side frame) is ignored, and an intervening raw extends hold past 2.0 s
+    // without keeping the car alive indefinitely.
+    let (mut vision, scene, k, _, _) = first_on(on_scene());
+    let fr = &scene.frames[k];
+    let arrival = seconds(fr.t_ns) + 0.5;
+    let index = 1 + scene.side as usize;
+    let raw_t = fr.t_ns + 1_200_000_000;
+    let raw_arrival = seconds(raw_t) + 0.6; // arrival + 1.3 s
+    let raw = raw_frame_of(&scene, fr, raw_t);
+    assert!(step_raw(&mut vision, &raw, raw_arrival, fr).unwrap().is_none());
+    let mut slots = [None; 5];
+    vision.apply(arrival + HOLD_S + 0.1, 0., PoseAt::default(), &mut slots);
+    assert!(slots[index].is_some(), "intervening raw bridges a ~2.1 s 3-view cycle");
+    let mut expired = [None; 5];
+    vision.apply(raw_arrival + 1.05, 0., PoseAt::default(), &mut expired);
+    assert!(expired[index].is_none(), "car still leaves promptly when visiond stops after raw");
+    // Raw older than RAW_HOLD_S is not combined into a later side frame.
+    let mut later = frame_of(&scene, fr);
+    later.time_ns = raw_t + ((RAW_HOLD_S + 0.2) * 1e9) as u64;
+    let stepped = step(&mut vision, &later, seconds(later.time_ns) + 0.5, fr).unwrap();
+    assert!(stepped.cands.iter().all(|c| c.view != det_rules::View::Raw));
 }

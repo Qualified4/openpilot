@@ -26,6 +26,13 @@ use det_rules::{swap_decision, Act, DetRules, SwapCfg};
 pub const LATE_S: f64 = 1.5;
 /// Without a newer result of a side for this long, its camera cars leave the slots.
 pub const HOLD_S: f64 = 2.0;
+/// How long cached full-frame raw candidates stay usable for subsequent side-view frames (~1 full L/R/raw cycle).
+pub const RAW_HOLD_S: f64 = 2.5;
+/// When a full-frame raw result arrives after a side result (3-view L/R/raw cycle), keep the held side car alive
+/// up to this long after the raw arrival (capped at `RAW_HOLD_MAX_S` after the side arrival) so ~2 s device cycles
+/// do not blink off between frames while still expiring promptly if `ccnc_visiond` stops.
+const RAW_HOLD_EXTEND_S: f64 = 1.0;
+const RAW_HOLD_MAX_S: f64 = 2.6;
 /// Rule E's speed limit (det_rules `RuleE::step`): camera cars are shown at or below it only.
 pub const SLOW: f64 = 3.0;
 /// Not while reversing. A standing car's vEgo dips a little below zero (`ccnc_visiond` STANDSTILL_NOISE).
@@ -42,9 +49,15 @@ pub enum Side {
     Right = 1,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameView {
+    Side(Side),
+    Raw,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Box {
-    /// x1, y1, x2, y2 in side view pixels.
+    /// x1, y1, x2, y2 in the frame's view pixels (side view 512x384 or raw 1344x760).
     pub xyxy: [f64; 4],
     pub confidence: f64,
     /// COCO class.
@@ -56,7 +69,7 @@ pub struct Box {
 pub struct Frame {
     /// Start of frame, ns on CLOCK_MONOTONIC.
     pub time_ns: u64,
-    pub side: Side,
+    pub view: FrameView,
     /// rpyCalib, wideFromDeviceEuler, height: what the view was built from (the height is the latest one).
     pub calibration: [f32; 7],
     pub boxes: Vec<Box>,
@@ -110,11 +123,19 @@ pub struct Stepped {
     pub out: SideOutput,
 }
 
+#[derive(Clone, Debug)]
+struct CachedRaw {
+    time_ns: u64,
+    arrival: f64,
+    cands: Vec<Cand>,
+}
+
 #[derive(Default)]
 pub struct Vision {
     geometry: Option<Geometry>,
     rules: [DetRules; 2],
     held: [Option<Held>; 2],
+    raw: Option<CachedRaw>,
 }
 
 fn calib_of(values: &[f32; 7]) -> Option<Calib> {
@@ -147,16 +168,19 @@ impl Vision {
     /// Positions of held results are in the world frame of the map: a map reset drops them. The rules keep going.
     pub fn reset_positions(&mut self) {
         self.held = [None; 2];
+        self.raw = None;
     }
 
-    /// Step the frame's side. `arrival` is when the result reached the map, `frame_pose` the ego pose at the frame.
+    /// Process one CcncVision frame. `FrameView::Raw` caches raw candidates for subsequent side views and returns
+    /// `Ok(None)`. `FrameView::Side` steps that side's rules (combining any fresh cached raw candidates) and returns
+    /// `Ok(Some(Stepped))`.
     pub fn frame(
         &mut self,
         frame: &Frame,
         arrival: f64,
         context: &Context,
         frame_pose: PoseAt,
-    ) -> Result<Stepped, Skipped> {
+    ) -> Result<Option<Stepped>, Skipped> {
         let age = arrival - frame.time_ns as f64 * 1e-9;
         if !(0. ..=LATE_S).contains(&age) {
             return Err(Skipped::Late);
@@ -166,8 +190,24 @@ impl Vision {
             Some(g) if g.serves(&calib) => g,
             _ => return Err(Skipped::NeedsGeometry(calib)),
         };
-        let (cands, out) = geometry.step(&mut self.rules[frame.side as usize], frame, &calib, context);
-        let side = frame.side as usize;
+        let side = match frame.view {
+            FrameView::Raw => {
+                let cands = geometry.raw_candidates(frame, &calib);
+                self.raw = Some(CachedRaw { time_ns: frame.time_ns, arrival, cands });
+                return Ok(None);
+            }
+            FrameView::Side(side) => side,
+        };
+        let raw_cands: &[Cand] = self
+            .raw
+            .as_ref()
+            .filter(|r| {
+                let dt = (frame.time_ns as f64 - r.time_ns as f64) * 1e-9;
+                (-0.05..=RAW_HOLD_S).contains(&dt)
+            })
+            .map_or(&[], |r| r.cands.as_slice());
+        let (cands, out) = geometry.step(&mut self.rules[side as usize], frame, side, &calib, context, raw_cands);
+        let side_idx = side as usize;
         let seen = |slot: &det_rules::SlotOutput| {
             let cand = &cands[slot.cand.filter(|_| slot.display_on)?];
             Some(Seen {
@@ -176,11 +216,11 @@ impl Vision {
                 world: frame_pose.to_world(cand.x, -cand.yc),
             })
         };
-        self.held[side] = Some(Held {
+        self.held[side_idx] = Some(Held {
             arrival,
             seen: [seen(&out.front), seen(&out.rear)],
         });
-        Ok(Stepped { cands, out })
+        Ok(Some(Stepped { cands, out }))
     }
 
     /// Put the held camera cars on the radar slots of `now`.
@@ -189,8 +229,18 @@ impl Vision {
             return;
         }
         let radar = *slots;
+        let raw_arrival = self.raw.as_ref().map(|r| r.arrival);
         for (side, held) in self.held.iter().enumerate() {
-            let Some(held) = held.filter(|h| (0. ..=HOLD_S).contains(&(now - h.arrival))) else {
+            let Some(held) = held.filter(|h| {
+                if now < h.arrival {
+                    return false;
+                }
+                let mut deadline = h.arrival + HOLD_S;
+                if let Some(ra) = raw_arrival.filter(|&ra| ra > h.arrival && ra <= now) {
+                    deadline = deadline.max(ra + RAW_HOLD_EXTEND_S).min(h.arrival + RAW_HOLD_MAX_S);
+                }
+                now <= deadline
+            }) else {
                 continue;
             };
             let swap = &self.rules[side].swap;

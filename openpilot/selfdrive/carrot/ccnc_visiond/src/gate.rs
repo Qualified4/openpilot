@@ -9,6 +9,8 @@ pub const WIDE_MAX_SPEED: f32 = 3.0;
 pub const STANDSTILL_NOISE: f32 = 0.01;
 /// carState comes at 100 Hz. Without a recent one the speed is unknown and nothing is processed.
 pub const SPEED_TIMEOUT_NS: u64 = 500_000_000;
+/// CcncMap comes at 20 Hz. Without a recent one, conditional full-frame raw inference stays off.
+pub const MAP_TIMEOUT_NS: u64 = 1_000_000_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Side {
@@ -18,10 +20,30 @@ pub enum Side {
 }
 
 impl Side {
+    #[cfg(test)]
     pub fn view(self) -> View {
         match self {
             Self::Left => View::SideL,
             Self::Right => View::SideR,
+        }
+    }
+}
+
+/// Which view to infer on the next camera frame: alternating left/right side views, plus an optional full-frame
+/// raw view inserted once per L/R pair while either LF or RF has a camera-backed car on CcncMap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Left,
+    Right,
+    Raw,
+}
+
+impl Target {
+    pub fn view(self) -> View {
+        match self {
+            Self::Left => View::SideL,
+            Self::Right => View::SideR,
+            Self::Raw => View::Full,
         }
     }
 }
@@ -38,13 +60,24 @@ pub enum Phase {
 #[derive(Default)]
 pub struct Gate {
     speed: Option<(f32, u64)>,
+    front_vision: Option<(bool, u64)>,
     next: Side,
+    pending_raw: bool,
     was_open: bool,
 }
 
 impl Gate {
     pub fn speed(&mut self, v_ego: f32, now_ns: u64) {
         self.speed = Some((v_ego, now_ns));
+    }
+
+    pub fn front_vision(&mut self, on: bool, now_ns: u64) {
+        self.front_vision = Some((on, now_ns));
+    }
+
+    fn want_raw(&self, now_ns: u64) -> bool {
+        self.front_vision
+            .is_some_and(|(on, at)| on && now_ns.saturating_sub(at) <= MAP_TIMEOUT_NS)
     }
 
     pub fn open(&self, now_ns: u64) -> bool {
@@ -55,7 +88,10 @@ impl Gate {
     pub fn phase(&mut self, now_ns: u64, ready: bool) -> Phase {
         let open = ready && self.open(now_ns);
         let phase = match (self.was_open, open) {
-            (_, false) => Phase::Closed,
+            (_, false) => {
+                self.pending_raw = false;
+                Phase::Closed
+            }
             (false, true) => Phase::Opened,
             (true, true) => Phase::Open,
         };
@@ -63,9 +99,16 @@ impl Gate {
         phase
     }
 
-    /// The side the next frame goes to, without taking it.
-    pub fn next_side(&self) -> Side {
-        self.next
+    /// The view the next frame goes to, without taking it.
+    pub fn next_target(&self) -> Target {
+        if self.pending_raw {
+            Target::Raw
+        } else {
+            match self.next {
+                Side::Left => Target::Left,
+                Side::Right => Target::Right,
+            }
+        }
     }
 
     /// The side to process now. The sides take turns, one camera frame each.
@@ -76,6 +119,22 @@ impl Gate {
             Side::Right => Side::Left,
         };
         side
+    }
+
+    /// The target to process now: L, R alternating, with Raw inserted after R while LF or RF has a camera car.
+    pub fn take_target(&mut self, now_ns: u64) -> Target {
+        if self.pending_raw {
+            self.pending_raw = false;
+            return Target::Raw;
+        }
+        let side = self.take_side();
+        if side == Side::Right && self.want_raw(now_ns) {
+            self.pending_raw = true;
+        }
+        match side {
+            Side::Left => Target::Left,
+            Side::Right => Target::Right,
+        }
     }
 }
 
@@ -127,5 +186,28 @@ mod tests {
         let sides: Vec<_> = (0..4).map(|_| gate.take_side()).collect();
         assert_eq!(sides, [Side::Left, Side::Right, Side::Left, Side::Right]);
         assert_eq!((Side::Left.view(), Side::Right.view()), (View::SideL, View::SideR));
+    }
+
+    #[test]
+    fn raw_inserted_only_while_front_vision_is_on_and_fresh() {
+        let mut gate = Gate::default();
+        // Without CcncMap, never runs Raw.
+        let seq: Vec<_> = (0..4).map(|_| gate.take_target(1_000)).collect();
+        assert_eq!(seq, [Target::Left, Target::Right, Target::Left, Target::Right]);
+        // When front vision turns on, Raw follows each L, R pair.
+        gate.front_vision(true, 2_000);
+        let seq: Vec<_> = (0..6).map(|_| gate.take_target(2_500)).collect();
+        assert_eq!(seq, [Target::Left, Target::Right, Target::Raw, Target::Left, Target::Right, Target::Raw]);
+        assert_eq!(Target::Raw.view(), View::Full);
+        // Stale front vision (> MAP_TIMEOUT_NS) stops Raw.
+        let seq: Vec<_> = (0..4).map(|_| gate.take_target(2_000 + MAP_TIMEOUT_NS + 1)).collect();
+        assert_eq!(seq, [Target::Left, Target::Right, Target::Left, Target::Right]);
+        // Closing the gate clears a pending Raw so the next stop starts on a side view.
+        gate.front_vision(true, 10_000);
+        assert_eq!(gate.take_target(10_000), Target::Left);
+        assert_eq!(gate.take_target(10_000), Target::Right);
+        assert_eq!(gate.next_target(), Target::Raw);
+        assert_eq!(gate.phase(10_000, false), Phase::Closed);
+        assert_eq!(gate.next_target(), Target::Left);
     }
 }
