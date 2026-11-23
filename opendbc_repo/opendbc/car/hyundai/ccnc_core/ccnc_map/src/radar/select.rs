@@ -116,7 +116,7 @@ pub fn approach_only(o: &MapObject) -> bool {
 }
 
 /// `_wall_outside(x, y)`.
-fn wall_outside(walls: &[Vec<Xy>], x: f64, y: f64) -> bool {
+pub(crate) fn wall_outside(walls: &[Vec<Xy>], x: f64, y: f64) -> bool {
     walls
         .iter()
         .any(|points| interpolate(points, x).is_some_and(|wy| wy * y > 0. && y.abs() >= wy.abs() - 0.25))

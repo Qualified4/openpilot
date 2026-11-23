@@ -384,3 +384,18 @@ fn an_approach_only_object_takes_no_side_slot() {
     assert_eq!(slot_of(-5., -1., true), Some(3));
     assert_eq!(slot_of(-5., 1., true), Some(4));
 }
+
+#[test]
+fn a_car_the_lanes_rule_out_takes_no_side_slot() {
+    let world = road();
+    for (r, side, index) in [(-1., 0, LF), (1., 1, RF)] {
+        let mut car = vehicle(&world, 1, 0., 20., r);
+        car.flags.side_blocked[side] = true;
+        let slots = Assigner::default().update(0., &[car], &world, None);
+        assert_eq!(slots[index], None, "r={r}");
+        let mut other = vehicle(&world, 1, 0., 20., r);
+        other.flags.side_blocked[1 - side] = true;
+        let slots = Assigner::default().update(0., &[other], &world, None);
+        assert!(slots[index].is_some(), "r={r}: the other side's rule");
+    }
+}

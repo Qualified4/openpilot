@@ -258,6 +258,33 @@ impl<'a> Lanes<'a> {
         Ok((None, false, f64::INFINITY))
     }
 
+    /// `_lane`'s side-slot room for LF (index 0) and RF (index 1): true where the lines leave no adjacent lane for an
+    /// object at (x, y) beyond ego's line on that side. Without ego's line there, `_lane` gives no side slot either.
+    /// An object inside ego's line is left to the world lane coordinate, and the outer line's margin is not checked.
+    pub fn side_blocked(&self, x: f64, y: f64, moving: bool, walls: &[f64]) -> [bool; 2] {
+        let (bounds, usable, _) = self.view(x);
+        let from = |i: usize, base: f64, sign: f64| (usable & (1 << i) != 0).then(|| sign * (bounds[i].unwrap() - base));
+        [(1, 0, 4, 1.), (2, 3, 5, -1.)].map(|(inner, line, edge, sign)| {
+            let Some(base) = (usable & (1 << inner) != 0).then(|| bounds[inner].unwrap()) else {
+                return true;
+            };
+            let offset = sign * (y - base);
+            if offset <= 0. {
+                return false;
+            }
+            let (outer, road) = (from(line, base, sign), from(edge, base, sign));
+            let room = match (outer, road) {
+                (None, None) => return true,
+                (Some(outer), Some(road)) if moving => py_max(outer, road),
+                (Some(outer), Some(road)) => py_min(outer, road),
+                (Some(width), None) | (None, Some(width)) => width,
+            };
+            room - 0.25 <= 1.8
+                || road.is_some_and(|road| offset > road - 0.95)
+                || walls.iter().any(|&wy| sign * wy > 0.2 && offset > sign * (wy - base))
+        })
+    }
+
     /// `_ego_lines(x)`: ego's left and right lane lines at x (None where unusable).
     pub fn ego_lines(&self, x: f64) -> (Option<f64>, Option<f64>) {
         let line = |i: i64| -> Option<f64> {

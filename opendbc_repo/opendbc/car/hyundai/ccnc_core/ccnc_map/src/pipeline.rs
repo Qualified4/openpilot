@@ -100,6 +100,8 @@ pub struct Pipeline {
     kinds: vision::Kinds,
     /// logMonoTime of the last CcncVision message.
     vision_seen: Option<u64>,
+    /// Until when ego counts as changing lanes for the radar map's side-slot lane rules.
+    changing_until: f64,
 }
 
 impl Pipeline {
@@ -124,6 +126,7 @@ impl Pipeline {
             speed_at: History::default(),
             lprob_at: History::default(),
             radar_slots: [None; 5],
+            changing_until: f64::NEG_INFINITY,
             kinds: vision::Kinds::default(),
             vision_seen: None,
         }
@@ -287,6 +290,17 @@ impl Pipeline {
         Ok(None)
     }
 
+    /// Ego counts as changing lanes for the radar map's side-slot lane rules while a blinker is on or its world lane
+    /// coordinate is more than a quarter lane off its lane's centre (centres at k + 0.5), and for 3 s after: the model
+    /// relabels its lines across the crossing. The world's own lane change state is off in this process.
+    fn ego_changing(&mut self, now: f64, blinker: bool) -> bool {
+        let u = self.world.u_ego();
+        if blinker || (u.is_finite() && (u - (u.floor() + 0.5)).abs() > 0.25) {
+            self.changing_until = now + 3.;
+        }
+        now <= self.changing_until
+    }
+
     fn update_radar(&mut self, stamp: u64, input: Vec<live_tracks::RawPoint>) -> Result<MapOut> {
         let Some((_, car)) = self
             .car
@@ -380,12 +394,14 @@ impl Pipeline {
                 usable: true,
             },
         )?;
+        let ego_changing = self.ego_changing(now, car.blinker);
         self.radar.update_vehicles(
             &mut self.tracker,
             now,
             &tracks,
             &self.world,
             RADAR.crossing_travel,
+            ego_changing,
         );
         self.kinds.apply(self.tracker.vehicles_mut());
         let cars = self.tracker.vehicles();
@@ -446,6 +462,15 @@ mod tests {
             pipe.tracker.update(1.0 + f64::from(i) * 0.05, &[(10, 20., 0., 0.)], &world);
         }
         assert!(pipe.tracker.vid_at(1.0, 10).is_some(), "an answer for a frame {kept_s} s old finds its car");
+    }
+
+    #[test]
+    fn a_blinker_lifts_the_side_lane_rules_for_3_s() {
+        let mut pipe = Pipeline::new(0);
+        assert!(!pipe.ego_changing(1.0, false), "no blinker and no world coordinate");
+        assert!(pipe.ego_changing(1.0, true));
+        assert!(pipe.ego_changing(3.9, false), "the model relabels its lines after the crossing");
+        assert!(!pipe.ego_changing(4.1, false));
     }
 
     #[test]

@@ -39,6 +39,9 @@ pub struct Flags {
     pub admitted: bool,
     /// The radar map has only an approaching Doppler for it (`select::approach_only`): no LF or RF slot.
     pub approach_only: bool,
+    /// LF and RF ruled out by the radar map's lanes: no adjacent lane (its width − 0.25 m ≤ 1.8 m), beyond the road
+    /// edge − 0.95 m or a wall line, or a wall line inside it while the object's motion is unconfirmed.
+    pub side_blocked: [bool; 2],
 }
 
 /// Bounded history with oldest-first iteration. Storage is only needed after the first sample.
