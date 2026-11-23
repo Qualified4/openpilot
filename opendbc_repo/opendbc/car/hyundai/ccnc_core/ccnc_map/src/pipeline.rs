@@ -438,6 +438,17 @@ mod tests {
     }
 
     #[test]
+    fn the_tracker_keeps_radar_ids_as_long_as_the_tracks_kept_for_kind_answers() {
+        let mut pipe = Pipeline::new(0);
+        let world = World::default();
+        let kept_s = HISTORY_NS as f64 * 1e-9;
+        for i in 0..=(kept_s * 20.) as i32 {
+            pipe.tracker.update(1.0 + f64::from(i) * 0.05, &[(10, 20., 0., 0.)], &world);
+        }
+        assert!(pipe.tracker.vid_at(1.0, 10).is_some(), "an answer for a frame {kept_s} s old finds its car");
+    }
+
+    #[test]
     fn near_drops_a_time_farther_than_the_tolerance() {
         let mut history = History::default();
         for t in [1_000, 1_050, 1_100] {

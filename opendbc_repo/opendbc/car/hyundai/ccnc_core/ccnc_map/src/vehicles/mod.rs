@@ -10,7 +10,9 @@ use crate::world::World;
 use self::link::{handoff, Axes, Decision, Sample};
 
 pub const MAX_VEHICLES: usize = 128;
-const HISTORY_LEN: usize = 40;
+/// The 4 s the pipeline keeps the tracks a classifier answer is matched against: 81 liveTracks updates at 20 Hz,
+/// both ends counted, and a few for a faster radar.
+const HISTORY_LEN: usize = 84;
 const RETAIN: f64 = 2.;
 const RADAR_FRAME_TOLERANCE: f64 = 0.03;
 
