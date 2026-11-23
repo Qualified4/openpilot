@@ -143,6 +143,7 @@ impl Quiet {
             night_corrected: false,
             calibration,
             boxes: Vec::new(),
+            kinds: Vec::new(),
         };
         send(publisher, &out)
     }
@@ -345,6 +346,7 @@ fn run() -> io::Result<()> {
                     cut: false,
                 })
                 .collect(),
+            kinds: Vec::new(),
         };
         send(&publisher, &out)?;
         quiet.frame();
@@ -397,6 +399,7 @@ mod tests {
             night_corrected: true,
             calibration: ccnc_vision_msg::Calibration::UNKNOWN,
             boxes,
+            kinds: Vec::new(),
         };
         let bytes = ccnc_vision_msg::encode(&out, 1).len() as u64;
         let queue = cereal_queue_sizes(&[ccnc_vision_msg::SERVICE])[0];

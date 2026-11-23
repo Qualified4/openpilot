@@ -2,28 +2,66 @@
 
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use ccnc_map::vision::{Box, Calib, Frame, FrameView, Geometry, Side};
+use ccnc_map::vision::{Box, Calib, Frame, FrameView, Geometry, KindResult, KindView, Side};
 use ccnc_vision_msg::{Status, View};
 
-/// A frame result of a CcncVision Event, with the Event's logMonoTime. The frame's time is `frameMonoTime`, on
-/// liveTracks' clock; `timestampSof` (the camera's CLOCK_BOOTTIME) is not used. Status messages give None.
-pub fn frame(bytes: &[u8]) -> Option<(u64, Frame)> {
+/// What a CcncVision Event holds for the map.
+pub struct Message {
+    /// The Event's logMonoTime.
+    pub stamp: u64,
+    /// A wide camera frame result. Status messages and road camera frames (their boxes are only classified) have none.
+    pub frame: Option<Frame>,
+    /// Classifier answers for boxes of earlier frames.
+    pub kinds: Vec<KindResult>,
+    /// rpyCalib, wideFromDeviceEuler, height of the message.
+    pub calibration: [f32; 7],
+}
+
+/// A CcncVision Event. A frame's time is `frameMonoTime`, on liveTracks' clock; `timestampSof` (the camera's
+/// CLOCK_BOOTTIME) is not used.
+pub fn message(bytes: &[u8]) -> Option<Message> {
     let (stamp, out) = ccnc_vision_msg::decode(bytes)?;
-    let view = match (out.status, out.view) {
-        (Status::Frame, View::SideL) => FrameView::Side(Side::Left),
-        (Status::Frame, View::SideR) => FrameView::Side(Side::Right),
-        (Status::Frame, View::Full) => FrameView::Raw,
-        _ => return None,
-    };
     let c = out.calibration;
     let [a, b, d] = c.rpy_calib;
     let [e, f, g] = c.wide_from_device_euler;
-    let boxes = out
-        .boxes
+    let calibration = [a, b, d, e, f, g, c.height];
+    let view = match (out.status, out.view) {
+        (Status::Frame, View::SideL) => Some(FrameView::Side(Side::Left)),
+        (Status::Frame, View::SideR) => Some(FrameView::Side(Side::Right)),
+        (Status::Frame, View::Full) => Some(FrameView::Raw),
+        _ => None,
+    };
+    let frame = view.map(|view| Frame {
+        time_ns: out.frame_mono_time,
+        view,
+        calibration,
+        boxes: out
+            .boxes
+            .iter()
+            .map(|b| Box { xyxy: b.xyxy.map(f64::from), confidence: f64::from(b.confidence), class_id: b.class_id })
+            .collect(),
+    });
+    let kinds = out
+        .kinds
         .iter()
-        .map(|b| Box { xyxy: b.xyxy.map(f64::from), confidence: f64::from(b.confidence), class_id: b.class_id })
+        .filter_map(|k| {
+            let view = match k.view {
+                View::CropFront => KindView::Front,
+                View::SideL => KindView::Side(Side::Left),
+                View::SideR => KindView::Side(Side::Right),
+                View::Full => return None,
+            };
+            Some(KindResult { time_ns: k.frame_mono_time, view, xyxy: k.xyxy.map(f64::from), kind: k.kind, prob: f64::from(k.prob) })
+        })
         .collect();
-    Some((stamp, Frame { time_ns: out.frame_mono_time, view, calibration: [a, b, d, e, f, g, c.height], boxes }))
+    Some(Message { stamp, frame, kinds, calibration })
+}
+
+/// A wide camera frame result with the Event's logMonoTime.
+#[cfg(test)]
+pub fn frame(bytes: &[u8]) -> Option<(u64, Frame)> {
+    let message = message(bytes)?;
+    Some((message.stamp, message.frame?))
 }
 
 /// Builds `Geometry` (about 50 ms on M8) on its own thread, as a normal thread at nice 19: the map's SCHED_FIFO
@@ -91,7 +129,30 @@ mod tests {
             night_corrected: false,
             calibration: Calibration { rpy_calib: [0., -0.0106, 0.004], wide_from_device_euler: [0., -0.0098, -0.018], height: 1.22 },
             boxes: Vec::new(),
+            kinds: Vec::new(),
         }
+    }
+
+    #[test]
+    fn kind_values_are_the_map_values() {
+        use ccnc_map::vision::kind;
+        assert_eq!(
+            [ccnc_vision_msg::KIND_CAR, ccnc_vision_msg::KIND_TRUCK, ccnc_vision_msg::KIND_BUS],
+            [kind::KIND_CAR, kind::KIND_TRUCK, kind::KIND_BUS]
+        );
+    }
+
+    #[test]
+    fn answers_come_with_any_status() {
+        let answer = |view| ccnc_vision_msg::KindResult { frame_mono_time: 5, view, xyxy: [1., 2., 3., 4.], kind: 2, prob: 0.75 };
+        let mut out = message(Status::Resting, View::SideL, 0, 0);
+        out.kinds = vec![answer(View::CropFront), answer(View::Full), answer(View::SideR)];
+        let read = super::message(&ccnc_vision_msg::encode(&out, 9)).unwrap();
+        assert!(read.frame.is_none());
+        let want = |view| KindResult { time_ns: 5, view, xyxy: [1., 2., 3., 4.], kind: 2, prob: 0.75 };
+        assert_eq!(read.kinds, [want(KindView::Front), want(KindView::Side(Side::Right))], "no answers for the wide frame");
+        let front = super::message(&ccnc_vision_msg::encode(&message(Status::Frame, View::CropFront, 5, 5), 9)).unwrap();
+        assert!(front.frame.is_none(), "road camera boxes are not wide camera results");
     }
 
     #[test]

@@ -1,4 +1,10 @@
-use ccnc_map::{cmap, cmap::MapOut, pipeline::STALE_NS};
+use ccnc_map::{
+    cmap,
+    cmap::MapOut,
+    pipeline::STALE_NS,
+    slots::Slot,
+    vision::kind::{KIND_BUS, KIND_TRUCK},
+};
 use pyo3::{intern, prelude::*, types::PyDict};
 
 use crate::{
@@ -124,6 +130,17 @@ pub(crate) fn from_card(
     Ok(output)
 }
 
+/// DETECT for a slot: the map's 1 (moving away) / 2 (closing or slow) become the grey / white car (3 / 4), or the
+/// grey / white truck (5 / 6) once the map has confirmed a truck or bus there (the cluster has no bus shape).
+/// Anything else goes as it is.
+fn detect_code(slot: &Slot) -> u8 {
+    match slot.detect {
+        detect @ (1 | 2) if slot.kind_confirmed && matches!(slot.kind, KIND_TRUCK | KIND_BUS) => detect + 4,
+        detect @ (1 | 2) => detect + 2,
+        detect => detect,
+    }
+}
+
 /// Every slot is rewritten from the message, so a new generation leaves nothing of the old one behind.
 pub(crate) fn apply_slots(values: &Bound<'_, PyDict>, map: &MapOut) -> PyResult<()> {
     for (index, ([distance, lateral, detect], slot)) in FRONT_FIELDS
@@ -145,11 +162,7 @@ pub(crate) fn apply_slots(values: &Bound<'_, PyDict>, map: &MapOut) -> PyResult<
             } else {
                 (f64::from(slot.distance).abs(), 25.5)
             };
-            let code = if matches!(slot.detect, 1 | 2) {
-                slot.detect + 2
-            } else {
-                slot.detect
-            };
+            let code = detect_code(&slot);
             ((0.8 * x).clamp(0., max), y, code)
         });
         values.set_item(distance, x)?;
@@ -167,4 +180,29 @@ pub(crate) fn apply_cmap(values_162: &Bound<'_, PyDict>, msg: &[u8]) -> PyResult
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ccnc_map::vision::kind::KIND_CAR;
+
+    fn slot(detect: u8, kind: u8, kind_confirmed: bool) -> Slot {
+        Slot { vid: 4, distance: 12., lateral: 0.5, detect, lane_coord_rel: 0., v_rel: 0., kind, kind_confirmed, vision: 0 }
+    }
+
+    #[test]
+    fn a_confirmed_truck_or_bus_is_drawn_as_a_truck() {
+        for detect in [1, 2] {
+            // No kind, a kind that is not confirmed, or a car: the car shape, as before kinds.
+            for (kind, confirmed) in [(0, false), (0, true), (KIND_CAR, true), (KIND_TRUCK, false), (KIND_BUS, false)] {
+                assert_eq!(detect_code(&slot(detect, kind, confirmed)), detect + 2, "{detect} {kind} {confirmed}");
+            }
+            assert_eq!(detect_code(&slot(detect, KIND_TRUCK, true)), detect + 4);
+            assert_eq!(detect_code(&slot(detect, KIND_BUS, true)), detect + 4);
+        }
+        for detect in [0, 3, 7, 31] {
+            assert_eq!(detect_code(&slot(detect, KIND_TRUCK, true)), detect, "other values go as they are");
+        }
+    }
 }

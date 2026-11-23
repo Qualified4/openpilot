@@ -11,10 +11,11 @@
 //! Times are seconds on CLOCK_MONOTONIC, the clock of liveTracks' `logMonoTime`. A frame's time is the message's
 //! `frameMonoTime`, never `timestampSof` (the camera's CLOCK_BOOTTIME).
 
-mod kind;
+pub mod kind;
 mod wide;
 
 pub use det_rules::{Calib, Cand, SideOutput, SlotState, Track};
+pub use kind::{KindResult, KindView, Kinds};
 pub use wide::Geometry;
 
 use crate::pos::common::LANE_WIDTH;
@@ -135,12 +136,16 @@ struct CachedRaw {
     cands: Vec<Cand>,
 }
 
+/// Side frames whose candidates a classifier answer can still be tied to (it comes a message or two later).
+const RECENT_SIDE_FRAMES: usize = 4;
+
 #[derive(Default)]
 pub struct Vision {
     geometry: Option<Geometry>,
     rules: [DetRules; 2],
     held: [Option<Held>; 2],
     raw: Option<CachedRaw>,
+    recent: std::collections::VecDeque<(u64, Side, Vec<Cand>)>,
 }
 
 fn calib_of(values: &[f32; 7]) -> Option<Calib> {
@@ -174,6 +179,12 @@ impl Vision {
     pub fn reset_positions(&mut self) {
         self.held = [None; 2];
         self.raw = None;
+        self.recent.clear();
+    }
+
+    /// The candidates the side frame of `time_ns` was stepped with, while it is one of the last few.
+    pub fn side_cands(&self, time_ns: u64, side: Side) -> Option<Vec<Cand>> {
+        self.recent.iter().find(|(t, s, _)| *t == time_ns && *s == side).map(|(_, _, c)| c.clone())
     }
 
     /// Process one CcncVision frame. `FrameView::Raw` caches raw candidates for subsequent side views and returns
@@ -213,6 +224,12 @@ impl Vision {
             .map_or(&[], |r| r.cands.as_slice());
         let (cands, out) = geometry.step(&mut self.rules[side as usize], frame, side, &calib, context, raw_cands);
         let side_idx = side as usize;
+        if kind::SIDE_KINDS {
+            if self.recent.len() == RECENT_SIDE_FRAMES {
+                self.recent.pop_front();
+            }
+            self.recent.push_back((frame.time_ns, side, cands.clone()));
+        }
         let seen = |slot: &det_rules::SlotOutput| {
             let cand = &cands[slot.cand.filter(|_| slot.display_on)?];
             Some(Seen {

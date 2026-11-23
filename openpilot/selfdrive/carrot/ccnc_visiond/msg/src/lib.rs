@@ -45,6 +45,19 @@ const BOX_XYXY: usize = 0;
 const BOX_CONFIDENCE: usize = 16;
 const BOX_CLASS_ID: usize = 20;
 const BOX_CUT_BIT: usize = 168;
+/// CcncVision pointers: boxes, kinds.
+const VISION_POINTERS: usize = 2;
+const KIND_WORDS: usize = 4;
+const KIND_FRAME_MONO_TIME: usize = 0;
+const KIND_VIEW: usize = 8;
+const KIND_KIND: usize = 9;
+const KIND_XYXY: usize = 12;
+const KIND_PROB: usize = 28;
+
+/// `Kind.kind`: the vehicle shapes the cluster can draw (there is no bus shape: a bus is drawn as a truck).
+pub const KIND_CAR: u8 = 1;
+pub const KIND_TRUCK: u8 = 2;
+pub const KIND_BUS: u8 = 3;
 
 /// The image a box is measured in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +117,21 @@ pub struct VisionBox {
     pub cut: bool,
 }
 
+/// The classifier's answer for one box of an earlier frame. It comes in a later message than its box: the
+/// classifier runs on its own thread and never holds detection up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KindResult {
+    /// `frameMonoTime` of the frame the box is from.
+    pub frame_mono_time: u64,
+    pub view: View,
+    /// The box as it was published, pixels of `view`.
+    pub xyxy: [f32; 4],
+    /// `KIND_CAR`, `KIND_TRUCK` or `KIND_BUS`.
+    pub kind: u8,
+    /// Softmax probability of `kind`.
+    pub prob: f32,
+}
+
 /// The liveCalibration values a side view is built from (radians, meters).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Calibration {
@@ -151,6 +179,8 @@ pub struct VisionOut {
     /// The angles the frame's side view was built from, and the latest valid height.
     pub calibration: Calibration,
     pub boxes: Vec<VisionBox>,
+    /// Classifier answers that came since the last message, for boxes of earlier frames. Any status may carry them.
+    pub kinds: Vec<KindResult>,
 }
 
 fn struct_pointer(data_words: usize, pointers: usize) -> u64 {
@@ -162,12 +192,14 @@ fn put<const N: usize>(bytes: &mut [u8], at: usize, value: [u8; N]) {
 }
 
 pub fn encode(out: &VisionOut, log_mono_time: u64) -> Vec<u8> {
-    // One segment: root pointer, Event, CcncVision, then the inline-composite box list.
+    // One segment: root pointer, Event, CcncVision, then the inline-composite box list and kind list.
     const EVENT: usize = 2;
     const VISION: usize = EVENT + EVENT_WORDS + 1;
-    const LIST: usize = VISION + VISION_WORDS + 1;
+    const LIST: usize = VISION + VISION_WORDS + VISION_POINTERS;
     let list_words = out.boxes.len() * BOX_WORDS;
-    let words = LIST + 1 + list_words;
+    let kinds_at = LIST + 1 + list_words;
+    let kind_words = out.kinds.len() * KIND_WORDS;
+    let words = kinds_at + 1 + kind_words;
     let mut bytes = vec![0; words * 8];
     put(&mut bytes, 4, ((words - 1) as u32).to_le_bytes());
     put(&mut bytes, 8, struct_pointer(EVENT_WORDS, 1).to_le_bytes());
@@ -175,7 +207,7 @@ pub fn encode(out: &VisionOut, log_mono_time: u64) -> Vec<u8> {
     let event = &mut bytes[EVENT * 8..VISION * 8];
     put(event, 0, log_mono_time.to_le_bytes());
     put(event, EVENT_DISCRIMINANT_BYTE, EVENT_CCNC_VISION.to_le_bytes());
-    put(event, EVENT_WORDS * 8, struct_pointer(VISION_WORDS, 1).to_le_bytes());
+    put(event, EVENT_WORDS * 8, struct_pointer(VISION_WORDS, VISION_POINTERS).to_le_bytes());
 
     let vision = &mut bytes[VISION * 8..LIST * 8];
     put(vision, FRAME_ID, out.frame_id.to_le_bytes());
@@ -188,8 +220,11 @@ pub fn encode(out: &VisionOut, log_mono_time: u64) -> Vec<u8> {
     for (k, value) in out.calibration.values().iter().enumerate() {
         put(vision, CALIBRATION + 4 * k, value.to_le_bytes());
     }
-    let list_pointer = 1u64 | (7 << 32) | ((list_words as u64) << 35);
+    // A list pointer's offset counts words from the end of the pointer to the list's tag word.
+    let list_pointer = 1u64 | (((LIST - (VISION + VISION_WORDS + 1)) as u64) << 2) | (7 << 32) | ((list_words as u64) << 35);
     put(vision, VISION_WORDS * 8, list_pointer.to_le_bytes());
+    let kinds_pointer = 1u64 | (((kinds_at - (VISION + VISION_WORDS + 2)) as u64) << 2) | (7 << 32) | ((kind_words as u64) << 35);
+    put(vision, (VISION_WORDS + 1) * 8, kinds_pointer.to_le_bytes());
 
     let tag = struct_pointer(BOX_WORDS, 0) | ((out.boxes.len() as u64) << 2);
     put(&mut bytes, LIST * 8, tag.to_le_bytes());
@@ -202,6 +237,19 @@ pub fn encode(out: &VisionOut, log_mono_time: u64) -> Vec<u8> {
         put(dst, BOX_CONFIDENCE, vision_box.confidence.to_le_bytes());
         dst[BOX_CLASS_ID] = vision_box.class_id;
         dst[BOX_CUT_BIT / 8] |= u8::from(vision_box.cut) << (BOX_CUT_BIT % 8);
+    }
+    let tag = struct_pointer(KIND_WORDS, 0) | ((out.kinds.len() as u64) << 2);
+    put(&mut bytes, kinds_at * 8, tag.to_le_bytes());
+    for (i, kind) in out.kinds.iter().enumerate() {
+        let start = (kinds_at + 1 + i * KIND_WORDS) * 8;
+        let dst = &mut bytes[start..start + KIND_WORDS * 8];
+        put(dst, KIND_FRAME_MONO_TIME, kind.frame_mono_time.to_le_bytes());
+        dst[KIND_VIEW] = kind.view as u8;
+        dst[KIND_KIND] = kind.kind;
+        for (k, value) in kind.xyxy.iter().enumerate() {
+            put(dst, KIND_XYXY + 4 * k, value.to_le_bytes());
+        }
+        put(dst, KIND_PROB, kind.prob.to_le_bytes());
     }
     bytes
 }
@@ -224,6 +272,20 @@ pub fn decode(bytes: &[u8]) -> Option<(u64, VisionOut)> {
             cut: b.bit(BOX_CUT_BIT),
         })
         .collect();
+    // Older messages have no kind list (one pointer): read as empty. An answer with an unknown view is left out.
+    let kinds = message
+        .struct_list(&vision, 1)?
+        .iter()
+        .filter_map(|k| {
+            Some(KindResult {
+                frame_mono_time: k.u64_at(KIND_FRAME_MONO_TIME),
+                view: View::from_wire(k.u8_at(KIND_VIEW))?,
+                xyxy: std::array::from_fn(|i| k.f32_at(KIND_XYXY + 4 * i)),
+                kind: k.u8_at(KIND_KIND),
+                prob: k.f32_at(KIND_PROB),
+            })
+        })
+        .collect();
     Some((
         event.u64_at(0),
         VisionOut {
@@ -236,6 +298,7 @@ pub fn decode(bytes: &[u8]) -> Option<(u64, VisionOut)> {
             night_corrected: vision.bit(NIGHT_CORRECTED_BIT),
             calibration: Calibration::from_values(std::array::from_fn(|k| vision.f32_at(CALIBRATION + 4 * k))),
             boxes,
+            kinds,
         },
     ))
 }
@@ -308,6 +371,59 @@ mod tests {
                     cut: i % 2 == 1,
                 })
                 .collect(),
+            kinds: Vec::new(),
+        }
+    }
+
+    fn kinds(n: usize) -> Vec<KindResult> {
+        (0..n)
+            .map(|i| KindResult {
+                frame_mono_time: 0x0102_0304_0506_0700 + i as u64,
+                view: [View::CropFront, View::SideL, View::SideR][i % 3],
+                xyxy: [10.5 + i as f32, 20.25, 300.0, 619.5],
+                kind: [KIND_CAR, KIND_TRUCK, KIND_BUS][i % 3],
+                prob: 0.875,
+            })
+            .collect()
+    }
+
+    /// The layout before `kinds`: CcncVision with one pointer, the box list right after it.
+    fn encode_without_kinds(out: &VisionOut, log_mono_time: u64) -> Vec<u8> {
+        let new = encode(&VisionOut { kinds: Vec::new(), ..out.clone() }, log_mono_time);
+        let vision = (2 + EVENT_WORDS + 1) * 8;
+        let mut old = new[..vision + VISION_WORDS * 8 + 8].to_vec();
+        // Boxes: tag and elements, then the kind list's tag word is dropped.
+        old.extend_from_slice(&new[vision + (VISION_WORDS + 2) * 8..new.len() - 8]);
+        let segment_words = (old.len() / 8 - 1) as u32;
+        put(&mut old, 4, segment_words.to_le_bytes());
+        put(&mut old, 2 * 8 + EVENT_WORDS * 8, struct_pointer(VISION_WORDS, 1).to_le_bytes());
+        let list_words = out.boxes.len() * BOX_WORDS;
+        put(&mut old, vision + VISION_WORDS * 8, (1u64 | (7 << 32) | ((list_words as u64) << 35)).to_le_bytes());
+        old
+    }
+
+    #[test]
+    fn kinds_go_through_with_the_boxes() {
+        for (boxes, n) in [(0, 0), (0, 1), (2, 3), (37, 4)] {
+            let out = VisionOut { kinds: kinds(n), ..sample(boxes) };
+            let bytes = encode(&out, 77);
+            assert_eq!(decode(&bytes), Some((77, out)));
+        }
+        let quiet = VisionOut { status: Status::Resting, boxes: Vec::new(), kinds: kinds(2), ..sample(0) };
+        assert_eq!(decode(&encode(&quiet, 3)).unwrap().1.kinds, kinds(2), "a status message carries answers too");
+        let mut unknown_view = encode(&VisionOut { kinds: kinds(2), ..sample(1) }, 0);
+        let first_kind = unknown_view.len() - 2 * KIND_WORDS * 8;
+        unknown_view[first_kind + KIND_VIEW] = 9;
+        assert_eq!(decode(&unknown_view).unwrap().1.kinds, kinds(2)[1..], "an answer with an unknown view is left out");
+    }
+
+    #[test]
+    fn messages_without_kinds_still_decode() {
+        for boxes in [0, 1, 5] {
+            let out = sample(boxes);
+            let old = encode_without_kinds(&out, 9);
+            assert_eq!(old.len(), encode(&out, 9).len() - 16, "one pointer and one list tag less");
+            assert_eq!(decode(&old), Some((9, out)));
         }
     }
 

@@ -80,6 +80,7 @@ pub struct Pipeline {
     lprob_at: History<Vec<f64>>,
     /// The last update's radar slots, before the camera cars.
     radar_slots: [Option<Slot>; 5],
+    kinds: vision::Kinds,
 }
 
 impl Pipeline {
@@ -103,6 +104,7 @@ impl Pipeline {
             speed_at: History::default(),
             lprob_at: History::default(),
             radar_slots: [None; 5],
+            kinds: vision::Kinds::default(),
         }
     }
 
@@ -157,6 +159,27 @@ impl Pipeline {
         };
         let pose = self.world.pose.at(seconds(t));
         self.vision.frame(frame, seconds(stamp), &context, pose)
+    }
+
+    /// Classifier answers that reached the map. `calibration` is the carrying message's (rpyCalib, height used for
+    /// the road camera). They show from the next radar update on, on cars the radar already draws.
+    pub fn kinds(&mut self, results: &[vision::KindResult], calibration: &[f32; 7]) {
+        if results.is_empty() {
+            return;
+        }
+        let c = calibration.map(f64::from);
+        let cam = vision::kind::FrontCam::new([c[0], c[1], c[2]], c[6]);
+        let (tracks_at, vision, tracker) = (&self.tracks_at, &self.vision, &self.tracker);
+        self.kinds.observe(
+            results,
+            cam.as_ref(),
+            |t| tracks_at.at(t).cloned(),
+            |t, side| vision.side_cands(t, side),
+            |id| {
+                let id = u32::try_from(id).ok()?;
+                tracker.vehicles().iter().find(|car| car.radar_id == Some(id)).map(|car| car.vid)
+            },
+        );
     }
 
     pub fn set_vision_geometry(&mut self, geometry: vision::Geometry) {
@@ -333,13 +356,15 @@ impl Pipeline {
                 usable: true,
             },
         )?;
-        let cars = self.radar.update_vehicles(
+        self.radar.update_vehicles(
             &mut self.tracker,
             now,
             &tracks,
             &self.world,
             RADAR.crossing_travel,
         );
+        self.kinds.apply(self.tracker.vehicles_mut());
+        let cars = self.tracker.vehicles();
         let mut slots = self.slots.update(now, cars, &self.world, lead);
         let ego = self.world.u_ego();
         self.rear.finish(

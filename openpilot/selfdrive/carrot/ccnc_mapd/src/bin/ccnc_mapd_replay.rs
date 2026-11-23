@@ -65,7 +65,10 @@ fn main() -> io::Result<()> {
             *baseline.get_or_insert_with(|| HEAP_BYTES.load(Relaxed) - buffers(&frame, &times));
         let pipeline = pipeline.get_or_insert_with(|| Pipeline::new(0));
         while framing::next(&mut reader, &mut frame)? {
-            if let Some((stamp, camera)) = vision::frame(&frame) {
+            if let Some(message) = vision::message(&frame) {
+                pipeline.kinds(&message.kinds, &message.calibration);
+                let Some(camera) = message.frame else { continue };
+                let stamp = message.stamp;
                 // Built in line so a replay uses the first frame too, where the daemon skips frames until built.
                 let start = Instant::now();
                 if let Err(Skipped::NeedsGeometry(calib)) = pipeline.vision(stamp, &camera) {

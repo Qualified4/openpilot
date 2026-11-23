@@ -254,7 +254,7 @@ struct CustomReserved3 @0xda96579883444c35 {
 struct CustomReserved4 @0x80ae746ee2596b11 {
   frameId @0 :UInt32;
   timestampSof @1 :UInt64;
-  view @2 :UInt8;  # 0 full, 1 cropFront, 2 sideL, 3 sideR. ccnc_visiond publishes 2 and 3.
+  view @2 :UInt8;  # 0 full (wide), 1 cropFront (road camera above the bonnet), 2 sideL, 3 sideR.
   processingMs @3 :Float32;  # Frame copy to publish.
   nightCorrected @4 :Bool;
   boxes @5 :List(Box);
@@ -270,6 +270,20 @@ struct CustomReserved4 @0x80ae746ee2596b11 {
   frameMonoTime @13 :UInt64;  # timestampSof on CLOCK_MONOTONIC, converted when the message was published.
   status @14 :UInt8;  # 0 frame, 1 resting (speed above 3 m/s, reversing or no carState), 2 not calibrated,
                       # 3 no camera frames, 4 stopped on an error, 5 unsupported wide camera resolution.
+  # Classifier answers for boxes of earlier frames (the classifier runs on its own thread and never holds up
+  # detection). Any status may carry them; empty when the classifier has nothing new.
+  kinds @15 :List(Kind);
+
+  struct Kind {
+    frameMonoTime @0 :UInt64;  # frameMonoTime of the frame the box is from.
+    view @1 :UInt8;  # The box's view, as above (1 cropFront: the road camera above the bonnet crop line).
+    kind @2 :UInt8;  # 1 car, 2 truck, 3 bus.
+    x1 @3 :Float32;  # The box as published with its frame.
+    y1 @4 :Float32;
+    x2 @5 :Float32;
+    y2 @6 :Float32;
+    prob @7 :Float32;  # Softmax probability of kind.
+  }
 
   struct Box {
     x1 @0 :Float32;  # Pixels of the view named above.
