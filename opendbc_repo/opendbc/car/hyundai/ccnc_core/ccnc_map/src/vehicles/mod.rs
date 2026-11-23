@@ -28,6 +28,8 @@ pub struct Kind {
     pub conf: f32,
     pub confirmed_at: f64,
     pub frames: u32,
+    /// Taken from another vid of the same vehicle when this vid started: shown even on an `Ambiguous` link.
+    pub inherited: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
