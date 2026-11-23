@@ -7,7 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use crate::pymath::{py_max, py_min, py_sum};
 use crate::radar::{Error, MapState, Result};
 use crate::slots::{Observation, Slot as WorldSlot};
-use crate::vehicles::{Vehicle, MAX_VEHICLES};
+use crate::vehicles::{Kind, Link, Vehicle, MAX_VEHICLES};
 use crate::world::World;
 use side_flow::{Flow, Motion};
 
@@ -419,6 +419,9 @@ pub struct WorldRear {
     constants: Consts,
     generation: u32,
     radar_stamp: Option<f64>,
+    /// Confirmed kinds by vid. The tracker forgets a car 2 s after its last radar update; the rear handover keeps
+    /// drawing it for up to 10 s, with this kind.
+    kinds: Vec<(u32, Kind)>,
 }
 
 impl WorldRear {
@@ -436,6 +439,17 @@ impl WorldRear {
         let ego = world.pose.at(now);
         let width = world.lanes.width_at(ego.s);
         let lateral = bsd_laterals(width, width);
+        if context_changed {
+            self.kinds.clear();
+        }
+        for car in input.vehicles.iter().filter(|car| car.link == Link::Sure) {
+            if let Some(kind) = car.kind.filter(|k| k.confirmed_at.is_finite()) {
+                match self.kinds.iter_mut().find(|(vid, _)| *vid == car.vid) {
+                    Some(kept) => kept.1 = kind,
+                    None => self.kinds.push((car.vid, kind)),
+                }
+            }
+        }
         let to_car = |vid| input.vehicles.iter().find(|car| car.vid == vid);
         let front = [slots[0], slots[1], slots[2]].map(|slot| slot.and_then(|s| to_car(s.vid)));
         let selected = front.map(|car| car.map(|car| Identity(i128::from(car.vid), car.born)));
@@ -548,8 +562,10 @@ impl WorldRear {
             } else {
                 -drawn.y.value()
             };
-            let kind = to_car(vid)
-                .and_then(|car| car.kind.filter(|_| car.link == crate::vehicles::Link::Sure));
+            let kind = match to_car(vid) {
+                Some(car) => car.kind.filter(|_| car.link == Link::Sure),
+                None => self.kinds.iter().find(|(kept, _)| *kept == vid).map(|&(_, kind)| kind),
+            };
             slots[i + 3] = Some(WorldSlot {
                 vid,
                 distance: (drawn.x.value() / self.constants.scale) as f32,
@@ -567,6 +583,17 @@ impl WorldRear {
                 vision: crate::slots::VISION_NONE,
             });
         }
+        let sides = &self.state.sides;
+        self.kinds.retain(|&(vid, _)| {
+            let key = i128::from(vid);
+            input.vehicles.iter().any(|car| car.vid == vid)
+                || sides.iter().any(|side| {
+                    [&side.front, &side.rear].into_iter().flatten().any(|track| track.key.0 == key)
+                        || side.flow.rear.as_ref().is_some_and(|drawn| {
+                            matches!(drawn.key, Some(side_flow::Key::Radar(Identity(v, _))) if v == key)
+                        })
+                })
+        });
         Ok(())
     }
 }

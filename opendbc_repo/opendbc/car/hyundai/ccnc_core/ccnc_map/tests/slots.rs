@@ -291,3 +291,76 @@ fn rear_slots_use_r_and_active_bsd_uses_the_existing_drawing() {
         assert_eq!(left.vid, if blind[0] { 0 } else { 1 });
     }
 }
+
+#[test]
+fn a_confirmed_truck_and_bus_keep_their_kind_in_the_rear_slots_after_the_tracker_forgets_them() {
+    use ccnc_map::vehicles::Kind;
+    use ccnc_map::vision::kind::{KIND_BUS, KIND_TRUCK};
+    let mut world = road();
+    let mut assigner = Assigner::default();
+    let mut rear = WorldRear::default();
+    let kind = |class, confirmed_at| Some(Kind { class, conf: 0.9, confirmed_at, frames: 2 });
+    // Ego 10 m/s, two cars 2 m/s slower pass from 6 m ahead: a confirmed truck on the left, a confirmed bus on the
+    // right. The radar loses them 3 m behind with the BSD on; the tracker forgets them 2 s (RETAIN) later.
+    let lost = 4.5;
+    let mut checked = 0;
+    for i in 0..=((lost + 9.5) * 20.) as i32 {
+        let now = f64::from(i) * 0.05;
+        world.car_state(now, 10., false);
+        if i % 20 == 0 {
+            world.model(now, &model(0., 0., 0.));
+        }
+        world.radar(now);
+        let seen = now.min(lost);
+        let mut cars = vec![
+            vehicle(&world, 1, seen, 8. * seen + 6., -1.),
+            vehicle(&world, 2, seen, 8. * seen + 6., 1.),
+        ];
+        cars[0].kind = kind(KIND_TRUCK, 0.);
+        cars[1].kind = kind(KIND_BUS, 0.);
+        if now - lost > 2. {
+            cars.clear();
+        }
+        let blind = [now >= lost - 1.; 2];
+        let mut slots = assigner.update(now, &cars, &world, None);
+        rear.finish(&world, WorldInput { now, changing: false, can_valid: true, blind, vehicles: &cars }, &mut slots).unwrap();
+        let after = now - lost;
+        if [2.05, 5., 9.].iter().any(|t| (after - t).abs() < 1e-6) {
+            assert!(cars.is_empty(), "the tracker has forgotten them at {after:.2} s");
+            let (left, right) = (slots[3].unwrap(), slots[4].unwrap());
+            assert_eq!((left.vid, left.kind, left.kind_confirmed), (1, KIND_TRUCK, true), "LR at {after:.2} s");
+            assert_eq!((right.vid, right.kind, right.kind_confirmed), (2, KIND_BUS, true), "RR at {after:.2} s");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 3);
+}
+
+#[test]
+fn an_unconfirmed_kind_is_not_kept_after_the_tracker_forgets_the_car() {
+    use ccnc_map::vehicles::Kind;
+    use ccnc_map::vision::kind::KIND_TRUCK;
+    let mut world = road();
+    let mut assigner = Assigner::default();
+    let mut rear = WorldRear::default();
+    let lost = 4.5;
+    for i in 0..=((lost + 3.) * 20.) as i32 {
+        let now = f64::from(i) * 0.05;
+        world.car_state(now, 10., false);
+        if i % 20 == 0 {
+            world.model(now, &model(0., 0., 0.));
+        }
+        world.radar(now);
+        let seen = now.min(lost);
+        let mut car = vehicle(&world, 1, seen, 8. * seen + 6., -1.);
+        car.kind = Some(Kind { class: KIND_TRUCK, conf: 0.9, confirmed_at: f64::INFINITY, frames: 1 });
+        let cars: Vec<_> = if now - lost > 2. { vec![] } else { vec![car] };
+        let mut slots = assigner.update(now, &cars, &world, None);
+        let blind = [now >= lost - 1., false];
+        rear.finish(&world, WorldInput { now, changing: false, can_valid: true, blind, vehicles: &cars }, &mut slots).unwrap();
+        if let Some(left) = slots[3].filter(|_| now >= lost) {
+            let shown = if cars.is_empty() { (0, false) } else { (KIND_TRUCK, false) };
+            assert_eq!((left.vid, left.kind, left.kind_confirmed), (1, shown.0, shown.1), "at {:.2} s", now - lost);
+        }
+    }
+}
