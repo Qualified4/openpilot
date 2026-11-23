@@ -30,15 +30,23 @@ dependencies = [
 [[package]]
 name = "ccnc_map"
 version = "0.1.0"
+dependencies = [
+ "det_rules",
+]
 
 [[package]]
 name = "ccnc_mapd"
 version = "0.1.0"
 dependencies = [
  "ccnc_map",
+ "ccnc_vision_msg",
  "libc",
  "stripnet",
 ]
+
+[[package]]
+name = "ccnc_vision_msg"
+version = "0.1.0"
 
 [[package]]
 name = "cfg-if"
@@ -64,6 +72,10 @@ dependencies = [
  "generic-array",
  "typenum",
 ]
+
+[[package]]
+name = "det_rules"
+version = "0.1.0"
 
 [[package]]
 name = "digest"

@@ -16,7 +16,8 @@ def copied_loader(tmp_path):
   core_copy = tmp_path / "ccnc_core"
   shutil.copytree(CORE_DIR / "src", core_copy / "src")
   shutil.copytree(CORE_DIR / "ccnc_map" / "src", core_copy / "ccnc_map" / "src")
-  for name in ("Cargo.toml", "Cargo.lock", "build.rs", "ccnc_map/Cargo.toml"):
+  shutil.copytree(CORE_DIR / "det_rules" / "src", core_copy / "det_rules" / "src")
+  for name in ("Cargo.toml", "Cargo.lock", "build.rs", "ccnc_map/Cargo.toml", "det_rules/Cargo.toml"):
     shutil.copyfile(CORE_DIR / name, core_copy / name)
   binary = core_copy / BINARY_PATH
   binary.parent.mkdir(parents=True)
@@ -57,10 +58,11 @@ def test_rejects_changed_source(copied_loader, tmp_path, caplog):
 def test_source_hash_covers_ccnc_map(copied_loader, tmp_path):
   loader, _ = copied_loader
   core_copy = tmp_path / "ccnc_core"
-  before = loader._source_hash(core_copy)
-  with (core_copy / "ccnc_map" / "src" / "lib.rs").open("ab") as source:
-    source.write(b"\n")
-  assert loader._source_hash(core_copy) != before
+  for crate in ("ccnc_map", "det_rules"):
+    before = loader._source_hash(core_copy)
+    with (core_copy / crate / "src" / "lib.rs").open("ab") as source:
+      source.write(b"\n")
+    assert loader._source_hash(core_copy) != before, crate
 
 
 def test_caches_missing_extension(copied_loader, caplog):

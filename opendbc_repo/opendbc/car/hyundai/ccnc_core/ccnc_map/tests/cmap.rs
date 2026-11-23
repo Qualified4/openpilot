@@ -60,6 +60,7 @@ fn cmap_roundtrip_matches_pycapnp() {
         v_rel: -1.5,
         kind: 3,
         kind_confirmed: true,
+        vision: 1,
     });
     slots[4] = Some(Slot {
         vid: 0,
@@ -70,6 +71,7 @@ fn cmap_roundtrip_matches_pycapnp() {
         v_rel: 0.,
         kind: 0,
         kind_confirmed: false,
+        vision: 0,
     });
     let expected = MapOut {
         radar_log_mono_time: 123456789012,

@@ -27,4 +27,5 @@ pub mod radar;
 pub mod rear;
 pub mod slots;
 pub mod vehicles;
+pub mod vision;
 pub mod world;

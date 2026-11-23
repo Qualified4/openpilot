@@ -1,0 +1,7 @@
+[package]
+name = "det_rules"
+version = "0.1.0"
+edition = "2021"
+description = "Camera vehicle detection rules (item 68): pure computation, no I/O, no dependencies"
+
+[dependencies]

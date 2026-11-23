@@ -6,7 +6,12 @@ use std::io::{self, BufReader, BufWriter, Write};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::time::Instant;
 
+use ccnc_map::vision::{Geometry, Skipped};
 use ccnc_map::{cmap, input::framing, pipeline::Pipeline};
+
+#[path = "../vision.rs"]
+#[allow(dead_code)] // The geometry thread is the daemon's; the replay builds in line.
+mod vision;
 
 struct RetainedHeap;
 static HEAP_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -42,6 +47,7 @@ fn main() -> io::Result<()> {
     let mut out = BufWriter::new(io::stdout().lock());
     let mut frame = Vec::new();
     let mut times = Vec::new();
+    let mut vision_times = Vec::new();
     let mut max_state = 0;
     let mut valid = 0;
     let mut pipeline = None;
@@ -59,6 +65,19 @@ fn main() -> io::Result<()> {
             *baseline.get_or_insert_with(|| HEAP_BYTES.load(Relaxed) - buffers(&frame, &times));
         let pipeline = pipeline.get_or_insert_with(|| Pipeline::new(0));
         while framing::next(&mut reader, &mut frame)? {
+            if let Some((stamp, camera)) = vision::frame(&frame) {
+                // Built in line so a replay uses the first frame too, where the daemon skips frames until built.
+                let start = Instant::now();
+                if let Err(Skipped::NeedsGeometry(calib)) = pipeline.vision(stamp, &camera) {
+                    pipeline.set_vision_geometry(Geometry::build(&calib));
+                    let start = Instant::now();
+                    let _ = pipeline.vision(stamp, &camera);
+                    vision_times.push(start.elapsed().as_nanos());
+                } else {
+                    vision_times.push(start.elapsed().as_nanos());
+                }
+                continue;
+            }
             let start = bench.then(Instant::now);
             let result = pipeline
                 .ingest(&frame)
@@ -91,6 +110,11 @@ fn main() -> io::Result<()> {
         }
         let p99 = times[(count * 99).div_ceil(100) - 1] as f64 / 1e3;
         eprintln!("radar_frames={count} valid={valid} p99_us={p99:.2} state_bytes={max_state}");
+        if !vision_times.is_empty() {
+            vision_times.sort_unstable();
+            let at = |q: usize| vision_times[(vision_times.len() * q).div_ceil(100).max(1) - 1] as f64 / 1e3;
+            eprintln!("vision_frames={} p50_us={:.2} p99_us={:.2}", vision_times.len(), at(50), at(99));
+        }
     }
     out.flush()
 }

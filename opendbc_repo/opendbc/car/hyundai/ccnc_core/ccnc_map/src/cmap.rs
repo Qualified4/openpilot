@@ -29,7 +29,7 @@ pub struct Schema {
     pub slots_pointer: usize,
     // Offsets in the field's own units, as reported by Cap'n Proto.
     pub map_fields: [usize; 5],
-    pub slot_fields: [usize; 9],
+    pub slot_fields: [usize; 10],
     pub data_words: [usize; 3],
     pub pointer_words: [usize; 3],
 }
@@ -40,7 +40,7 @@ pub const fn schema() -> Schema {
         event_pointer: 0,
         slots_pointer: 0,
         map_fields: [0, 2, 12, 4, MAP_VALID_BIT],
-        slot_fields: [0, 1, 2, 12, 4, 5, 13, KIND_CONFIRMED_BIT, SLOT_PRESENT_BIT],
+        slot_fields: [0, 1, 2, 12, 4, 5, 13, KIND_CONFIRMED_BIT, SLOT_PRESENT_BIT, 15],
         data_words: [EVENT_WORDS, MAP_WORDS, SLOT_WORDS],
         pointer_words: [1, 1, 0],
     }
@@ -92,7 +92,7 @@ pub fn encode_at(map: &MapOut, log_mono_time: u64) -> Vec<u8> {
 
     let list_tag = struct_tag(SLOT_WORDS, 0) | ((SLOT_COUNT as u64) << 2);
     put(&mut bytes, LIST_START, list_tag.to_le_bytes());
-    let [vid, distance, lateral, detect, lane, speed, kind, confirmed, present] = s.slot_fields;
+    let [vid, distance, lateral, detect, lane, speed, kind, confirmed, present, vision] = s.slot_fields;
     for (i, slot) in map.slots.iter().enumerate() {
         let Some(slot) = slot else { continue };
         let start = (LIST_START + 1 + i * SLOT_WORDS) * 8;
@@ -106,6 +106,7 @@ pub fn encode_at(map: &MapOut, log_mono_time: u64) -> Vec<u8> {
         dst[kind] = slot.kind;
         dst[confirmed / 8] |= u8::from(slot.kind_confirmed) << (confirmed % 8);
         dst[present / 8] |= 1 << (present % 8);
+        dst[vision] = slot.vision;
     }
     bytes
 }
@@ -130,7 +131,7 @@ pub fn decode(bytes: &[u8]) -> Option<MapOut> {
     if fields.len() != SLOT_COUNT {
         return None;
     }
-    let [vid, distance, lateral, detect, lane, speed, kind, confirmed, present] = s.slot_fields;
+    let [vid, distance, lateral, detect, lane, speed, kind, confirmed, present, vision] = s.slot_fields;
     let slots = std::array::from_fn(|i| {
         let data = fields[i].data;
         let f32_at = |offset| f32::from_le_bytes(data_bytes(data, offset * 4));
@@ -144,6 +145,7 @@ pub fn decode(bytes: &[u8]) -> Option<MapOut> {
             v_rel: f32_at(speed),
             kind: data_bytes::<1>(data, kind)[0],
             kind_confirmed: bit(data, confirmed),
+            vision: data_bytes::<1>(data, vision)[0],
         })
     });
     let [stamp, generation, status, ego, valid] = s.map_fields;

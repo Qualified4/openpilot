@@ -563,6 +563,7 @@ impl WorldRear {
                     .map_or(0., |t| t.vrel as f32),
                 kind: kind.map_or(0, |k| k.class),
                 kind_confirmed: kind.is_some_and(|k| k.confirmed_at.is_finite()),
+                vision: crate::slots::VISION_NONE,
             });
         }
         Ok(())

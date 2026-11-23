@@ -1,11 +1,13 @@
 mod inputs;
 mod output;
+mod vision;
 
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ccnc_map::pipeline::Pipeline;
+use ccnc_map::vision::Skipped;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -76,8 +78,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let publisher = output::open()?;
     // Start each process with a different generation so a subscriber can see restarts.
     let mut pipeline = Pipeline::new((monotonic_ns() / 1_000) as u32);
+    let mut geometry = vision::Builder::start()
+        .map_err(|err| eprintln!("ccnc_mapd: no side view geometry thread, camera results are not used: {err}"))
+        .ok();
+    let mut dropped = None;
+    // The last result of each side that came while the geometry was being built: used once it is there.
+    let mut waiting: Vec<(u64, ccnc_map::vision::Frame)> = Vec::new();
     while !STOP.load(Ordering::Relaxed) {
+        if let Some(built) = geometry.as_ref().and_then(vision::Builder::take) {
+            pipeline.set_vision_geometry(built);
+            for (stamp, frame) in waiting.drain(..) {
+                let _ = pipeline.vision(stamp, &frame);
+            }
+        }
         for (_, bytes) in input.read() {
+            if let Some((stamp, frame)) = vision::frame(&bytes) {
+                match pipeline.vision(stamp, &frame) {
+                    Err(Skipped::NeedsGeometry(calib)) => {
+                        if let Some(builder) = geometry.as_mut() {
+                            builder.request(calib);
+                            waiting.retain(|(_, other)| other.side != frame.side);
+                            waiting.push((stamp, frame));
+                        }
+                    }
+                    Err(why) => {
+                        if dropped != Some(why) {
+                            eprintln!("ccnc_mapd: camera result dropped ({why:?}), frame {} ms before {}", stamp.saturating_sub(frame.time_ns) / 1_000_000, stamp);
+                        }
+                        dropped = Some(why);
+                        continue;
+                    }
+                    Ok(_) => {}
+                }
+                dropped = None;
+                continue;
+            }
             if let Some(map) = pipeline
                 .ingest(&bytes)
                 .map_err(|err| io::Error::other(format!("map update: {err:?}")))?
@@ -155,7 +190,7 @@ mod tests {
             .split_whitespace()
             .map(|s| s.parse().unwrap())
             .collect();
-        assert_eq!(expected.len(), 6);
+        assert_eq!(expected.len(), 7);
         for (name, queue_size) in services.zip(expected) {
             assert_eq!(
                 fs::metadata(path.join(name)).unwrap().len(),

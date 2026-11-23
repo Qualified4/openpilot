@@ -14,11 +14,15 @@ use crate::radar::{
     Frame, MapState, Range, Result,
 };
 use crate::rear::{WorldInput, WorldRear};
-use crate::slots::Assigner;
+use crate::slots::{Assigner, Slot};
 use crate::vehicles::{Tracker, MAX_VEHICLES};
+use crate::vision::{self, Vision};
 use crate::world::{World, RADAR_LAG, STATUS_FROZEN};
+use std::collections::VecDeque;
 
 pub const STALE_NS: u64 = 250_000_000;
+/// How far back the inputs of a camera frame's time are kept: a later result is dropped anyway.
+const HISTORY_NS: u64 = 2_000_000_000;
 const RADAR: Consts = Consts::map_process();
 
 fn seconds(t: u64) -> f64 {
@@ -27,6 +31,33 @@ fn seconds(t: u64) -> f64 {
 
 fn fresh(now: u64, stamp: u64) -> bool {
     now.checked_sub(stamp).is_some_and(|age| age <= STALE_NS)
+}
+
+/// Recent inputs by logMonoTime, for the camera frames that arrive up to a second and a half late.
+struct History<T>(VecDeque<(u64, T)>);
+
+impl<T> History<T> {
+    fn push(&mut self, stamp: u64, value: T) {
+        if self.0.back().is_some_and(|(last, _)| stamp < *last) {
+            return;
+        }
+        while self.0.front().is_some_and(|(first, _)| first + HISTORY_NS < stamp) {
+            self.0.pop_front();
+        }
+        self.0.push_back((stamp, value));
+    }
+
+    /// The last one at or before `t`, else the first (what the offline rules were scored with).
+    fn at(&self, t: u64) -> Option<&T> {
+        let i = self.0.partition_point(|(stamp, _)| *stamp <= t);
+        self.0.get(i.saturating_sub(1)).map(|(_, value)| value)
+    }
+}
+
+impl<T> Default for History<T> {
+    fn default() -> Self {
+        Self(VecDeque::new())
+    }
 }
 
 pub struct Pipeline {
@@ -42,6 +73,13 @@ pub struct Pipeline {
     car: Option<(u64, CarState)>,
     model_stamp: Option<u64>,
     lead: Option<(u64, Option<(f64, f64)>)>,
+    vision: Vision,
+    start_guard: det_rules::StartGuard,
+    tracks_at: History<Vec<vision::Track>>,
+    speed_at: History<f64>,
+    lprob_at: History<Vec<f64>>,
+    /// The last update's radar slots, before the camera cars.
+    radar_slots: [Option<Slot>; 5],
 }
 
 impl Pipeline {
@@ -59,6 +97,12 @@ impl Pipeline {
             car: None,
             model_stamp: None,
             lead: None,
+            vision: Vision::default(),
+            start_guard: det_rules::StartGuard::default(),
+            tracks_at: History::default(),
+            speed_at: History::default(),
+            lprob_at: History::default(),
+            radar_slots: [None; 5],
         }
     }
 
@@ -93,7 +137,30 @@ impl Pipeline {
             self.radar_generation = self.world.generation();
             self.radar = MapState::for_observation();
             self.model_stamp = None;
+            self.vision.reset_positions();
         }
+    }
+
+    /// One CcncVision frame that reached the map at `stamp` (its logMonoTime). The decision shows from the next
+    /// radar update on. `Skipped::NeedsGeometry` asks for `set_vision_geometry`; the frame is not used.
+    pub fn vision(&mut self, stamp: u64, frame: &vision::Frame) -> std::result::Result<vision::Stepped, vision::Skipped> {
+        let t = frame.time_ns;
+        let (Some(tracks), Some(&v_ego)) = (self.tracks_at.at(t), self.speed_at.at(t)) else {
+            return Err(vision::Skipped::NoInputs);
+        };
+        let context = vision::Context {
+            v_ego,
+            tracks,
+            lprob: self.lprob_at.at(t).map(Vec::as_slice),
+            slots: vision::slot_states(&self.radar_slots),
+            guard: self.start_guard.ok(),
+        };
+        let pose = self.world.pose.at(seconds(t));
+        self.vision.frame(frame, seconds(stamp), &context, pose)
+    }
+
+    pub fn set_vision_geometry(&mut self, geometry: vision::Geometry) {
+        self.vision.set_geometry(geometry);
     }
 
     pub fn ingest(&mut self, bytes: &[u8]) -> Result<Option<MapOut>> {
@@ -112,6 +179,8 @@ impl Pipeline {
                 let mut car = event.car_state().unwrap_or_default();
                 car.can_valid &= event.valid && car.speed.is_finite();
                 if car.can_valid {
+                    self.speed_at.push(stamp, car.speed);
+                    self.start_guard.observe(car.speed);
                     self.world.blinker(car.blinker);
                     self.world.car_state(now, car.speed, car.reverse);
                     self.sync_generation();
@@ -120,6 +189,7 @@ impl Pipeline {
             }
             EVENT_MODEL_V2 if event.valid && self.model_stamp.is_none_or(|last| stamp > last) => {
                 if let Some(model) = model_v2::parse(bytes) {
+                    self.lprob_at.push(stamp, model.lane_line_probs.iter().map(|&p| f64::from(p)).collect());
                     self.world.model_with_walls(now, &model, Some(&self.radar));
                     let (px, py, heading) = self.radar.pose_at(now).unwrap_or(self.radar.pose);
                     let (s, c) = heading.sin_cos();
@@ -148,6 +218,18 @@ impl Pipeline {
                 }
                 self.last_tracks = Some(stamp);
                 if let Some(points) = event.valid.then(|| live_tracks::parse(bytes)).flatten() {
+                    self.tracks_at.push(
+                        stamp,
+                        points
+                            .iter()
+                            .map(|p| vision::Track {
+                                id: p.track_id as i64,
+                                d_rel: f64::from(p.d_rel),
+                                y_rel: f64::from(p.y_rel),
+                                v_rel: f64::from(p.v_rel),
+                            })
+                            .collect(),
+                    );
                     self.tracks_valid = true;
                     return self.update_radar(stamp, points).map(Some);
                 }
@@ -271,6 +353,8 @@ impl Pipeline {
             },
             &mut slots,
         )?;
+        self.radar_slots = slots;
+        self.vision.apply(now, car.speed, self.world.pose.at(now), &mut slots);
         Ok(if ego.is_finite() {
             MapOut {
                 ego_lane_coord: ego as f32,

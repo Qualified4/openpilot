@@ -24,12 +24,14 @@ fn main() -> io::Result<()> {
         "Cargo.lock".into(),
         "build.rs".into(),
         "ccnc_map/Cargo.toml".into(),
+        "det_rules/Cargo.toml".into(),
     ];
-    for watched in paths.iter().map(String::as_str).chain(["src", "ccnc_map/src"]) {
+    for watched in paths.iter().map(String::as_str).chain(["src", "ccnc_map/src", "det_rules/src"]) {
         println!("cargo:rerun-if-changed={watched}");
     }
     collect_sources(Path::new("src"), &mut paths)?;
     collect_sources(Path::new("ccnc_map/src"), &mut paths)?;
+    collect_sources(Path::new("det_rules/src"), &mut paths)?;
     paths.sort_unstable();
 
     // Keep in sync with _source_hash in ccnc_core_loader.py.

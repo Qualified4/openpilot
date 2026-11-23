@@ -29,6 +29,9 @@ dependencies = [
 [[package]]
 name = "ccnc_map"
 version = "0.1.0"
+dependencies = [
+ "det_rules",
+]
 
 [[package]]
 name = "cfg-if"
@@ -54,6 +57,10 @@ dependencies = [
  "generic-array",
  "typenum",
 ]
+
+[[package]]
+name = "det_rules"
+version = "0.1.0"
 
 [[package]]
 name = "digest"

@@ -20,7 +20,16 @@ pub struct Slot {
     pub v_rel: f32,
     pub kind: u8,
     pub kind_confirmed: bool,
+    /// What the wide camera adds: `VISION_*`.
+    pub vision: u8,
 }
+
+/// The slot holds a radar car the camera has no say about.
+pub const VISION_NONE: u8 = 0;
+/// The slot holds a car seen by the wide camera alone (it filled an empty slot or replaced a farther radar car).
+pub const VISION_ONLY: u8 = 1;
+/// The slot holds a radar car, and the wide camera sees a car there too.
+pub const VISION_CONFIRMS: u8 = 2;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Observation {
@@ -246,6 +255,7 @@ impl Assigner {
                 v_rel: v_rel as f32,
                 kind: kind.map_or(0, |k| k.class),
                 kind_confirmed: kind.is_some_and(|k| k.confirmed_at.is_finite()),
+                vision: VISION_NONE,
             };
             let rank = |s: Slot| {
                 let advantage = if slot == 0 && preferred_ff == Some(s.vid) {
@@ -260,7 +270,6 @@ impl Assigner {
             }
         }
         self.previous_ff = best[0].map(|s| s.vid);
-        wide_rules(&mut best);
         best
     }
 }
@@ -269,4 +278,3 @@ fn eligible(car: &Vehicle) -> bool {
     !car.flags.structure && (car.flags.proven || car.flags.admitted || car.flags.motion_confirmed)
 }
 
-fn wide_rules(_slots: &mut [Option<Slot>; 5]) {}

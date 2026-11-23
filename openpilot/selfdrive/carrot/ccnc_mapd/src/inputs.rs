@@ -7,12 +7,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use ccnc_map::input::map_events::Event;
 use stripnet::ipc::Sub;
 
-pub const SERVICES: [&str; 5] = [
+pub const SERVICES: [&str; 6] = [
     "liveTracks",
     "livePose",
     "carState",
     "modelV2",
     "radarState",
+    // CcncVision. Present only while ccnc_visiond runs (CcncVisionProcess=1); without it nothing changes.
+    "customReserved4",
 ];
 
 /// Where msgq_header_t keeps `write_uid` (msgq_repo/msgq/msgq.h). A publisher writes a new one when it starts.
@@ -153,12 +155,12 @@ pub struct Inputs {
 
 impl Inputs {
     /// A publisher wakes a subscriber with a signal to the thread that first read the queue after the publisher
-    /// started, and every signal ends that thread's sleep. On the main thread the four context queues ended 160
-    /// sleeps a second for messages that wait for the next liveTracks anyway. They are opened, and registered with
+    /// started, and every signal ends that thread's sleep. On the main thread the context queues ended 160 sleeps a
+    /// second (without CcncVision) for messages that wait for the next liveTracks anyway. They are opened, and registered with
     /// each new publisher, by a thread that blocks the signal. The main thread reads them and takes the signal
     /// for liveTracks alone.
     ///
-    /// When that thread cannot do its part, the main thread reads and takes the signal for all five queues, as
+    /// When that thread cannot do its part, the main thread reads and takes the signal for every queue, as
     /// before the context thread.
     pub fn open() -> io::Result<Self> {
         let [tracks, context @ ..] = SERVICES;

@@ -15,4 +15,4 @@ pyo3 = { version = "0.27.2", features = ["abi3-py312", "extension-module"] }
 sha2 = "0.10.9"
 
 [workspace]
-members = ["ccnc_map"]
+members = ["ccnc_map", "det_rules"]

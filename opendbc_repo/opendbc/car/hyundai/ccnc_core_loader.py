@@ -16,8 +16,8 @@ _LOAD_LOCK = Lock()
 
 
 def _source_hash(core_dir: Path) -> str:
-  paths = ["Cargo.toml", "Cargo.lock", "build.rs", "ccnc_map/Cargo.toml"]
-  for source in ("src", "ccnc_map/src"):
+  paths = ["Cargo.toml", "Cargo.lock", "build.rs", "ccnc_map/Cargo.toml", "det_rules/Cargo.toml"]
+  for source in ("src", "ccnc_map/src", "det_rules/src"):
     paths.extend(path.relative_to(core_dir).as_posix() for path in (core_dir / source).rglob("*") if path.is_file())
   # Keep in sync with build.rs. Each field is prefixed with its 8-byte length.
   digest = sha256()
