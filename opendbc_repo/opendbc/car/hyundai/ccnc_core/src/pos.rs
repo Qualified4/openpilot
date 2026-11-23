@@ -12,9 +12,10 @@ use crate::guard;
 use ccnc_map::pos::display_a::DisplayA;
 use ccnc_map::pos::display_b::DisplayB;
 use ccnc_map::pos::{Common, FrameIn, Obj, Vid};
+use ccnc_map::radar::select::approach_only;
 
-/// (vid, x, y, seen, report, lines) of an `Obj`, as the trace and the test entry carry it.
-type ObjTuple = (i64, f64, f64, f64, Option<(f64, f64, f64)>, [Option<f64>; 4]);
+/// (vid, x, y, seen, report, lines, side_ok) of an `Obj`, as the trace and the test entry carry it.
+type ObjTuple = (i64, f64, f64, f64, Option<(f64, f64, f64)>, [Option<f64>; 4], bool);
 type FrameTuple = (f64, Option<f64>, [Option<i64>; 3], Option<(f64, f64)>, Vec<ObjTuple>, Option<f64>);
 type OutTuple = ([Option<i64>; 3], [Option<f64>; 3]);
 
@@ -22,13 +23,13 @@ fn frame_from(t: FrameTuple) -> FrameIn {
     let (now, yaw, selected, lead, objs, heading) = t;
     let objs = objs
         .into_iter()
-        .map(|(vid, x, y, seen, report, lines)| Obj { vid, x, y, seen, report, lines })
+        .map(|(vid, x, y, seen, report, lines, side_ok)| Obj { vid, x, y, seen, report, lines, side_ok })
         .collect();
     FrameIn { now, yaw, selected, lead, objs, heading }
 }
 
 fn frame_tuple(f: &FrameIn) -> FrameTuple {
-    let objs = f.objs.iter().map(|o| (o.vid, o.x, o.y, o.seen, o.report, o.lines)).collect();
+    let objs = f.objs.iter().map(|o| (o.vid, o.x, o.y, o.seen, o.report, o.lines, o.side_ok)).collect();
     (f.now, f.yaw, f.selected, f.lead, objs, f.heading)
 }
 
@@ -133,11 +134,14 @@ fn build_frame(map: &Bound<'_, PyAny>, cs: &Bound<'_, PyAny>, followed: &[Vid]) 
     keys.dedup();
     let offset = state.st.lane_offset;
     let lanes = state.st.lane_cache.view(offset, false, (0., 0.), false);
+    let bridged = state.st.bridge.as_ref().map(|bridge| bridge.key);
     let mut objs = Vec::with_capacity(keys.len());
     for vid in keys {
         let (Some(o), Some(&(x, y))) = (state.st.objects.get(&vid), state.st.local.get(&vid)) else { continue };
         let lines = std::array::from_fn(|i| lanes.boundary(i as i64 + offset, x));
-        objs.push(Obj { vid, x, y, seen: o.seen, report: o.report, lines });
+        // The selector's own side-slot rules: no opposing or approach-only object, and its bridged FF stays FF.
+        let side_ok = !(o.last_motion.0 < -1. / 3.6 || approach_only(o) || bridged == Some(vid));
+        objs.push(Obj { vid, x, y, seen: o.seen, report: o.report, lines, side_ok });
     }
     let heading = road_heading(&lanes, offset);
     Ok(Some(FrameIn { now, yaw: yaw_rate(cs)?, selected: if usable { selected } else { [None; 3] }, lead: lead_one(cs)?, objs, heading }))

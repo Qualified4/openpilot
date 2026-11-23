@@ -111,7 +111,7 @@ pub fn vision(st: &mut MapState, now: f64, leads: &[Xy]) -> Result<()> {
 }
 
 /// `_approach_only(obj)`.
-fn approach_only(o: &MapObject) -> bool {
+pub fn approach_only(o: &MapObject) -> bool {
     !(o.radar_moving || o.forward_samples != 0 || o.vision_seen || o.admitted)
 }
 

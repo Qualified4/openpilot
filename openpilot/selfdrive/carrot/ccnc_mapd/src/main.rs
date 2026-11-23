@@ -72,7 +72,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if STOP.load(Ordering::Relaxed) {
         return Ok(());
     }
-    let input = inputs::Inputs::open()?;
+    let mut input = inputs::Inputs::open()?;
     let publisher = output::open()?;
     // Start each process with a different generation so a subscriber can see restarts.
     let mut pipeline = Pipeline::new((monotonic_ns() / 1_000) as u32);
@@ -106,15 +106,37 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, MutexGuard};
     use std::{fs, process::Command};
+
+    /// A private msgq directory for one test. OPENPILOT_PREFIX is process wide, so the tests take turns.
+    pub struct QueuePrefix {
+        pub path: PathBuf,
+        _turn: MutexGuard<'static, ()>,
+    }
+
+    pub fn queue_prefix(name: &str) -> QueuePrefix {
+        static TURN: Mutex<()> = Mutex::new(());
+        let turn = TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prefix = format!("{name}_{}_{}", std::process::id(), monotonic_ns());
+        let path = PathBuf::from(format!("/dev/shm/msgq_{prefix}"));
+        fs::create_dir(&path).unwrap();
+        std::env::set_var("OPENPILOT_PREFIX", prefix);
+        QueuePrefix { path, _turn: turn }
+    }
+
+    impl Drop for QueuePrefix {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 
     #[test]
     fn opens_every_queue_with_cereal_size() {
         const HEADER_BYTES: u64 = 8 * (3 + 3 * 40); // msgq_header_t in msgq_repo/msgq/msgq.h
-        let prefix = format!("mapd_queues_{}_{}", std::process::id(), monotonic_ns());
-        let path = std::path::PathBuf::from(format!("/dev/shm/msgq_{prefix}"));
-        fs::create_dir(&path).unwrap();
-        std::env::set_var("OPENPILOT_PREFIX", prefix);
+        let prefix = queue_prefix("mapd_queues");
+        let path = &prefix.path;
         let _inputs = inputs::Inputs::open().unwrap();
         let _output = output::open().unwrap();
         let services = inputs::SERVICES.into_iter().chain([output::SERVICE]);
