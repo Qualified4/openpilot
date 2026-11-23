@@ -249,7 +249,7 @@ impl Assigner {
             } else if v_rel < -1. {
                 drawing.detect = 2;
             }
-            let kind = car.kind.filter(|_| car.link == Link::Sure);
+            let kind = car.kind.filter(|k| car.link == Link::Sure || k.inherited);
             let candidate = Slot {
                 vid: car.vid,
                 distance: x as f32,

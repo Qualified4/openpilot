@@ -9,7 +9,13 @@
 //! * two answers of the same shape at least `GAP_S` and at most `MAX_GAP_S` apart confirm it (det-light 6: no "different view" condition,
 //!   a standing car never gives one). The shape is what the cluster draws: car, or truck for a truck and a bus
 //!   alike, so a truck the classifier calls truck once and bus once is confirmed; the kind shown is the last one;
-//! * a confirmed shape changes after `N_FLIP` agreeing answers of the other shape;
+//! * a truck or bus answer below `MIN_PROB_TRUCK` (but at least `MIN_PROB`) is not counted, yet it ends a run of
+//!   car answers: it still says "not a car";
+//! * a confirmed shape changes after `N_FLIP` agreeing answers of the other shape within `FLIP_WINDOW_S`;
+//! * one box answers every radar track of its car (`SAME_CAR_*`): a truck the radar sees as two tracks, two vids,
+//!   gets the answer on both, so the slot keeps its shape when FF moves between them;
+//! * a vid the tracker starts next to a confirmed car (a radar id jump, a split, an unsure handoff) takes that
+//!   car's confirmed vote (`INHERIT_GAP_S`); its own answers may flip it later;
 //! * the vote goes when its vid goes.
 //!
 //! Night frames are not classified (`ccnc_visiond`), as R1 had it: there is no labelled night data.
@@ -34,6 +40,19 @@ pub const GAP_S: f64 = 0.8;
 pub const MAX_GAP_S: f64 = 10.0;
 pub const N_CONFIRM: u32 = 2;
 pub const N_FLIP: u32 = 4;
+/// The `N_FLIP` answers of a flip come within this time of the first one. A confirmed car is rechecked every
+/// `RECHECK_S` (5 s): four rechecks span 15 s, and 20 s leaves room for one recheck without an answer.
+pub const FLIP_WINDOW_S: f64 = 20.0;
+/// Two radar tracks are one vehicle when they are this close: across and in speed `LinkGates::same_id`'s values (the
+/// tracker's test that a radar id is still the car it was: 6 m, 1.5 m, 2.5 m/s), along the road a car's length (the
+/// same 6 m) or, for a truck or bus, 16 m (Korean road law's longest vehicle, an articulated one, is 16.7 m).
+pub const SAME_CAR_LON_M: f64 = 6.0;
+pub const SAME_TRUCK_LON_M: f64 = 16.0;
+pub const SAME_CAR_LAT_M: f64 = 1.5;
+pub const SAME_CAR_SPEED: f64 = 2.5;
+/// A new vid takes the confirmed kind of a car the radar saw at most this long ago (`LinkGates::BODY.gap`: the
+/// tracker keeps a radar id on its car across a gap this long).
+pub const INHERIT_GAP_S: f64 = 0.8;
 /// Side view answers are tied to vids only when this is on. To turn it on: score the classifier on hand labelled
 /// side view boxes (the front labels say nothing about the side views' angle and distortion), check the confirmed
 /// kinds of the 58 scenes and the truck/bus scenes 30, 31, 44, then turn on `ccnc_visiond`'s `SIDE_KINDS` too.
@@ -176,6 +195,15 @@ fn shape(kind: u8) -> u8 {
     }
 }
 
+fn is_truck(kind: u8) -> bool {
+    matches!(kind, KIND_TRUCK | KIND_BUS)
+}
+
+/// Whether two radar tracks can be one vehicle `lon` m long.
+fn same_car(a: &Track, b: &Track, lon: f64) -> bool {
+    (a.d_rel - b.d_rel).abs() <= lon && (a.y_rel - b.y_rel).abs() <= SAME_CAR_LAT_M && (a.v_rel - b.v_rel).abs() <= SAME_CAR_SPEED
+}
+
 /// The least probability an answer of this shape needs to count.
 fn min_prob(shape: u8) -> f64 {
     if shape == KIND_CAR {
@@ -193,13 +221,26 @@ struct Vote {
     /// Time of the last counted answer.
     last: f64,
     streak: (u8, u32),
+    /// Time of the streak's first answer.
+    streak_from: f64,
     counted: u32,
     prob: f64,
+    /// Taken from another vid of the same car.
+    inherited: bool,
 }
 
 impl Vote {
     fn new() -> Self {
-        Self { shown: KIND_CAR, confirmed_at: f64::NAN, last: f64::NEG_INFINITY, streak: (0, 0), counted: 0, prob: 0. }
+        Self {
+            shown: KIND_CAR,
+            confirmed_at: f64::NAN,
+            last: f64::NEG_INFINITY,
+            streak: (0, 0),
+            streak_from: f64::NEG_INFINITY,
+            counted: 0,
+            prob: 0.,
+            inherited: false,
+        }
     }
 
     fn confirmed(&self) -> bool {
@@ -208,7 +249,18 @@ impl Vote {
 
     /// Count an answer; whether it counted.
     fn observe(&mut self, t: f64, kind: u8, prob: f64) -> bool {
-        if !matches!(kind, KIND_CAR | KIND_TRUCK | KIND_BUS) || prob < min_prob(shape(kind)) || t - self.last < GAP_S {
+        if !matches!(kind, KIND_CAR | KIND_TRUCK | KIND_BUS) || prob < MIN_PROB {
+            return false;
+        }
+        let answer = shape(kind);
+        if prob < min_prob(answer) {
+            // Too unsure a truck to count, but not a car either.
+            if self.streak.0 == KIND_CAR {
+                self.streak = (0, 0);
+            }
+            return false;
+        }
+        if t - self.last < GAP_S {
             return false;
         }
         let confirmed = self.confirmed();
@@ -216,10 +268,17 @@ impl Vote {
             // An answer that is not confirmed yet expires: two of a shape count only within MAX_GAP_S.
             self.streak = (0, 0);
         }
+        if confirmed && t - self.streak_from > FLIP_WINDOW_S {
+            self.streak = (0, 0);
+        }
         self.last = t;
         self.counted += 1;
-        let answer = shape(kind);
-        self.streak = if self.streak.0 == answer { (answer, self.streak.1 + 1) } else { (answer, 1) };
+        if self.streak.0 == answer {
+            self.streak.1 += 1;
+        } else {
+            self.streak = (answer, 1);
+            self.streak_from = t;
+        }
         let need = if confirmed { N_FLIP } else { N_CONFIRM };
         if self.streak.1 >= need && (!confirmed || answer != shape(self.shown)) {
             self.confirmed_at = t;
@@ -234,7 +293,13 @@ impl Vote {
     }
 
     fn kind(&self) -> Kind {
-        Kind { class: self.shown, conf: self.prob as f32, confirmed_at: self.confirmed_at, frames: self.counted }
+        Kind {
+            class: self.shown,
+            conf: self.prob as f32,
+            confirmed_at: self.confirmed_at,
+            frames: self.counted,
+            inherited: self.inherited,
+        }
     }
 }
 
@@ -348,28 +413,45 @@ impl Kinds {
         side_cands: impl Fn(u64, Side) -> Option<Vec<Cand>>,
         vid_at: impl Fn(u64, i64) -> Option<u32>,
     ) {
-        // Per frame and track the best placed box only.
-        let mut best: HashMap<(u64, i64), (f64, u64, &KindResult)> = HashMap::new();
+        // Per frame and track the best placed box only: the box whose best track it is first, then the closest one.
+        let mut best: HashMap<(u64, i64), ((bool, f64), u64, &KindResult)> = HashMap::new();
         for result in results {
             let Some((stamp, tracks)) = tracks_near(result.time_ns) else { continue };
-            let placed = match result.view {
-                KindView::Front => cam.and_then(|cam| {
-                    tracks.iter().filter_map(|t| Some((front_gate(cam, t, &result.xyxy)?, t.id))).min_by(|a, b| a.0.total_cmp(&b.0))
+            let placed: Vec<(f64, &Track)> = match result.view {
+                KindView::Front => cam.map_or_else(Vec::new, |cam| {
+                    tracks.iter().filter_map(|t| Some((front_gate(cam, t, &result.xyxy)?, t))).collect()
                 }),
-                KindView::Side(side) if SIDE_KINDS => side_cands(result.time_ns, side).and_then(|cands| {
-                    let cand = cands.iter().find(|c| c.bbox.iter().zip(&result.xyxy).all(|(a, b)| (a - b).abs() < 0.5))?;
-                    tracks.iter().filter_map(|t| Some((side_gate(cand, t)?, t.id))).min_by(|a, b| a.0.total_cmp(&b.0))
+                KindView::Side(side) if SIDE_KINDS => side_cands(result.time_ns, side).map_or_else(Vec::new, |cands| {
+                    let Some(cand) = cands.iter().find(|c| c.bbox.iter().zip(&result.xyxy).all(|(a, b)| (a - b).abs() < 0.5)) else {
+                        return Vec::new();
+                    };
+                    tracks.iter().filter_map(|t| Some((side_gate(cand, t)?, t))).min_by(|a, b| a.0.total_cmp(&b.0)).into_iter().collect()
                 }),
-                KindView::Side(_) => None,
+                KindView::Side(_) => Vec::new(),
             };
-            if let Some((q, id)) = placed {
-                let entry = best.entry((result.time_ns, id)).or_insert((q, stamp, result));
-                if q < entry.0 {
-                    *entry = (q, stamp, result);
+            let Some(&(_, lead)) = placed.iter().min_by(|a, b| a.0.total_cmp(&b.0)) else { continue };
+            // The box's car: its best track and the other tracks in the gate that can be the same vehicle.
+            let truck = is_truck(result.kind)
+                || vid_at(stamp, lead.id).and_then(|vid| self.votes.get(&vid)).is_some_and(|v| v.confirmed() && is_truck(v.shown));
+            let lon = if truck { SAME_TRUCK_LON_M } else { SAME_CAR_LON_M };
+            for &(q, track) in placed.iter().filter(|(_, t)| same_car(t, lead, lon)) {
+                let rank = (track.id != lead.id, q);
+                let entry = best.entry((result.time_ns, track.id)).or_insert((rank, stamp, result));
+                if rank < entry.0 {
+                    *entry = (rank, stamp, result);
                 }
             }
         }
-        let mut placed: Vec<_> = best.into_iter().filter_map(|((t, id), (_, stamp, r))| Some((t, vid_at(stamp, id)?, r))).collect();
+        // Two tracks of one frame can have one vid (an id the tracker just moved): one answer per frame and vid.
+        let mut per_vid: HashMap<(u64, u32), ((bool, f64), &KindResult)> = HashMap::new();
+        for ((t, id), (rank, stamp, result)) in best {
+            let Some(vid) = vid_at(stamp, id) else { continue };
+            let entry = per_vid.entry((t, vid)).or_insert((rank, result));
+            if rank < entry.0 {
+                *entry = (rank, result);
+            }
+        }
+        let mut placed: Vec<_> = per_vid.into_iter().map(|((t, vid), (_, r))| (t, vid, r)).collect();
         placed.sort_by_key(|(t, vid, _)| (*t, *vid));
         for (t, vid, result) in placed {
             self.count(vid, t as f64 * 1e-9, result.kind, result.prob);
@@ -420,8 +502,10 @@ impl Kinds {
         !self.recheck_served && now < self.recheck_from + RECHECK_ASK_S
     }
 
-    /// Put the votes on the vehicles; a vid that is gone takes its vote and asking with it.
-    pub fn apply(&mut self, cars: &mut [Vehicle]) {
+    /// Put the votes on the vehicles; a vid that is gone takes its vote and asking with it. `now` is the radar update
+    /// the tracker just made (its new vids were born then), `heading` the ego heading in the world frame.
+    pub fn apply(&mut self, now: f64, heading: f64, cars: &mut [Vehicle]) {
+        self.inherit(now, heading, cars);
         self.votes.retain(|vid, _| cars.iter().any(|car| car.vid == *vid));
         self.asks.retain(|vid, _| cars.iter().any(|car| car.vid == *vid));
         for car in cars {
@@ -431,6 +515,44 @@ impl Kinds {
 
     pub fn is_empty(&self) -> bool {
         self.votes.is_empty()
+    }
+
+    /// Give each vid born at `now` the confirmed vote of a car it can be the same vehicle as (along and across the
+    /// ego heading, the old car moved on at its speed). Candidates of different shapes give nothing.
+    fn inherit(&mut self, now: f64, heading: f64, cars: &[Vehicle]) {
+        if self.votes.is_empty() {
+            return;
+        }
+        let (sin, cos) = heading.sin_cos();
+        for car in cars.iter().filter(|car| car.born == now) {
+            if self.votes.contains_key(&car.vid) {
+                continue;
+            }
+            let mut found: Option<(f64, Vote)> = None;
+            let mut shapes = [false; 2];
+            // Not from another vid born now: no chain of inheritances within one update.
+            for old in cars.iter().filter(|old| old.born != now && now - old.seen_radar <= INHERIT_GAP_S) {
+                let Some(vote) = self.votes.get(&old.vid).filter(|v| v.confirmed()) else { continue };
+                let dt = now - old.seen_radar;
+                let (dx, dy) = (
+                    f64::from(car.wx) - (f64::from(old.wx) + f64::from(old.vx) * dt),
+                    f64::from(car.wy) - (f64::from(old.wy) + f64::from(old.vy) * dt),
+                );
+                let (lon, lat) = (cos * dx + sin * dy, -sin * dx + cos * dy);
+                let dv = cos * f64::from(car.vx - old.vx) + sin * f64::from(car.vy - old.vy);
+                let length = if is_truck(vote.shown) { SAME_TRUCK_LON_M } else { SAME_CAR_LON_M };
+                if lon.abs() > length || lat.abs() > SAME_CAR_LAT_M || dv.abs() > SAME_CAR_SPEED {
+                    continue;
+                }
+                shapes[usize::from(is_truck(vote.shown))] = true;
+                if found.is_none_or(|(d, _)| lon.abs() < d) {
+                    found = Some((lon.abs(), *vote));
+                }
+            }
+            if let (Some((_, vote)), false) = (found, shapes[0] && shapes[1]) {
+                self.votes.insert(car.vid, Vote { streak: (0, 0), streak_from: f64::NEG_INFINITY, inherited: true, ..vote });
+            }
+        }
     }
 }
 
@@ -475,11 +597,269 @@ mod tests {
         late.observe(20.4, KIND_CAR, 0.9);
         assert_eq!(late.confirmed_at, 20.4, "two within MAX_GAP_S");
         late.observe(60.0, KIND_TRUCK, 0.9);
-        late.observe(90.0, KIND_TRUCK, 0.9);
-        late.observe(120.0, KIND_TRUCK, 0.9);
+        late.observe(65.0, KIND_TRUCK, 0.9);
+        late.observe(70.0, KIND_TRUCK, 0.9);
         assert_eq!(late.shown, KIND_CAR);
-        late.observe(150.0, KIND_TRUCK, 0.9);
-        assert_eq!((late.shown, late.confirmed_at), (KIND_TRUCK, 150.0), "a flip does not expire");
+        late.observe(75.0, KIND_TRUCK, 0.9);
+        assert_eq!((late.shown, late.confirmed_at), (KIND_TRUCK, 75.0), "four rechecks 5 s apart flip it");
+    }
+
+    #[test]
+    fn a_flip_needs_its_four_answers_within_the_window() {
+        let mut vote = Vote::new();
+        vote.observe(0.0, KIND_CAR, 0.9);
+        vote.observe(1.0, KIND_CAR, 0.9);
+        assert!(vote.confirmed());
+        // 7 s apart: the fourth comes 21 s after the first.
+        for t in [30.0, 37.0, 44.0, 51.0] {
+            vote.observe(t, KIND_TRUCK, 0.9);
+        }
+        assert_eq!((vote.shown, vote.confirmed_at), (KIND_CAR, 1.0), "farther than FLIP_WINDOW_S");
+        // The run started again at 51 s: three more within 20 s of it flip it.
+        for t in [56.0, 61.0, 66.0] {
+            vote.observe(t, KIND_TRUCK, 0.9);
+        }
+        assert_eq!((vote.shown, vote.confirmed_at), (KIND_TRUCK, 66.0));
+        // First to fourth answer exactly FLIP_WINDOW_S apart still flips.
+        let mut edge = Vote::new();
+        edge.observe(0.0, KIND_TRUCK, 0.9);
+        edge.observe(1.0, KIND_TRUCK, 0.9);
+        for t in [10.0, 15.0, 20.0, 30.0] {
+            edge.observe(t, KIND_CAR, 0.9);
+        }
+        assert_eq!(edge.shown, KIND_CAR);
+    }
+
+    #[test]
+    fn an_unsure_truck_answer_ends_a_run_of_car_answers() {
+        let mut vote = Vote::new();
+        vote.observe(0.0, KIND_CAR, 0.9);
+        assert!(!vote.observe(0.5, KIND_TRUCK, 0.7), "not counted");
+        vote.observe(1.0, KIND_CAR, 0.9);
+        assert!(!vote.confirmed(), "the run of car answers started again at 1 s");
+        assert_eq!(vote.counted, 2);
+        vote.observe(2.0, KIND_CAR, 0.9);
+        assert!(vote.confirmed());
+        // A confirmed truck: an unsure truck answer among the car answers keeps it a truck.
+        let mut truck = Vote::new();
+        truck.observe(0.0, KIND_TRUCK, 0.9);
+        truck.observe(1.0, KIND_TRUCK, 0.9);
+        for t in [2.0, 3.0, 4.0] {
+            truck.observe(t, KIND_CAR, 0.9);
+        }
+        truck.observe(4.5, KIND_BUS, 0.65);
+        truck.observe(5.0, KIND_CAR, 0.9);
+        assert_eq!(truck.shown, KIND_TRUCK, "three car answers, then the run ended");
+        // Below MIN_PROB an answer says nothing.
+        let mut car = Vote::new();
+        car.observe(0.0, KIND_CAR, 0.9);
+        car.observe(0.5, KIND_TRUCK, 0.55);
+        car.observe(1.0, KIND_CAR, 0.9);
+        assert!(car.confirmed());
+    }
+
+    /// A box `w` x `h` m standing on the road at the radar point (d_rel, y_rel).
+    fn box_at(cam: &FrontCam, d_rel: f64, y_rel: f64, w: f64, h: f64) -> [f64; 4] {
+        let (u, v) = cam.radar_ground(d_rel, y_rel).unwrap();
+        let x = d_rel + CAM2B;
+        let (w, h) = (w * FOCAL / x, h * FOCAL / x);
+        [u - w / 2., v - h, u + w / 2., v + 2.]
+    }
+
+    /// A 20 Hz radar run through the map's tracker with kind answers at the given frames: (time, points) updates,
+    /// answers as (time, box, kind, prob).
+    struct Run {
+        tracker: crate::vehicles::Tracker,
+        world: crate::world::World,
+        kinds: Kinds,
+        history: Vec<(u64, Vec<Track>)>,
+        cam: FrontCam,
+    }
+
+    impl Run {
+        fn new() -> Self {
+            Self {
+                tracker: crate::vehicles::Tracker::default(),
+                world: crate::world::World::default(),
+                kinds: Kinds::default(),
+                history: Vec::new(),
+                cam: FrontCam::new([0.0, 0.0, 0.0], 1.22).unwrap(),
+            }
+        }
+
+        fn update(&mut self, now: f64, tracks: &[Track]) {
+            let points: Vec<_> = tracks.iter().map(|t| (t.id as u32, t.d_rel, t.y_rel, t.v_rel)).collect();
+            self.tracker.update(now, &points, &self.world);
+            self.history.push(((now * 1e9).round() as u64, tracks.to_vec()));
+            self.kinds.apply(now, 0., self.tracker.vehicles_mut());
+        }
+
+        fn answer(&mut self, now: f64, xyxy: [f64; 4], kind: u8, prob: f64) {
+            let result = KindResult { time_ns: (now * 1e9).round() as u64, view: KindView::Front, xyxy, kind, prob };
+            let (history, tracker) = (&self.history, &self.tracker);
+            let near = |t: u64| {
+                let (stamp, tracks) = history.iter().min_by_key(|(s, _)| s.abs_diff(t))?;
+                (stamp.abs_diff(t) <= 150_000_000).then(|| (*stamp, tracks.clone()))
+            };
+            let vid_at = |stamp: u64, id: i64| tracker.vid_at(stamp as f64 * 1e-9, u32::try_from(id).ok()?);
+            self.kinds.observe(&[result], Some(&self.cam), near, |_, _| None, vid_at);
+        }
+
+        fn vid(&self, now: f64, id: u32) -> u32 {
+            self.tracker.vid_at(now, id).unwrap()
+        }
+
+        /// What a slot holding `vid` shows: (kind, confirmed), as `Assigner` reads it.
+        fn shown(&self, vid: u32) -> (u8, bool) {
+            let car = self.tracker.vehicles().iter().find(|car| car.vid == vid).unwrap();
+            let kind = car.kind.filter(|k| car.link == crate::vehicles::Link::Sure || k.inherited);
+            (kind.map_or(0, |k| k.class), kind.is_some_and(|k| k.confirmed_at.is_finite()))
+        }
+    }
+
+    fn track(id: i64, d_rel: f64, y_rel: f64) -> Track {
+        Track { id, d_rel, y_rel, v_rel: 0. }
+    }
+
+    #[test]
+    fn a_truck_seen_as_two_tracks_keeps_its_shape_on_both_vids() {
+        let mut run = Run::new();
+        // The truck's rear at 20 m and its cab 8 m farther, one box.
+        let tracks = [track(10, 20., 0.), track(11, 28., 0.)];
+        let bbox = box_at(&run.cam, 20., 0., 2.5, 3.5);
+        assert!(tracks.iter().all(|t| front_gate(&run.cam, t, &bbox).is_some()), "both tracks are in the box's gate");
+        for i in 0..=40 {
+            let now = 1.0 + f64::from(i) * 0.05;
+            run.update(now, &tracks);
+            if i % 20 == 0 {
+                run.answer(now, bbox, KIND_TRUCK, 0.9);
+            }
+        }
+        let (rear, cab) = (run.vid(3.0, 10), run.vid(3.0, 11));
+        assert_ne!(rear, cab);
+        // FF moving between the two vids every 0.25 s keeps the truck shape.
+        for i in 0..8 {
+            let now = 3.0 + f64::from(i + 1) * 0.25;
+            run.update(now, &tracks);
+            let ff = if i % 2 == 0 { cab } else { rear };
+            assert_eq!(run.shown(ff), (KIND_TRUCK, true), "FF vid {ff} at {now}");
+        }
+    }
+
+    #[test]
+    fn a_truck_answer_does_not_reach_the_car_in_the_next_lane() {
+        let mut run = Run::new();
+        // A truck 10 m ahead: up close the gate is wide enough to take the car next to it too.
+        let tracks = [track(10, 10., 0.), track(12, 10., 2.9)];
+        let bbox = box_at(&run.cam, 10., 0., 2.5, 3.5);
+        assert!(tracks.iter().all(|t| front_gate(&run.cam, t, &bbox).is_some()), "both tracks are in the box's gate");
+        for i in 0..=40 {
+            let now = 1.0 + f64::from(i) * 0.05;
+            run.update(now, &tracks);
+            if i % 20 == 0 {
+                run.answer(now, bbox, KIND_TRUCK, 0.9);
+            }
+        }
+        let (truck, car) = (run.vid(3.0, 10), run.vid(3.0, 12));
+        assert_eq!(run.shown(truck), (KIND_TRUCK, true));
+        assert!(!run.kinds.votes.contains_key(&car), "the car next to it got no answer");
+        // The same for a car the box's car is 1.6 m beside (just over SAME_CAR_LAT_M) at 20 m.
+        let mut run = Run::new();
+        let tracks = [track(10, 20., 0.), track(12, 20., 1.6)];
+        let bbox = box_at(&run.cam, 20., 0., 2.5, 3.5);
+        assert!(front_gate(&run.cam, &tracks[1], &bbox).is_some());
+        for i in 0..=40 {
+            let now = 1.0 + f64::from(i) * 0.05;
+            run.update(now, &tracks);
+            if i % 20 == 0 {
+                run.answer(now, bbox, KIND_TRUCK, 0.9);
+            }
+        }
+        assert!(!run.kinds.votes.contains_key(&run.vid(3.0, 12)));
+    }
+
+    /// A truck confirmed on radar id 10 at (20, 0) from 1 s to 3 s.
+    fn confirmed_truck(y_rel: f64) -> (Run, u32) {
+        let mut run = Run::new();
+        let bbox = box_at(&run.cam, 20., y_rel, 2.5, 3.5);
+        for i in 0..=40 {
+            let now = 1.0 + f64::from(i) * 0.05;
+            run.update(now, &[track(10, 20., y_rel)]);
+            if i % 20 == 0 {
+                run.answer(now, bbox, KIND_TRUCK, 0.9);
+            }
+        }
+        let vid = run.vid(3.0, 10);
+        assert_eq!(run.shown(vid), (KIND_TRUCK, true));
+        (run, vid)
+    }
+
+    #[test]
+    fn a_new_vid_where_a_confirmed_truck_was_shows_the_truck_at_once() {
+        // The truck's radar id ends; 0.6 s later (past the tracker's handoff gap) a new id at the same place.
+        let (mut run, old) = confirmed_truck(0.);
+        run.update(3.6, &[track(20, 20., 0.)]);
+        let new = run.vid(3.6, 20);
+        assert_ne!(new, old);
+        assert_eq!(run.shown(new), (KIND_TRUCK, true));
+        // The same radar id jumps 7 m to the cab: the tracker starts a new vid for it.
+        let (mut run, old) = confirmed_truck(0.);
+        run.update(3.05, &[track(10, 27., 0.)]);
+        let new = run.vid(3.05, 10);
+        assert_ne!(new, old);
+        assert_eq!(run.shown(new), (KIND_TRUCK, true));
+        // Too long a gap, or another place: nothing to take.
+        let (mut run, _) = confirmed_truck(0.);
+        run.update(3.9, &[track(20, 20., 0.)]);
+        assert_eq!(run.shown(run.vid(3.9, 20)), (0, false), "the truck was seen 0.9 s ago");
+        let (mut run, _) = confirmed_truck(0.);
+        run.update(3.6, &[track(20, 20., 2.0)]);
+        assert_eq!(run.shown(run.vid(3.6, 20)), (0, false), "2 m across");
+        // The vote taken is the new vid's own: its own answers flip it.
+        let (mut run, _) = confirmed_truck(0.);
+        let bbox = box_at(&run.cam, 20., 0., 1.8, 1.5);
+        for i in 0..=100 {
+            let now = 3.6 + f64::from(i) * 0.05;
+            run.update(now, &[track(20, 20., 0.)]);
+            if i % 20 == 0 {
+                run.answer(now, bbox, KIND_CAR, 0.9);
+            }
+        }
+        assert_eq!(run.shown(run.vid(8.6, 20)), (KIND_CAR, true), "four car answers");
+    }
+
+    #[test]
+    fn an_unsure_link_shows_the_kind_it_took_but_not_one_of_two_shapes() {
+        // Two confirmed trucks; a new id between them is an Ambiguous link.
+        let mut run = Run::new();
+        let tracks = [track(10, 20., -0.4), track(11, 20., 0.6)];
+        for i in 0..=40 {
+            let now = 1.0 + f64::from(i) * 0.05;
+            run.update(now, &tracks);
+            if i % 20 == 0 {
+                for t in &tracks {
+                    run.answer(now, box_at(&run.cam, 20., t.y_rel, 1.0, 3.5), KIND_TRUCK, 0.9);
+                }
+            }
+        }
+        assert!(tracks.iter().all(|t| run.shown(run.vid(3.0, t.id as u32)) == (KIND_TRUCK, true)));
+        run.update(3.3, &[track(20, 20., 0.)]);
+        let vid = run.vid(3.3, 20);
+        let car = run.tracker.vehicles().iter().find(|car| car.vid == vid).unwrap();
+        assert_eq!(car.link, crate::vehicles::Link::Ambiguous);
+        assert_eq!(run.shown(vid), (KIND_TRUCK, true));
+        // A truck and a car there: which one it is is not known.
+        let mut run = Run::new();
+        for i in 0..=40 {
+            let now = 1.0 + f64::from(i) * 0.05;
+            run.update(now, &tracks);
+            if i % 20 == 0 {
+                run.answer(now, box_at(&run.cam, 20., -0.4, 1.0, 3.5), KIND_TRUCK, 0.9);
+                run.answer(now, box_at(&run.cam, 20., 0.6, 1.0, 1.5), KIND_CAR, 0.9);
+            }
+        }
+        run.update(3.3, &[track(20, 20., 0.)]);
+        assert_eq!(run.shown(run.vid(3.3, 20)), (0, false));
     }
 
     /// Ask about `vid` at 20 Hz from `from` for `secs`; how long it was wanted.

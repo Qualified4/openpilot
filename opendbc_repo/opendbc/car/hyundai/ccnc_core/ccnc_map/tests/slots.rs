@@ -299,7 +299,7 @@ fn a_confirmed_truck_and_bus_keep_their_kind_in_the_rear_slots_after_the_tracker
     let mut world = road();
     let mut assigner = Assigner::default();
     let mut rear = WorldRear::default();
-    let kind = |class, confirmed_at| Some(Kind { class, conf: 0.9, confirmed_at, frames: 2 });
+    let kind = |class, confirmed_at| Some(Kind { class, conf: 0.9, confirmed_at, frames: 2, inherited: false });
     // Ego 10 m/s, two cars 2 m/s slower pass from 6 m ahead: a confirmed truck on the left, a confirmed bus on the
     // right. The radar loses them 3 m behind with the BSD on; the tracker forgets them 2 s (RETAIN) later.
     let lost = 4.5;
@@ -353,7 +353,7 @@ fn an_unconfirmed_kind_is_not_kept_after_the_tracker_forgets_the_car() {
         world.radar(now);
         let seen = now.min(lost);
         let mut car = vehicle(&world, 1, seen, 8. * seen + 6., -1.);
-        car.kind = Some(Kind { class: KIND_TRUCK, conf: 0.9, confirmed_at: f64::INFINITY, frames: 1 });
+        car.kind = Some(Kind { class: KIND_TRUCK, conf: 0.9, confirmed_at: f64::INFINITY, frames: 1, inherited: false });
         let cars: Vec<_> = if now - lost > 2. { vec![] } else { vec![car] };
         let mut slots = assigner.update(now, &cars, &world, None);
         let blind = [now >= lost - 1., false];

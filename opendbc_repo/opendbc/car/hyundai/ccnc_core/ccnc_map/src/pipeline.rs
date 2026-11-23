@@ -403,7 +403,7 @@ impl Pipeline {
             RADAR.crossing_travel,
             ego_changing,
         );
-        self.kinds.apply(self.tracker.vehicles_mut());
+        self.kinds.apply(now, self.world.radar_pose(now).heading, self.tracker.vehicles_mut());
         let cars = self.tracker.vehicles();
         let mut slots = self.slots.update(now, cars, &self.world, lead);
         let ego = self.world.u_ego();

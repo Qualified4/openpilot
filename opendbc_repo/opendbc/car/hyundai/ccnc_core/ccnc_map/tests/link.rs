@@ -88,6 +88,7 @@ fn ambiguous_link_does_not_carry_kind() {
             conf: 0.9,
             confirmed_at: 1.,
             frames: 2,
+            inherited: false,
         });
     }
     tracker.update(1.3, &[point(20, 20., 0.)], &world);
