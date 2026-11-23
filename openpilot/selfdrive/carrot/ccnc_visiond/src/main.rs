@@ -47,8 +47,9 @@ use ccnc_vision_msg::{Calibration, KindResult, Status, View, VisionBox, VisionOu
 use stripnet::ipc::{Pub, Sub};
 
 const SPEED_SERVICE: &str = "carState";
-/// How long the road camera rests after a night frame (only the top half is converted to tell).
-const FRONT_NIGHT_REST_NS: u64 = 10_000_000_000;
+/// How long the road camera rests after a night frame (only the top half is converted to tell), whatever the map
+/// asks: the standing pace, so one dark frame (a tunnel, a glitch) costs little and night costs a top half every 2 s.
+const FRONT_NIGHT_REST_NS: u64 = 2_000_000_000;
 const CALIBRATION_SERVICE: &str = "liveCalibration";
 const MAP_SERVICE: &str = "customReserved3";
 const CAMERA_SERVER: &str = "camerad";
@@ -253,7 +254,7 @@ fn run() -> io::Result<()> {
     // back to back.
     let mut last_front = None;
     let mut front_pace = sched_cfg.front;
-    // After a night road frame the road camera rests this long, whatever the map asks (night frames get no answer).
+    // After a night road frame the road camera rests (night frames get no answer, so the map's recheck stays open).
     let mut front_rest_until = 0u64;
     let mut road_wrong_size = None;
     let mut gate = gate::Gate::default();
