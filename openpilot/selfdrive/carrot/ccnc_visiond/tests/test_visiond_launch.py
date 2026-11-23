@@ -21,7 +21,8 @@ def launcher(tmp_path):
   return binary, state, env
 
 
-ASSET_NAMES = ("yolox_tiny_int8.onnx", "libonnxruntime.so.1.32.0")
+ASSET_NAMES = ("yolox_tiny_int8.onnx", "kind_mnv3s_128.onnx", "libonnxruntime.so.1.32.0")
+ORT_LIB = ASSET_NAMES[-1]
 
 
 def make_assets(tmp_path, names=ASSET_NAMES):
@@ -42,7 +43,7 @@ def test_manifest_lists_the_launcher_assets():
   rows = [line.split() for line in manifest.read_text().splitlines() if line.strip()]
   assert tuple(name for _, name in rows) == ASSET_NAMES
   assert all(len(digest) == 64 and int(digest, 16) >= 0 for digest, _ in rows)
-  assert "ORT_LIB=" + ASSET_NAMES[1] in LAUNCH.read_text()
+  assert "ORT_LIB=" + ORT_LIB in LAUNCH.read_text()
 
 
 def run_env_dump(binary, env, tmp_path):
@@ -61,7 +62,7 @@ def test_matching_assets_start_without_halt(launcher, tmp_path):
   assets = make_assets(tmp_path)
   clean = {k: v for k, v in env.items() if not k.startswith("CCNC_VISIOND_")}
   got = run_env_dump(binary, {**clean, "CCNC_VISIOND_HALT": "left over"}, tmp_path)
-  assert got == {"halt": "unset", "assets": str(assets), "ort": str(assets / ASSET_NAMES[1]),
+  assert got == {"halt": "unset", "assets": str(assets), "ort": str(assets / ORT_LIB),
                  "policy": "idle", "cpus": "0-2", "threads": "2", "min_period": "0"}
   assert not state.with_suffix(".failed").exists()
 
@@ -239,7 +240,7 @@ def test_unusable_assets_halt_without_crash(launcher, tmp_path, assets_present):
   assets = tmp_path / "assets"
   if assets_present:
     make_assets(tmp_path)
-    reason = f"load: loading {assets / ASSET_NAMES[1]}"
+    reason = f"load: loading {assets / ORT_LIB}"
   else:
     make_assets(tmp_path)
     for name in ASSET_NAMES:

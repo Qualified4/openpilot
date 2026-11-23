@@ -1,10 +1,15 @@
-//! ccnc_visiond: vehicle boxes from the wide camera's side views while the car stands or creeps.
-//! Input: VisionIPC `wideRoad`, `carState.vEgo` and `liveCalibration`. Output: one CcncVision (`customReserved4`)
-//! per processed frame, and a status message about once a second while none is processed. The side views are built from liveCalibration; nothing is processed before calibrationd
-//! says calibrated.
+//! ccnc_visiond: vehicle boxes from the wide camera's side views while the car stands or creeps, and the kind
+//! (car, truck, bus) of the radar cars ahead from the road camera.
+//! Input: VisionIPC `wideRoad` and `road`, `carState.vEgo`, `liveCalibration` and CcncMap. Output: one CcncVision
+//! (`customReserved4`) per processed frame, one with the classifier's answers when it has new ones, and a status
+//! message about once a second while nothing is processed. The side views are built from liveCalibration; no side
+//! frame is processed before calibrationd says calibrated.
+//!
+//! The road camera is looked at only while CcncMap has a radar car in FF, LF or RF without a confirmed kind, by
+//! day, at `gate::FrontPace`. The classifier runs on its own thread (`classify`) and never holds detection up.
 //!
 //! Environment:
-//! * `CCNC_VISIOND_ASSETS`: directory with `yolox_tiny_int8.onnx` (default `assets`).
+//! * `CCNC_VISIOND_ASSETS`: directory with `yolox_tiny_int8.onnx` and `kind_mnv3s_128.onnx` (default `assets`).
 //! * `CCNC_VISIOND_ENGINE`: `ort` (default) or `tract` when built with the `tract` feature.
 //! * `ORT_DYLIB_PATH`: libonnxruntime.so for the `ort` backend.
 //! * `CCNC_VISIOND_HALT`: set by the launcher when the assets are missing or their sha256 differs. The process
@@ -16,8 +21,10 @@
 //! * `CCNC_VISIOND_THREADS`: ORT/tract intra-op threads (default `2`, max `4`).
 //! * `CCNC_VISIOND_NICE`: nice value when policy is `other` or `batch` (default `19`).
 //! * `CCNC_VISIOND_MIN_PERIOD_MS`: optional minimum interval between inferences in ms (default `0`).
+//! * `CCNC_VISIOND_FRONT_MS`, `CCNC_VISIOND_FRONT_STOP_MS`: road camera period (`sched`).
 
 mod calib;
+mod classify;
 mod detect;
 mod engine;
 mod gate;
@@ -36,7 +43,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use ccnc_vision_msg::{Calibration, Status, VisionBox, VisionOut};
+use ccnc_vision_msg::{Calibration, KindResult, Status, View, VisionBox, VisionOut};
 use stripnet::ipc::{Pub, Sub};
 
 const SPEED_SERVICE: &str = "carState";
@@ -148,6 +155,23 @@ impl Quiet {
         send(publisher, &out)
     }
 
+    /// The classifier's answers go out as they come, in a message of their own.
+    fn kinds(&mut self, publisher: &Pub, kinds: Vec<KindResult>, calibration: Calibration) -> io::Result<()> {
+        let out = VisionOut {
+            status: Status::Kinds,
+            frame_id: 0,
+            timestamp_sof: 0,
+            frame_mono_time: 0,
+            view: View::CropFront,
+            processing_ms: 0.0,
+            night_corrected: false,
+            calibration,
+            boxes: Vec::new(),
+            kinds,
+        };
+        send(publisher, &out)
+    }
+
     /// A frame went out: the next status message waits a full period.
     fn frame(&mut self) {
         self.last = Some(Instant::now());
@@ -202,19 +226,29 @@ fn run() -> io::Result<()> {
         Ok(detector) => detector,
         Err(err) => return halt("load", err, &publisher),
     };
+    let kind_model = assets.join(classify::MODEL).to_string_lossy().into_owned();
+    let kind_engine = engine_name();
+    let mut classifier = match classify::Classifier::start(move || engine::open(&kind_engine, &kind_model, [1, 3, 128, 128], 1)) {
+        Ok(classifier) => classifier,
+        Err(err) => return halt("load", err.context("kind model"), &publisher),
+    };
     let applied = sched_cfg.apply_all_threads();
     eprintln!(
-        "ccnc_visiond: sched policy={} cpus={} active={} threads={} min_period_ms={} tasks={}/{}/{}",
+        "ccnc_visiond: sched policy={} cpus={} active={} threads={} min_period_ms={} front_ms={} tasks={}/{}/{}",
         sched_cfg.policy.name(),
         sched_cfg.cpus.format(),
         applied.active_cpus,
         sched_cfg.threads,
         sched_cfg.min_period.as_millis(),
+        sched_cfg.front.map_or("off".into(), |p| format!("{}/{}", p.moving_ns / 1_000_000, p.standing_ns / 1_000_000)),
         applied.policy_ok,
         applied.affinity_ok,
         applied.threads_seen,
     );
     let mut camera = vipc::Client::new(vipc::Stream::Wide, CAMERA_SERVER);
+    let mut road = vipc::Client::new(vipc::Stream::Road, CAMERA_SERVER);
+    let mut last_front = None;
+    let mut road_wrong_size = None;
     let mut gate = gate::Gate::default();
     let mut calib = calib::Calib::default();
     let mut rejected = None;
@@ -232,6 +266,9 @@ fn run() -> io::Result<()> {
         for bytes in map_sub.drain() {
             if let Some(front_on) = ccnc_vision_msg::map_front_vision_on(&bytes) {
                 gate.front_vision(front_on, clock_ns(libc::CLOCK_MONOTONIC));
+            }
+            if let Some(wanted) = ccnc_vision_msg::map_front_kind_wanted(&bytes) {
+                gate.front_kind(wanted, clock_ns(libc::CLOCK_MONOTONIC));
             }
         }
         for bytes in calibration.drain() {
@@ -251,6 +288,57 @@ fn run() -> io::Result<()> {
             eprintln!("ccnc_visiond: liveCalibration {}", if calibrated { "calibrated" } else { "not calibrated, nothing is processed" });
         }
         let latest = calib.usable().copied().unwrap_or(Calibration::UNKNOWN);
+        let answers = classifier.answers();
+        if !answers.is_empty() {
+            quiet.kinds(&publisher, answers, latest)?;
+        }
+        if let Some(pace) = sched_cfg.front {
+            let now = clock_ns(libc::CLOCK_MONOTONIC);
+            if gate.front_due(now, last_front, pace) {
+                if let Some(frame) = road.poll() {
+                    last_front = Some(now);
+                    let size = (frame.layout.width, frame.layout.height);
+                    if size != wcam::WIDE_SIZE {
+                        if road_wrong_size != Some(size) {
+                            eprintln!("ccnc_visiond: road camera frame {}x{}, not {}x{}; not used", size.0, size.1, wcam::WIDE_SIZE.0, wcam::WIDE_SIZE.1);
+                        }
+                        road_wrong_size = Some(size);
+                        continue;
+                    }
+                    let started = Instant::now();
+                    match detector.run_front(frame.layout, &frame.nv12) {
+                        Ok(found) if !found.night => {
+                            let (boot_now, mono_now) = (clock_ns(libc::CLOCK_BOOTTIME), clock_ns(libc::CLOCK_MONOTONIC));
+                            let frame_mono = frame_mono_time(frame.timestamp_sof, boot_now, mono_now);
+                            let dets: Vec<_> = found.boxes.iter().map(|(d, _)| *d).collect();
+                            let picked = classify::pick(&dets, |d| found.boxes.iter().any(|(b, cut)| *cut && b.b == d.b));
+                            classifier.submit(classify::Job::new(frame_mono, View::CropFront, &found.image, &picked));
+                            let out = VisionOut {
+                                status: Status::Frame,
+                                frame_id: frame.frame_id,
+                                timestamp_sof: frame.timestamp_sof,
+                                frame_mono_time: frame_mono,
+                                view: View::CropFront,
+                                processing_ms: started.elapsed().as_secs_f32() * 1000.0,
+                                night_corrected: false,
+                                calibration: latest,
+                                boxes: found
+                                    .boxes
+                                    .iter()
+                                    .map(|(b, cut)| VisionBox { xyxy: b.b.map(|v| v as f32), confidence: b.score, class_id: b.cls as u8, cut: *cut })
+                                    .collect(),
+                                kinds: Vec::new(),
+                            };
+                            send(&publisher, &out)?;
+                            quiet.frame();
+                        }
+                        Ok(_) => {}
+                        Err(err) => eprintln!("ccnc_visiond: road frame {} dropped: {err:#}", frame.frame_id),
+                    }
+                    continue;
+                }
+            }
+        }
         let ready = detector.fixed() || calibrated;
         match gate.phase(clock_ns(libc::CLOCK_MONOTONIC), ready) {
             gate::Phase::Closed => {
@@ -327,11 +415,16 @@ fn run() -> io::Result<()> {
         // The view's angles are the ones it was built with. The height is not part of the view: the latest one.
         let calibration = if detector.fixed() { found.calibration } else { Calibration { height: latest.height, ..found.calibration } };
         let (boot_now, mono_now) = (clock_ns(libc::CLOCK_BOOTTIME), clock_ns(libc::CLOCK_MONOTONIC));
+        let frame_mono = frame_mono_time(frame.timestamp_sof, boot_now, mono_now);
+        if classify::SIDE_KINDS && target != gate::Target::Raw && !found.night {
+            let picked = classify::pick(&found.boxes, |_| false);
+            classifier.submit(classify::Job::new(frame_mono, target.view(), &found.image, &picked));
+        }
         let out = VisionOut {
             status: Status::Frame,
             frame_id: frame.frame_id,
             timestamp_sof: frame.timestamp_sof,
-            frame_mono_time: frame_mono_time(frame.timestamp_sof, boot_now, mono_now),
+            frame_mono_time: frame_mono,
             view: target.view(),
             processing_ms: started.elapsed().as_secs_f32() * 1000.0,
             night_corrected: found.night,
@@ -404,6 +497,10 @@ mod tests {
         let bytes = ccnc_vision_msg::encode(&out, 1).len() as u64;
         let queue = cereal_queue_sizes(&[ccnc_vision_msg::SERVICE])[0];
         assert!(3 * (8 + bytes.div_ceil(8) * 8) <= queue, "{bytes} bytes with {} boxes, queue {queue}", detect::MAX_BOXES);
+        // Answers wait at most for one detection: a few jobs' worth.
+        let kind = KindResult { frame_mono_time: 1, view: View::CropFront, xyxy: [0.0; 4], kind: 2, prob: 1.0 };
+        let answers = VisionOut { status: Status::Kinds, boxes: Vec::new(), kinds: vec![kind; 16 * classify::MAX_CROPS], ..out };
+        assert!(ccnc_vision_msg::encode(&answers, 1).len() < bytes as usize);
     }
 
     #[test]

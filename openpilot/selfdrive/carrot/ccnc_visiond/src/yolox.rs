@@ -1,7 +1,7 @@
 //! YOLOX output decoding and NMS, matching scripts/run_bench.py (yolox / yolox_raw families).
 
 /// One detection in original-image pixels: [x1, y1, x2, y2], score, COCO class.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Det {
     pub b: [f64; 4],
     pub score: f32,

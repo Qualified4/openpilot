@@ -24,12 +24,14 @@ const RETRY: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy)]
 pub enum Stream {
+    Road = 0,
     Wide = 2,
 }
 
 impl Stream {
     pub fn camera(self) -> &'static str {
         match self {
+            Self::Road => "road",
             Self::Wide => "wideRoad",
         }
     }

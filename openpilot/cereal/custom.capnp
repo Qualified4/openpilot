@@ -269,7 +269,8 @@ struct CustomReserved4 @0x80ae746ee2596b11 {
   height @12 :Float32;  # The latest valid liveCalibration height, not necessarily the one the view was built with.
   frameMonoTime @13 :UInt64;  # timestampSof on CLOCK_MONOTONIC, converted when the message was published.
   status @14 :UInt8;  # 0 frame, 1 resting (speed above 3 m/s, reversing or no carState), 2 not calibrated,
-                      # 3 no camera frames, 4 stopped on an error, 5 unsupported wide camera resolution.
+                      # 3 no camera frames, 4 stopped on an error, 5 unsupported wide camera resolution,
+                      # 6 classifier answers only (kinds, no frame).
   # Classifier answers for boxes of earlier frames (the classifier runs on its own thread and never holds up
   # detection). Any status may carry them; empty when the classifier has nothing new.
   kinds @15 :List(Kind);

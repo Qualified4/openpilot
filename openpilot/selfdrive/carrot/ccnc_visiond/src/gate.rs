@@ -48,6 +48,21 @@ impl Target {
     }
 }
 
+/// How often the road camera is looked at, while a radar car ahead (FF, LF, RF) has no confirmed kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrontPace {
+    /// Above `WIDE_MAX_SPEED`, when nothing else runs. 2 Hz at most by default: two answers 0.8 s apart confirm a
+    /// kind, so a faster rate would only spend the little cores.
+    pub moving_ns: u64,
+    /// While the side views run: one road frame every this long takes a side frame's turn. The car ahead of a
+    /// standing car does not change, and the side cars are what the stop is for (their rules count frames).
+    pub standing_ns: u64,
+}
+
+impl FrontPace {
+    pub const DEFAULT: FrontPace = FrontPace { moving_ns: 500_000_000, standing_ns: 2_000_000_000 };
+}
+
 /// What the loop does with the camera now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -64,6 +79,7 @@ pub struct Gate {
     next: Side,
     pending_raw: bool,
     was_open: bool,
+    front_kind: Option<(bool, u64)>,
 }
 
 impl Gate {
@@ -73,6 +89,19 @@ impl Gate {
 
     pub fn front_vision(&mut self, on: bool, now_ns: u64) {
         self.front_vision = Some((on, now_ns));
+    }
+
+    pub fn front_kind(&mut self, wanted: bool, now_ns: u64) {
+        self.front_kind = Some((wanted, now_ns));
+    }
+
+    /// Whether to take a road camera frame now, the last one taken at `last_ns`. Only forward (or standing) at a
+    /// known speed, while the map asks for a kind (a recent CcncMap), and at most at `pace`.
+    pub fn front_due(&self, now_ns: u64, last_ns: Option<u64>, pace: FrontPace) -> bool {
+        let wanted = self.front_kind.is_some_and(|(on, at)| on && now_ns.saturating_sub(at) <= MAP_TIMEOUT_NS);
+        let forward = self.speed.is_some_and(|(v_ego, at)| v_ego >= -STANDSTILL_NOISE && now_ns.saturating_sub(at) <= SPEED_TIMEOUT_NS);
+        let period = if self.open(now_ns) { pace.standing_ns } else { pace.moving_ns };
+        wanted && forward && last_ns.is_none_or(|last| now_ns.saturating_sub(last) >= period)
     }
 
     fn want_raw(&self, now_ns: u64) -> bool {
@@ -178,6 +207,30 @@ mod tests {
         assert_eq!(gate.phase(41 + SPEED_TIMEOUT_NS, false), Phase::Closed);
         assert_eq!(gate.phase(42 + SPEED_TIMEOUT_NS, true), Phase::Opened);
         assert_eq!(gate.phase(43 + SPEED_TIMEOUT_NS, true), Phase::Open);
+    }
+
+    #[test]
+    fn front_runs_while_wanted_at_its_pace() {
+        let pace = FrontPace { moving_ns: 500, standing_ns: 2_000 };
+        let mut gate = Gate::default();
+        assert!(!gate.front_due(0, None, pace), "nothing known");
+        gate.speed(20.0, 0);
+        assert!(!gate.front_due(0, None, pace), "the map does not ask");
+        gate.front_kind(true, 0);
+        assert!(gate.front_due(0, None, pace), "any forward speed");
+        assert!(!gate.front_due(499, Some(0), pace));
+        assert!(gate.front_due(500, Some(0), pace));
+        gate.speed(0.0, 500);
+        assert!(!gate.front_due(1_000, Some(500), pace), "standing: the side views' pace");
+        assert!(gate.front_due(2_500, Some(500), pace));
+        gate.speed(-0.5, 2_500);
+        assert!(!gate.front_due(5_000, Some(500), pace), "reversing");
+        gate.speed(5.0, 10_000);
+        gate.front_kind(false, 10_000);
+        assert!(!gate.front_due(10_000, None, pace), "every car ahead has its kind");
+        gate.front_kind(true, 10_000);
+        assert!(!gate.front_due(11_001 + MAP_TIMEOUT_NS, None, pace), "the map went quiet");
+        assert!(!gate.front_due(10_001 + SPEED_TIMEOUT_NS, None, pace), "the speed is old");
     }
 
     #[test]

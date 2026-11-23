@@ -9,6 +9,8 @@
 //!   cadence near ~1.3-1.7 s while leaving at least one core in 0-2 plus core 3 untouched.
 //! * `CCNC_VISIOND_NICE=19`: used only when policy is `other` or `batch` (strictly below `ccnc_lane_type` nice 10).
 //! * `CCNC_VISIOND_MIN_PERIOD_MS=0`: optional minimum wall-clock interval between inferences (ms).
+//! * `CCNC_VISIOND_FRONT_MS=500` / `CCNC_VISIOND_FRONT_STOP_MS=2000`: road camera period above 3 m/s and while the
+//!   side views run (`gate::FrontPace`); `CCNC_VISIOND_FRONT_MS=0` turns the road camera off.
 //!
 //! Big-core comparison alternative: `CCNC_VISIOND_POLICY=idle CCNC_VISIOND_CPUS=4 CCNC_VISIOND_THREADS=1`.
 
@@ -123,6 +125,8 @@ pub struct Config {
     pub cpus: CpuSpec,
     pub threads: usize,
     pub min_period: Duration,
+    /// None: the road camera is off.
+    pub front: Option<crate::gate::FrontPace>,
 }
 
 impl Default for Config {
@@ -133,6 +137,7 @@ impl Default for Config {
             cpus: CpuSpec::parse(DEFAULT_CPUS_STR).unwrap(),
             threads: DEFAULT_THREADS,
             min_period: Duration::ZERO,
+            front: Some(crate::gate::FrontPace::DEFAULT),
         }
     }
 }
@@ -182,6 +187,16 @@ impl Config {
                 Err(_) => eprintln!("ccnc_visiond: CCNC_VISIOND_MIN_PERIOD_MS={v:?} invalid, using 0"),
             }
         }
+        let mut pace = crate::gate::FrontPace::DEFAULT;
+        for (name, field) in [("CCNC_VISIOND_FRONT_MS", &mut pace.moving_ns), ("CCNC_VISIOND_FRONT_STOP_MS", &mut pace.standing_ns)] {
+            if let Some(v) = get(name) {
+                match v.trim().parse::<u64>() {
+                    Ok(ms) => *field = ms * 1_000_000,
+                    Err(_) => eprintln!("ccnc_visiond: {name}={v:?} invalid, using {} ms", *field / 1_000_000),
+                }
+            }
+        }
+        cfg.front = (pace.moving_ns > 0).then_some(pace);
         cfg
     }
 
@@ -331,6 +346,11 @@ mod tests {
             ("CCNC_VISIOND_MIN_PERIOD_MS", "715"),
         ]);
         let custom = Config::from_lookup(|k| map.get(k).map(|v| (*v).to_string()));
+        assert_eq!(custom.front, Some(crate::gate::FrontPace::DEFAULT));
+        let front = HashMap::from([("CCNC_VISIOND_FRONT_MS", "1000"), ("CCNC_VISIOND_FRONT_STOP_MS", "3000")]);
+        let front = Config::from_lookup(|k| front.get(k).map(|v| (*v).to_string()));
+        assert_eq!(front.front, Some(crate::gate::FrontPace { moving_ns: 1_000_000_000, standing_ns: 3_000_000_000 }));
+        assert_eq!(Config::from_lookup(|k| (k == "CCNC_VISIOND_FRONT_MS").then(|| "0".into())).front, None, "off");
         assert_eq!(custom.policy, Policy::Batch);
         assert_eq!(custom.nice, 15);
         assert_eq!(custom.cpus, CpuSpec::Mask(1 << 4));
@@ -342,6 +362,7 @@ mod tests {
             ("CCNC_VISIOND_CPUS", "99"),
             ("CCNC_VISIOND_THREADS", "0"),
             ("CCNC_VISIOND_MIN_PERIOD_MS", "-5"),
+            ("CCNC_VISIOND_FRONT_MS", "x"),
         ]);
         let fallback = Config::from_lookup(|k| bad.get(k).map(|v| (*v).to_string()));
         assert_eq!(fallback, def);
@@ -361,6 +382,7 @@ mod tests {
                 cpus: CpuSpec::Mask(1u64 << cpu),
                 threads: 1,
                 min_period: Duration::ZERO,
+                front: None,
             };
             // Spawn a worker BEFORE configuring, then enforce on that worker's tid explicitly.
             let b_start = Arc::new(Barrier::new(2));

@@ -20,6 +20,9 @@ pub const CAL_STATUS_CALIBRATED: u16 = 1;
 const MAP_VALID_BIT: usize = 104;
 const MAP_SLOT_PRESENT_BIT: usize = 113;
 const MAP_SLOT_VISION_BYTE: usize = 15;
+const MAP_SLOT_KIND_CONFIRMED_BIT: usize = 112;
+/// `Slot.vision`: a car from the wide camera alone (it has no radar vid to put a kind on).
+const MAP_SLOT_VISION_ONLY: u8 = 1;
 
 const EVENT_WORDS: usize = 2;
 const EVENT_DISCRIMINANT_BYTE: usize = 8;
@@ -96,11 +99,13 @@ pub enum Status {
     Halted = 4,
     /// The wide camera is not the 1344x760 one the lens constants are for.
     UnsupportedCamera = 5,
+    /// Classifier answers only (`kinds`), no frame.
+    Kinds = 6,
 }
 
 impl Status {
     fn from_wire(value: u8) -> Option<Self> {
-        [Self::Frame, Self::Resting, Self::NotCalibrated, Self::NoCamera, Self::Halted, Self::UnsupportedCamera]
+        [Self::Frame, Self::Resting, Self::NotCalibrated, Self::NoCamera, Self::Halted, Self::UnsupportedCamera, Self::Kinds]
             .into_iter()
             .find(|status| *status as u8 == value)
     }
@@ -349,6 +354,24 @@ pub fn map_front_vision_on(bytes: &[u8]) -> Option<bool> {
     Some(on)
 }
 
+/// Whether a valid CcncMap Event has a radar car in FF, LF or RF whose kind is not confirmed yet: the road camera
+/// is looked at only then (`ccnc_visiond` front pacing).
+pub fn map_front_kind_wanted(bytes: &[u8]) -> Option<bool> {
+    let message = Message::new(bytes)?;
+    let event = message.root()?;
+    if event.u16_at(EVENT_DISCRIMINANT_BYTE) != EVENT_CCNC_MAP || event.bit(EVENT_INVALID_BIT) {
+        return None;
+    }
+    let map = message.struct_pointer(&event, 0)?;
+    if !map.bit(MAP_VALID_BIT) {
+        return Some(false);
+    }
+    let slots = message.struct_list(&map, 0)?;
+    Some(slots.iter().take(3).any(|s| {
+        s.bit(MAP_SLOT_PRESENT_BIT) && s.u8_at(MAP_SLOT_VISION_BYTE) != MAP_SLOT_VISION_ONLY && !s.bit(MAP_SLOT_KIND_CONFIRMED_BIT)
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,7 +463,7 @@ mod tests {
         let fixed = VisionOut { calibration: Calibration::UNKNOWN, ..sample(1) };
         let (_, back) = decode(&encode(&fixed, 0)).unwrap();
         assert!(back.calibration.values().iter().all(|v| v.is_nan()));
-        for status in [Status::Resting, Status::NotCalibrated, Status::NoCamera, Status::Halted, Status::UnsupportedCamera] {
+        for status in [Status::Resting, Status::NotCalibrated, Status::NoCamera, Status::Halted, Status::UnsupportedCamera, Status::Kinds] {
             let quiet = VisionOut { status, frame_id: 0, timestamp_sof: 0, frame_mono_time: 0, ..sample(0) };
             assert_eq!(decode(&encode(&quiet, 5)), Some((5, quiet)));
         }
@@ -475,7 +498,7 @@ mod tests {
         view[(2 + EVENT_WORDS + 1) * 8 + VIEW] = 4;
         assert_eq!(decode(&view), None);
         let mut status = bytes.clone();
-        status[(2 + EVENT_WORDS + 1) * 8 + STATUS] = 6;
+        status[(2 + EVENT_WORDS + 1) * 8 + STATUS] = 7;
         assert_eq!(decode(&status), None);
         let mut list = bytes;
         // The list claims more words than the segment holds.
@@ -569,6 +592,29 @@ mod tests {
             bytes[start + MAP_SLOT_VISION_BYTE] = vision;
         }
         bytes
+    }
+
+    #[test]
+    fn front_kind_is_wanted_for_unconfirmed_radar_cars_ahead() {
+        let with = |slots: [(bool, u8); 5], confirmed: [bool; 5]| {
+            let mut bytes = ccnc_map_event(true, true, slots);
+            for (i, c) in confirmed.into_iter().enumerate() {
+                if c {
+                    bytes[(10 + i * 3) * 8 + MAP_SLOT_KIND_CONFIRMED_BIT / 8] |= 1 << (MAP_SLOT_KIND_CONFIRMED_BIT % 8);
+                }
+            }
+            map_front_kind_wanted(&bytes)
+        };
+        let none = [false; 5];
+        assert_eq!(with([(false, 0); 5], none), Some(false));
+        assert_eq!(with([(true, 0), (false, 0), (false, 0), (false, 0), (false, 0)], none), Some(true), "FF radar car");
+        assert_eq!(with([(false, 0), (false, 0), (true, 2), (false, 0), (false, 0)], none), Some(true), "RF radar car the camera sees");
+        assert_eq!(with([(false, 0), (true, 1), (false, 0), (false, 0), (false, 0)], none), Some(false), "camera-only LF: no vid");
+        assert_eq!(with([(false, 0), (false, 0), (false, 0), (true, 0), (true, 0)], none), Some(false), "LR / RR are not ahead");
+        assert_eq!(with([(true, 0), (true, 0), (false, 0), (false, 0), (false, 0)], [true, true, false, false, false]), Some(false), "confirmed");
+        assert_eq!(with([(true, 0), (true, 0), (false, 0), (false, 0), (false, 0)], [true, false, false, false, false]), Some(true));
+        assert_eq!(map_front_kind_wanted(&ccnc_map_event(true, false, [(true, 0); 5])), Some(false), "invalid map");
+        assert_eq!(map_front_kind_wanted(&ccnc_map_event(false, true, [(true, 0); 5])), None);
     }
 
     #[test]
