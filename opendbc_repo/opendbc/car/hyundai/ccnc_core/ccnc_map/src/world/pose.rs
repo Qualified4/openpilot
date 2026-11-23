@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
-// carState is 100 Hz. Leave room for the samples bracketing the two-second history.
-const HISTORY_CAPACITY: usize = 256;
+// carState is 100 Hz. Keep 4 s of history so slow little-core camera frames (up to LATE_S = 3 s) get exact poses.
+const HISTORY_CAPACITY: usize = 512;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PoseAt {
@@ -68,7 +68,7 @@ impl Pose {
             self.history.pop_front();
         }
         self.history.push_back(next);
-        while self.history.len() > 1 && t - self.history[1].t >= 2. {
+        while self.history.len() > 1 && t - self.history[1].t >= 4. {
             self.history.pop_front();
         }
     }

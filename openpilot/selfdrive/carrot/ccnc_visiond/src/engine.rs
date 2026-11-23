@@ -52,6 +52,8 @@ mod ort_backend {
             sb = b(sb.with_intra_threads(threads))?;
             sb = b(sb.with_inter_threads(1))?;
             sb = b(sb.with_parallel_execution(false))?;
+            sb = b(sb.with_intra_op_spinning(false))?;
+            sb = b(sb.with_inter_op_spinning(false))?;
             let s = sb.commit_from_file(path).map_err(|e| anyhow::anyhow!("{e}")).with_context(|| format!("ort: loading {path}"))?;
             let input = s.inputs()[0].name().to_string();
             Ok(Self { s, input })

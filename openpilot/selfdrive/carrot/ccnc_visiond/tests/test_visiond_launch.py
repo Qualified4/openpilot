@@ -48,7 +48,10 @@ def test_manifest_lists_the_launcher_assets():
 def run_env_dump(binary, env, tmp_path):
   dump = tmp_path / "env"
   make_binary(binary, f"echo \"halt=${{CCNC_VISIOND_HALT-unset}}\" > '{dump}'\n"
-                      f"echo \"assets=$CCNC_VISIOND_ASSETS\" >> '{dump}'\necho \"ort=$ORT_DYLIB_PATH\" >> '{dump}'\nexit 0\n")
+                      f"echo \"assets=$CCNC_VISIOND_ASSETS\" >> '{dump}'\necho \"ort=$ORT_DYLIB_PATH\" >> '{dump}'\n"
+                      f"echo \"policy=$CCNC_VISIOND_POLICY\" >> '{dump}'\necho \"cpus=$CCNC_VISIOND_CPUS\" >> '{dump}'\n"
+                      f"echo \"threads=$CCNC_VISIOND_THREADS\" >> '{dump}'\necho \"min_period=$CCNC_VISIOND_MIN_PERIOD_MS\" >> '{dump}'\n"
+                      f"exit 0\n")
   assert subprocess.run([LAUNCH], env=env, timeout=10).returncode == 0
   return dict(line.split("=", 1) for line in dump.read_text().splitlines())
 
@@ -56,8 +59,22 @@ def run_env_dump(binary, env, tmp_path):
 def test_matching_assets_start_without_halt(launcher, tmp_path):
   binary, state, env = launcher
   assets = make_assets(tmp_path)
-  got = run_env_dump(binary, {**env, "CCNC_VISIOND_HALT": "left over"}, tmp_path)
-  assert got == {"halt": "unset", "assets": str(assets), "ort": str(assets / ASSET_NAMES[1])}
+  clean = {k: v for k, v in env.items() if not k.startswith("CCNC_VISIOND_")}
+  got = run_env_dump(binary, {**clean, "CCNC_VISIOND_HALT": "left over"}, tmp_path)
+  assert got == {"halt": "unset", "assets": str(assets), "ort": str(assets / ASSET_NAMES[1]),
+                 "policy": "idle", "cpus": "0-2", "threads": "2", "min_period": "0"}
+  assert not state.with_suffix(".failed").exists()
+
+
+def test_launcher_forwards_scheduling_overrides(launcher, tmp_path):
+  binary, state, env = launcher
+  make_assets(tmp_path)
+  got = run_env_dump(binary, {**env, "CCNC_VISIOND_POLICY": "other", "CCNC_VISIOND_CPUS": "4",
+                              "CCNC_VISIOND_THREADS": "1", "CCNC_VISIOND_MIN_PERIOD_MS": "715"}, tmp_path)
+  assert got["policy"] == "other"
+  assert got["cpus"] == "4"
+  assert got["threads"] == "1"
+  assert got["min_period"] == "715"
   assert not state.with_suffix(".failed").exists()
 
 
@@ -215,9 +232,10 @@ def test_unusable_assets_halt_without_crash(launcher, tmp_path, assets_present):
   prefix = f"visiond-launch-{os.getpid()}-{time.monotonic_ns()}"
   shm = Path("/dev/shm") / f"msgq_{prefix}"
   shm.mkdir()
-  for name in ("CCNC_VISIOND_ENGINE", "CCNC_VISIOND_ASSETS", "ORT_DYLIB_PATH", "CCNC_VISIOND_HALT"):
+  for name in ("CCNC_VISIOND_ENGINE", "CCNC_VISIOND_ASSETS", "ORT_DYLIB_PATH", "CCNC_VISIOND_HALT",
+               "CCNC_VISIOND_POLICY", "CCNC_VISIOND_CPUS", "CCNC_VISIOND_THREADS", "CCNC_VISIOND_MIN_PERIOD_MS"):
     env.pop(name, None)
-  env.update(VISIOND_LAUNCH_BIN=str(BUILT), OPENPILOT_PREFIX=prefix)
+  env.update(VISIOND_LAUNCH_BIN=str(BUILT), OPENPILOT_PREFIX=prefix, CCNC_VISIOND_CPUS="0")
   assets = tmp_path / "assets"
   if assets_present:
     make_assets(tmp_path)
@@ -237,6 +255,16 @@ def test_unusable_assets_halt_without_crash(launcher, tmp_path, assets_present):
         assert halted.read_text().startswith(reason), halted.read_text()
         time.sleep(0.3)
         assert proc.poll() is None
+        # Verify the real child binary took SCHED_IDLE and pinned affinity (even before model load / in halt).
+        child_pids = [int(p.name) for p in Path("/proc").iterdir() if p.name.isdecimal()
+                      and (p / "stat").exists() and int((p / "stat").read_text().rsplit(")", 1)[1].split()[1]) == proc.pid]
+        assert len(child_pids) == 1
+        cpid = child_pids[0]
+        for task in (Path("/proc") / str(cpid) / "task").iterdir():
+          tid = int(task.name)
+          assert os.sched_getscheduler(tid) == os.SCHED_IDLE
+          cpus = next(l.split()[1] for l in (task / "status").read_text().splitlines() if l.startswith("Cpus_allowed_list:"))
+          assert cpus == "0"
         proc.send_signal(signal.SIGTERM)
         assert proc.wait(timeout=3) == 0
       finally:

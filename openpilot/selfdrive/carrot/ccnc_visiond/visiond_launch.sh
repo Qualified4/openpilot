@@ -48,6 +48,14 @@ else
   unset CCNC_VISIOND_HALT
 fi
 export CCNC_VISIOND_ASSETS="$ASSETS" ORT_DYLIB_PATH="$ASSETS/$ORT_LIB"
+# Default scheduling: little cores 0-2 under SCHED_IDLE with 2 ORT threads (stays completely off big driving cores
+# 4/5/6/7 and core 3 pandad/encoderd, and yields to loggerd/calibrationd/ui/ccnc_lane_type on 0-2).
+# Override via env for gate comparisons (e.g. CCNC_VISIOND_CPUS=4 CCNC_VISIOND_THREADS=1).
+export CCNC_VISIOND_POLICY=${CCNC_VISIOND_POLICY:-idle}
+export CCNC_VISIOND_CPUS=${CCNC_VISIOND_CPUS:-0-2}
+export CCNC_VISIOND_THREADS=${CCNC_VISIOND_THREADS:-2}
+export CCNC_VISIOND_NICE=${CCNC_VISIOND_NICE:-19}
+export CCNC_VISIOND_MIN_PERIOD_MS=${CCNC_VISIOND_MIN_PERIOD_MS:-0}
 
 start=$SECONDS
 stopping=0

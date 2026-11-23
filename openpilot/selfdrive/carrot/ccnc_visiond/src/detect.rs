@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 pub const MODEL: &str = "yolox_tiny_dyn.onnx";
 /// Map files for `Detector::fixed_maps` (replay checks against maps made offline).
 pub const MAPS: [&str; 2] = ["map_vL.bin", "map_vR.bin"];
-pub const THREADS: usize = 2;
 /// Side view detector input height and width. A 512x384 side view fills 416x312 of it.
 const SIDE_INPUT: [usize; 2] = [320, 416];
 /// Full wide frame detector input height and width (1344x760 -> 416x235 inside 416x416).
@@ -33,6 +32,7 @@ struct Views {
 
 pub struct Detector {
     engine: Box<dyn engine::Engine>,
+    threads: usize,
     views: Option<Views>,
     /// The views came from map files and stay as they are.
     fixed: bool,
@@ -51,10 +51,10 @@ fn is_night(image: &pre::Img) -> bool {
 }
 
 impl Detector {
-    pub fn load(assets: &Path, engine: &str) -> Result<Self> {
+    pub fn load(assets: &Path, engine: &str, threads: usize) -> Result<Self> {
         let model = assets.join(MODEL).to_string_lossy().into_owned();
-        let engine = engine::open(engine, &model, [1, 3, SIDE_INPUT[0], SIDE_INPUT[1]], THREADS)?;
-        Ok(Self { engine, views: None, fixed: false })
+        let engine = engine::open(engine, &model, [1, 3, SIDE_INPUT[0], SIDE_INPUT[1]], threads)?;
+        Ok(Self { engine, threads, views: None, fixed: false })
     }
 
     /// Use the map files in `dir` for every frame instead of building the views from liveCalibration.
@@ -73,11 +73,15 @@ impl Detector {
             return None;
         }
         let start = Instant::now();
-        let maps = std::thread::scope(|scope| {
-            let left = scope.spawn(|| wcam::side_map(calibration, 0));
-            let right = wcam::side_map(calibration, 1);
-            [left.join().expect("side map thread"), right]
-        });
+        let maps = if self.threads <= 1 {
+            [wcam::side_map(calibration, 0), wcam::side_map(calibration, 1)]
+        } else {
+            std::thread::scope(|scope| {
+                let left = scope.spawn(|| wcam::side_map(calibration, 0));
+                let right = wcam::side_map(calibration, 1);
+                [left.join().expect("side map thread"), right]
+            })
+        };
         self.views = Some(Views { maps, calibration: *calibration });
         Some(start.elapsed())
     }

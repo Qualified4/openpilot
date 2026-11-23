@@ -21,8 +21,8 @@ use crate::world::{World, RADAR_LAG, STATUS_FROZEN};
 use std::collections::VecDeque;
 
 pub const STALE_NS: u64 = 250_000_000;
-/// How far back the inputs of a camera frame's time are kept: a later result is dropped anyway.
-const HISTORY_NS: u64 = 2_000_000_000;
+/// How far back the inputs of a camera frame's time are kept (covers LATE_S = 3 s with 1 s margin).
+const HISTORY_NS: u64 = 4_000_000_000;
 const RADAR: Consts = Consts::map_process();
 
 fn seconds(t: u64) -> f64 {

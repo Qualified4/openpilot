@@ -11,6 +11,11 @@
 //!   halts with this reason instead of loading anything.
 //! * `CCNC_VISIOND_FIXED_MAPS`: replay checks only. Directory with `map_vL.bin` and `map_vR.bin` used for every
 //!   frame instead of liveCalibration, which is then not needed.
+//! * `CCNC_VISIOND_POLICY`: `idle` (default, `SCHED_IDLE`), `batch`, or `other`.
+//! * `CCNC_VISIOND_CPUS`: CPU affinity list (default `0-2`, or `all`/`none` to inherit).
+//! * `CCNC_VISIOND_THREADS`: ORT/tract intra-op threads (default `2`, max `4`).
+//! * `CCNC_VISIOND_NICE`: nice value when policy is `other` or `batch` (default `19`).
+//! * `CCNC_VISIOND_MIN_PERIOD_MS`: optional minimum interval between inferences in ms (default `0`).
 
 mod calib;
 mod detect;
@@ -20,6 +25,7 @@ mod night;
 mod nv12;
 mod pre;
 mod remap;
+mod sched;
 mod vipc;
 mod wcam;
 mod yolox;
@@ -41,7 +47,6 @@ const CAMERA_SERVER: &str = "camerad";
 const IDLE: Duration = Duration::from_millis(100);
 /// Sleep while waiting for the next camera frame (20 Hz).
 const FRAME_WAIT: Duration = Duration::from_millis(5);
-const NICE: libc::c_int = 10;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -49,7 +54,7 @@ extern "C" fn request_stop(_: libc::c_int) {
     STOP.store(true, Ordering::Relaxed);
 }
 
-fn configure() -> io::Result<()> {
+fn configure(sched_cfg: &sched::Config) -> io::Result<()> {
     let launcher_pid = std::env::var("VISIOND_PARENT_PID").ok().and_then(|pid| pid.parse::<libc::pid_t>().ok());
     unsafe {
         let parent = launcher_pid.unwrap_or_else(|| libc::getppid());
@@ -66,12 +71,18 @@ fn configure() -> io::Result<()> {
             STOP.store(true, Ordering::Relaxed);
             return Ok(());
         }
-        // The inference threads start later and inherit this.
-        if libc::setpriority(libc::PRIO_PROCESS, 0, NICE) != 0 {
-            return Err(io::Error::last_os_error());
-        }
     }
+    // Applied before ORT loads so inference worker threads inherit both affinity and policy.
+    let _ = sched_cfg.apply_current()?;
     Ok(())
+}
+
+fn sleep_interruptible(mut remaining: Duration) {
+    while !remaining.is_zero() && !STOP.load(Ordering::Relaxed) {
+        let step = remaining.min(Duration::from_millis(20));
+        sleep(step);
+        remaining = remaining.saturating_sub(step);
+    }
 }
 
 fn clock_ns(clock: libc::clockid_t) -> u64 {
@@ -164,7 +175,8 @@ fn open<T>(queue: Option<T>, what: &str) -> io::Result<T> {
 }
 
 fn run() -> io::Result<()> {
-    configure()?;
+    let sched_cfg = sched::Config::from_env();
+    configure(&sched_cfg)?;
     if STOP.load(Ordering::Relaxed) {
         return Ok(());
     }
@@ -178,7 +190,7 @@ fn run() -> io::Result<()> {
         return halt("assets", anyhow::anyhow!(reason.to_string_lossy().into_owned()), &publisher);
     }
     let assets = PathBuf::from(std::env::var("CCNC_VISIOND_ASSETS").unwrap_or_else(|_| "assets".into()));
-    let loaded = detect::Detector::load(&assets, &engine_name()).and_then(|mut detector| {
+    let loaded = detect::Detector::load(&assets, &engine_name(), sched_cfg.threads).and_then(|mut detector| {
         if let Some(dir) = std::env::var_os("CCNC_VISIOND_FIXED_MAPS") {
             detector.fixed_maps(std::path::Path::new(&dir))?;
             eprintln!("ccnc_visiond: fixed side view maps from {}, liveCalibration not used", dir.to_string_lossy());
@@ -189,6 +201,18 @@ fn run() -> io::Result<()> {
         Ok(detector) => detector,
         Err(err) => return halt("load", err, &publisher),
     };
+    let applied = sched_cfg.apply_all_threads();
+    eprintln!(
+        "ccnc_visiond: sched policy={} cpus={} active={} threads={} min_period_ms={} tasks={}/{}/{}",
+        sched_cfg.policy.name(),
+        sched_cfg.cpus.format(),
+        applied.active_cpus,
+        sched_cfg.threads,
+        sched_cfg.min_period.as_millis(),
+        applied.policy_ok,
+        applied.affinity_ok,
+        applied.threads_seen,
+    );
     let mut camera = vipc::Client::new(vipc::Stream::Wide, CAMERA_SERVER);
     let mut gate = gate::Gate::default();
     let mut calib = calib::Calib::default();
@@ -197,6 +221,7 @@ fn run() -> io::Result<()> {
     let mut quiet = Quiet { last: None };
     let mut failures = 0;
     let mut wrong_size = None;
+    let mut threads_rechecked = false;
     while !STOP.load(Ordering::Relaxed) {
         for bytes in speed.drain() {
             if let Some(v_ego) = ccnc_vision_msg::car_state_speed(&bytes) {
@@ -274,6 +299,17 @@ fn run() -> io::Result<()> {
         let found = match detector.run(frame.layout, &frame.nv12, target) {
             Ok(found) => {
                 failures = 0;
+                if !threads_rechecked {
+                    // Catch any ORT worker thread created lazily on the first inference call.
+                    let after = sched_cfg.apply_all_threads();
+                    if after.threads_seen != applied.threads_seen {
+                        eprintln!(
+                            "ccnc_visiond: sched after first run active={} tasks={}/{}/{}",
+                            after.active_cpus, after.policy_ok, after.affinity_ok, after.threads_seen,
+                        );
+                    }
+                    threads_rechecked = true;
+                }
                 found
             }
             Err(err) => {
@@ -312,6 +348,9 @@ fn run() -> io::Result<()> {
         };
         send(&publisher, &out)?;
         quiet.frame();
+        if !sched_cfg.min_period.is_zero() {
+            sleep_interruptible(sched_cfg.min_period.saturating_sub(started.elapsed()));
+        }
     }
     Ok(())
 }

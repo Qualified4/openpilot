@@ -125,8 +125,8 @@ mod tests {
             }
         };
         assert_eq!(decide(2_000_000_000, 2_400_000_000), Ok(()));
-        assert_eq!(decide(2_000_000_000, 3_499_000_000), Ok(()), "1.5 s late is still used");
-        assert_eq!(decide(2_000_000_000, 3_500_000_100), Err(Skipped::Late));
+        assert_eq!(decide(2_000_000_000, 4_999_000_000), Ok(()), "3.0 s late is still used");
+        assert_eq!(decide(2_000_000_000, 5_000_000_100), Err(Skipped::Late));
         assert_eq!(decide(2_000_000_000, 1_999_000_000), Err(Skipped::Late), "published before its frame");
     }
 }

@@ -23,16 +23,21 @@ use crate::world::PoseAt;
 use det_rules::{swap_decision, Act, DetRules, SwapCfg};
 
 /// A result that reaches the map later than this after its frame is dropped.
-pub const LATE_S: f64 = 1.5;
+/// Raised to 3.0 s for little-core SCHED_IDLE inference (~0.6-1.5 s/view, tail up to ~2.8 s); positions are stored
+/// in the world frame at `frameMonoTime` (pose & input histories keep 4 s) and moved by ego motion, and camera
+/// cars still turn off immediately above 3 m/s.
+pub const LATE_S: f64 = 3.0;
 /// Without a newer result of a side for this long, its camera cars leave the slots.
-pub const HOLD_S: f64 = 2.0;
-/// How long cached full-frame raw candidates stay usable for subsequent side-view frames (~1 full L/R/raw cycle).
-pub const RAW_HOLD_S: f64 = 2.5;
+/// Covers a 3.0 s per-side cadence (1.5 s/view on little cores) without blinking while still clearing promptly if
+/// `ccnc_visiond` stops or starves.
+pub const HOLD_S: f64 = 3.5;
+/// How long cached full-frame raw candidates stay usable for subsequent side-view frames (~1 slow L/R/raw cycle).
+pub const RAW_HOLD_S: f64 = 4.0;
 /// When a full-frame raw result arrives after a side result (3-view L/R/raw cycle), keep the held side car alive
-/// up to this long after the raw arrival (capped at `RAW_HOLD_MAX_S` after the side arrival) so ~2 s device cycles
+/// up to this long after the raw arrival (capped at `RAW_HOLD_MAX_S` after the side arrival) so slow 3-view cycles
 /// do not blink off between frames while still expiring promptly if `ccnc_visiond` stops.
-const RAW_HOLD_EXTEND_S: f64 = 1.0;
-const RAW_HOLD_MAX_S: f64 = 2.6;
+const RAW_HOLD_EXTEND_S: f64 = 1.5;
+const RAW_HOLD_MAX_S: f64 = 4.5;
 /// Rule E's speed limit (det_rules `RuleE::step`): camera cars are shown at or below it only.
 pub const SLOW: f64 = 3.0;
 /// Not while reversing. A standing car's vEgo dips a little below zero (`ccnc_visiond` STANDSTILL_NOISE).
