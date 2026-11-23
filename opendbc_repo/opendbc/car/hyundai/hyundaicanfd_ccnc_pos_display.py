@@ -4,9 +4,10 @@ operation for operation on the same plain frames (the Rust trace or ``_pos_run_f
 exactly. Keep both in step.
 
 A frame is (now, yaw, selected, lead, objs, heading): yaw the livePose yaw rate (left +) or None, selected the existing
-selector's FF/LF/RF map keys, lead radarState leadOne (dRel, yRel) or None, objs (vid, x, y, seen, report, lines)
-with report the map object's last (stamp, x, y) in the ego frame and lines the ego lane view's left outer, left
-inner, right inner and right outer line at x (left +) or None, and heading the road's heading in the ego frame at ego
+selector's FF/LF/RF map keys, lead radarState leadOne (dRel, yRel) or None, objs (vid, x, y, seen, report, lines,
+side) with report the map object's last (stamp, x, y) in the ego frame, lines the ego lane view's left outer, left
+inner, right inner and right outer line at x (left +) or None and side whether the selector would let the object into
+a side slot (not opposing, not approach-only, not its bridged FF), and heading the road's heading in the ego frame at ego
 (left +, rad, from ego's inner lines) or None. An output is (assigned keys, drawn lateral).
 """
 import math
@@ -44,7 +45,7 @@ def _clamp(v, lo, hi):
 
 class Track:
   def __init__(self, o, now):
-    vid, x, y, seen, report, lines = o
+    vid, x, y, seen, report, lines, _ = o
     stamp, x, m = report if report is not None else (-math.inf, x, y)
     self.x, self.p, self.m, self.b, self.y, self.stamp, self.now = x, m, m, 0., m, stamp, now
 
@@ -188,7 +189,9 @@ class Common:
     vid = selected[0]
     if vid is not None and vid in objs:
       side = self._side(objs, vid)
-      if side == 0 or vid == lead:
+      # objs[vid][6]: the map's selector would let it into a side slot (not opposing, not approach-only, not its
+      # bridged FF).
+      if side == 0 or vid == lead or not objs[vid][6]:
         slots[0] = vid
       elif nearer(vid, slots[side]):
         slots[side] = vid

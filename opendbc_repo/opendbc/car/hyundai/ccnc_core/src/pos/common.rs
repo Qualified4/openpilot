@@ -45,6 +45,9 @@ pub struct Obj {
     pub seen: f64,
     pub report: Option<(f64, f64, f64)>,
     pub lines: [Option<f64>; 4],
+    /// Whether the map's selector would let this object into a side slot: not opposing, not approach-only and
+    /// not the FF object it keeps through a vision bridge.
+    pub side_ok: bool,
 }
 
 /// One display update's input.
@@ -271,7 +274,11 @@ impl Common {
         }
         if let Some(vid) = f.selected[0].filter(|v| objs.contains_key(v)) {
             let side = side_of(&LaneView::new(&objs[&vid].lines), self.y(vid));
-            if side == 0 || Some(vid) == lead {
+            // The map keeps opposing and approach-only objects and its bridged FF out of LF and RF. Moving its FF
+            // choice there would bypass that, and the rear handover then follows the object behind ego (recorded
+            // 2026-11-22 in a car park: returns by a pillar and by a gate post that the map had as FF were drawn
+            // as LF for 1-2 s and then as LR for 7 s).
+            if side == 0 || Some(vid) == lead || !objs[&vid].side_ok {
                 slots[0] = Some(vid);
             } else if nearer(vid, slots[side]) {
                 slots[side] = Some(vid);

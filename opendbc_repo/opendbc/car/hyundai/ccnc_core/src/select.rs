@@ -143,7 +143,7 @@ pub(crate) fn vision(objects: &Bound<'_, PyDict>, local: &Bound<'_, PyDict>, now
 }
 
 /// `_approach_only(obj)`.
-fn approach_only(o: &MapObject) -> bool {
+pub(crate) fn approach_only(o: &MapObject) -> bool {
     !(o.radar_moving || o.forward_samples != 0 || o.vision_seen || o.admitted)
 }
 
