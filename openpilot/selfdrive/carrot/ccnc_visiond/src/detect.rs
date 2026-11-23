@@ -62,7 +62,11 @@ pub struct FrontFound {
 }
 
 fn is_night(image: &pre::Img) -> bool {
-    let upper = &image.data[..image.h / 2 * image.w * 3];
+    dark(&image.data[..image.h / 2 * image.w * 3])
+}
+
+/// Whether the upper half of a frame (BGR bytes) is night.
+fn dark(upper: &[u8]) -> bool {
     let sum: u64 = upper.iter().map(|&v| u64::from(v)).sum();
     !upper.is_empty() && (sum as f64 / upper.len() as f64) < NIGHT_MEAN
 }
@@ -135,11 +139,14 @@ impl Detector {
 
     /// Road camera frame: the part above the bonnet, by day only (the kinds have no night evidence, R1). Each box
     /// comes with whether it is cut by the crop line (its bottom is the bonnet, not the car's).
+    /// Night is told from the upper half alone, before the rest of the frame is converted.
     pub fn run_front(&mut self, layout: Layout, nv12: &[u8]) -> Result<FrontFound> {
-        let frame = layout.to_bgr(nv12)?;
-        if is_night(&frame) || frame.h < FRONT_CROP_Y {
+        let half = layout.height / 2;
+        let mut frame = layout.to_bgr_rows(nv12, half)?;
+        if dark(&frame.data[..half * frame.w * 3]) || layout.height < FRONT_CROP_Y {
             return Ok(FrontFound { boxes: Vec::new(), image: frame, night: true });
         }
+        layout.finish_bgr(nv12, &mut frame)?;
         let top = pre::Img { w: frame.w, h: FRONT_CROP_Y, data: frame.data[..FRONT_CROP_Y * frame.w * 3].to_vec() };
         let (boxes, ratio) = self.detect(&top, FRONT_INPUT[0], FRONT_INPUT[1])?;
         let cut_at = FRONT_CROP_Y as f64 - FRONT_CUT_TOL / ratio;

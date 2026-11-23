@@ -47,6 +47,8 @@ use ccnc_vision_msg::{Calibration, KindResult, Status, View, VisionBox, VisionOu
 use stripnet::ipc::{Pub, Sub};
 
 const SPEED_SERVICE: &str = "carState";
+/// How long the road camera rests after a night frame (only the top half is converted to tell).
+const FRONT_NIGHT_REST_NS: u64 = 10_000_000_000;
 const CALIBRATION_SERVICE: &str = "liveCalibration";
 const MAP_SERVICE: &str = "customReserved3";
 const CAMERA_SERVER: &str = "camerad";
@@ -247,7 +249,12 @@ fn run() -> io::Result<()> {
     );
     let mut camera = vipc::Client::new(vipc::Stream::Wide, CAMERA_SERVER);
     let mut road = vipc::Client::new(vipc::Stream::Road, CAMERA_SERVER);
+    // When the last road frame's detection ended: the pace is the rest after it, so a slow detection never runs
+    // back to back.
     let mut last_front = None;
+    let mut front_pace = sched_cfg.front;
+    // After a night road frame the road camera rests this long, whatever the map asks (night frames get no answer).
+    let mut front_rest_until = 0u64;
     let mut road_wrong_size = None;
     let mut gate = gate::Gate::default();
     let mut calib = calib::Calib::default();
@@ -292,13 +299,18 @@ fn run() -> io::Result<()> {
         if !answers.is_empty() {
             quiet.kinds(&publisher, answers, latest)?;
         }
-        if let Some(pace) = sched_cfg.front {
+        if front_pace.is_some() && !classifier.alive() {
+            // No restart: the side views go on, the road camera stops (its boxes are only for the classifier).
+            eprintln!("ccnc_visiond: kind thread ended; road camera off until restart");
+            front_pace = None;
+        }
+        if let Some(pace) = front_pace {
             let now = clock_ns(libc::CLOCK_MONOTONIC);
-            if gate.front_due(now, last_front, pace) {
+            if now >= front_rest_until && gate.front_due(now, last_front, pace) {
                 if let Some(frame) = road.poll() {
-                    last_front = Some(now);
                     let size = (frame.layout.width, frame.layout.height);
                     if size != wcam::WIDE_SIZE {
+                        last_front = Some(now);
                         if road_wrong_size != Some(size) {
                             eprintln!("ccnc_visiond: road camera frame {}x{}, not {}x{}; not used", size.0, size.1, wcam::WIDE_SIZE.0, wcam::WIDE_SIZE.1);
                         }
@@ -306,7 +318,9 @@ fn run() -> io::Result<()> {
                         continue;
                     }
                     let started = Instant::now();
-                    match detector.run_front(frame.layout, &frame.nv12) {
+                    let found = detector.run_front(frame.layout, &frame.nv12);
+                    last_front = Some(clock_ns(libc::CLOCK_MONOTONIC));
+                    match found {
                         Ok(found) if !found.night => {
                             let (boot_now, mono_now) = (clock_ns(libc::CLOCK_BOOTTIME), clock_ns(libc::CLOCK_MONOTONIC));
                             let frame_mono = frame_mono_time(frame.timestamp_sof, boot_now, mono_now);
@@ -332,7 +346,7 @@ fn run() -> io::Result<()> {
                             send(&publisher, &out)?;
                             quiet.frame();
                         }
-                        Ok(_) => {}
+                        Ok(_) => front_rest_until = last_front.unwrap_or(now) + FRONT_NIGHT_REST_NS,
                         Err(err) => eprintln!("ccnc_visiond: road frame {} dropped: {err:#}", frame.frame_id),
                     }
                     continue;

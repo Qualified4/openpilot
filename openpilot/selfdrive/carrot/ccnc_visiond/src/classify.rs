@@ -191,6 +191,11 @@ impl Classifier {
         cv.notify_one();
     }
 
+    /// Whether the thread still runs (it ends on a panic, or when its answers have nowhere to go).
+    pub fn alive(&self) -> bool {
+        self.thread.as_ref().is_some_and(|thread| !thread.is_finished())
+    }
+
     /// Every answer since the last call.
     pub fn answers(&self) -> Vec<KindResult> {
         self.answers.try_iter().flatten().collect()
@@ -304,6 +309,31 @@ mod tests {
         assert_eq!(*frames.last().unwrap(), 19, "the newest frame is always answered");
         assert!(got.iter().all(|a| a.kind == KIND_TRUCK && (a.prob - 0.8).abs() < 1e-6));
         assert!(runs.lock().unwrap().iter().all(|&n| n == 2), "one batch per frame");
+        drop(classifier);
+    }
+
+    struct Panics;
+
+    impl Engine for Panics {
+        fn run(&mut self, _: [usize; 4], _: Vec<f32>) -> Result<(Vec<usize>, Vec<f32>)> {
+            panic!("kind engine test panic");
+        }
+    }
+
+    #[test]
+    fn a_thread_that_dies_shows() {
+        let mut classifier = Classifier::start(|| Ok(Box::new(Panics) as Box<dyn Engine>)).unwrap();
+        assert!(classifier.alive());
+        let img = image();
+        let boxes = [det([0., 0., 40., 40.], 2, 0.9)];
+        classifier.submit(Job::new(1, View::CropFront, &img, &boxes.iter().collect::<Vec<_>>()));
+        let start = Instant::now();
+        while classifier.alive() && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!classifier.alive());
+        assert!(classifier.answers().is_empty());
+        classifier.submit(Job::new(2, View::CropFront, &img, &boxes.iter().collect::<Vec<_>>()));
         drop(classifier);
     }
 

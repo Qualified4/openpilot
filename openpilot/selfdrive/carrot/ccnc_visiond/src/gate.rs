@@ -51,8 +51,8 @@ impl Target {
 /// How often the road camera is looked at, while a radar car ahead (FF, LF, RF) has no confirmed kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrontPace {
-    /// Above `WIDE_MAX_SPEED`, when nothing else runs. 2 Hz at most by default: two answers 0.8 s apart confirm a
-    /// kind, so a faster rate would only spend the little cores.
+    /// Above `WIDE_MAX_SPEED`, when nothing else runs: the rest after a road frame's detection, 500 ms by default
+    /// (two answers 0.8 s apart confirm a kind, so a shorter rest would only spend the little cores).
     pub moving_ns: u64,
     /// While the side views run: one road frame every this long takes a side frame's turn. The car ahead of a
     /// standing car does not change, and the side cars are what the stop is for (their rules count frames).
@@ -95,8 +95,9 @@ impl Gate {
         self.front_kind = Some((wanted, now_ns));
     }
 
-    /// Whether to take a road camera frame now, the last one taken at `last_ns`. Only forward (or standing) at a
-    /// known speed, while the map asks for a kind (a recent CcncMap), and at most at `pace`.
+    /// Whether to take a road camera frame now, the last one's detection having ended at `last_ns` (`pace` is the
+    /// rest after a detection). Only forward (or standing) at a known speed, while the map asks for a kind (a recent
+    /// CcncMap).
     pub fn front_due(&self, now_ns: u64, last_ns: Option<u64>, pace: FrontPace) -> bool {
         let wanted = self.front_kind.is_some_and(|(on, at)| on && now_ns.saturating_sub(at) <= MAP_TIMEOUT_NS);
         let forward = self.speed.is_some_and(|(v_ego, at)| v_ego >= -STANDSTILL_NOISE && now_ns.saturating_sub(at) <= SPEED_TIMEOUT_NS);
