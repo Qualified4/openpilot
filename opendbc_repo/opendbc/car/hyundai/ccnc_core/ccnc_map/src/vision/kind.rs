@@ -6,9 +6,10 @@
 //! the track to its vehicle (vid), and the vid's answers are voted on:
 //!
 //! * only answers with a probability of `MIN_PROB` or more count;
-//! * two answers of the same kind at least `GAP_S` apart confirm it (det-light 6: no "different view" condition,
-//!   a standing car never gives one);
-//! * a confirmed kind changes after `N_FLIP` agreeing answers of another kind;
+//! * two answers of the same shape at least `GAP_S` apart confirm it (det-light 6: no "different view" condition,
+//!   a standing car never gives one). The shape is what the cluster draws: car, or truck for a truck and a bus
+//!   alike, so a truck the classifier calls truck once and bus once is confirmed; the kind shown is the last one;
+//! * a confirmed shape changes after `N_FLIP` agreeing answers of the other shape;
 //! * the vote goes when its vid goes.
 //!
 //! Night frames are not classified (`ccnc_visiond`), as R1 had it: there is no labelled night data.
@@ -162,6 +163,15 @@ pub fn side_gate(cand: &Cand, track: &Track) -> Option<f64> {
     (dx <= SIDE_MATCH_X && dy <= SIDE_MATCH_Y).then_some(dx + dy)
 }
 
+/// The cluster shape of a kind: car, or truck (truck and bus).
+fn shape(kind: u8) -> u8 {
+    if kind == KIND_CAR {
+        KIND_CAR
+    } else {
+        KIND_TRUCK
+    }
+}
+
 /// The answers of one vid.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Vote {
@@ -185,15 +195,17 @@ impl Vote {
         }
         self.last = t;
         self.counted += 1;
-        self.streak = if self.streak.0 == kind { (kind, self.streak.1 + 1) } else { (kind, 1) };
+        let answer = shape(kind);
+        self.streak = if self.streak.0 == answer { (answer, self.streak.1 + 1) } else { (answer, 1) };
         let confirmed = self.confirmed_at.is_finite();
         let need = if confirmed { N_FLIP } else { N_CONFIRM };
-        if self.streak.1 >= need && (!confirmed || kind != self.shown) {
-            self.shown = kind;
+        if self.streak.1 >= need && (!confirmed || answer != shape(self.shown)) {
             self.confirmed_at = t;
             self.streak = (0, 0);
         }
-        if kind == self.shown {
+        if answer == shape(self.shown) || self.confirmed_at == t {
+            // The shown kind follows the latest answer of the shown shape (truck or bus).
+            self.shown = kind;
             self.prob = prob;
         }
     }
@@ -282,6 +294,12 @@ mod tests {
         }
         vote.observe(5.0, KIND_CAR, 0.9);
         assert_eq!((vote.shown, vote.confirmed_at), (KIND_CAR, 5.0));
+        let mut big = Vote::new();
+        big.observe(0.0, KIND_TRUCK, 0.9);
+        big.observe(1.0, KIND_BUS, 0.8);
+        assert_eq!((big.shown, big.confirmed_at), (KIND_BUS, 1.0), "truck then bus: the truck shape, the last kind shown");
+        big.observe(2.0, KIND_TRUCK, 0.7);
+        assert_eq!((big.shown, big.confirmed_at), (KIND_TRUCK, 1.0));
         let mut mixed = Vote::new();
         for (t, k) in [(0.0, KIND_TRUCK), (1.0, KIND_CAR), (2.0, KIND_TRUCK), (3.0, KIND_CAR)] {
             mixed.observe(t, k, 0.9);
