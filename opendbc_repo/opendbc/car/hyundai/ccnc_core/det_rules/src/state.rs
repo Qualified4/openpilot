@@ -1,7 +1,7 @@
 //! All rule state in one struct, and the per-frame entry points (port of step5_lrrr.run_scene's frame body).
 use crate::rules::{swap_decision, Act, ClassConfirm, Reason, RuleE, SplitGate, SwapCfg, Timing, VehicleClass};
 use crate::wide::{counts_as_car, display_filters, pick_side, rear_distance, split_side, Cand, Filters};
-use crate::{Lane, Track};
+use crate::{Lane, Track, JITTER_S};
 use std::collections::HashMap;
 
 /// Current radar slot of 0x162 the camera car is compared with (LF/RF/LR/RR _DETECT and _DETECT_DISTANCE).
@@ -64,6 +64,8 @@ struct SideRules {
     front: RuleE,
     rear: RuleE,
     gate: SplitGate,
+    /// The proposed rear car while the split proposal stays unbroken (`Timing::rear_span_s`).
+    pair: RuleE,
 }
 
 /// The rule state: rule E of the four side slots, the split gate of each side and R1 of every front car.
@@ -81,7 +83,7 @@ impl Default for DetRules {
 }
 impl DetRules {
     pub fn new(timing: Timing) -> DetRules {
-        let side = || SideRules { front: timing.rule_e(), rear: timing.rule_e(), gate: timing.split_gate() };
+        let side = || SideRules { front: timing.rule_e(), rear: timing.rule_e(), gate: timing.split_gate(), pair: timing.rule_e() };
         DetRules { timing, swap: SwapCfg { min_run: timing.n_on, ..SwapCfg::default() }, sides: [side(), side()], classes: HashMap::new() }
     }
 
@@ -97,22 +99,34 @@ impl DetRules {
             let single = pick_side(&refs, side);
             let split = split_side(&refs, side, |c| counts_as_car(c, f.v_ego, f.tracks, f.lprob));
             let (front, rear) = st.gate.apply(split, single, f.v_ego, f.start_guard_ok, |c| shown(c).is_empty(), t);
-            let slot = |rule: &mut RuleE, c: Option<&Cand>, radar: SlotState, is_rear: bool| {
+            // rear_span_s: the rear car of the split proposal while the gate's count runs (it resets with the gate)
+            let pair_run = self.timing.rear_span_s.and_then(|span| {
+                let proposed = split.1.filter(|_| split.0.is_some() && st.gate.rule.run > 0);
+                let ok = proposed.map_or(false, |c| shown(c).is_empty());
+                st.pair.step(proposed, f.v_ego, f.start_guard_ok, ok, t);
+                let spanned = st.pair.first_hit().is_some_and(|t0| t - t0 >= span - JITTER_S);
+                (rear.is_some() && st.pair.run >= self.timing.n_on && spanned).then_some(st.pair.run)
+            });
+            let slot = |rule: &mut RuleE, c: Option<&Cand>, radar: SlotState, is_rear: bool, also: Option<u32>| {
                 let filters = c.map_or(Filters::default(), shown);
-                let display_on = rule.step(c, f.v_ego, f.start_guard_ok, filters.is_empty(), t);
+                let mut display_on = rule.step(c, f.v_ego, f.start_guard_ok, filters.is_empty(), t);
+                let (mut run, mut reason) = (rule.run, rule.reason);
+                if let Some(pair_run) = also.filter(|_| !display_on) {
+                    (display_on, run, reason) = (true, pair_run, Reason::On);
+                }
                 let dist = c.map(|c| (if is_rear { rear_distance(c) } else { c.x }, c.cut));
                 SlotOutput {
                     cand: index(c),
                     display_on,
-                    confirm_run: rule.run,
-                    action: swap_decision(display_on, dist, radar.detect, radar.dist, rule.run, &self.swap),
+                    confirm_run: run,
+                    action: swap_decision(display_on, dist, radar.detect, radar.dist, run, &self.swap),
                     filters,
-                    reason: rule.reason,
+                    reason,
                     rear_dist: c.filter(|_| is_rear).map(rear_distance),
                 }
             };
-            let front = slot(&mut st.front, front, f.slots[i][0], false);
-            let rear = slot(&mut st.rear, rear, f.slots[i][1], true);
+            let front = slot(&mut st.front, front, f.slots[i][0], false, None);
+            let rear = slot(&mut st.rear, rear, f.slots[i][1], true, pair_run);
             out[i] = Some(SideOutput { front, rear });
         }
         WideOutput { t, sides: out.map(|o| o.expect("both sides are filled above")) }

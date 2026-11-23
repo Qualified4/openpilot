@@ -6,6 +6,12 @@ use crate::JITTER_S;
 /// The frame-count rules in one place: rule E on, swap/fill min_run, the split gate (all `n_on`) and R1.
 /// `jump_rate` reads the stability check in time: (m/s, m/s) times the time since the last hit. `win_s` tolerates frames
 /// without a candidate: `n_on` hits whose span fits in `win_s` (None = consecutive only).
+///
+/// Slower than 1 Hz (little-core `ccnc_visiond`: 1.2-2.6 s per side) two more read the rules in time; both leave 1 Hz
+/// input as it was (frames <= 1.06 s apart there) and are off in `FRAMES`:
+/// * `jump_dt_max`: the jump limits stop growing past this interval (2.0 s: at most 4.0 / 2.8 m).
+/// * `rear_span_s`: LR/RR is also on once the proposed two-car split has been seen, unbroken, in `n_on` frames spanning
+///   this long. At 1 Hz the rear rule takes the third frame (2 s); at 2 s per side this is the second, not the 4 s third.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Timing {
     pub n_on: u32,
@@ -14,18 +20,31 @@ pub struct Timing {
     pub r1_gap_s: f64, // R1: distinct views at least this far apart
     pub r1_confirm: u32,
     pub r1_flip: u32,
+    pub jump_dt_max: Option<f64>,
+    pub rear_span_s: Option<f64>,
 }
 impl Timing {
     /// The rules as written for consecutive processed frames (stability 1.0 / 0.7 m per frame, R1 views 1.0 s apart).
-    pub const FRAMES: Timing = Timing { n_on: 2, win_s: None, jump_rate: None, r1_gap_s: 1.0, r1_confirm: 2, r1_flip: 4 };
-    /// 1 Hz recommendation (REPORT_1HZ_KO section 6): stability per second, R1 views one frame apart count.
-    pub const TIME_1HZ: Timing =
-        Timing { n_on: 2, win_s: None, jump_rate: Some((2.0, 1.4)), r1_gap_s: 1.0 - JITTER_S, r1_confirm: 2, r1_flip: 4 };
-    /// TIME_1HZ + '2 hits within 2 s' (one miss tolerated). Tested and not recommended.
-    pub const TIME_1HZ_WIN2: Timing =
-        Timing { n_on: 2, win_s: Some(2.0), jump_rate: Some((2.0, 1.4)), r1_gap_s: 1.0 - JITTER_S, r1_confirm: 2, r1_flip: 4 };
+    pub const FRAMES: Timing =
+        Timing { n_on: 2, win_s: None, jump_rate: None, r1_gap_s: 1.0, r1_confirm: 2, r1_flip: 4, jump_dt_max: None, rear_span_s: None };
+    /// 1 Hz recommendation (REPORT_1HZ_KO section 6): stability per second, R1 views one frame apart count; read in
+    /// time for slower cadences (t9f).
+    pub const TIME_1HZ: Timing = Timing {
+        n_on: 2,
+        win_s: None,
+        jump_rate: Some((2.0, 1.4)),
+        r1_gap_s: 1.0 - JITTER_S,
+        r1_confirm: 2,
+        r1_flip: 4,
+        jump_dt_max: Some(2.0),
+        rear_span_s: Some(2.0),
+    };
+    /// The 1 Hz rules before t9f (jump limits without a cap, LR/RR on the third frame only).
+    pub const TIME_1HZ_T9E: Timing = Timing { jump_dt_max: None, rear_span_s: None, ..Timing::TIME_1HZ };
+    /// TIME_1HZ_T9E + '2 hits within 2 s' (one miss tolerated). Tested and not recommended.
+    pub const TIME_1HZ_WIN2: Timing = Timing { win_s: Some(2.0), ..Timing::TIME_1HZ_T9E };
     pub fn rule_e(&self) -> RuleE {
-        RuleE::new(self.n_on, self.win_s, self.jump_rate)
+        RuleE { jump_dt_max: self.jump_dt_max, ..RuleE::new(self.n_on, self.win_s, self.jump_rate) }
     }
     pub fn split_gate(&self) -> SplitGate {
         SplitGate { rule: self.rule_e() }
@@ -74,6 +93,7 @@ pub struct RuleE {
     pub n_on: u32,
     pub win_s: Option<f64>,
     pub jump_rate: Option<(f64, f64)>,
+    pub jump_dt_max: Option<f64>,
     pub run: u32,
     pub reason: Reason,
     prev: Option<(f64, f64)>, // x, yc of the last accepted candidate
@@ -86,7 +106,11 @@ impl Default for RuleE {
 }
 impl RuleE {
     pub fn new(n_on: u32, win_s: Option<f64>, jump_rate: Option<(f64, f64)>) -> RuleE {
-        RuleE { n_on, win_s, jump_rate, run: 0, reason: Reason::NoCandidate, prev: None, hits: Vec::new() }
+        RuleE { n_on, win_s, jump_rate, jump_dt_max: None, run: 0, reason: Reason::NoCandidate, prev: None, hits: Vec::new() }
+    }
+    /// Capture time of the first hit counted in `run`.
+    pub fn first_hit(&self) -> Option<f64> {
+        self.hits.first().copied()
     }
     /// t: capture time of the frame in s (unused when both `win_s` and `jump_rate` are None).
     pub fn step(&mut self, c: Option<&Cand>, v_ego: f64, guard_ok: bool, extra_ok: bool, t: f64) -> bool {
@@ -115,6 +139,7 @@ impl RuleE {
                 None => (1.0, 0.7),
                 Some((kx, ky)) => {
                     let dt = t - self.hits.last().copied().unwrap_or(t);
+                    let dt = self.jump_dt_max.map_or(dt, |m| dt.min(m));
                     (kx * dt, ky * dt)
                 }
             };
