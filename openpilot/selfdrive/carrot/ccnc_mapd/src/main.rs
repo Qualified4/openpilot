@@ -171,6 +171,17 @@ mod tests {
     }
 
     #[test]
+    fn runs_below_plannerd_and_radard() {
+        let source = fs::read_to_string("../../../common/realtime.py").unwrap();
+        let ctrl_low: i32 = source
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("CTRL_LOW ="))
+            .and_then(|value| value.split_whitespace().next()?.parse().ok())
+            .unwrap();
+        assert_eq!(env!("MAPD_RT_PRIORITY").parse::<i32>().unwrap(), ctrl_low - 1);
+    }
+
+    #[test]
     fn opens_every_queue_with_cereal_size() {
         const HEADER_BYTES: u64 = 8 * (3 + 3 * 40); // msgq_header_t in msgq_repo/msgq/msgq.h
         let prefix = queue_prefix("mapd_queues");
