@@ -4,7 +4,7 @@
 //! says calibrated.
 //!
 //! Environment:
-//! * `CCNC_VISIOND_ASSETS`: directory with `yolox_tiny_dyn.onnx` (default `assets`).
+//! * `CCNC_VISIOND_ASSETS`: directory with `yolox_tiny_int8.onnx` (default `assets`).
 //! * `CCNC_VISIOND_ENGINE`: `ort` (default) or `tract` when built with the `tract` feature.
 //! * `ORT_DYLIB_PATH`: libonnxruntime.so for the `ort` backend.
 //! * `CCNC_VISIOND_HALT`: set by the launcher when the assets are missing or their sha256 differs. The process

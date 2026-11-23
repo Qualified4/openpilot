@@ -7,7 +7,9 @@ use ccnc_vision_msg::Calibration;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-pub const MODEL: &str = "yolox_tiny_dyn.onnx";
+/// YOLOX-tiny quantized to INT8 (QDQ, the output concat/reshape left in float: det-light 2026-11-23), for the side
+/// views and the full wide frame alike.
+pub const MODEL: &str = "yolox_tiny_int8.onnx";
 /// Map files for `Detector::fixed_maps` (replay checks against maps made offline).
 pub const MAPS: [&str; 2] = ["map_vL.bin", "map_vR.bin"];
 /// Side view detector input height and width. A 512x384 side view fills 416x312 of it.

@@ -21,7 +21,7 @@ def launcher(tmp_path):
   return binary, state, env
 
 
-ASSET_NAMES = ("yolox_tiny_dyn.onnx", "libonnxruntime.so.1.32.0")
+ASSET_NAMES = ("yolox_tiny_int8.onnx", "libonnxruntime.so.1.32.0")
 
 
 def make_assets(tmp_path, names=ASSET_NAMES):
