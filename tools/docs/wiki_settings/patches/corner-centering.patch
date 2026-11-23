@@ -1,0 +1,105 @@
+--- a/EN-Corner-Centering(0).md
++++ b/EN-Corner-Centering(0).md
+@@ -29,6 +29,32 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN LatCornerCenterBlend -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++In laneless driving, when the model path sits inside the lane center in a corner, the set share of that difference is added to the target curvature toward the lane center. The correction only points outward and changes by 20% every 0.05 s, so it turns on and off without a step.
++
++- **Higher:** Changes the target curvature to remove more of the inside bias.
++- **0:** Nothing is computed; behavior is unchanged.
++- **Conditions:** Acts only when both lane-line probabilities and standard deviations are good, the lane is 2.5–4.5 m wide and steady, the model follows the lane, corner lateral acceleration and curvature are large enough, and speed is above about 30 km/h.
++- **Pauses:** No correction during a lane change, automatic turn or turn signal and for 1 s afterward, during driver steering and for 0.5 s afterward, or when a moving radar vehicle or BSD is present in the adjacent lane on the corner outside.
++- **Scope:** Applies only to the laneless target curvature. It does not apply to the lane-mode path or to Volkswagen MEB.
++<!-- CARROT:SECTION:END BEHAVIOR -->
++
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### Usage
++
++Defaults to off. To try it, start low and check both whether the car still hugs the inside of corners and whether steering shakes. Return to `0` if anything is wrong.
++<!-- CARROT:SECTION:END USAGE -->
++
++<!-- CARROT:SECTION:BEGIN REFERENCE -->
++### Reference
++
++<!-- CARROT:NOTICE level="WARNING" -->
++> [!WARNING]
++> Experimental and not validated on a vehicle. It was checked only by replaying recorded drive logs as fixed input. 50% does not move the vehicle by 50%; the actual shift is smaller because the model pulls back.
++<!-- CARROT:NOTICE:END -->
++<!-- CARROT:SECTION:END REFERENCE -->
+ <!-- CARROT:MANUAL:END LatCornerCenterBlend -->
+ 
+ <!-- CARROT:SETTING:END LatCornerCenterBlend -->
+--- a/KO-코너-중앙-보정(0).md
++++ b/KO-코너-중앙-보정(0).md
+@@ -29,6 +29,32 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN LatCornerCenterBlend -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++레인리스 주행 중 코너에서 모델 경로가 차선 중앙보다 안쪽에 있으면, 그 차이의 설정 비율만큼 목표 곡률을 차선 중앙 쪽으로 더합니다. 보정은 바깥쪽 방향으로만 하며 0.05초마다 20%씩 바뀌어 계단 없이 켜지고 꺼집니다.
++
++- **높이면:** 안쪽 치우침을 더 많이 줄이도록 목표 곡률을 바꿉니다.
++- **0:** 계산하지 않으며 기존 동작과 같습니다.
++- **동작 조건:** 양쪽 차선 확률과 표준편차가 좋고, 차선 폭이 2.5~4.5m로 일정하고, 모델이 차선을 따르고, 코너 가로 가속도·곡률이 충분하고, 약 30km/h 이상일 때만 동작합니다.
++- **멈춤:** 차선 변경·자동 턴·방향지시등 중과 끝난 뒤 1초, 운전자 조향 중과 끝난 뒤 0.5초, 코너 바깥쪽 옆 차로에 움직이는 레이더 차량이나 BSD가 있을 때는 보정하지 않습니다.
++- **적용 범위:** 레인리스 목표 곡률에만 적용합니다. 레인모드 경로와 폭스바겐 MEB에는 적용하지 않습니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
++
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### 사용
++
++기본값은 꺼짐입니다. 켜려면 낮은 값부터 시험하고, 코너에서 차선 안쪽으로 붙는지와 조향 떨림을 함께 확인합니다. 이상하면 `0`으로 되돌립니다.
++<!-- CARROT:SECTION:END USAGE -->
++
++<!-- CARROT:SECTION:BEGIN REFERENCE -->
++### 참고
++
++<!-- CARROT:NOTICE level="WARNING" -->
++> [!WARNING]
++> 실차에서 검증하지 않은 시험 기능입니다. 기록된 주행 로그를 고정 입력으로 재생해서만 확인했습니다. 50%가 차량 위치를 50% 옮긴다는 뜻은 아니며, 실제 이동은 모델의 되당김 때문에 더 작습니다.
++<!-- CARROT:NOTICE:END -->
++<!-- CARROT:SECTION:END REFERENCE -->
+ <!-- CARROT:MANUAL:END LatCornerCenterBlend -->
+ 
+ <!-- CARROT:SETTING:END LatCornerCenterBlend -->
+--- a/ZH-弯道居中校正(0).md
++++ b/ZH-弯道居中校正(0).md
+@@ -29,6 +29,32 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN LatCornerCenterBlend -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++无车道线模式下，弯道中模型路径位于车道中心内侧时，按设定比例将该差值加到目标曲率上，使车辆朝车道中心校正。校正只朝外侧，每 0.05 秒变化 20%，开启和关闭时没有阶跃。
++
++- **调高：** 更多地减少内侧偏移。
++- **0：** 不进行计算，行为与原来相同。
++- **条件：** 仅在两侧车道线概率和标准差良好、车道宽 2.5~4.5 m 且稳定、模型沿车道行驶、弯道横向加速度和曲率足够、车速约 30 km/h 以上时工作。
++- **暂停：** 变道、自动转弯或转向灯期间及结束后 1 秒，驾驶员转向期间及结束后 0.5 秒，或弯道外侧相邻车道有移动的雷达车辆或 BSD 时不校正。
++- **范围：** 仅作用于无车道线目标曲率，不作用于车道模式路径和大众 MEB。
++<!-- CARROT:SECTION:END BEHAVIOR -->
++
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### 使用
++
++默认关闭。尝试时从低值开始，同时确认弯道中是否仍贴内侧以及转向是否抖动。如有异常请恢复为 `0`。
++<!-- CARROT:SECTION:END USAGE -->
++
++<!-- CARROT:SECTION:BEGIN REFERENCE -->
++### 参考
++
++<!-- CARROT:NOTICE level="WARNING" -->
++> [!WARNING]
++> 实验功能，未经实车验证，仅通过将记录的行车日志作为固定输入回放确认。50% 并不表示车辆位置移动 50%，由于模型会回拉，实际移动更小。
++<!-- CARROT:NOTICE:END -->
++<!-- CARROT:SECTION:END REFERENCE -->
+ <!-- CARROT:MANUAL:END LatCornerCenterBlend -->
+ 
+ <!-- CARROT:SETTING:END LatCornerCenterBlend -->
