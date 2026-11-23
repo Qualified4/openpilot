@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openpilot.cereal import messaging
+from openpilot.cereal import log, messaging
 from openpilot.common.params import Params
 from opendbc.can import CANPacker
 from opendbc.car.hyundai import ccnc_core_loader, hyundaicanfd as canfd
@@ -14,6 +14,7 @@ from opendbc.car.hyundai.tests.test_ccnc_lane_marking import marking
 
 NS = 1_000_000_000
 TICK = NS // 20
+STALE = 250_000_000
 
 
 def packet(stamp, *, generation=1, valid=True, occupied=True):
@@ -150,6 +151,37 @@ def test_corrupt_message_falls_back_without_exception(display, monkeypatch):  # 
     values = dict(send(frame))["CCNC_0x162"]
     assert canfd.ccnc_extension.state._rust_map_link.using_process == want_process
     assert values["FF_DETECT"] == (4 if want_process else 0)
+
+
+def test_latest_holds_the_bytes_as_received(monkeypatch):
+  from openpilot.selfdrive.car.card import CcncMapSubMaster
+
+  queue_dir = Path(tempfile.mkdtemp(prefix="msgq_map_bytes_", dir="/dev/shm"))
+  monkeypatch.setenv("OPENPILOT_PREFIX", queue_dir.name.removeprefix("msgq_"))
+  pub = messaging.pub_sock("customReserved3")
+  sm = CcncMapSubMaster()
+  # A message with far pointers: serializing it again would give other bytes.
+  event = log.Event.new_message(num_first_segment_words=1, logMonoTime=NS, valid=True)
+  payload = event.init("customReserved3")
+  payload.radarLogMonoTime, payload.generation, payload.valid = NS, 1, True
+  payload.init("slots", 5)
+  raw = event.to_bytes()
+  assert messaging.log_from_bytes(raw).as_builder().to_bytes() != raw
+  pub.send(raw)
+  sm.update(0)
+  assert sm.latest == (raw, NS)
+
+
+def test_same_message_is_decoded_once():
+  core = ccnc_core_loader.load()
+  link = core.MapLink()
+  raw = packet(NS)
+  # The link keeps the selection rules every tick while the message stays the same.
+  assert link.use_process(NS, raw, NS)
+  assert link.use_process(NS + STALE, raw, NS)
+  assert not link.use_process(NS + STALE + 1, raw, NS)
+  assert not link.use_process(NS + STALE + 1, b"broken", NS + STALE + 1)
+  assert not link.use_process(NS + STALE + 2, raw, NS + STALE + 2), "recovering after the gap"
 
 
 def test_bad_param_value_is_off(display, monkeypatch, tmp_path):  # noqa: F811

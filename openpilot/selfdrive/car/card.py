@@ -133,7 +133,7 @@ class CarSubMaster(messaging.SubMaster):
 
 
 class CcncMapSubMaster(messaging.SubMaster):
-  """Keep the latest CcncMap Event for Rust. A bad packet expires it immediately."""
+  """Keep the latest CcncMap Event, as received, for Rust. A bad packet expires it immediately."""
 
   def __init__(self):
     super().__init__(['customReserved3'])
@@ -141,15 +141,16 @@ class CcncMapSubMaster(messaging.SubMaster):
 
   def update(self, timeout: int = 0) -> None:
     try:
-      super().update(timeout)
+      raw, msgs = [], []
+      for sock in self.poller.poll(timeout) + [self.sock[s] for s in self.non_polled_services]:
+        raw.append(dat := sock.receive(non_blocking=True))
+        msgs.append(None if dat is None else messaging.log_from_bytes(dat))
+      self.update_msgs(time.monotonic(), msgs)
+      for dat, msg in zip(raw, msgs, strict=True):
+        if msg is not None:
+          self.latest = (dat, msg.logMonoTime) if msg.valid and msg.customReserved3.valid else (None, None)
     except Exception:
       self.latest = (None, None)
-
-  def update_msgs(self, cur_time, msgs):
-    super().update_msgs(cur_time, msgs)
-    for msg in msgs:
-      if msg is not None:
-        self.latest = (msg.as_builder().to_bytes(), msg.logMonoTime) if msg.valid and msg.customReserved3.valid else (None, None)
 
 
 class Car:

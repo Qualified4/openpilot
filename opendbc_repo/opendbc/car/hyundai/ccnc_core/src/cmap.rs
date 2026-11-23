@@ -23,6 +23,8 @@ fn valid_map(bytes: &[u8]) -> Option<MapOut> {
 #[pyclass]
 #[derive(Default)]
 pub(crate) struct MapLink {
+    /// The last message read and what it held: card hands the same message over at every tick until a new one comes.
+    decoded: Option<(Vec<u8>, Option<MapOut>)>,
     last: Option<(u64, u32)>,
     healthy_since: Option<u64>,
     recovering: bool,
@@ -44,11 +46,17 @@ impl MapLink {
 }
 
 impl MapLink {
+    fn read(&mut self, msg: &[u8]) -> Option<MapOut> {
+        if self.decoded.as_ref().is_none_or(|(bytes, _)| bytes.as_slice() != msg) {
+            self.decoded = Some((msg.to_vec(), valid_map(msg)));
+        }
+        self.decoded.as_ref().and_then(|(_, map)| *map)
+    }
+
     fn select(&mut self, now: u64, msg: Option<&[u8]>, stamp: Option<u64>) -> Option<MapOut> {
         let fresh = |time| now.checked_sub(time).is_some_and(|age| age <= STALE_NS);
-        let candidate = stamp
-            .filter(|stamp| fresh(*stamp))
-            .zip(msg.and_then(valid_map));
+        let map = msg.and_then(|msg| self.read(msg));
+        let candidate = stamp.filter(|stamp| fresh(*stamp)).zip(map);
         let Some((stamp, map)) = candidate.filter(|(stamp, map)| {
             self.last.is_none_or(|(last, _)| *stamp >= last)
                 && map.radar_log_mono_time <= *stamp
