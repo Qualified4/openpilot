@@ -183,6 +183,21 @@ impl Quiet {
 
 /// Stay alive and say so once a second: a restart would fail the same way, and the reason file tells the two
 /// apart from a crash.
+/// After the detector's first inference, whichever camera it was: catch any ORT worker thread created lazily then.
+fn recheck_threads(sched_cfg: &sched::Config, applied: &sched::Applied, done: &mut bool) {
+    if *done {
+        return;
+    }
+    let after = sched_cfg.apply_all_threads();
+    if after.threads_seen != applied.threads_seen {
+        eprintln!(
+            "ccnc_visiond: sched after first run active={} tasks={}/{}/{}",
+            after.active_cpus, after.policy_ok, after.affinity_ok, after.threads_seen,
+        );
+    }
+    *done = true;
+}
+
 fn halt(stage: &str, err: anyhow::Error, publisher: &Pub) -> io::Result<()> {
     let reason = format!("{stage}: {err:#}");
     eprintln!("ccnc_visiond: publishing stopped, {reason}");
@@ -305,7 +320,8 @@ fn run() -> io::Result<()> {
             eprintln!("ccnc_visiond: kind thread ended; road camera off until restart");
             front_pace = None;
         }
-        if let Some(pace) = front_pace {
+        // Road camera answers are placed with liveCalibration: none without it.
+        if let Some(pace) = front_pace.filter(|_| calibrated) {
             let now = clock_ns(libc::CLOCK_MONOTONIC);
             if now >= front_rest_until && gate.front_due(now, last_front, pace) {
                 if let Some(frame) = road.poll() {
@@ -321,6 +337,9 @@ fn run() -> io::Result<()> {
                     let started = Instant::now();
                     let found = detector.run_front(frame.layout, &frame.nv12);
                     last_front = Some(clock_ns(libc::CLOCK_MONOTONIC));
+                    if found.is_ok() {
+                        recheck_threads(&sched_cfg, &applied, &mut threads_rechecked);
+                    }
                     match found {
                         Ok(found) if !found.night => {
                             let (boot_now, mono_now) = (clock_ns(libc::CLOCK_BOOTTIME), clock_ns(libc::CLOCK_MONOTONIC));
@@ -403,17 +422,7 @@ fn run() -> io::Result<()> {
         let found = match detector.run(frame.layout, &frame.nv12, target) {
             Ok(found) => {
                 failures = 0;
-                if !threads_rechecked {
-                    // Catch any ORT worker thread created lazily on the first inference call.
-                    let after = sched_cfg.apply_all_threads();
-                    if after.threads_seen != applied.threads_seen {
-                        eprintln!(
-                            "ccnc_visiond: sched after first run active={} tasks={}/{}/{}",
-                            after.active_cpus, after.policy_ok, after.affinity_ok, after.threads_seen,
-                        );
-                    }
-                    threads_rechecked = true;
-                }
+                recheck_threads(&sched_cfg, &applied, &mut threads_rechecked);
                 found
             }
             Err(err) => {
