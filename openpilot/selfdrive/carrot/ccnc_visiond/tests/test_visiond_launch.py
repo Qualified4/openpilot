@@ -113,3 +113,39 @@ def test_enable_ccnc_visiond_conditions(tmp_path, monkeypatch):
     assert not enabled(True, make_params(stored), cp), stored
   failed.touch()
   assert not enabled(True, make_params(b"1"), cp)
+
+
+BUILT = LAUNCH.parent / "target/release/ccnc_visiond"
+
+
+@pytest.mark.skipif(not BUILT.is_file(), reason="needs cargo build --release")
+def test_missing_onnxruntime_halts_without_crash(launcher, tmp_path):
+  # The default build has only ort, so without CCNC_VISIOND_ENGINE it loads onnxruntime, finds none and halts.
+  _, state, env = launcher
+  prefix = f"visiond-launch-{os.getpid()}-{time.monotonic_ns()}"
+  shm = Path("/dev/shm") / f"msgq_{prefix}"
+  shm.mkdir()
+  env.pop("CCNC_VISIOND_ENGINE", None)
+  env.update(VISIOND_LAUNCH_BIN=str(BUILT), OPENPILOT_PREFIX=prefix, CCNC_VISIOND_ASSETS=str(tmp_path),
+             ORT_DYLIB_PATH=str(tmp_path / "missing" / "libonnxruntime.so"))
+  halted = state.with_suffix(".halted")
+  try:
+    with subprocess.Popen([LAUNCH], env=env, start_new_session=True, stderr=subprocess.DEVNULL) as proc:
+      try:
+        deadline = time.monotonic() + 5
+        while not halted.exists() and time.monotonic() < deadline:
+          time.sleep(0.02)
+        assert halted.read_text().startswith(f"load: loading {tmp_path / 'missing' / 'libonnxruntime.so'}")
+        time.sleep(0.3)
+        assert proc.poll() is None
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=3) == 0
+      finally:
+        if proc.poll() is None:
+          os.killpg(proc.pid, signal.SIGKILL)
+  finally:
+    for path in shm.iterdir():
+      path.unlink()
+    shm.rmdir()
+  assert not state.with_suffix(".failed").exists()
+  assert not state.with_suffix(".crashes").exists()

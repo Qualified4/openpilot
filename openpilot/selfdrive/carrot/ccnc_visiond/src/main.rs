@@ -1,11 +1,16 @@
 //! ccnc_visiond: vehicle boxes from the wide camera's side views while the car stands or creeps.
-//! Input: VisionIPC `wideRoad` and `carState.vEgo`. Output: one CcncVision (`customReserved4`) per processed frame.
+//! Input: VisionIPC `wideRoad`, `carState.vEgo` and `liveCalibration`. Output: one CcncVision (`customReserved4`)
+//! per processed frame. The side views are built from liveCalibration; nothing is processed before calibrationd
+//! says calibrated.
 //!
 //! Environment:
-//! * `CCNC_VISIOND_ASSETS`: directory with `yolox_tiny_dyn.onnx`, `map_vL.bin` and `map_vR.bin` (default `assets`).
-//! * `CCNC_VISIOND_ENGINE`: `ort` or `tract`. Needed while both backends are built in.
+//! * `CCNC_VISIOND_ASSETS`: directory with `yolox_tiny_dyn.onnx` (default `assets`).
+//! * `CCNC_VISIOND_ENGINE`: `ort` (default) or `tract` when built with the `tract` feature.
 //! * `ORT_DYLIB_PATH`: libonnxruntime.so for the `ort` backend.
+//! * `CCNC_VISIOND_FIXED_MAPS`: replay checks only. Directory with `map_vL.bin` and `map_vR.bin` used for every
+//!   frame instead of liveCalibration, which is then not needed.
 
+mod calib;
 mod detect;
 mod engine;
 mod gate;
@@ -14,6 +19,7 @@ mod nv12;
 mod pre;
 mod remap;
 mod vipc;
+mod wcam;
 mod yolox;
 
 use std::io;
@@ -26,6 +32,7 @@ use ccnc_vision_msg::{VisionBox, VisionOut};
 use stripnet::ipc::{Pub, Sub};
 
 const SPEED_SERVICE: &str = "carState";
+const CALIBRATION_SERVICE: &str = "liveCalibration";
 const CAMERA_SERVER: &str = "camerad";
 /// Sleep while the speed keeps the detector off.
 const IDLE: Duration = Duration::from_millis(100);
@@ -74,16 +81,9 @@ fn state_path() -> String {
     std::env::var("VISIOND_STATE").unwrap_or_else(|_| "/dev/shm/ccnc_visiond".into())
 }
 
-/// The backend named by CCNC_VISIOND_ENGINE, or the only one built in.
-fn engine_name() -> anyhow::Result<String> {
-    if let Ok(name) = std::env::var("CCNC_VISIOND_ENGINE") {
-        return Ok(name);
-    }
-    match (cfg!(feature = "ort"), cfg!(feature = "tract")) {
-        (true, false) => Ok("ort".into()),
-        (false, true) => Ok("tract".into()),
-        _ => anyhow::bail!("CCNC_VISIOND_ENGINE must name the backend (ort or tract)"),
-    }
+/// The backend named by CCNC_VISIOND_ENGINE, else ort (tract in a tract-only build).
+fn engine_name() -> String {
+    std::env::var("CCNC_VISIOND_ENGINE").unwrap_or_else(|_| if cfg!(feature = "ort") { "ort" } else { "tract" }.into())
 }
 
 /// Stay alive without publishing: a restart would fail the same way, and the reason file tells the two apart
@@ -110,9 +110,17 @@ fn run() -> io::Result<()> {
         return Ok(());
     }
     let speed = open(Sub::new(SPEED_SERVICE, true), SPEED_SERVICE)?;
+    // Every message is looked at: one with bad values is dropped, the one before it still counts.
+    let calibration = open(Sub::new(CALIBRATION_SERVICE, false), CALIBRATION_SERVICE)?;
     let publisher = open(Pub::new(ccnc_vision_msg::SERVICE), ccnc_vision_msg::SERVICE)?;
     let assets = PathBuf::from(std::env::var("CCNC_VISIOND_ASSETS").unwrap_or_else(|_| "assets".into()));
-    let loaded = engine_name().and_then(|engine| detect::Detector::load(&assets, &engine));
+    let loaded = detect::Detector::load(&assets, &engine_name()).and_then(|mut detector| {
+        if let Some(dir) = std::env::var_os("CCNC_VISIOND_FIXED_MAPS") {
+            detector.fixed_maps(std::path::Path::new(&dir))?;
+            eprintln!("ccnc_visiond: fixed side view maps from {}, liveCalibration not used", dir.to_string_lossy());
+        }
+        Ok(detector)
+    });
     let mut detector = match loaded {
         Ok(detector) => detector,
         Err(err) => {
@@ -122,13 +130,32 @@ fn run() -> io::Result<()> {
     };
     let mut camera = vipc::Client::new(vipc::Stream::Wide, CAMERA_SERVER);
     let mut gate = gate::Gate::default();
+    let mut calib = calib::Calib::default();
+    let mut rejected = None;
+    let mut calibrated = false;
     while !STOP.load(Ordering::Relaxed) {
         for bytes in speed.drain() {
             if let Some(v_ego) = ccnc_vision_msg::car_state_speed(&bytes) {
                 gate.speed(v_ego, clock_ns(libc::CLOCK_MONOTONIC));
             }
         }
-        match gate.phase(clock_ns(libc::CLOCK_MONOTONIC)) {
+        for bytes in calibration.drain() {
+            let Some(message) = ccnc_vision_msg::live_calibration(&bytes) else { continue };
+            match calib.update(&message) {
+                Ok(()) => rejected = None,
+                Err(why) => {
+                    if rejected != Some(why) {
+                        eprintln!("ccnc_visiond: liveCalibration ignored ({why:?}), the earlier values stay");
+                    }
+                    rejected = Some(why);
+                }
+            }
+        }
+        if calibrated != calib.usable().is_some() {
+            calibrated = !calibrated;
+            eprintln!("ccnc_visiond: liveCalibration {}", if calibrated { "calibrated" } else { "not calibrated, nothing is processed" });
+        }
+        match gate.phase(clock_ns(libc::CLOCK_MONOTONIC), detector.fixed() || calibrated) {
             gate::Phase::Closed => {
                 camera.discard();
                 sleep(IDLE);
@@ -138,6 +165,16 @@ fn run() -> io::Result<()> {
             // during the last sleep.
             gate::Phase::Opened => camera.discard(),
             gate::Phase::Open => {}
+        }
+        if let Some(took) = calib.usable().and_then(|c| detector.calibrate(c)) {
+            // Frames that came while building are skipped: the camera gives only the latest one.
+            let c = calib.usable().unwrap();
+            eprintln!(
+                "ccnc_visiond: side views built in {:.1} ms for rpyCalib {:?} wideFromDeviceEuler {:?}",
+                took.as_secs_f64() * 1000.0,
+                c.rpy_calib,
+                c.wide_from_device_euler
+            );
         }
         let started = Instant::now();
         let Some(frame) = camera.poll() else {
@@ -159,6 +196,7 @@ fn run() -> io::Result<()> {
             view: side.view(),
             processing_ms: started.elapsed().as_secs_f32() * 1000.0,
             night_corrected: found.night,
+            calibration: found.calibration,
             boxes: found
                 .boxes
                 .iter()
@@ -210,7 +248,15 @@ mod tests {
     fn largest_message_fits_the_queue() {
         // One box per detector output row at most. msgq asserts 3 * (8-byte length + message, 8-byte aligned) <= queue.
         let boxes = vec![VisionBox { xyxy: [0.0; 4], confidence: 1.0, class_id: 79, cut: false }; detect::MAX_BOXES];
-        let out = VisionOut { frame_id: 1, timestamp_sof: 1, view: ccnc_vision_msg::View::SideR, processing_ms: 1.0, night_corrected: true, boxes };
+        let out = VisionOut {
+            frame_id: 1,
+            timestamp_sof: 1,
+            view: ccnc_vision_msg::View::SideR,
+            processing_ms: 1.0,
+            night_corrected: true,
+            calibration: ccnc_vision_msg::Calibration::UNKNOWN,
+            boxes,
+        };
         let bytes = ccnc_vision_msg::encode(&out, 1).len() as u64;
         let queue = cereal_queue_sizes(&[ccnc_vision_msg::SERVICE])[0];
         assert!(3 * (8 + bytes.div_ceil(8) * 8) <= queue, "{bytes} bytes with {} boxes, queue {queue}", detect::MAX_BOXES);
@@ -224,8 +270,9 @@ mod tests {
         fs::create_dir(&path).unwrap();
         std::env::set_var("OPENPILOT_PREFIX", prefix);
         let _speed = Sub::new(SPEED_SERVICE, true).unwrap();
+        let _calibration = Sub::new(CALIBRATION_SERVICE, false).unwrap();
         let _publisher = Pub::new(ccnc_vision_msg::SERVICE).unwrap();
-        let services = [SPEED_SERVICE, ccnc_vision_msg::SERVICE];
+        let services = [SPEED_SERVICE, CALIBRATION_SERVICE, ccnc_vision_msg::SERVICE];
         let expected = cereal_queue_sizes(&services);
         for (name, queue_size) in services.into_iter().zip(expected) {
             assert_eq!(fs::metadata(path.join(name)).unwrap().len(), HEADER_BYTES + queue_size, "{name}");

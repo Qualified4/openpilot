@@ -6,8 +6,9 @@ publish = false
 description = "Camera vehicle detection process: wide side views at standstill, published as CcncVision"
 
 [features]
-# Both inference backends are built until one is chosen. CCNC_VISIOND_ENGINE picks one at run time.
-default = ["ort", "tract"]
+# onnxruntime is the backend (owner decision 2026-11-23, faster on the test machine). tract stays as an option:
+# a build with both picks one with CCNC_VISIOND_ENGINE, ort when it is not set.
+default = ["ort"]
 # onnxruntime, libonnxruntime.so loaded at run time (ORT_DYLIB_PATH).
 ort = ["dep:ort"]
 # Pure Rust.

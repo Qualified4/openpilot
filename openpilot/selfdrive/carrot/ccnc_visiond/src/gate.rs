@@ -48,8 +48,9 @@ impl Gate {
         self.speed.is_some_and(|(v_ego, at)| v_ego <= WIDE_MAX_SPEED && now_ns.saturating_sub(at) <= SPEED_TIMEOUT_NS)
     }
 
-    pub fn phase(&mut self, now_ns: u64) -> Phase {
-        let open = self.open(now_ns);
+    /// `ready`: the rest of what processing needs (the side views' calibration) is there.
+    pub fn phase(&mut self, now_ns: u64, ready: bool) -> Phase {
+        let open = ready && self.open(now_ns);
         let phase = match (self.was_open, open) {
             (_, false) => Phase::Closed,
             (false, true) => Phase::Opened,
@@ -97,15 +98,19 @@ mod tests {
     #[test]
     fn reports_each_opening_once() {
         let mut gate = Gate::default();
-        assert_eq!(gate.phase(0), Phase::Closed);
+        assert_eq!(gate.phase(0, true), Phase::Closed);
         gate.speed(5.0, 10);
-        assert_eq!(gate.phase(10), Phase::Closed);
+        assert_eq!(gate.phase(10, true), Phase::Closed);
         gate.speed(0.0, 20);
-        assert_eq!(gate.phase(20), Phase::Opened);
-        assert_eq!(gate.phase(30), Phase::Open);
-        assert_eq!(gate.phase(21 + SPEED_TIMEOUT_NS), Phase::Closed);
+        assert_eq!(gate.phase(20, true), Phase::Opened);
+        assert_eq!(gate.phase(30, true), Phase::Open);
+        assert_eq!(gate.phase(21 + SPEED_TIMEOUT_NS, true), Phase::Closed);
         gate.speed(0.0, 40 + SPEED_TIMEOUT_NS);
-        assert_eq!(gate.phase(40 + SPEED_TIMEOUT_NS), Phase::Opened);
+        assert_eq!(gate.phase(40 + SPEED_TIMEOUT_NS, true), Phase::Opened);
+        // Not ready (no calibration) closes it the same way, and it opens again once.
+        assert_eq!(gate.phase(41 + SPEED_TIMEOUT_NS, false), Phase::Closed);
+        assert_eq!(gate.phase(42 + SPEED_TIMEOUT_NS, true), Phase::Opened);
+        assert_eq!(gate.phase(43 + SPEED_TIMEOUT_NS, true), Phase::Open);
     }
 
     #[test]

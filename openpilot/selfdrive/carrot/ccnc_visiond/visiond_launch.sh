@@ -6,7 +6,7 @@ FAST_S=${VISIOND_LAUNCH_FAST_S:-60}
 CRASHES=3
 
 [[ ! -e "$STATE.failed" ]] || exit 0
-# A process that could not load its model or maps stays alive and writes the reason here. This is not a crash.
+# A process that could not load its model, onnxruntime or maps stays alive and writes the reason here. This is not a crash.
 rm -f "$STATE.halted"
 if [[ ! -x "$BIN" ]]; then
   echo "no binary $BIN" > "$STATE.failed"

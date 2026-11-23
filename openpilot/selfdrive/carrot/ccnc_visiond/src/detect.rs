@@ -1,11 +1,14 @@
 //! One camera frame to boxes of one side view: NV12 to BGR, night correction, side view, YOLOX.
 //! The steps and constants are those of the offline runner's wide configuration with a 416x320 input.
 
-use crate::{engine, gate::Side, night::Clahe, nv12::Layout, pre, remap, yolox};
+use crate::{engine, gate::Side, night::Clahe, nv12::Layout, pre, remap, wcam, yolox};
 use anyhow::{Context, Result};
+use ccnc_vision_msg::Calibration;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 pub const MODEL: &str = "yolox_tiny_dyn.onnx";
+/// Map files for `Detector::fixed_maps` (replay checks against maps made offline).
 pub const MAPS: [&str; 2] = ["map_vL.bin", "map_vR.bin"];
 pub const THREADS: usize = 2;
 /// Detector input height and width. A 512x384 side view fills 416x312 of it.
@@ -20,14 +23,23 @@ const CLAHE: Clahe = Clahe { clip: 3.0, tiles: 8 };
 /// A frame is night when the mean of the upper half (all channels) is below this.
 const NIGHT_MEAN: f64 = 35.0;
 
+/// Both side views' remap tables and what they were built from.
+struct Views {
+    maps: [remap::Map; 2],
+    calibration: Calibration,
+}
+
 pub struct Detector {
     engine: Box<dyn engine::Engine>,
-    maps: [remap::Map; 2],
+    views: Option<Views>,
+    /// The views came from map files and stay as they are.
+    fixed: bool,
 }
 
 pub struct Found {
     pub night: bool,
     pub boxes: Vec<yolox::Det>,
+    pub calibration: Calibration,
 }
 
 fn is_night(image: &pre::Img) -> bool {
@@ -38,27 +50,56 @@ fn is_night(image: &pre::Img) -> bool {
 
 impl Detector {
     pub fn load(assets: &Path, engine: &str) -> Result<Self> {
-        let path = |name: &str| assets.join(name).to_string_lossy().into_owned();
+        let model = assets.join(MODEL).to_string_lossy().into_owned();
+        let engine = engine::open(engine, &model, [1, 3, INPUT[0], INPUT[1]], THREADS)?;
+        Ok(Self { engine, views: None, fixed: false })
+    }
+
+    /// Use the map files in `dir` for every frame instead of building the views from liveCalibration.
+    pub fn fixed_maps(&mut self, dir: &Path) -> Result<()> {
+        let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
         let load_map = |name: &str| remap::Map::load(&path(name)).with_context(|| format!("map {}", path(name)));
-        let maps = [load_map(MAPS[0])?, load_map(MAPS[1])?];
-        let engine = engine::open(engine, &path(MODEL), [1, 3, INPUT[0], INPUT[1]], THREADS)?;
-        Ok(Self { engine, maps })
+        self.views = Some(Views { maps: [load_map(MAPS[0])?, load_map(MAPS[1])?], calibration: Calibration::UNKNOWN });
+        self.fixed = true;
+        Ok(())
+    }
+
+    /// Have views for `calibration`: built again when an angle moved by `calib::REBUILD_RAD` or more from the
+    /// one they were built with. Returns how long building took, if it did.
+    pub fn calibrate(&mut self, calibration: &Calibration) -> Option<Duration> {
+        if self.fixed || self.views.as_ref().is_some_and(|v| !crate::calib::needs_rebuild(&v.calibration, calibration)) {
+            return None;
+        }
+        let start = Instant::now();
+        let maps = std::thread::scope(|scope| {
+            let left = scope.spawn(|| wcam::side_map(calibration, 0));
+            let right = wcam::side_map(calibration, 1);
+            [left.join().expect("side map thread"), right]
+        });
+        self.views = Some(Views { maps, calibration: *calibration });
+        Some(start.elapsed())
+    }
+
+    pub fn fixed(&self) -> bool {
+        self.fixed
     }
 
     pub fn run(&mut self, layout: Layout, nv12: &[u8], side: Side) -> Result<Found> {
+        let Some(views) = &self.views else { anyhow::bail!("no side views yet") };
         let mut frame = layout.to_bgr(nv12)?;
         let night = is_night(&frame);
         if night {
             CLAHE.apply(&mut frame);
         }
-        let view = remap::remap_linear(&frame, &self.maps[side as usize]);
+        let view = remap::remap_linear(&frame, &views.maps[side as usize]);
+        let calibration = views.calibration;
         let [height, width] = INPUT;
         let (input, ratio) = pre::letterbox(&view, height, width, None);
         let (_, mut out) = self.engine.run([1, 3, height, width], pre::to_chw_raw(&input))?;
         yolox::grid_decode(&mut out, NUM_CLASSES, height, width);
         let candidates = yolox::candidates(&out, NUM_CLASSES, KEEP_SCORE);
         let keep = yolox::nms(&candidates, KEEP_SCORE, NMS_IOU);
-        Ok(Found { night, boxes: yolox::to_image(&candidates, &keep, ratio, view.w, view.h) })
+        Ok(Found { night, boxes: yolox::to_image(&candidates, &keep, ratio, view.w, view.h), calibration })
     }
 }
 

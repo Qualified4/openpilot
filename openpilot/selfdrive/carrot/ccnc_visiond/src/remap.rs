@@ -1,5 +1,5 @@
 //! Wide side view: OpenCV 5.1-compatible `cv2.remap(img, mx, my, INTER_LINEAR, borderValue=0)` with float maps
-//! precomputed offline (Virt.mx / Virt.my of wcam.py, yaw -+55 deg, 512x384).
+//! (Virt.mx / Virt.my of wcam.py, yaw -+55 deg, 512x384), built by `wcam::side_map` or read from a file.
 use crate::pre::Img;
 use anyhow::{bail, Result};
 
