@@ -246,7 +246,24 @@ struct CustomReserved3 @0xda96579883444c35 {
   }
 }
 
+# CcncVision, published by ccnc_visiond once per processed camera frame.
 struct CustomReserved4 @0x80ae746ee2596b11 {
+  frameId @0 :UInt32;
+  timestampSof @1 :UInt64;
+  view @2 :UInt8;  # 0 full, 1 cropFront, 2 sideL, 3 sideR. ccnc_visiond publishes 2 and 3.
+  processingMs @3 :Float32;  # Frame copy to publish.
+  nightCorrected @4 :Bool;
+  boxes @5 :List(Box);
+
+  struct Box {
+    x1 @0 :Float32;  # Pixels of the view named above.
+    y1 @1 :Float32;
+    x2 @2 :Float32;
+    y2 @3 :Float32;
+    confidence @4 :Float32;
+    classId @5 :UInt8;  # Detector class index (COCO).
+    cut @6 :Bool;  # The box bottom is the crop line of a cropped view.
+  }
 }
 
 struct CustomReserved5 @0xa5cd762cd951a455 {
