@@ -255,6 +255,9 @@ pub const ASK_ROUNDS: u32 = 2;
 /// (`N_FLIP`) or one answer of the confirmed shape comes, within `FLIP_ASK_S` of asking per vid.
 pub const RECHECK_S: f64 = 5.0;
 pub const RECHECK_ASK_S: f64 = 4.0;
+/// How long before the recheck started a road frame may be taken and still serve it. The recheck starts at a radar
+/// update; the newest road frame `ccnc_visiond` takes then was exposed (timestampSof) 30-80 ms earlier.
+const RECHECK_FRAME_LEAD_S: f64 = 0.15;
 pub const FLIP_ASK_S: f64 = 12.0;
 /// A radar update counts for this much asking at most (liveTracks is 20 Hz; a slot gap is not asking time).
 const ASK_STEP_S: f64 = 0.1;
@@ -390,7 +393,7 @@ impl Kinds {
 
     /// A road camera frame (its frame time) reached the map: it serves the recheck under way.
     pub fn front_frame(&mut self, time_ns: u64) {
-        if time_ns as f64 * 1e-9 >= self.recheck_from {
+        if time_ns as f64 * 1e-9 >= self.recheck_from - RECHECK_FRAME_LEAD_S {
             self.recheck_served = true;
         }
     }
@@ -512,6 +515,18 @@ mod tests {
         assert!(gap.wanted(5, 0.0));
         assert!(gap.wanted(5, 30.0));
         assert!(gap.asks[&5].asked_s <= ASK_STEP_S);
+    }
+
+    #[test]
+    fn a_road_frame_exposed_just_before_the_recheck_serves_it() {
+        let mut kinds = Kinds::default();
+        answer(&mut kinds, 1, 0.0, KIND_CAR, 0.9);
+        answer(&mut kinds, 1, 1.0, KIND_CAR, 0.9);
+        assert!(kinds.wanted(1, 6.0));
+        kinds.front_frame(5_700_000_000);
+        assert!(kinds.wanted(1, 6.5), "a frame from before the last radar update does not");
+        kinds.front_frame(5_940_000_000);
+        assert!(!kinds.wanted(1, 7.0), "the newest frame at the recheck's radar update, 60 ms older, does");
     }
 
     #[test]
