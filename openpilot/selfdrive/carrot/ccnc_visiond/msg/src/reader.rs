@@ -1,4 +1,4 @@
-//! A bounds-checked reader for the parts of a Cap'n Proto message this crate needs: structs and struct lists.
+//! A bounds-checked reader for the parts of a Cap'n Proto message this crate needs: structs, struct lists and f32 lists.
 //! Anything else (a capability, another list form, bytes that do not frame a message) reads as None.
 
 /// The segment count capnp's FlatArrayMessageReader takes (it rejects 512 or more).
@@ -149,6 +149,22 @@ impl<'a> Message<'a> {
             return Some(Struct::empty());
         }
         self.read_struct(parent.segment, parent.pointers + index)
+    }
+
+    /// A List(Float32). Another element size gives None.
+    pub fn f32_list(&self, parent: &Struct<'a>, index: usize) -> Option<Vec<f32>> {
+        if index >= parent.pointer_count {
+            return Some(Vec::new());
+        }
+        let Some((segment, start, tag)) = self.resolve(parent.segment, parent.pointers + index)? else {
+            return Some(Vec::new());
+        };
+        if tag & 3 != 1 || (tag >> 32) & 7 != 4 {
+            return None;
+        }
+        let count = (tag >> 35) as usize;
+        let bytes = self.segments[segment].get(start.checked_mul(8)?..start.checked_mul(8)?.checked_add(count.checked_mul(4)?)?)?;
+        Some(bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect())
     }
 
     /// A list of structs in the inline composite form. Other list forms give None.

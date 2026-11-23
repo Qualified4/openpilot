@@ -254,6 +254,15 @@ struct CustomReserved4 @0x80ae746ee2596b11 {
   processingMs @3 :Float32;  # Frame copy to publish.
   nightCorrected @4 :Bool;
   boxes @5 :List(Box);
+  # liveCalibration the side view of this frame was built from (radians, meters). The reader takes ground points
+  # with these, not with the latest liveCalibration. NaN when the process ran with fixed maps (replay checks only).
+  rpyCalibRoll @6 :Float32;
+  rpyCalibPitch @7 :Float32;
+  rpyCalibYaw @8 :Float32;
+  wideFromDeviceRoll @9 :Float32;
+  wideFromDevicePitch @10 :Float32;
+  wideFromDeviceYaw @11 :Float32;
+  height @12 :Float32;
 
   struct Box {
     x1 @0 :Float32;  # Pixels of the view named above.

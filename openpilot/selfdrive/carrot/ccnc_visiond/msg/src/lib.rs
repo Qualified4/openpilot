@@ -10,13 +10,16 @@ pub use reader::{Message, Struct};
 pub const SERVICE: &str = "customReserved4";
 
 /// `Event` union member numbers (the discriminant value at 16-bit offset 4 of the data section).
+pub const EVENT_LIVE_CALIBRATION: u16 = 18;
 pub const EVENT_CAR_STATE: u16 = 21;
 pub const EVENT_CCNC_VISION: u16 = 109;
+/// `LiveCalibrationData.Status.calibrated`.
+pub const CAL_STATUS_CALIBRATED: u16 = 1;
 
 const EVENT_WORDS: usize = 2;
 const EVENT_DISCRIMINANT_BYTE: usize = 8;
 const EVENT_INVALID_BIT: usize = 80;
-const VISION_WORDS: usize = 3;
+const VISION_WORDS: usize = 6;
 const BOX_WORDS: usize = 3;
 // Byte offsets inside the data section, except bits where named so.
 const FRAME_ID: usize = 0;
@@ -24,6 +27,13 @@ const VIEW: usize = 4;
 const NIGHT_CORRECTED_BIT: usize = 40;
 const TIMESTAMP_SOF: usize = 8;
 const PROCESSING_MS: usize = 16;
+/// rpyCalib roll, pitch, yaw, then wideFromDeviceEuler roll, pitch, yaw, then height: seven f32 from here.
+const CALIBRATION: usize = 20;
+// LiveCalibrationData: calStatus (enum, u16) in the data section, the rest are List(Float32) pointers.
+const CAL_STATUS: usize = 2;
+const CAL_RPY_CALIB: usize = 4;
+const CAL_WIDE_FROM_DEVICE_EULER: usize = 6;
+const CAL_HEIGHT: usize = 7;
 const BOX_XYXY: usize = 0;
 const BOX_CONFIDENCE: usize = 16;
 const BOX_CLASS_ID: usize = 20;
@@ -62,6 +72,38 @@ pub struct VisionBox {
     pub cut: bool,
 }
 
+/// The liveCalibration values a side view is built from (radians, meters).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Calibration {
+    pub rpy_calib: [f32; 3],
+    pub wide_from_device_euler: [f32; 3],
+    pub height: f32,
+}
+
+impl Calibration {
+    /// Marks a frame whose view did not come from a calibration (fixed maps of a replay check).
+    pub const UNKNOWN: Calibration = Calibration { rpy_calib: [f32::NAN; 3], wide_from_device_euler: [f32::NAN; 3], height: f32::NAN };
+
+    fn values(&self) -> [f32; 7] {
+        let [a, b, c] = self.rpy_calib;
+        let [d, e, f] = self.wide_from_device_euler;
+        [a, b, c, d, e, f, self.height]
+    }
+
+    fn from_values(v: [f32; 7]) -> Self {
+        Calibration { rpy_calib: [v[0], v[1], v[2]], wide_from_device_euler: [v[3], v[4], v[5]], height: v[6] }
+    }
+}
+
+/// A liveCalibration message as sent: the lists are not checked here.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveCalibration {
+    pub cal_status: u16,
+    pub rpy_calib: Vec<f32>,
+    pub wide_from_device_euler: Vec<f32>,
+    pub height: Vec<f32>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct VisionOut {
     pub frame_id: u32,
@@ -70,6 +112,8 @@ pub struct VisionOut {
     /// Frame copy to publish, in milliseconds.
     pub processing_ms: f32,
     pub night_corrected: bool,
+    /// What the frame's side view was built from.
+    pub calibration: Calibration,
     pub boxes: Vec<VisionBox>,
 }
 
@@ -103,6 +147,9 @@ pub fn encode(out: &VisionOut, log_mono_time: u64) -> Vec<u8> {
     vision[NIGHT_CORRECTED_BIT / 8] |= u8::from(out.night_corrected) << (NIGHT_CORRECTED_BIT % 8);
     put(vision, TIMESTAMP_SOF, out.timestamp_sof.to_le_bytes());
     put(vision, PROCESSING_MS, out.processing_ms.to_le_bytes());
+    for (k, value) in out.calibration.values().iter().enumerate() {
+        put(vision, CALIBRATION + 4 * k, value.to_le_bytes());
+    }
     let list_pointer = 1u64 | (7 << 32) | ((list_words as u64) << 35);
     put(vision, VISION_WORDS * 8, list_pointer.to_le_bytes());
 
@@ -147,6 +194,7 @@ pub fn decode(bytes: &[u8]) -> Option<(u64, VisionOut)> {
             view: View::from_wire(vision.u8_at(VIEW))?,
             processing_ms: vision.f32_at(PROCESSING_MS),
             night_corrected: vision.bit(NIGHT_CORRECTED_BIT),
+            calibration: Calibration::from_values(std::array::from_fn(|k| vision.f32_at(CALIBRATION + 4 * k))),
             boxes,
         },
     ))
@@ -162,6 +210,22 @@ pub fn car_state_speed(bytes: &[u8]) -> Option<f32> {
     Some(message.struct_pointer(&event, 0)?.f32_at(0))
 }
 
+/// `liveCalibration` of a valid liveCalibration Event.
+pub fn live_calibration(bytes: &[u8]) -> Option<LiveCalibration> {
+    let message = Message::new(bytes)?;
+    let event = message.root()?;
+    if event.u16_at(EVENT_DISCRIMINANT_BYTE) != EVENT_LIVE_CALIBRATION || event.bit(EVENT_INVALID_BIT) {
+        return None;
+    }
+    let calibration = message.struct_pointer(&event, 0)?;
+    Some(LiveCalibration {
+        cal_status: calibration.u16_at(CAL_STATUS),
+        rpy_calib: message.f32_list(&calibration, CAL_RPY_CALIB)?,
+        wide_from_device_euler: message.f32_list(&calibration, CAL_WIDE_FROM_DEVICE_EULER)?,
+        height: message.f32_list(&calibration, CAL_HEIGHT)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +237,7 @@ mod tests {
             view: View::SideR,
             processing_ms: 612.25,
             night_corrected: true,
+            calibration: Calibration { rpy_calib: [1e-5, -0.0106, 0.004], wide_from_device_euler: [-6.5e-7, -0.0098, -0.018], height: 1.2228 },
             boxes: (0..boxes)
                 .map(|i| VisionBox {
                     xyxy: [0.5 + i as f32, 12.3, 511.9, 384.0],
@@ -194,6 +259,9 @@ mod tests {
         }
         let day = VisionOut { view: View::SideL, night_corrected: false, ..sample(1) };
         assert_eq!(decode(&encode(&day, 0)), Some((0, day)));
+        let fixed = VisionOut { calibration: Calibration::UNKNOWN, ..sample(1) };
+        let (_, back) = decode(&encode(&fixed, 0)).unwrap();
+        assert!(back.calibration.values().iter().all(|v| v.is_nan()));
     }
 
     #[test]
@@ -227,6 +295,46 @@ mod tests {
         put(&mut bytes, 32, struct_pointer(1, 0).to_le_bytes());
         put(&mut bytes, 40, speed.to_le_bytes());
         bytes
+    }
+
+    /// Root pointer, Event, LiveCalibrationData (2 data words, 8 pointers), then each list: a pointer to a
+    /// List(Float32) is element size 4 with the element count.
+    fn live_calibration_event(valid: bool, status: u16, lists: [&[f32]; 3]) -> Vec<u8> {
+        let list_words: Vec<usize> = lists.iter().map(|l| l.len().div_ceil(2)).collect();
+        let words = 1 + 3 + 10 + list_words.iter().sum::<usize>();
+        let mut bytes = vec![0; 8 * (words + 1)];
+        put(&mut bytes, 4, (words as u32).to_le_bytes());
+        put(&mut bytes, 8, struct_pointer(EVENT_WORDS, 1).to_le_bytes());
+        put(&mut bytes, 16 + EVENT_DISCRIMINANT_BYTE, EVENT_LIVE_CALIBRATION.to_le_bytes());
+        bytes[16 + EVENT_INVALID_BIT / 8] = u8::from(!valid) << (EVENT_INVALID_BIT % 8);
+        put(&mut bytes, 32, struct_pointer(2, 8).to_le_bytes());
+        put(&mut bytes, 40 + CAL_STATUS, status.to_le_bytes());
+        // Word indices count the 8-byte segment table as word 0: the struct ends at word 14, the lists follow.
+        let mut at = 15;
+        for (list, pointer) in lists.iter().zip([CAL_RPY_CALIB, CAL_WIDE_FROM_DEVICE_EULER, CAL_HEIGHT]) {
+            let pointer_word = 7 + pointer;
+            let offset = (at - pointer_word - 1) as u64;
+            put(&mut bytes, 8 * pointer_word, (1 | (offset << 2) | (4 << 32) | ((list.len() as u64) << 35)).to_le_bytes());
+            for (k, value) in list.iter().enumerate() {
+                put(&mut bytes, 8 * at + 4 * k, value.to_le_bytes());
+            }
+            at += list.len().div_ceil(2);
+        }
+        bytes
+    }
+
+    #[test]
+    fn live_calibration_reads_the_lists() {
+        let rpy: &[f32] = &[1e-5, -0.0106, 0.004];
+        let wide: &[f32] = &[-6.5e-7, -0.0098, -0.018];
+        let bytes = live_calibration_event(true, CAL_STATUS_CALIBRATED, [rpy, wide, &[1.2228]]);
+        let want = LiveCalibration { cal_status: 1, rpy_calib: rpy.to_vec(), wide_from_device_euler: wide.to_vec(), height: vec![1.2228] };
+        assert_eq!(live_calibration(&bytes), Some(want));
+        assert_eq!(live_calibration(&live_calibration_event(true, 3, [&[], wide, &[]])).unwrap().rpy_calib, Vec::<f32>::new());
+        assert_eq!(live_calibration(&live_calibration_event(false, 1, [rpy, wide, &[1.0]])), None);
+        assert_eq!(live_calibration(&encode(&sample(1), 0)), None);
+        let truncated = &bytes[..bytes.len() - 8];
+        assert_eq!(live_calibration(truncated), None);
     }
 
     #[test]
