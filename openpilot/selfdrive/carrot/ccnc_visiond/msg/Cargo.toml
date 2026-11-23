@@ -1,0 +1,8 @@
+[package]
+name = "ccnc_vision_msg"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "CcncVision (customReserved4) encode and decode, shared by ccnc_visiond and its readers"
+
+[dependencies]

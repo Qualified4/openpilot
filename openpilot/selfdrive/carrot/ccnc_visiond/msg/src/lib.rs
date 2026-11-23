@@ -1,0 +1,239 @@
+//! CcncVision as a cereal Event (`customReserved4`), written and read without a compiled schema.
+//!
+//! `ccnc_visiond` encodes with this crate and the reader side decodes with it, so both use the offsets below.
+//! They are the positions Cap'n Proto assigns to `CustomReserved4` in `openpilot/cereal/custom.capnp`.
+
+mod reader;
+
+pub use reader::{Message, Struct};
+
+pub const SERVICE: &str = "customReserved4";
+
+/// `Event` union member numbers (the discriminant value at 16-bit offset 4 of the data section).
+pub const EVENT_CAR_STATE: u16 = 21;
+pub const EVENT_CCNC_VISION: u16 = 109;
+
+const EVENT_WORDS: usize = 2;
+const EVENT_DISCRIMINANT_BYTE: usize = 8;
+const EVENT_INVALID_BIT: usize = 80;
+const VISION_WORDS: usize = 3;
+const BOX_WORDS: usize = 3;
+// Byte offsets inside the data section, except bits where named so.
+const FRAME_ID: usize = 0;
+const VIEW: usize = 4;
+const NIGHT_CORRECTED_BIT: usize = 40;
+const TIMESTAMP_SOF: usize = 8;
+const PROCESSING_MS: usize = 16;
+const BOX_XYXY: usize = 0;
+const BOX_CONFIDENCE: usize = 16;
+const BOX_CLASS_ID: usize = 20;
+const BOX_CUT_BIT: usize = 168;
+
+/// The image a box is measured in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum View {
+    /// The whole road camera frame. Reserved for the front detector.
+    Full = 0,
+    /// The road camera frame cropped above the bonnet. Reserved for the front detector.
+    CropFront = 1,
+    /// Wide camera, virtual view to the left (512x384).
+    SideL = 2,
+    /// Wide camera, virtual view to the right (512x384).
+    SideR = 3,
+}
+
+impl View {
+    fn from_wire(value: u8) -> Option<Self> {
+        [Self::Full, Self::CropFront, Self::SideL, Self::SideR]
+            .into_iter()
+            .find(|view| *view as u8 == value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VisionBox {
+    /// x1, y1, x2, y2 in pixels of the view.
+    pub xyxy: [f32; 4],
+    pub confidence: f32,
+    /// Detector class index (COCO).
+    pub class_id: u8,
+    /// The box bottom is the crop line of a cropped view. Side views are not cropped.
+    pub cut: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VisionOut {
+    pub frame_id: u32,
+    pub timestamp_sof: u64,
+    pub view: View,
+    /// Frame copy to publish, in milliseconds.
+    pub processing_ms: f32,
+    pub night_corrected: bool,
+    pub boxes: Vec<VisionBox>,
+}
+
+fn struct_pointer(data_words: usize, pointers: usize) -> u64 {
+    ((data_words as u64) << 32) | ((pointers as u64) << 48)
+}
+
+fn put<const N: usize>(bytes: &mut [u8], at: usize, value: [u8; N]) {
+    bytes[at..at + N].copy_from_slice(&value);
+}
+
+pub fn encode(out: &VisionOut, log_mono_time: u64) -> Vec<u8> {
+    // One segment: root pointer, Event, CcncVision, then the inline-composite box list.
+    const EVENT: usize = 2;
+    const VISION: usize = EVENT + EVENT_WORDS + 1;
+    const LIST: usize = VISION + VISION_WORDS + 1;
+    let list_words = out.boxes.len() * BOX_WORDS;
+    let words = LIST + 1 + list_words;
+    let mut bytes = vec![0; words * 8];
+    put(&mut bytes, 4, ((words - 1) as u32).to_le_bytes());
+    put(&mut bytes, 8, struct_pointer(EVENT_WORDS, 1).to_le_bytes());
+
+    let event = &mut bytes[EVENT * 8..VISION * 8];
+    put(event, 0, log_mono_time.to_le_bytes());
+    put(event, EVENT_DISCRIMINANT_BYTE, EVENT_CCNC_VISION.to_le_bytes());
+    put(event, EVENT_WORDS * 8, struct_pointer(VISION_WORDS, 1).to_le_bytes());
+
+    let vision = &mut bytes[VISION * 8..LIST * 8];
+    put(vision, FRAME_ID, out.frame_id.to_le_bytes());
+    vision[VIEW] = out.view as u8;
+    vision[NIGHT_CORRECTED_BIT / 8] |= u8::from(out.night_corrected) << (NIGHT_CORRECTED_BIT % 8);
+    put(vision, TIMESTAMP_SOF, out.timestamp_sof.to_le_bytes());
+    put(vision, PROCESSING_MS, out.processing_ms.to_le_bytes());
+    let list_pointer = 1u64 | (7 << 32) | ((list_words as u64) << 35);
+    put(vision, VISION_WORDS * 8, list_pointer.to_le_bytes());
+
+    let tag = struct_pointer(BOX_WORDS, 0) | ((out.boxes.len() as u64) << 2);
+    put(&mut bytes, LIST * 8, tag.to_le_bytes());
+    for (i, vision_box) in out.boxes.iter().enumerate() {
+        let start = (LIST + 1 + i * BOX_WORDS) * 8;
+        let dst = &mut bytes[start..start + BOX_WORDS * 8];
+        for (k, value) in vision_box.xyxy.iter().enumerate() {
+            put(dst, BOX_XYXY + 4 * k, value.to_le_bytes());
+        }
+        put(dst, BOX_CONFIDENCE, vision_box.confidence.to_le_bytes());
+        dst[BOX_CLASS_ID] = vision_box.class_id;
+        dst[BOX_CUT_BIT / 8] |= u8::from(vision_box.cut) << (BOX_CUT_BIT % 8);
+    }
+    bytes
+}
+
+/// The Event's `logMonoTime` and CcncVision. None for another Event member, an invalid Event or a malformed message.
+pub fn decode(bytes: &[u8]) -> Option<(u64, VisionOut)> {
+    let message = Message::new(bytes)?;
+    let event = message.root()?;
+    if event.u16_at(EVENT_DISCRIMINANT_BYTE) != EVENT_CCNC_VISION || event.bit(EVENT_INVALID_BIT) {
+        return None;
+    }
+    let vision = message.struct_pointer(&event, 0)?;
+    let boxes = message
+        .struct_list(&vision, 0)?
+        .iter()
+        .map(|b| VisionBox {
+            xyxy: std::array::from_fn(|k| b.f32_at(BOX_XYXY + 4 * k)),
+            confidence: b.f32_at(BOX_CONFIDENCE),
+            class_id: b.u8_at(BOX_CLASS_ID),
+            cut: b.bit(BOX_CUT_BIT),
+        })
+        .collect();
+    Some((
+        event.u64_at(0),
+        VisionOut {
+            frame_id: vision.u32_at(FRAME_ID),
+            timestamp_sof: vision.u64_at(TIMESTAMP_SOF),
+            view: View::from_wire(vision.u8_at(VIEW))?,
+            processing_ms: vision.f32_at(PROCESSING_MS),
+            night_corrected: vision.bit(NIGHT_CORRECTED_BIT),
+            boxes,
+        },
+    ))
+}
+
+/// `carState.vEgo` of a valid carState Event.
+pub fn car_state_speed(bytes: &[u8]) -> Option<f32> {
+    let message = Message::new(bytes)?;
+    let event = message.root()?;
+    if event.u16_at(EVENT_DISCRIMINANT_BYTE) != EVENT_CAR_STATE || event.bit(EVENT_INVALID_BIT) {
+        return None;
+    }
+    Some(message.struct_pointer(&event, 0)?.f32_at(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(boxes: usize) -> VisionOut {
+        VisionOut {
+            frame_id: 0x8123_4567,
+            timestamp_sof: 0xfedc_ba98_7654_3210,
+            view: View::SideR,
+            processing_ms: 612.25,
+            night_corrected: true,
+            boxes: (0..boxes)
+                .map(|i| VisionBox {
+                    xyxy: [0.5 + i as f32, 12.3, 511.9, 384.0],
+                    confidence: 0.9871,
+                    class_id: [2, 7, 79][i % 3],
+                    cut: i % 2 == 1,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn decode_returns_what_encode_was_given() {
+        for boxes in [0, 1, 2, 37] {
+            let out = sample(boxes);
+            let bytes = encode(&out, 123_456_789);
+            assert_eq!(bytes.len() % 8, 0);
+            assert_eq!(decode(&bytes), Some((123_456_789, out)));
+        }
+        let day = VisionOut { view: View::SideL, night_corrected: false, ..sample(1) };
+        assert_eq!(decode(&encode(&day, 0)), Some((0, day)));
+    }
+
+    #[test]
+    fn decode_rejects_other_or_damaged_messages() {
+        let bytes = encode(&sample(2), 1);
+        for cut in [0, 7, 8, bytes.len() - 8, bytes.len() - 1] {
+            assert_eq!(decode(&bytes[..cut]), None, "truncated to {cut}");
+        }
+        let mut other = bytes.clone();
+        other[16 + EVENT_DISCRIMINANT_BYTE] = 108;
+        assert_eq!(decode(&other), None);
+        let mut invalid = bytes.clone();
+        invalid[16 + EVENT_INVALID_BIT / 8] |= 1 << (EVENT_INVALID_BIT % 8);
+        assert_eq!(decode(&invalid), None);
+        let mut view = bytes.clone();
+        view[(2 + EVENT_WORDS + 1) * 8 + VIEW] = 4;
+        assert_eq!(decode(&view), None);
+        let mut list = bytes;
+        // The list claims more words than the segment holds.
+        list[(2 + EVENT_WORDS + 1 + VISION_WORDS) * 8 + 4] = 0xff;
+        assert_eq!(decode(&list), None);
+    }
+
+    fn car_state_event(discriminant: u16, valid: bool, speed: f32) -> Vec<u8> {
+        // Root pointer, Event (2 data words, 1 pointer), CarState with one data word.
+        let mut bytes = vec![0; 8 * 6];
+        put(&mut bytes, 4, 5u32.to_le_bytes());
+        put(&mut bytes, 8, struct_pointer(EVENT_WORDS, 1).to_le_bytes());
+        put(&mut bytes, 16 + EVENT_DISCRIMINANT_BYTE, discriminant.to_le_bytes());
+        bytes[16 + EVENT_INVALID_BIT / 8] = u8::from(!valid) << (EVENT_INVALID_BIT % 8);
+        put(&mut bytes, 32, struct_pointer(1, 0).to_le_bytes());
+        put(&mut bytes, 40, speed.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn car_state_speed_needs_a_valid_car_state() {
+        assert_eq!(car_state_speed(&car_state_event(EVENT_CAR_STATE, true, 2.5)), Some(2.5));
+        assert_eq!(car_state_speed(&car_state_event(EVENT_CAR_STATE, false, 2.5)), None);
+        assert_eq!(car_state_speed(&car_state_event(EVENT_CCNC_VISION, true, 2.5)), None);
+        assert_eq!(car_state_speed(&[]), None);
+    }
+}

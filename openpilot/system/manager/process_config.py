@@ -123,6 +123,12 @@ def enable_ccnc_mapd(started: bool, params: Params, CP: car.CarParams) -> bool:
   except (KjException, TypeError, ValueError):
     return False
 
+CCNC_VISIOND_FAILED = "/dev/shm/ccnc_visiond.failed"
+
+def enable_ccnc_visiond(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # 1 is the only mode. Any other stored value keeps the process off.
+  return started and params.get("CcncVisionProcess") == 1 and not os.path.exists(CCNC_VISIOND_FAILED)
+
 def cluster_hud_active(params: Params) -> bool:
   try:
     return params.get_int("ClusterHud") == 1
@@ -194,6 +200,7 @@ procs = [
   PythonProcess("radard", "openpilot.selfdrive.carrot.radar.radard_dpath", only_onroad),
   PythonProcess("radarcan", "openpilot.selfdrive.carrot.radar.radarcan", only_onroad),
   NativeProcess("ccnc_mapd", "openpilot/selfdrive/carrot/ccnc_mapd", ["./mapd_launch.sh"], enable_ccnc_mapd),
+  NativeProcess("ccnc_visiond", "openpilot/selfdrive/carrot/ccnc_visiond", ["./visiond_launch.sh"], enable_ccnc_visiond),
   PythonProcess("hardwared", "openpilot.system.hardware.hardwared", always_run),
   PythonProcess("modem", "openpilot.system.hardware.tici.modem", always_run, enabled=TICI and HARDWARE.get_device_type() != "tici"),
   PythonProcess("tombstoned", "openpilot.system.tombstoned", always_run, enabled=not PC),
