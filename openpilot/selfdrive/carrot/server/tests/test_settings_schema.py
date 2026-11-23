@@ -27,6 +27,7 @@ PARAMS_KEYS_PATH = Path(__file__).resolve().parents[4] / "common" / "params_keys
 KNOWN_DISPLAY_UNITS = {"raw", "speedKph", "distanceCm", "timeSec", "timeMs", "timeMin", "percent", "degree"}
 KNOWN_CONTROL_KINDS = {"toggle", "segmented", "select", "slider"}
 KNOWN_RISK_LEVELS = {"high", "medium"}
+CCNC_HDA1_ONLY = {"CcncExtendedDisplay", "CcncMapProcess", "CcncVisionProcess"}
 
 
 @pytest.fixture(scope="module")
@@ -355,7 +356,7 @@ def test_fixed_tuning_catalog_hides_longitudinal_pid_settings(settings, brand):
     for name in section["items"]
   }
 
-  assert hidden_names == hidden | {"CcncExtendedDisplay"}
+  assert hidden_names == hidden | CCNC_HDA1_ONLY
   assert hidden.isdisjoint(visible_names)
   assert hidden.isdisjoint(menu_names)
   assert all(
@@ -373,7 +374,7 @@ def test_other_brands_keep_longitudinal_pid_settings(settings):
   )
   visible_names = {item["name"] for items in filtered_groups.values() for item in items}
 
-  assert hidden_names == {"CcncExtendedDisplay"}
+  assert hidden_names == CCNC_HDA1_ONLY
   assert {"LongTuningKpV", "LongTuningKiV", "LongTuningKf"} <= visible_names
 
 
@@ -429,7 +430,7 @@ def test_ray_pedal_catalog_uses_identified_capability(settings, fingerprint, ped
   assert tuning <= {item["name"] for items in groups.values() for item in items}
   assert all(group["count"] == sum(not item.get("detail_parent") and not item.get("search_only")
                                   for item in filtered[group["group"]]) for group in counts)
-  assert hidden == {"CcncExtendedDisplay"} | (set() if expected else tuning)
+  assert hidden == CCNC_HDA1_ONLY | (set() if expected else tuning)
 
 
 @pytest.mark.parametrize("car_params", [None, b"invalid"])

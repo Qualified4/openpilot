@@ -19,7 +19,8 @@ class CcncCatalogTest(unittest.TestCase):
     self.assertEqual(len(result.pages), len(settings) * 3 + 2)
     params = {item["name"]: item for item in json.loads(CATALOG.read_text(encoding="utf-8"))["params"]}
     self.assertEqual({key for key in params if key.startswith("Ccnc")},
-                     {"CcncClusterDisplay", "CcncExtendedDisplay", "CcncTrafficBackground"})
+                     {"CcncClusterDisplay", "CcncExtendedDisplay", "CcncMapProcess", "CcncVisionProcess",
+                      "CcncTrafficBackground"})
     key = "CcncExtendedDisplay"
     setting = params[key]
     self.assertEqual((setting["control"], setting["min"], setting["max"], setting["default"]), ("toggle", 0, 1, 0))

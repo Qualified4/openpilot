@@ -270,7 +270,7 @@ For Hyundai/Kia CANFD openpilot longitudinal control, aReqRaw and aReqValue beco
 
 ## Vehicle and hardware
 
-This category contains 37 settings, including one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. Indicator control and the CCNC display settings, including lane type and color display, are described below.
+This category contains 39 settings, including one search-only driver-monitoring exception. Set car, harness and device options to match your vehicle and hardware. Indicator control and the CCNC display settings, including lane type and color display, are described below.
 
 | Group | Parameters | Purpose |
 |---|---|---|
@@ -279,6 +279,8 @@ This category contains 37 settings, including one search-only driver-monitoring 
 | CAN FD/HDA | `CanfdHDA2`, `HyundaiCanfdClusterDirectTx`, `CanfdDebug`, `HDPuse` | HDA2 selection, cluster direct send, CAN FD diagnostics, and HDP |
 | [CCNC display](#ccnc-display) | `CcncClusterDisplay` | CCNC cluster stock-style display · Lane hiding, dashed lines, lane highlight, lead ring, popups, alert texts and HDP icon; default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncExtendedDisplay` | CCNC extended display (HDA1) · Combined setting · default off |
+| [CCNC display](#ccnc-map-process) | `CcncMapProcess` | CCNC radar map process (HDA1, trial) · Extended-display vehicle positions from a separate radar-map process · default off |
+| [CCNC display](#ccnc-vision-process) | `CcncVisionProcess` | CCNC camera vehicle detection (HDA1, trial) · Side-car detection and lead-car kind · needs the map process · default off |
 | [CCNC display](#ccnc-display) | `CcncTrafficBackground` | CCNC stop/go background · Red (5) while stopping or stopped, green (8) for 2.5 s when pulling away from a stop; default ON (1). Unverified on the Sonata; turn off if not shown |
 | Radar | `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC radar, front-track orientation, corner radar, and Carrot Radar processing and cut-in sensitivity |
 | Driver monitoring | `DriverMonitoringEnabled` (search only), `DriverMonitoringMode`, `CarrotVisionEnabled`, `MuteDoor`, `MuteSeatbelt` | Driver monitoring and selected vehicle alerts |
@@ -359,6 +361,29 @@ Upgrading carries the setting forward after the vehicle is confirmed if all seve
 Lane line type and color recognition use a separate Python process by default.
 
 Device compute (average per cluster update): Off about 0.9 ms, On about 2.4 ms (about 3.1 ms with many vehicles). Lane type recognition runs in a separate process at about 14.7 ms per frame.
+
+<a id="ccnc-map-process"></a>
+#### CCNC radar map process (HDA1, trial)
+
+Off by default. While extended display is on, the cluster's vehicle positions come from the radar map built by a separate process (core 4). If the map is late or stops, the cluster falls back to the existing display. Display only; ACC, braking and steering are unaffected.
+
+- Works only while the internal comparison value `CcncPosDisplayMode` is 1. That value is not in the settings screen.
+- Applies within about 1 s, without restarting the car. Turning it on while driving starts the process; turning it off stops it.
+- If the process dies within 60 s of starting, or dies three times, it stays off until the device reboots.
+
+Device compute: about 13 ms/s at standstill. Values while driving are unverified.
+
+<a id="ccnc-vision-process"></a>
+#### CCNC camera vehicle detection (HDA1, trial)
+
+Off by default. Works only while the [CCNC radar map process](#ccnc-map-process) runs. Display only; ACC, braking and steering are unaffected.
+
+- While stopped or creeping (about 11 km/h or slower), finds cars alongside with the wide camera.
+- While a radar car ahead has no confirmed kind, classifies it (car, truck or bus) from the road camera and shows that shape on the cluster.
+- Runs on little cores 0-2 at the lowest priority and stays idle when the model files are not on the device.
+- Applies within about 1 s, without restarting the car.
+
+Device compute (at standstill): median about 0.42 s per frame, about 1.65 little cores in total. Values while driving are unverified.
 
 #### CCNC stop/go background
 

@@ -274,7 +274,7 @@ VW MEB(ID.4 포함)에도 수동 조향비와 학습 비율이 적용됩니다. 
 
 ## 차량·하드웨어
 
-차량·하드웨어에는 37개 항목이 있습니다(검색 전용 운전자 감시 예외 설정 1개 포함). 차종·하네스·기기 구성을 정하는 항목은 사용 중인 차량과 장치에 맞춰 설정하세요. 깜박이 제어와 차선 종류·색상 표시를 포함한 CCNC 표시 설정을 아래에서 설명합니다.
+차량·하드웨어에는 39개 항목이 있습니다(검색 전용 운전자 감시 예외 설정 1개 포함). 차종·하네스·기기 구성을 정하는 항목은 사용 중인 차량과 장치에 맞춰 설정하세요. 깜박이 제어와 차선 종류·색상 표시를 포함한 CCNC 표시 설정을 아래에서 설명합니다.
 
 | 중분류 | 파라미터 | 용도 |
 |---|---|---|
@@ -283,6 +283,8 @@ VW MEB(ID.4 포함)에도 수동 조향비와 학습 비율이 적용됩니다. 
 | CANFD·HDA | `CanfdHDA2`, `HyundaiCanfdClusterDirectTx`, `CanfdDebug`, `HDPuse` | HDA2 차량, 계기판 직접 송신과 CAN FD 디버그·HDP 기능 |
 | [CCNC 계기판 표시](#ccnc-display) | `CcncClusterDisplay` | CCNC 계기판 순정형 표시 · 차선 숨김·점선·차로 강조·앞차 링·팝업·경고 문구·HDP 아이콘, 기본 OFF(0) |
 | [CCNC 계기판 표시](#ccnc-display) | `CcncExtendedDisplay` | CCNC 확장 표시 (HDA1) · 통합 설정 · 기본 꺼짐 |
+| [CCNC 계기판 표시](#ccnc-map-process) | `CcncMapProcess` | CCNC 레이더 지도 프로세스 (HDA1, 시험) · 확장 표시의 차량 위치를 별도 프로세스 레이더 지도에서 받음 · 기본 꺼짐 |
+| [CCNC 계기판 표시](#ccnc-vision-process) | `CcncVisionProcess` | CCNC 영상 차량 검출 (HDA1, 시험) · 옆 차 검출과 앞차 종류 분류 · 지도 프로세스 필요 · 기본 꺼짐 |
 | [CCNC 계기판 표시](#ccnc-display) | `CcncTrafficBackground` | CCNC 정지·출발 배경색 · 정지 중 빨강(5), 정차 후 출발 시 2.5초 초록(8), 기본 ON(1). 소나타 미확인, 안 보이면 끄기 |
 | 레이더 | `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC 레이더, 전방 트랙 좌우 보정, 코너 레이더와 당근레이더 처리·컷인 감도 |
 | 운전자 모니터링 | `DriverMonitoringEnabled`(검색 전용), `DriverMonitoringMode`, `CarrotVisionEnabled`, `MuteDoor`, `MuteSeatbelt` | 운전자 모니터링과 일부 차량 경고음 처리 |
@@ -351,6 +353,29 @@ Bosch MRRevo14F 수신을 지원하는 버전에서 Bosch MRRevo14F 후보 차�
 차선 종류와 색상은 기본적으로 별도의 Python 프로세스에서 인식합니다.
 
 기기 연산(계기판 갱신당 평균): 끔 약 0.9ms, 켬 약 2.4ms(차량이 많은 장면 약 3.1ms). 차선 종류 인식은 별도 프로세스에서 프레임당 약 14.7ms.
+
+<a id="ccnc-map-process"></a>
+#### CCNC 레이더 지도 프로세스 (HDA1, 시험)
+
+기본 꺼짐. 확장 표시가 켜져 있을 때 계기판 차량 위치 표시를 별도 프로세스(코어 4)가 만든 레이더 지도에서 받습니다. 지도가 늦거나 멈추면 기존 표시로 돌아갑니다. 표시 전용이며 ACC·제동·조향과 무관합니다.
+
+- 내부 비교 값 `CcncPosDisplayMode`가 1일 때만 동작합니다. 이 값은 설정 화면에 없습니다.
+- 재시동 없이 약 1초 안에 적용됩니다. 주행 중에 켜면 프로세스가 시작되고, 끄면 멈춥니다.
+- 프로세스가 시작 60초 안에 죽거나 세 번 죽으면 기기를 재부팅할 때까지 다시 켜지지 않습니다.
+
+기기 연산: 정차 중 약 13ms/s. 주행 중 값은 미확인.
+
+<a id="ccnc-vision-process"></a>
+#### CCNC 영상 차량 검출 (HDA1, 시험)
+
+기본 꺼짐. [CCNC 레이더 지도 프로세스](#ccnc-map-process)가 동작할 때만 동작합니다. 표시 전용이며 ACC·제동·조향과 무관합니다.
+
+- 정차·서행(약 11km/h 이하) 중 광각 카메라로 옆 차를 찾습니다.
+- 종류가 확정되지 않은 레이더 앞차가 있으면 도로 카메라로 종류(승용·트럭·버스)를 분류해 계기판 차량 모양에 반영합니다.
+- 작은 코어 0~2에서 가장 낮은 우선순위로 돌며, 모델 파일이 기기에 없으면 조용히 쉽니다.
+- 재시동 없이 약 1초 안에 적용됩니다.
+
+기기 연산(정차 중): 화면 한 장 중앙값 약 0.42초, 작은 코어 합계 약 1.65코어. 주행 중 값은 미확인.
 
 #### CCNC 정지·출발 배경색
 
