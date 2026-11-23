@@ -23,7 +23,7 @@ def schema_values():
   yield offset(map_schema, "slots")
   for schema, names in (
     (map_schema, "radarLogMonoTime generation status egoLaneCoord valid"),
-    (slot, "vid distance lateral detect laneCoordRel vRel kind kindConfirmed present vision"),
+    (slot, "vid distance lateral detect laneCoordRel vRel kind kindConfirmed present vision kindWanted"),
   ):
     yield from (offset(schema, name) for name in names.split())
   for name in ("dataWordCount", "pointerCount"):
@@ -40,6 +40,7 @@ def sample():
   slot.vid, slot.distance, slot.lateral, slot.detect = 42, -2.5, 3.25, 6
   slot.laneCoordRel, slot.vRel, slot.kind, slot.kindConfirmed = -0.75, -1.5, 3, True
   slot.present, slot.vision = True, 1
+  slots[0].present, slots[0].vid, slots[0].kindWanted = True, 9, True
   slots[4].present, slots[4].detect, slots[4].lateral = True, 6, -2.75
   return event
 

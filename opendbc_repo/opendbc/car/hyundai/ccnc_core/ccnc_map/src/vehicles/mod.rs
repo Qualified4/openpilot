@@ -201,14 +201,6 @@ impl Tracker {
         }
     }
 
-    /// The display consumes the current track state without historical ID lookups.
-    pub(crate) fn for_display() -> Self {
-        Self {
-            record_history: false,
-            ..Self::default()
-        }
-    }
-
     pub fn vehicles(&self) -> &[Vehicle] {
         &self.cars
     }

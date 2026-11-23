@@ -188,7 +188,7 @@ mod tests {
     use ccnc_map::vision::kind::KIND_CAR;
 
     fn slot(detect: u8, kind: u8, kind_confirmed: bool) -> Slot {
-        Slot { vid: 4, distance: 12., lateral: 0.5, detect, lane_coord_rel: 0., v_rel: 0., kind, kind_confirmed, vision: 0 }
+        Slot { vid: 4, distance: 12., lateral: 0.5, detect, lane_coord_rel: 0., v_rel: 0., kind, kind_confirmed, kind_wanted: false, vision: 0 }
     }
 
     #[test]

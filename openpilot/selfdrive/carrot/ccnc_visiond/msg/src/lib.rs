@@ -20,9 +20,8 @@ pub const CAL_STATUS_CALIBRATED: u16 = 1;
 const MAP_VALID_BIT: usize = 104;
 const MAP_SLOT_PRESENT_BIT: usize = 113;
 const MAP_SLOT_VISION_BYTE: usize = 15;
-const MAP_SLOT_KIND_CONFIRMED_BIT: usize = 112;
-/// `Slot.vision`: a car from the wide camera alone (it has no radar vid to put a kind on).
-const MAP_SLOT_VISION_ONLY: u8 = 1;
+/// `Slot.kindWanted`: the map's per-vid asking (`ccnc_map::vision::kind`), FF, LF and RF only.
+const MAP_SLOT_KIND_WANTED_BIT: usize = 114;
 
 const EVENT_WORDS: usize = 2;
 const EVENT_DISCRIMINANT_BYTE: usize = 8;
@@ -354,8 +353,8 @@ pub fn map_front_vision_on(bytes: &[u8]) -> Option<bool> {
     Some(on)
 }
 
-/// Whether a valid CcncMap Event has a radar car in FF, LF or RF whose kind is not confirmed yet: the road camera
-/// is looked at only then (`ccnc_visiond` front pacing).
+/// Whether a valid CcncMap Event asks for road camera kind answers (`kindWanted` on FF, LF or RF): the road camera
+/// is looked at only then (`ccnc_visiond` front pacing). The map decides per vid how long it asks.
 pub fn map_front_kind_wanted(bytes: &[u8]) -> Option<bool> {
     let message = Message::new(bytes)?;
     let event = message.root()?;
@@ -367,9 +366,7 @@ pub fn map_front_kind_wanted(bytes: &[u8]) -> Option<bool> {
         return Some(false);
     }
     let slots = message.struct_list(&map, 0)?;
-    Some(slots.iter().take(3).any(|s| {
-        s.bit(MAP_SLOT_PRESENT_BIT) && s.u8_at(MAP_SLOT_VISION_BYTE) != MAP_SLOT_VISION_ONLY && !s.bit(MAP_SLOT_KIND_CONFIRMED_BIT)
-    }))
+    Some(slots.iter().take(3).any(|s| s.bit(MAP_SLOT_PRESENT_BIT) && s.bit(MAP_SLOT_KIND_WANTED_BIT)))
 }
 
 #[cfg(test)]
@@ -595,24 +592,22 @@ mod tests {
     }
 
     #[test]
-    fn front_kind_is_wanted_for_unconfirmed_radar_cars_ahead() {
-        let with = |slots: [(bool, u8); 5], confirmed: [bool; 5]| {
+    fn front_kind_is_wanted_while_the_map_asks_ahead() {
+        let with = |slots: [(bool, u8); 5], wanted: [bool; 5]| {
             let mut bytes = ccnc_map_event(true, true, slots);
-            for (i, c) in confirmed.into_iter().enumerate() {
-                if c {
-                    bytes[(10 + i * 3) * 8 + MAP_SLOT_KIND_CONFIRMED_BIT / 8] |= 1 << (MAP_SLOT_KIND_CONFIRMED_BIT % 8);
+            for (i, w) in wanted.into_iter().enumerate() {
+                if w {
+                    bytes[(10 + i * 3) * 8 + MAP_SLOT_KIND_WANTED_BIT / 8] |= 1 << (MAP_SLOT_KIND_WANTED_BIT % 8);
                 }
             }
             map_front_kind_wanted(&bytes)
         };
-        let none = [false; 5];
-        assert_eq!(with([(false, 0); 5], none), Some(false));
-        assert_eq!(with([(true, 0), (false, 0), (false, 0), (false, 0), (false, 0)], none), Some(true), "FF radar car");
-        assert_eq!(with([(false, 0), (false, 0), (true, 2), (false, 0), (false, 0)], none), Some(true), "RF radar car the camera sees");
-        assert_eq!(with([(false, 0), (true, 1), (false, 0), (false, 0), (false, 0)], none), Some(false), "camera-only LF: no vid");
-        assert_eq!(with([(false, 0), (false, 0), (false, 0), (true, 0), (true, 0)], none), Some(false), "LR / RR are not ahead");
-        assert_eq!(with([(true, 0), (true, 0), (false, 0), (false, 0), (false, 0)], [true, true, false, false, false]), Some(false), "confirmed");
-        assert_eq!(with([(true, 0), (true, 0), (false, 0), (false, 0), (false, 0)], [true, false, false, false, false]), Some(true));
+        let car = [(true, 0); 5];
+        assert_eq!(with(car, [false; 5]), Some(false), "cars ahead the map does not ask about");
+        assert_eq!(with(car, [true, false, false, false, false]), Some(true), "FF");
+        assert_eq!(with(car, [false, false, true, false, false]), Some(true), "RF");
+        assert_eq!(with([(false, 0); 5], [true, false, false, false, false]), Some(false), "not present");
+        assert_eq!(with(car, [false, false, false, true, true]), Some(false), "LR / RR are not ahead");
         assert_eq!(map_front_kind_wanted(&ccnc_map_event(true, false, [(true, 0); 5])), Some(false), "invalid map");
         assert_eq!(map_front_kind_wanted(&ccnc_map_event(false, true, [(true, 0); 5])), None);
     }

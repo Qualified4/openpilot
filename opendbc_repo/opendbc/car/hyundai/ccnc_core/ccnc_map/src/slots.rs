@@ -20,6 +20,8 @@ pub struct Slot {
     pub v_rel: f32,
     pub kind: u8,
     pub kind_confirmed: bool,
+    /// The map asks `ccnc_visiond` for a road camera answer about this slot's vid (FF, LF, RF only).
+    pub kind_wanted: bool,
     /// What the wide camera adds: `VISION_*`.
     pub vision: u8,
 }
@@ -255,6 +257,7 @@ impl Assigner {
                 v_rel: v_rel as f32,
                 kind: kind.map_or(0, |k| k.class),
                 kind_confirmed: kind.is_some_and(|k| k.confirmed_at.is_finite()),
+                kind_wanted: false,
                 vision: VISION_NONE,
             };
             let rank = |s: Slot| {

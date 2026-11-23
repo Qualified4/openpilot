@@ -244,6 +244,7 @@ struct CustomReserved3 @0xda96579883444c35 {
     kindConfirmed @7 :Bool;
     present @8 :Bool;  # BSD can fill a slot without a vehicle ID.
     vision @9 :UInt8;  # 0 radar only, 1 a car from the wide camera alone, 2 a radar car the camera also sees.
+    kindWanted @10 :Bool;  # FF, LF, RF: the map asks ccnc_visiond for a road camera kind answer about this vid.
   }
 }
 

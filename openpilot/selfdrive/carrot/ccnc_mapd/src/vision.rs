@@ -11,6 +11,8 @@ pub struct Message {
     pub stamp: u64,
     /// A wide camera frame result. Status messages and road camera frames (their boxes are only classified) have none.
     pub frame: Option<Frame>,
+    /// The frame time of a road camera frame (its boxes go to the classifier; the map only counts it).
+    pub front_frame: Option<u64>,
     /// Classifier answers for boxes of earlier frames.
     pub kinds: Vec<KindResult>,
     /// rpyCalib, wideFromDeviceEuler, height of the message.
@@ -54,7 +56,8 @@ pub fn message(bytes: &[u8]) -> Option<Message> {
             Some(KindResult { time_ns: k.frame_mono_time, view, xyxy: k.xyxy.map(f64::from), kind: k.kind, prob: f64::from(k.prob) })
         })
         .collect();
-    Some(Message { stamp, frame, kinds, calibration })
+    let front_frame = (out.status == Status::Frame && out.view == View::CropFront).then_some(out.frame_mono_time);
+    Some(Message { stamp, frame, front_frame, kinds, calibration })
 }
 
 /// A wide camera frame result with the Event's logMonoTime.

@@ -24,6 +24,10 @@ pub const STALE_NS: u64 = 250_000_000;
 /// How far back the inputs of a camera frame's time are kept (covers LATE_S = 3 s with 1 s margin).
 const HISTORY_NS: u64 = 4_000_000_000;
 const RADAR: Consts = Consts::map_process();
+/// A classifier answer is tied to the radar tracks recorded at most this far from its frame (liveTracks is 20 Hz).
+const KIND_TRACKS_NS: u64 = 150_000_000;
+/// The map asks `ccnc_visiond` for kinds only while it hears from it (a status message comes about once a second).
+const VISION_ALIVE_NS: u64 = 3_000_000_000;
 
 fn seconds(t: u64) -> f64 {
     t as f64 * 1e-9
@@ -51,6 +55,19 @@ impl<T> History<T> {
     fn at(&self, t: u64) -> Option<&T> {
         let i = self.0.partition_point(|(stamp, _)| *stamp <= t);
         self.0.get(i.saturating_sub(1)).map(|(_, value)| value)
+    }
+
+    /// The record closest to `t` and its time, when it is at most `tolerance` away (a time outside the kept range
+    /// has none).
+    fn near(&self, t: u64, tolerance: u64) -> Option<(u64, &T)> {
+        let i = self.0.partition_point(|(stamp, _)| *stamp <= t);
+        [i.checked_sub(1), Some(i)]
+            .into_iter()
+            .flatten()
+            .filter_map(|j| self.0.get(j))
+            .min_by_key(|(stamp, _)| stamp.abs_diff(t))
+            .filter(|(stamp, _)| stamp.abs_diff(t) <= tolerance)
+            .map(|(stamp, value)| (*stamp, value))
     }
 }
 
@@ -81,6 +98,8 @@ pub struct Pipeline {
     /// The last update's radar slots, before the camera cars.
     radar_slots: [Option<Slot>; 5],
     kinds: vision::Kinds,
+    /// logMonoTime of the last CcncVision message.
+    vision_seen: Option<u64>,
 }
 
 impl Pipeline {
@@ -88,7 +107,8 @@ impl Pipeline {
         Self {
             world: World::default(),
             radar: MapState::for_observation(),
-            tracker: Tracker::for_display(),
+            // With its ID history: a classifier answer finds its car at the frame's radar update (`vid_at`).
+            tracker: Tracker::default(),
             slots: Assigner::default(),
             rear: WorldRear::default(),
             generation_base,
@@ -105,6 +125,7 @@ impl Pipeline {
             lprob_at: History::default(),
             radar_slots: [None; 5],
             kinds: vision::Kinds::default(),
+            vision_seen: None,
         }
     }
 
@@ -161,9 +182,14 @@ impl Pipeline {
         self.vision.frame(frame, seconds(stamp), &context, pose)
     }
 
-    /// Classifier answers that reached the map. `calibration` is the carrying message's (rpyCalib, height used for
-    /// the road camera). They show from the next radar update on, on cars the radar already draws.
-    pub fn kinds(&mut self, results: &[vision::KindResult], calibration: &[f32; 7]) {
+    /// Every CcncVision message that reached the map at `stamp` (its logMonoTime): `front_frame` is the frame time
+    /// of a road camera frame, `results` the classifier answers, `calibration` the message's (rpyCalib, height used
+    /// for the road camera). Answers show from the next radar update on, on cars the radar already draws.
+    pub fn kinds(&mut self, stamp: u64, front_frame: Option<u64>, results: &[vision::KindResult], calibration: &[f32; 7]) {
+        self.vision_seen = Some(self.vision_seen.map_or(stamp, |seen| seen.max(stamp)));
+        if let Some(t) = front_frame {
+            self.kinds.front_frame(t);
+        }
         if results.is_empty() {
             return;
         }
@@ -173,12 +199,10 @@ impl Pipeline {
         self.kinds.observe(
             results,
             cam.as_ref(),
-            |t| tracks_at.at(t).cloned(),
+            |t| tracks_at.near(t, KIND_TRACKS_NS).map(|(stamp, tracks)| (stamp, tracks.clone())),
             |t, side| vision.side_cands(t, side),
-            |id| {
-                let id = u32::try_from(id).ok()?;
-                tracker.vehicles().iter().find(|car| car.radar_id == Some(id)).map(|car| car.vid)
-            },
+            // The car the track was at the frame's radar update, not the car with that radar id now.
+            |stamp, id| tracker.vid_at(seconds(stamp), u32::try_from(id).ok()?),
         );
     }
 
@@ -380,6 +404,13 @@ impl Pipeline {
         )?;
         self.radar_slots = slots;
         self.vision.apply(now, car.speed, self.world.pose.at(now), &mut slots);
+        let asking = self.vision_seen.is_some_and(|seen| stamp.saturating_sub(seen) <= VISION_ALIVE_NS);
+        for slot in slots[..3].iter_mut().flatten() {
+            slot.kind_wanted = asking
+                && slot.vid != 0
+                && slot.vision != crate::slots::VISION_ONLY
+                && self.kinds.wanted(slot.vid, now);
+        }
         Ok(if ego.is_finite() {
             MapOut {
                 ego_lane_coord: ego as f32,
@@ -390,5 +421,31 @@ impl Pipeline {
         } else {
             self.empty()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_map_tracker_finds_a_radar_id_at_an_earlier_update() {
+        let mut pipe = Pipeline::new(0);
+        let world = World::default();
+        pipe.tracker.update(1.0, &[(10, 20., 0., 0.)], &world);
+        pipe.tracker.update(1.05, &[(10, 20., 0., 0.)], &world);
+        assert!(pipe.tracker.vid_at(1.0, 10).is_some(), "kind answers need the tracker's ID history");
+    }
+
+    #[test]
+    fn near_drops_a_time_farther_than_the_tolerance() {
+        let mut history = History::default();
+        for t in [1_000, 1_050, 1_100] {
+            history.push(t, t);
+        }
+        assert_eq!(history.near(1_060, 20), Some((1_050, &1_050)));
+        assert_eq!(history.near(1_090, 20), Some((1_100, &1_100)));
+        assert_eq!(history.near(1_130, 20), None, "after the last record");
+        assert_eq!(history.near(970, 20), None, "before the kept range");
     }
 }

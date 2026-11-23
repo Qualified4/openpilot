@@ -321,6 +321,7 @@ fn place(
                     v_rel: 0.,
                     kind: 0,
                     kind_confirmed: false,
+                    kind_wanted: false,
                     vision: VISION_ONLY,
                 });
             }

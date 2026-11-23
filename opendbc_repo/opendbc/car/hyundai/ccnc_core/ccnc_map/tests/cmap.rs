@@ -51,6 +51,18 @@ fn cmap_schema_matches_capnp() {
 #[test]
 fn cmap_roundtrip_matches_pycapnp() {
     let mut slots = [None; 5];
+    slots[0] = Some(Slot {
+        vid: 9,
+        distance: 0.,
+        lateral: 0.,
+        detect: 0,
+        lane_coord_rel: 0.,
+        v_rel: 0.,
+        kind: 0,
+        kind_confirmed: false,
+        kind_wanted: true,
+        vision: 0,
+    });
     slots[3] = Some(Slot {
         vid: 42,
         distance: -2.5,
@@ -60,6 +72,7 @@ fn cmap_roundtrip_matches_pycapnp() {
         v_rel: -1.5,
         kind: 3,
         kind_confirmed: true,
+        kind_wanted: false,
         vision: 1,
     });
     slots[4] = Some(Slot {
@@ -71,6 +84,7 @@ fn cmap_roundtrip_matches_pycapnp() {
         v_rel: 0.,
         kind: 0,
         kind_confirmed: false,
+        kind_wanted: false,
         vision: 0,
     });
     let expected = MapOut {
