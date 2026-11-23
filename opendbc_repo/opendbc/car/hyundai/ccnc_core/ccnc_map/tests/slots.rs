@@ -364,3 +364,23 @@ fn an_unconfirmed_kind_is_not_kept_after_the_tracker_forgets_the_car() {
         }
     }
 }
+
+#[test]
+fn an_approach_only_object_takes_no_side_slot() {
+    let world = road();
+    let slot_of = |x: f64, r: f64, approach_only: bool| {
+        let mut car = vehicle(&world, 1, 0., x, r);
+        car.flags.approach_only = approach_only;
+        let slots = Assigner::default().update(0., &[car], &world, None);
+        slots.iter().position(Option::is_some)
+    };
+    // A guardrail post proven by its approaching Doppler alone stays out of LF and RF.
+    for r in [-1., 1.] {
+        assert!(slot_of(20., r, false).is_some(), "r={r}");
+        assert_eq!(slot_of(20., r, true), None, "r={r}");
+    }
+    // FF, LR and RR keep the existing rules: a car first seen alongside has no Doppler sample yet.
+    assert_eq!(slot_of(20., 0., true), Some(FF));
+    assert_eq!(slot_of(-5., -1., true), Some(3));
+    assert_eq!(slot_of(-5., 1., true), Some(4));
+}

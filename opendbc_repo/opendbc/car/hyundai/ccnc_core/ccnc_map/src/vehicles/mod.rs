@@ -37,6 +37,8 @@ pub struct Flags {
     pub structure: bool,
     pub proven: bool,
     pub admitted: bool,
+    /// The radar map has only an approaching Doppler for it (`select::approach_only`): no LF or RF slot.
+    pub approach_only: bool,
 }
 
 /// Bounded history with oldest-first iteration. Storage is only needed after the first sample.

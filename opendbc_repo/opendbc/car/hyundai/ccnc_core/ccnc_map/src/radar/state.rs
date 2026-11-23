@@ -10,7 +10,7 @@ use super::consts::Consts;
 use super::lanes::{LaneCache, Lanes};
 use super::object::{MapObjectData, Ring};
 use super::observe::{crossing, observe, ObserveIn};
-use super::select::{lane_reference, vision, Bridge, Selector};
+use super::select::{approach_only, lane_reference, vision, Bridge, Selector};
 use super::walls::{self, BandData, BandPoint, IntSet, WallData};
 use crate::vehicles::{Flags, Tracker, Vehicle};
 use crate::world::World;
@@ -292,6 +292,7 @@ impl MapState {
                 structure: object.structure,
                 proven: self.vehicle_proven(object, crossing_travel),
                 admitted: object.admitted,
+                approach_only: approach_only(object),
             });
         }
         tracker.vehicles()

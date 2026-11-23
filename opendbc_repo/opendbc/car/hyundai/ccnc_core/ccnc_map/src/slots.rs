@@ -238,6 +238,11 @@ impl Assigner {
             if slot != 0 && speed < -1. / 3.6 {
                 continue;
             }
+            // The selector's LF/RF rule: no object the radar has only seen approach (a guardrail post or a pillar
+            // proven by its Doppler alone). A car first seen alongside has no Doppler yet, so LR/RR keep it.
+            if (slot == 1 || slot == 2) && car.flags.approach_only {
+                continue;
+            }
             if v_rel > 2. {
                 drawing.detect = 1;
             } else if v_rel < -1. {
