@@ -4,6 +4,9 @@
 use crate::remap::Map;
 use ccnc_vision_msg::Calibration;
 
+/// The wide camera frame the lens constants below are for (os04c10, width x height). Other frames are not processed.
+pub const WIDE_SIZE: (usize, usize) = (1344, 760);
+
 /// Fisheye fit of the os04c10 wide camera (wide-side-20261121/data/lens.json): r = F (θ + K1 θ³) around (CX, CY).
 const F: f64 = 442.80633225081266;
 const K1: f64 = 0.03044466692675767;

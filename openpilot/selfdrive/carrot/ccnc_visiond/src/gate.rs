@@ -2,8 +2,11 @@
 
 use ccnc_vision_msg::View;
 
-/// The side views are only used for cars next to a standing or creeping car.
+/// The side views are only used for cars next to a standing or creeping car, not while reversing.
 pub const WIDE_MAX_SPEED: f32 = 3.0;
+/// vEgo of a standing car dips below zero (down to -0.0011 m/s in the 16 recorded routes, never below zero while
+/// moving); reversing is faster than this.
+pub const STANDSTILL_NOISE: f32 = 0.01;
 /// carState comes at 100 Hz. Without a recent one the speed is unknown and nothing is processed.
 pub const SPEED_TIMEOUT_NS: u64 = 500_000_000;
 
@@ -45,7 +48,7 @@ impl Gate {
     }
 
     pub fn open(&self, now_ns: u64) -> bool {
-        self.speed.is_some_and(|(v_ego, at)| v_ego <= WIDE_MAX_SPEED && now_ns.saturating_sub(at) <= SPEED_TIMEOUT_NS)
+        self.speed.is_some_and(|(v_ego, at)| (-STANDSTILL_NOISE..=WIDE_MAX_SPEED).contains(&v_ego) && now_ns.saturating_sub(at) <= SPEED_TIMEOUT_NS)
     }
 
     /// `ready`: the rest of what processing needs (the side views' calibration) is there.
@@ -58,6 +61,11 @@ impl Gate {
         };
         self.was_open = open;
         phase
+    }
+
+    /// The side the next frame goes to, without taking it.
+    pub fn next_side(&self) -> Side {
+        self.next
     }
 
     /// The side to process now. The sides take turns, one camera frame each.
@@ -79,7 +87,7 @@ mod tests {
     fn open_only_at_low_known_speed() {
         let mut gate = Gate::default();
         assert!(!gate.open(0), "no speed yet");
-        for (v_ego, open) in [(0.0, true), (3.0, true), (3.01, false), (25.0, false), (f32::NAN, false), (-0.1, true)] {
+        for (v_ego, open) in [(0.0, true), (3.0, true), (3.01, false), (25.0, false), (f32::NAN, false), (-0.1, false), (-0.0011, true), (-0.0101, false)] {
             gate.speed(v_ego, 1_000);
             assert_eq!(gate.open(1_000), open, "{v_ego}");
         }

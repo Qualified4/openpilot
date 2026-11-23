@@ -1,6 +1,6 @@
 //! ccnc_visiond: vehicle boxes from the wide camera's side views while the car stands or creeps.
 //! Input: VisionIPC `wideRoad`, `carState.vEgo` and `liveCalibration`. Output: one CcncVision (`customReserved4`)
-//! per processed frame. The side views are built from liveCalibration; nothing is processed before calibrationd
+//! per processed frame, and a status message about once a second while none is processed. The side views are built from liveCalibration; nothing is processed before calibrationd
 //! says calibrated.
 //!
 //! Environment:
@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use ccnc_vision_msg::{VisionBox, VisionOut};
+use ccnc_vision_msg::{Calibration, Status, VisionBox, VisionOut};
 use stripnet::ipc::{Pub, Sub};
 
 const SPEED_SERVICE: &str = "carState";
@@ -86,18 +86,74 @@ fn engine_name() -> String {
     std::env::var("CCNC_VISIOND_ENGINE").unwrap_or_else(|_| if cfg!(feature = "ort") { "ort" } else { "tract" }.into())
 }
 
-/// Stay alive without publishing: a restart would fail the same way, and the reason file tells the two apart
-/// from a crash.
-fn halt(stage: &str, err: anyhow::Error) {
+/// Status messages while no frame is processed, at most this often.
+const STATUS_PERIOD: Duration = Duration::from_secs(1);
+/// Inference failures in a row before the process stops. One failed frame (a buffer replaced while it was copied,
+/// an allocation that failed) is dropped and the next frame is tried. Ten in a row are several seconds at the
+/// device's rate: the cause is not passing, and a restart would meet it again.
+const MAX_FAILURES: u32 = 10;
+
+/// `sof` (CLOCK_BOOTTIME) on CLOCK_MONOTONIC, from both clocks read at the same moment. The two differ by the time
+/// the device was suspended.
+fn frame_mono_time(sof: u64, boot_now: u64, mono_now: u64) -> u64 {
+    sof.saturating_sub(boot_now.saturating_sub(mono_now))
+}
+
+/// Publish with logMonoTime on CLOCK_MONOTONIC, the clock of the Python publishers this process is read next to.
+fn send(publisher: &Pub, out: &VisionOut) -> io::Result<()> {
+    if publisher.send(&ccnc_vision_msg::encode(out, clock_ns(libc::CLOCK_MONOTONIC))) {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("send {}", ccnc_vision_msg::SERVICE)))
+    }
+}
+
+/// The once-a-second message while no frame is published.
+struct Quiet {
+    last: Option<Instant>,
+}
+
+impl Quiet {
+    fn report(&mut self, publisher: &Pub, status: Status, view: ccnc_vision_msg::View, calibration: Calibration) -> io::Result<()> {
+        if self.last.is_some_and(|last| last.elapsed() < STATUS_PERIOD) {
+            return Ok(());
+        }
+        self.last = Some(Instant::now());
+        let out = VisionOut {
+            status,
+            frame_id: 0,
+            timestamp_sof: 0,
+            frame_mono_time: 0,
+            view,
+            processing_ms: 0.0,
+            night_corrected: false,
+            calibration,
+            boxes: Vec::new(),
+        };
+        send(publisher, &out)
+    }
+
+    /// A frame went out: the next status message waits a full period.
+    fn frame(&mut self) {
+        self.last = Some(Instant::now());
+    }
+}
+
+/// Stay alive and say so once a second: a restart would fail the same way, and the reason file tells the two
+/// apart from a crash.
+fn halt(stage: &str, err: anyhow::Error, publisher: &Pub) -> io::Result<()> {
     let reason = format!("{stage}: {err:#}");
     eprintln!("ccnc_visiond: publishing stopped, {reason}");
     let path = format!("{}.halted", state_path());
     if let Err(err) = std::fs::write(&path, format!("{reason}\n")) {
         eprintln!("ccnc_visiond: cannot write {path}: {err}");
     }
+    let mut quiet = Quiet { last: None };
     while !STOP.load(Ordering::Relaxed) {
+        quiet.report(publisher, Status::Halted, ccnc_vision_msg::View::SideL, Calibration::UNKNOWN)?;
         sleep(IDLE);
     }
+    Ok(())
 }
 
 fn open<T>(queue: Option<T>, what: &str) -> io::Result<T> {
@@ -123,16 +179,16 @@ fn run() -> io::Result<()> {
     });
     let mut detector = match loaded {
         Ok(detector) => detector,
-        Err(err) => {
-            halt("load", err);
-            return Ok(());
-        }
+        Err(err) => return halt("load", err, &publisher),
     };
     let mut camera = vipc::Client::new(vipc::Stream::Wide, CAMERA_SERVER);
     let mut gate = gate::Gate::default();
     let mut calib = calib::Calib::default();
     let mut rejected = None;
     let mut calibrated = false;
+    let mut quiet = Quiet { last: None };
+    let mut failures = 0;
+    let mut wrong_size = None;
     while !STOP.load(Ordering::Relaxed) {
         for bytes in speed.drain() {
             if let Some(v_ego) = ccnc_vision_msg::car_state_speed(&bytes) {
@@ -155,9 +211,13 @@ fn run() -> io::Result<()> {
             calibrated = !calibrated;
             eprintln!("ccnc_visiond: liveCalibration {}", if calibrated { "calibrated" } else { "not calibrated, nothing is processed" });
         }
-        match gate.phase(clock_ns(libc::CLOCK_MONOTONIC), detector.fixed() || calibrated) {
+        let latest = calib.usable().copied().unwrap_or(Calibration::UNKNOWN);
+        let ready = detector.fixed() || calibrated;
+        match gate.phase(clock_ns(libc::CLOCK_MONOTONIC), ready) {
             gate::Phase::Closed => {
                 camera.discard();
+                let status = if ready { Status::Resting } else { Status::NotCalibrated };
+                quiet.report(&publisher, status, gate.next_side().view(), latest)?;
                 sleep(IDLE);
                 continue;
             }
@@ -168,35 +228,64 @@ fn run() -> io::Result<()> {
         }
         if let Some(took) = calib.usable().and_then(|c| detector.calibrate(c)) {
             // Frames that came while building are skipped: the camera gives only the latest one.
-            let c = calib.usable().unwrap();
             eprintln!(
                 "ccnc_visiond: side views built in {:.1} ms for rpyCalib {:?} wideFromDeviceEuler {:?}",
                 took.as_secs_f64() * 1000.0,
-                c.rpy_calib,
-                c.wide_from_device_euler
+                latest.rpy_calib,
+                latest.wide_from_device_euler
             );
         }
         let started = Instant::now();
         let Some(frame) = camera.poll() else {
             // Without a camera server, try again at the idle rate instead of the frame rate.
-            sleep(if camera.connected() { FRAME_WAIT } else { IDLE });
+            if camera.connected() {
+                sleep(FRAME_WAIT);
+            } else {
+                quiet.report(&publisher, Status::NoCamera, gate.next_side().view(), latest)?;
+                sleep(IDLE);
+            }
             continue;
         };
+        let size = (frame.layout.width, frame.layout.height);
+        if size != wcam::WIDE_SIZE {
+            if wrong_size != Some(size) {
+                eprintln!("ccnc_visiond: wide camera frame {}x{}, the lens model is for {}x{}; frames are not processed", size.0, size.1, wcam::WIDE_SIZE.0, wcam::WIDE_SIZE.1);
+            }
+            wrong_size = Some(size);
+            quiet.report(&publisher, Status::UnsupportedCamera, gate.next_side().view(), latest)?;
+            sleep(IDLE);
+            continue;
+        }
+        wrong_size = None;
         let side = gate.take_side();
         let found = match detector.run(frame.layout, &frame.nv12, side) {
-            Ok(found) => found,
+            Ok(found) => {
+                failures = 0;
+                found
+            }
             Err(err) => {
-                halt("inference", err);
-                return Ok(());
+                failures += 1;
+                if failures >= MAX_FAILURES {
+                    return halt("inference", err, &publisher);
+                }
+                if failures == 1 {
+                    eprintln!("ccnc_visiond: frame {} dropped, inference failed: {err:#}", frame.frame_id);
+                }
+                continue;
             }
         };
+        // The view's angles are the ones it was built with. The height is not part of the view: the latest one.
+        let calibration = if detector.fixed() { found.calibration } else { Calibration { height: latest.height, ..found.calibration } };
+        let (boot_now, mono_now) = (clock_ns(libc::CLOCK_BOOTTIME), clock_ns(libc::CLOCK_MONOTONIC));
         let out = VisionOut {
+            status: Status::Frame,
             frame_id: frame.frame_id,
             timestamp_sof: frame.timestamp_sof,
+            frame_mono_time: frame_mono_time(frame.timestamp_sof, boot_now, mono_now),
             view: side.view(),
             processing_ms: started.elapsed().as_secs_f32() * 1000.0,
             night_corrected: found.night,
-            calibration: found.calibration,
+            calibration,
             boxes: found
                 .boxes
                 .iter()
@@ -208,10 +297,8 @@ fn run() -> io::Result<()> {
                 })
                 .collect(),
         };
-        // logMonoTime is on the camera's clock, so a reader gets the age of the frame from the two stamps.
-        if !publisher.send(&ccnc_vision_msg::encode(&out, clock_ns(libc::CLOCK_BOOTTIME))) {
-            return Err(io::Error::other(format!("send {}", ccnc_vision_msg::SERVICE)));
-        }
+        send(&publisher, &out)?;
+        quiet.frame();
     }
     Ok(())
 }
@@ -249,8 +336,10 @@ mod tests {
         // One box per detector output row at most. msgq asserts 3 * (8-byte length + message, 8-byte aligned) <= queue.
         let boxes = vec![VisionBox { xyxy: [0.0; 4], confidence: 1.0, class_id: 79, cut: false }; detect::MAX_BOXES];
         let out = VisionOut {
+            status: Status::Frame,
             frame_id: 1,
             timestamp_sof: 1,
+            frame_mono_time: 1,
             view: ccnc_vision_msg::View::SideR,
             processing_ms: 1.0,
             night_corrected: true,
@@ -260,6 +349,17 @@ mod tests {
         let bytes = ccnc_vision_msg::encode(&out, 1).len() as u64;
         let queue = cereal_queue_sizes(&[ccnc_vision_msg::SERVICE])[0];
         assert!(3 * (8 + bytes.div_ceil(8) * 8) <= queue, "{bytes} bytes with {} boxes, queue {queue}", detect::MAX_BOXES);
+    }
+
+    #[test]
+    fn frame_time_moves_to_the_monotonic_clock() {
+        // A device that was suspended for an hour: CLOCK_BOOTTIME runs 3600 s ahead of CLOCK_MONOTONIC.
+        let (mono_now, offset) = (50_000_000_000, 3_600_000_000_000);
+        let boot_now = mono_now + offset;
+        let sof = boot_now - 120_000_000;
+        assert_eq!(frame_mono_time(sof, boot_now, mono_now), mono_now - 120_000_000);
+        assert_eq!(frame_mono_time(sof, mono_now, mono_now), sof, "same clocks");
+        assert_eq!(frame_mono_time(5, boot_now, mono_now), 0, "never below zero");
     }
 
     #[test]

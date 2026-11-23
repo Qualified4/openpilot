@@ -19,16 +19,18 @@ pub const CAL_STATUS_CALIBRATED: u16 = 1;
 const EVENT_WORDS: usize = 2;
 const EVENT_DISCRIMINANT_BYTE: usize = 8;
 const EVENT_INVALID_BIT: usize = 80;
-const VISION_WORDS: usize = 6;
+const VISION_WORDS: usize = 7;
 const BOX_WORDS: usize = 3;
 // Byte offsets inside the data section, except bits where named so.
 const FRAME_ID: usize = 0;
 const VIEW: usize = 4;
+const STATUS: usize = 6;
 const NIGHT_CORRECTED_BIT: usize = 40;
 const TIMESTAMP_SOF: usize = 8;
 const PROCESSING_MS: usize = 16;
 /// rpyCalib roll, pitch, yaw, then wideFromDeviceEuler roll, pitch, yaw, then height: seven f32 from here.
 const CALIBRATION: usize = 20;
+const FRAME_MONO_TIME: usize = 48;
 // LiveCalibrationData: calStatus (enum, u16) in the data section, the rest are List(Float32) pointers.
 const CAL_STATUS: usize = 2;
 const CAL_RPY_CALIB: usize = 4;
@@ -58,6 +60,31 @@ impl View {
         [Self::Full, Self::CropFront, Self::SideL, Self::SideR]
             .into_iter()
             .find(|view| *view as u8 == value)
+    }
+}
+
+/// What a message reports. Only `Frame` carries a frame and its boxes; the others come about once a second while
+/// nothing is processed, so a reader can tell a resting process from a stopped one. No message at all means the
+/// process is not running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Status {
+    Frame = 0,
+    /// Speed above the side view limit, reversing, or no recent carState.
+    Resting = 1,
+    NotCalibrated = 2,
+    NoCamera = 3,
+    /// Stopped on an error until the process restarts (the reason is in the `.halted` file).
+    Halted = 4,
+    /// The wide camera is not the 1344x760 one the lens constants are for.
+    UnsupportedCamera = 5,
+}
+
+impl Status {
+    fn from_wire(value: u8) -> Option<Self> {
+        [Self::Frame, Self::Resting, Self::NotCalibrated, Self::NoCamera, Self::Halted, Self::UnsupportedCamera]
+            .into_iter()
+            .find(|status| *status as u8 == value)
     }
 }
 
@@ -106,13 +133,17 @@ pub struct LiveCalibration {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VisionOut {
+    pub status: Status,
     pub frame_id: u32,
+    /// Start of frame on the camera's clock (CLOCK_BOOTTIME).
     pub timestamp_sof: u64,
+    /// The same instant on CLOCK_MONOTONIC, the clock of `logMonoTime` here and of carState and liveTracks.
+    pub frame_mono_time: u64,
     pub view: View,
     /// Frame copy to publish, in milliseconds.
     pub processing_ms: f32,
     pub night_corrected: bool,
-    /// What the frame's side view was built from.
+    /// The angles the frame's side view was built from, and the latest valid height.
     pub calibration: Calibration,
     pub boxes: Vec<VisionBox>,
 }
@@ -144,6 +175,8 @@ pub fn encode(out: &VisionOut, log_mono_time: u64) -> Vec<u8> {
     let vision = &mut bytes[VISION * 8..LIST * 8];
     put(vision, FRAME_ID, out.frame_id.to_le_bytes());
     vision[VIEW] = out.view as u8;
+    vision[STATUS] = out.status as u8;
+    put(vision, FRAME_MONO_TIME, out.frame_mono_time.to_le_bytes());
     vision[NIGHT_CORRECTED_BIT / 8] |= u8::from(out.night_corrected) << (NIGHT_CORRECTED_BIT % 8);
     put(vision, TIMESTAMP_SOF, out.timestamp_sof.to_le_bytes());
     put(vision, PROCESSING_MS, out.processing_ms.to_le_bytes());
@@ -168,7 +201,7 @@ pub fn encode(out: &VisionOut, log_mono_time: u64) -> Vec<u8> {
     bytes
 }
 
-/// The Event's `logMonoTime` and CcncVision. None for another Event member, an invalid Event or a malformed message.
+/// The Event's `logMonoTime` (CLOCK_MONOTONIC) and CcncVision. None for another Event member, an invalid Event or a malformed message.
 pub fn decode(bytes: &[u8]) -> Option<(u64, VisionOut)> {
     let message = Message::new(bytes)?;
     let event = message.root()?;
@@ -189,8 +222,10 @@ pub fn decode(bytes: &[u8]) -> Option<(u64, VisionOut)> {
     Some((
         event.u64_at(0),
         VisionOut {
+            status: Status::from_wire(vision.u8_at(STATUS))?,
             frame_id: vision.u32_at(FRAME_ID),
             timestamp_sof: vision.u64_at(TIMESTAMP_SOF),
+            frame_mono_time: vision.u64_at(FRAME_MONO_TIME),
             view: View::from_wire(vision.u8_at(VIEW))?,
             processing_ms: vision.f32_at(PROCESSING_MS),
             night_corrected: vision.bit(NIGHT_CORRECTED_BIT),
@@ -232,8 +267,10 @@ mod tests {
 
     fn sample(boxes: usize) -> VisionOut {
         VisionOut {
+            status: Status::Frame,
             frame_id: 0x8123_4567,
             timestamp_sof: 0xfedc_ba98_7654_3210,
+            frame_mono_time: 0x0123_4567_89ab_cdef,
             view: View::SideR,
             processing_ms: 612.25,
             night_corrected: true,
@@ -262,6 +299,23 @@ mod tests {
         let fixed = VisionOut { calibration: Calibration::UNKNOWN, ..sample(1) };
         let (_, back) = decode(&encode(&fixed, 0)).unwrap();
         assert!(back.calibration.values().iter().all(|v| v.is_nan()));
+        for status in [Status::Resting, Status::NotCalibrated, Status::NoCamera, Status::Halted, Status::UnsupportedCamera] {
+            let quiet = VisionOut { status, frame_id: 0, timestamp_sof: 0, frame_mono_time: 0, ..sample(0) };
+            assert_eq!(decode(&encode(&quiet, 5)), Some((5, quiet)));
+        }
+    }
+
+    #[test]
+    fn fields_sit_where_pycapnp_puts_them() {
+        // Offsets printed by pycapnp for CustomReserved4 (data 7 words): status u8 at byte 6, frameMonoTime u64 at
+        // word 6, timestampSof u64 at word 1.
+        let bytes = encode(&sample(0), 0);
+        let vision = &bytes[(2 + EVENT_WORDS + 1) * 8..];
+        assert_eq!(VISION_WORDS, 7);
+        assert_eq!(u64::from_le_bytes(vision[48..56].try_into().unwrap()), 0x0123_4567_89ab_cdef);
+        assert_eq!(u64::from_le_bytes(vision[8..16].try_into().unwrap()), 0xfedc_ba98_7654_3210);
+        let halted = encode(&VisionOut { status: Status::Halted, ..sample(0) }, 0);
+        assert_eq!(halted[(2 + EVENT_WORDS + 1) * 8 + 6], 4);
     }
 
     #[test]
@@ -279,6 +333,9 @@ mod tests {
         let mut view = bytes.clone();
         view[(2 + EVENT_WORDS + 1) * 8 + VIEW] = 4;
         assert_eq!(decode(&view), None);
+        let mut status = bytes.clone();
+        status[(2 + EVENT_WORDS + 1) * 8 + STATUS] = 6;
+        assert_eq!(decode(&status), None);
         let mut list = bytes;
         // The list claims more words than the segment holds.
         list[(2 + EVENT_WORDS + 1 + VISION_WORDS) * 8 + 4] = 0xff;

@@ -246,7 +246,10 @@ struct CustomReserved3 @0xda96579883444c35 {
   }
 }
 
-# CcncVision, published by ccnc_visiond once per processed camera frame.
+# CcncVision, published by ccnc_visiond once per processed camera frame, and about once a second while it
+# processes none (status other than frame, no boxes). logMonoTime is CLOCK_MONOTONIC, the clock of the Python
+# publishers (carState, liveTracks, modelV2). timestampSof is the camera's CLOCK_BOOTTIME; compare frameMonoTime
+# with other messages' logMonoTime.
 struct CustomReserved4 @0x80ae746ee2596b11 {
   frameId @0 :UInt32;
   timestampSof @1 :UInt64;
@@ -262,7 +265,10 @@ struct CustomReserved4 @0x80ae746ee2596b11 {
   wideFromDeviceRoll @9 :Float32;
   wideFromDevicePitch @10 :Float32;
   wideFromDeviceYaw @11 :Float32;
-  height @12 :Float32;
+  height @12 :Float32;  # The latest valid liveCalibration height, not necessarily the one the view was built with.
+  frameMonoTime @13 :UInt64;  # timestampSof on CLOCK_MONOTONIC, converted when the message was published.
+  status @14 :UInt8;  # 0 frame, 1 resting (speed above 3 m/s, reversing or no carState), 2 not calibrated,
+                      # 3 no camera frames, 4 stopped on an error, 5 unsupported wide camera resolution.
 
   struct Box {
     x1 @0 :Float32;  # Pixels of the view named above.

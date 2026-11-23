@@ -106,10 +106,9 @@ def enable_ccnc_lane_type(started, params, CP: car.CarParams) -> bool:
 
 CCNC_MAPD_FAILED = "/dev/shm/ccnc_mapd.failed"
 
-def enable_ccnc_mapd(started: bool, params: Params, CP: car.CarParams) -> bool:
-  if not started or not params.get_bool("CcncMapProcess") or not params.get_bool("CcncExtendedDisplay"):
-    return False
-  if params.get("CcncPosDisplayMode") != 1 or os.path.exists(CCNC_MAPD_FAILED):
+def _hda1_cluster_display(params: Params, CP: car.CarParams) -> bool:
+  """CcncExtendedDisplay on an HDA1 cluster car, the vehicles the CCNC map and camera serve."""
+  if not params.get_bool("CcncExtendedDisplay"):
     return False
   # A live fingerprint can veto stale persistent vehicle data.
   if CP.brand and not hda1_cluster_supported(CP):
@@ -123,11 +122,20 @@ def enable_ccnc_mapd(started: bool, params: Params, CP: car.CarParams) -> bool:
   except (KjException, TypeError, ValueError):
     return False
 
+def enable_ccnc_mapd(started: bool, params: Params, CP: car.CarParams) -> bool:
+  if not started or not params.get_bool("CcncMapProcess"):
+    return False
+  if params.get("CcncPosDisplayMode") != 1 or os.path.exists(CCNC_MAPD_FAILED):
+    return False
+  return _hda1_cluster_display(params, CP)
+
 CCNC_VISIOND_FAILED = "/dev/shm/ccnc_visiond.failed"
 
 def enable_ccnc_visiond(started: bool, params: Params, CP: car.CarParams) -> bool:
   # 1 is the only mode. Any other stored value keeps the process off.
-  return started and params.get("CcncVisionProcess") == 1 and not os.path.exists(CCNC_VISIOND_FAILED)
+  if not started or params.get("CcncVisionProcess") != 1 or os.path.exists(CCNC_VISIOND_FAILED):
+    return False
+  return _hda1_cluster_display(params, CP)
 
 def cluster_hud_active(params: Params) -> bool:
   try:

@@ -91,15 +91,25 @@ def test_enable_ccnc_visiond_conditions(tmp_path, monkeypatch):
   from openpilot.cereal import car
   from openpilot.common.params import Params
   from openpilot.system.manager import process_config
+  from opendbc.car.hyundai.values import HyundaiExtFlags, HyundaiFlags
 
+  # The same vehicles and display setting as the CCNC map process.
+  hda1 = car.CarParams.new_message(brand="hyundai", openpilotLongitudinalControl=True,
+                                   flags=int(HyundaiFlags.CANFD | HyundaiFlags.CAMERA_SCC),
+                                   extFlags=int(HyundaiExtFlags.CCNC_CLUSTER_RX))
+  hda2 = car.CarParams.new_message(brand="hyundai", flags=int(HyundaiFlags.CANFD))
+  stored_bytes = {id(hda1): hda1.to_bytes(), id(hda2): hda2.to_bytes()}
   cases = count()
 
-  def make_params(value=None):
+  def make_params(value=None, display=True, persistent=hda1):
     params = Params(str(tmp_path / str(next(cases))))
     assert params.get_default_value("CcncVisionProcess") == 0
     if value is not None:
       with open(params.get_param_path("CcncVisionProcess"), "wb") as out:
         out.write(value)
+    params.put_bool("CcncExtendedDisplay", display)
+    if persistent is not None:
+      params.put("CarParamsPersistent", stored_bytes[id(persistent)])
     return params
 
   failed = tmp_path / "visiond.failed"
@@ -107,10 +117,15 @@ def test_enable_ccnc_visiond_conditions(tmp_path, monkeypatch):
   enabled = process_config.enable_ccnc_visiond
   cp = car.CarParams.new_message()
   assert enabled(True, make_params(b"1"), cp)
+  assert enabled(True, make_params(b"1"), hda1)
   assert not enabled(False, make_params(b"1"), cp)
   assert not enabled(True, make_params(), cp)
   for stored in (b"0", b"2", b"-1", b"11", b"1.5", b"on", b""):
     assert not enabled(True, make_params(stored), cp), stored
+  assert not enabled(True, make_params(b"1", display=False), cp)
+  assert not enabled(True, make_params(b"1", persistent=None), cp)
+  assert not enabled(True, make_params(b"1", persistent=hda2), cp)
+  assert not enabled(True, make_params(b"1"), hda2), "a live fingerprint vetoes the stored one"
   failed.touch()
   assert not enabled(True, make_params(b"1"), cp)
 
