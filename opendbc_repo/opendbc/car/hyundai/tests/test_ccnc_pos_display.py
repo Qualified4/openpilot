@@ -13,8 +13,8 @@ LINES = (5.25, 1.75, -1.75, -5.25)
 DT = 0.05
 
 
-def obj(vid, x, y, now, lines=LINES, report=True):
-  return (vid, x, y, now, (now, x, y) if report else None, lines)
+def obj(vid, x, y, now, lines=LINES, report=True, side=True):
+  return (vid, x, y, now, (now, x, y) if report else None, lines, side)
 
 
 def frame(now, objs, selected, yaw=None, lead=None, heading=None):
@@ -195,6 +195,16 @@ def test_ping_pong_is_blocked_but_not_a_lane_change():
 
 
 @pytest.mark.parametrize("mode", [1, 2])
+@pytest.mark.parametrize("side, slot", [(True, 1), (False, 0)])
+def test_ff_choice_beside_the_lane_moves_aside_only_where_the_map_allows_a_side_slot(mode, side, slot):
+  """The map's FF choice 2.6 m left of the lane centre is drawn as LF when the map would let it into a side slot.
+  One the map keeps out of the side slots (opposing, approach-only or its bridged FF) stays FF."""
+  frames = [frame(i * DT, [obj(1, 8., 2.6, i * DT, side=side)], (1, None, None)) for i in range(20)]
+  out = run_both(mode, frames)
+  assert all(a == [1 if s == slot else None for s in range(3)] for a, _ in out)
+
+
+@pytest.mark.parametrize("mode", [1, 2])
 def test_rust_matches_python_on_random_frames(mode):
   rng = random.Random(7 + mode)
   frames, now = [], 0.
@@ -209,7 +219,7 @@ def test_rust_matches_python_on_random_frames(mode):
       if rng.random() < 0.9:
         lines = tuple(None if rng.random() < 0.1 else v + rng.uniform(-0.3, 0.3) for v in LINES)
         stamp = now - rng.choice((0., 0.02, 0.06))
-        objs.append((vid, c[0], c[1], stamp, (stamp, c[0], c[1]) if rng.random() < 0.9 else None, lines))
+        objs.append((vid, c[0], c[1], stamp, (stamp, c[0], c[1]) if rng.random() < 0.9 else None, lines, rng.random() < 0.8))
     keys = [o[0] for o in objs]
     selected = [rng.choice(keys + [None]) if keys else None for _ in range(3)]
     selected = [s if s not in selected[:i] else None for i, s in enumerate(selected)]
