@@ -27,6 +27,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.controls.lib.steer_ratio import resolve_vehicle_model_steer_ratio
 from openpilot.selfdrive.controls.lib.lateral_readiness import LateralStartupGate, lateral_vehicle_parameters
+from openpilot.selfdrive.controls.lib.corner_center import corner_center_curvature
 
 
 from openpilot.common.realtime import DT_CTRL, DT_MDL
@@ -222,8 +223,11 @@ class Controls:
       else:
         curvature = get_lag_adjusted_curvature(self.CP, CS.vEgo, lat_plan.psis, lat_plan.curvatures, steer_actuator_delay + lat_smooth_seconds, lat_plan.distances)
         new_desired_curvature = smooth_value(curvature, self.desired_curvature, lat_smooth_seconds)
-    else:      
-      new_desired_curvature = smooth_value(model_v2.action.desiredCurvature, self.desired_curvature, 0.1)
+    else:
+      model_curvature = model_v2.action.desiredCurvature
+      if lat_plan.cornerCenterActive:
+        model_curvature += corner_center_curvature(self.sm, CS.vEgo, CS.steeringPressed)
+      new_desired_curvature = smooth_value(model_curvature, self.desired_curvature, 0.1)
 
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
 

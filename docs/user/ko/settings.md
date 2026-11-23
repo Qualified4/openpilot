@@ -166,12 +166,12 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 폭스바겐의 별도 `SET`은 현재 속도 설정, `RES`는 이전 설정속도 복원에 사용하고, `+`·`-`는 버튼 모드·속도 단위·길게 누르기 설정을 따릅니다. 오픈파일럿 종방향 제어의 수동 인게이지 버튼은 기존 물리 `SET`·`RES`로 유지됩니다.
 
 <a id="vehicle-steering"></a>
-### 차량 조향 — 상위 36개 + ONNX 상세 6개 + 검색 전용 1개
+### 차량 조향 — 상위 37개 + ONNX 상세 6개 + 검색 전용 1개
 
 | 세부 구역 | 파라미터 | 용도 |
 |---|---|---|
 | ONNX 차선·BSD | `ShareData`, `OnnxBsdEnabled`, `OnnxLaneThreshold`, `OnnxLaneIntervalMs`, `OnnxBsdThreshold`, `OnnxBsdSmoothingMs`, `OnnxBsdIntervalMs` | 차선 종류 인식과 별도 카메라 BSD 실행 및 세부 조정 |
-| 중앙 보정 | `PathOffset`, `CameraYawTrimDeg` | 레인모드 경로의 좌우 위치와 카메라 YAW 미세 보정 |
+| 중앙 보정 | `PathOffset`, `CameraYawTrimDeg`, `LatCornerCenterBlend` | 레인모드 경로의 좌우 위치, 카메라 YAW 미세 보정, 레인리스 코너 중앙 보정 |
 | 조향감 | `SteerActuatorDelay`, `CenterToFrontRatio`, `LatSmoothSec`, `LatSuspendAngleDeg`, `CustomSR`, `SteerRatioRate` | 조향 시점, 평활화, 일시중지 각도와 조향비 |
 | [차로 변경](lane-change.md)·자동 턴 | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneChangeYellowSolid`, `LaneLineCheck`, `AutoTurnControl`, `AutoTurnControlRightLaneChange`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | 차로 변경 진입 조건과 ATC 동작 |
 | 레인모드 | `LatMpcPathCost`, `LatMpcMotionCost`, `LatMpcAccelCost`, `LatMpcJerkCost`, `LatMpcSteeringRateCost`, `LatMpcInputOffset`, `UseLaneLineSpeed`, `UseLaneLineCurveSpeed`, `AdjustLaneOffset` | 레인모드 MPC 가중치와 차선 사용 조건 |
@@ -182,6 +182,8 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 `ONNX 차선·BSD 인식`(`ShareData`)은 장치에서 차선 종류를 계산하는 설정입니다. 시각 BSD는 상세 화면의 별도 `OnnxBsdEnabled` 설정으로 켜야 하며 기본값은 꺼짐입니다. 켜면 모델이 추정한 차로 폭이 2m 이상인 설정된 좌우 영역을 번갈아 검사하고 속도나 차로 변경 방향은 실행 조건으로 사용하지 않습니다. BSD 모델은 사각지대 위협, 근접 차량 없음, 멀거나 뒤쪽에 있는 차량을 구분합니다. `OnnxBsdEnabled`가 꺼지면 BSD ONNX 네트워크를 언로드하지만 차선 인식은 계속됩니다. 차선 인식과 스냅샷을 위해 비전 서비스와 카메라 구독은 유지되며 차량 자체 BSD에는 영향이 없습니다. 상세 화면은 기능 토글을 맨 위에 유지하고, 바로 아래의 분리된 카드에 BSD 감지영역 편집기를 표시합니다. 좌우 선택, 영상 갱신, 점 되돌리기, 점 초기화와 영역 저장만 기본 화면에 두며, 영상 왼쪽 위의 사각형 점 목록은 `1(좌)`, `1(우)` 형식으로 표시됩니다. 선택된 점이 없을 때 빈 화면을 누르면 별도 모드 없이 점이 추가되고, 확대·화면 이동·영역 전체 이동 없이 선택된 점만 이동합니다. 4개 편집 버튼 바로 아래의 좌우 2열 버튼으로 도로·와이드 카메라 영상을 팝업에서 확인합니다. 실행 상태·좌우 신뢰도·처리 성능과 6개 상세 설정은 우측 아래의 **고급 설정 펼치기/접기** 텍스트로 봅니다. 편집기는 마지막 카메라 영상 한 장을 보관하고, 영상이 없으면 흐린 기본 주행 예시 화면을 표시합니다. 영역 저장은 현재 세션에서 실제 카메라 영상을 받은 뒤에만 가능합니다. BSD는 기본값이 꺼짐이며 저장한 설정은 서비스 재시작 후에도 유지됩니다. 필요한 OpenCV는 업데이트에 포함되어 정상 시작 시 자동 준비됩니다. ShareData가 켜져 있어도 서비스는 onroad 초기화와 모델·CAN·Panda 준비가 완료되어 주행 준비 상태가 0.5초 유지된 뒤 시작합니다. 실제 크루즈 활성화는 필요하지 않습니다. Offroad에서는 종료하고 다음 onroad에서도 다시 기다립니다. [동작 조건과 세부값](lane-change.md#sharedata--onnx-차선bsd-인식)을 참고하세요.
 
 `UseLaneLineSpeed`로 레인모드를 사용하더라도 모델 속도 궤적의 시작값이 실제 차속의 70% 미만이거나 끝값이 시작값의 70% 미만이면 일시적으로 레인리스로 전환합니다. 속도 조건이 약 1초간 연속으로 정상이고 기존 차선·속도 조건도 충족해야 레인모드로 복귀합니다.
+
+`LatCornerCenterBlend`(코너 중앙 보정)는 기본값이 `0`(꺼짐)인 시험 기능입니다. 레인리스 주행 중 코너에서 모델 경로가 차선 중앙보다 안쪽으로 치우치면, 그 차이의 설정 비율(`0~50%`)만큼 목표 곡률을 차선 중앙 쪽으로 보정합니다. 양쪽 차선 확률과 표준편차가 좋고, 차선 폭이 2.5~4.5m로 일정하며(합류·분기 아님), 모델이 차선을 따르고, 코너 가로 가속도와 곡률이 충분하고, 30km/h 안팎 이상일 때만 동작합니다. 차선 변경·자동 턴·방향지시등 중과 끝난 뒤 1초, 운전자 조향 중과 끝난 뒤 0.5초, 보정 쪽(코너 바깥쪽) 옆 차로에 움직이는 레이더 차량이나 BSD가 있을 때는 보정하지 않습니다. 레인모드가 켜진 경로와 폭스바겐 MEB에는 적용되지 않습니다. 실차에서 검증하지 않았고 기록된 주행 로그를 고정 입력으로 재생해서만 확인했습니다. 50%가 차량 위치를 50% 옮긴다는 뜻은 아니며, 실제 이동은 모델의 되당김 때문에 더 작습니다.
 
 `SteerActuatorDelay`는 높을수록 더 일찍 조향하도록 보상하고, `LatSmoothSec`는 높을수록 부드러워지는 대신 반응이 늦어질 수 있습니다. 두 값을 동시에 바꾸면 원인을 구분하기 어렵습니다.
 

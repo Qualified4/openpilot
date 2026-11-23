@@ -1379,6 +1379,13 @@ struct LateralPlan @0xe1e9318e2ae8b51e {
   position @35 :XYZTData;
   distances @36 :List(Float32);
 
+  # Corner centering (LatCornerCenterBlend > 0, laneless branch only). controlsd adds
+  # cornerCenterCurvature to modelV2.action.desiredCurvature when cornerCenterActive.
+  cornerCenterCurvature @37 :Float32;  # rad/m
+  cornerCenterActive @38 :Bool;
+  cornerCenterGate @39 :Float32;  # condition weight 0..1
+  cornerCenterBlock @40 :UInt32;  # bit mask, corner_center.BLOCK_REASONS
+
   struct SolverState {
     x @0 :List(List(Float32));
     u @1 :List(Float32);
