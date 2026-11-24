@@ -97,14 +97,14 @@ def test_lane_lines_do_not_depend_on_the_map(display, monkeypatch, map_process):
       return packet(now - NS // 2, generation=2), now - NS // 2  # late
     if t < 1.9:
       return packet(now, generation=2, valid=False), now
-    return packet(now, generation=3), now  # back after the 5 s recovery, reset again meanwhile
+    return packet(now, generation=3), now  # back after the 2 s recovery, reset again meanwhile
 
   using = {}
   for step in range(150):
     t = step / 20
     clock.now = NS + step * TICK
     # The recogniser has no fresh result on the frames where the map changes; the display keeps its last one.
-    quiet = t == .5 or 1. <= t < 1.1 or 6.8 <= t < 7.2
+    quiet = t == .5 or 1. <= t < 1.1 or 3.8 <= t < 4.2
     cs.ccnc_lane_marking = None if quiet else recognised
     cs.ccnc_map_bytes = map_input(t, clock.now)
     values = dict(send(step * 5))["ADRV_0x161"]
@@ -112,7 +112,9 @@ def test_lane_lines_do_not_depend_on_the_map(display, monkeypatch, map_process):
     link = getattr(canfd.ccnc_extension.state, "_rust_map_link", None)
     using[t] = link is not None and link.using_process
   if map_process:
-    assert [using[t] for t in (.45, .95, 1.2, 1.5, 1.8, 3., 6.8, 7.4)] == [True, True, False, False, False, False, False, True]
+    # Nothing received keeps the last map for 0.25 s after its last message (0.95 s).
+    assert [using[t] for t in (.45, .95, 1.2, 1.25, 1.5, 1.8, 3., 3.85, 3.9, 7.4)] == \
+      [True, True, True, False, False, False, False, False, True, True]
   else:
     assert not any(using.values())
 
@@ -141,10 +143,12 @@ def test_corrupt_message_falls_back_without_exception(display, monkeypatch):  # 
   templates(cs)
   clock = SimpleNamespace(now=NS)
   monkeypatch.setattr(canfd, "time", SimpleNamespace(monotonic_ns=lambda: clock.now, monotonic=lambda: clock.now / NS))
+  # Within 0.25 s of the last valid message card keeps its slots, then falls back.
   for frame, raw, want_process in (
     (0, packet(NS), True),
-    (5, b"broken", False),
-    (10, messaging.new_message("customReserved3", logMonoTime=NS + 2 * TICK, valid=True).to_bytes(), False),
+    (5, b"broken", True),
+    (10, messaging.new_message("customReserved3", logMonoTime=NS + 2 * TICK, valid=True).to_bytes(), True),
+    (30, b"broken", False),
   ):
     clock.now = NS + frame * TICK // 5
     pub.send(raw)
