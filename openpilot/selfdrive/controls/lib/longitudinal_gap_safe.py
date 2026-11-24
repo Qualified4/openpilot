@@ -26,6 +26,7 @@ ENABLE_TIME = 3.0          # s to blend in after the setting turns on while enga
 LEAD_DECEL_INV_RATE = 0.025  # 1/(m/s^2) per s: a level change that lengthens the gap (5 -> 8) takes 3 s
 LEAD_DECEL_LIMITS = (4.0, 10.0)
 REACTION_LIMITS = (0.3, 1.2)
+GAP_LEVELS = 4             # GapSafeLeadDecel1-4, one per LongitudinalPersonality
 
 
 class LeadGap(NamedTuple):

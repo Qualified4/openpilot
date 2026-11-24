@@ -462,9 +462,12 @@ class LongitudinalMpc:
       v_cruise, stop_x = carrot.v_cruise, carrot.stop_dist
       mode = 'acc' if tesla_stop_active else carrot.mode
 
+    # Gap level index as in CarrotPlanner._get_base_t_follow: aggressive (0) = level 1 ... moreRelaxed (3) = level 4.
+    gap_level = int(getattr(personality, 'raw', personality))
+    gap_safe_on = bool(gap_safe_enabled) and 0 <= gap_level < gap_safe.GAP_LEVELS
     self.gap_safe_state.update(
-      enabled=gap_safe_enabled, snap=reset_state, dt=self.dt,
-      lead_decel=carrot.gapSafeLeadDecel[int(getattr(personality, 'raw', personality))] if gap_safe_enabled else 0.0,
+      enabled=gap_safe_on, snap=reset_state, dt=self.dt,
+      lead_decel=carrot.gapSafeLeadDecel[gap_level] if gap_safe_on else 0.0,
     )
     # GapSafeDistance: lead nodes use the safety-distance parameters. Off (or before the
     # first blend step), every lead quantity below is the TF computation unchanged.

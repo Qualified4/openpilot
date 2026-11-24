@@ -203,3 +203,29 @@ def test_blended_mode_uses_the_original_path(native):
   assert on.lead_gap is None
   for name in FIELDS:
     np.testing.assert_array_equal(getattr(on, name), getattr(base, name))
+
+
+def test_gap_level_order_matches_tfollowgap(native):
+  """Cluster gap level n uses TFollowGap<n> and GapSafeLeadDecel<n> for every personality."""
+  from openpilot.selfdrive.carrot.carrot_functions import CarrotPlanner
+  tf = CarrotPlanner.__new__(CarrotPlanner)
+  tf.tFollowGap1, tf.tFollowGap2, tf.tFollowGap3, tf.tFollowGap4 = 1.0, 2.0, 3.0, 4.0
+  decels = [4.5, 6.5, 8.5, 9.5]
+  for name, personality in log.LongitudinalPersonality.schema.enumerants.items():
+    level = int(tf._get_base_t_follow(personality, 0.0))
+    mpc = native.LongitudinalMpc()
+    mpc.set_accel_limits(-3.5, 1.6)
+    radar = log.RadarState.new_message()
+    n = native.N + 1
+    mpc.update(carrot(gapSafeLeadDecel=decels), True, radar, V80, np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n),
+               personality=personality, gap_safe_enabled=True)
+    assert mpc.gap_safe_state.inv_lead_decel == pytest.approx(1 / decels[level - 1]), name
+
+
+def test_unknown_gap_level_turns_it_off(native):
+  mpc = native.LongitudinalMpc()
+  mpc.set_accel_limits(-3.5, 1.6)
+  radar = log.RadarState.new_message()
+  n = native.N + 1
+  mpc.update(carrot(), True, radar, V80, np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n), personality=7, gap_safe_enabled=True)
+  assert mpc.gap_safe_state.weight == 0.0 and mpc.lead_gap is None
