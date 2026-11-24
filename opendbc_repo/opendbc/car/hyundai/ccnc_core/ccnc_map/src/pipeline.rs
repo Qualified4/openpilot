@@ -431,9 +431,11 @@ impl Pipeline {
             },
             &mut slots,
         )?;
+        let split = self.slots.split_alongside(&mut slots);
         self.radar_slots = slots;
         self.vision.apply(now, car.speed, self.world.pose.at(now), &mut slots);
-        crate::slots::keep_remembered(remembered, &self.radar_slots, &mut slots);
+        let protected = [false, remembered[0] || split[0], remembered[1] || split[1], split[0], split[1]];
+        crate::slots::keep_radar(protected, &self.radar_slots, &mut slots);
         let asking = self.vision_seen.is_some_and(|seen| stamp.saturating_sub(seen) <= VISION_ALIVE_NS);
         for slot in slots[..3].iter_mut().flatten() {
             slot.kind_wanted = asking

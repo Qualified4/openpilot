@@ -1,5 +1,5 @@
 use ccnc_map::rear::{WorldInput, WorldRear};
-use ccnc_map::slots::{keep_remembered, Assigner, Slot, VISION_CONFIRMS, VISION_NONE, VISION_ONLY};
+use ccnc_map::slots::{keep_radar, Assigner, Slot, VISION_CONFIRMS, VISION_NONE, VISION_ONLY};
 use ccnc_map::vehicles::{Flags, Tracker, Vehicle};
 use ccnc_map::world::{World, RADAR_LAG};
 
@@ -508,13 +508,75 @@ fn a_remembered_car_stays_when_the_camera_would_replace_it() {
     let mut slots = radar;
     slots[LF] = Some(camera_car);
     slots[RF] = Some(Slot { lateral: -3.5, ..camera_car });
-    keep_remembered([true, false], &radar, &mut slots);
+    keep_radar([false, true, false, false, false], &radar, &mut slots);
     assert_eq!(slots[LF], Some(Slot { vision: VISION_CONFIRMS, ..radar_car }));
     assert_eq!(slots[RF].map(|s| s.vision), Some(VISION_ONLY));
     // A camera confirmation, or no camera answer, leaves the slot as it is.
     let mut slots = radar;
     slots[LF] = Some(Slot { vision: VISION_CONFIRMS, ..radar_car });
-    keep_remembered([true, true], &radar, &mut slots);
+    keep_radar([false, true, true, false, false], &radar, &mut slots);
     assert_eq!(slots[LF].map(|s| (s.vid, s.vision)), Some((7, VISION_CONFIRMS)));
     assert_eq!(slots[RF], radar[RF]);
+}
+
+const LR: usize = 3;
+
+/// Cars in the left lane at these distances, drawn and then split.
+fn left_pair(assigner: &mut Assigner, world: &World, now: f64, xs: &[f64]) -> [Option<Slot>; 5] {
+    let cars: Vec<_> = xs.iter().enumerate().map(|(i, &x)| vehicle(world, i as u32 + 1, now, x, -1.)).collect();
+    let mut slots = assigner.update(now, &cars, world, None);
+    assigner.split_alongside(&mut slots);
+    slots
+}
+
+#[test]
+fn a_car_alongside_with_another_ahead_is_drawn_in_the_rear_slot() {
+    let world = road();
+    let slots = left_pair(&mut Assigner::default(), &world, 0., &[3., 35.]);
+    assert_eq!(slots[LR].map(|s| (s.vid, s.distance)), Some((1, 0.)));
+    assert_eq!(slots[LF].map(|s| (s.vid, s.distance)), Some((2, 35.)));
+    // The rear drawing keeps the car's observed lateral.
+    let alone = Assigner::default().update(0., &[vehicle(&world, 1, 0., 3., -1.)], &world, None);
+    assert_eq!(slots[LR].unwrap().lateral, alone[LF].unwrap().lateral);
+}
+
+#[test]
+fn a_single_car_alongside_stays_in_the_front_slot() {
+    let world = road();
+    let slots = left_pair(&mut Assigner::default(), &world, 0., &[3.]);
+    assert_eq!(slots[LF].map(|s| (s.vid, s.distance)), Some((1, 3.)));
+    assert_eq!(slots[LR], None);
+}
+
+#[test]
+fn the_side_pair_switches_once_each_way() {
+    let world = road();
+    let mut assigner = Assigner::default();
+    let mut switches = Vec::new();
+    let mut previous = None;
+    // The near car comes from 5.5 m to 4.5 m and back out to 6.5 m, with 0.3 m of noise.
+    let path = (0..=40).map(|i| 5.5 - 0.025 * f64::from(i)).chain((0..=80).map(|i| 4.5 + 0.025 * f64::from(i)));
+    for (i, x) in path.enumerate() {
+        let now = i as f64 * 0.05;
+        let noise = if i % 2 == 0 { 0.3 } else { -0.3 };
+        let slots = left_pair(&mut assigner, &world, now, &[x + noise, 35.]);
+        let alongside = slots[LR].is_some_and(|s| s.vid == 1);
+        assert_eq!(slots[LF].unwrap().vid, if alongside { 2 } else { 1 }, "at {now:.2}");
+        if previous.is_some_and(|p| p != alongside) {
+            switches.push((now, alongside));
+        }
+        previous = Some(alongside);
+    }
+    assert_eq!(switches.iter().map(|s| s.1).collect::<Vec<_>>(), [true, false], "{switches:?}");
+}
+
+#[test]
+fn the_car_alongside_replaces_a_rear_handover_drawing() {
+    let world = road();
+    let mut assigner = Assigner::default();
+    let cars = [vehicle(&world, 1, 0., 3., -1.), vehicle(&world, 2, 0., 35., -1.)];
+    let mut slots = assigner.update(0., &cars, &world, None);
+    slots[LR] = Some(Slot { vid: 9, distance: -8., ..slots[LF].unwrap() });
+    assert_eq!(assigner.split_alongside(&mut slots), [true, false]);
+    assert_eq!(slots[LR].map(|s| s.vid), Some(1));
 }

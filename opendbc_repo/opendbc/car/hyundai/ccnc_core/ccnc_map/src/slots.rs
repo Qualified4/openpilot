@@ -10,6 +10,10 @@ const OBSERVATION_MAX_AGE: f64 = 0.15;
 const FF_PREFERENCE_M: f32 = 1.0;
 /// The legacy selector's stop memory range ahead (`Consts::memory_max_x`); the map keeps LF and RF at x >= 0.
 const MEMORY_MAX_X: f64 = 15.;
+/// Two cars in one side lane: the nearer one, this close ahead or less, is drawn alongside in that side's rear slot.
+const ALONGSIDE_ENTER_M: f64 = 5.0;
+/// ... and back in the front slot beyond this.
+const ALONGSIDE_EXIT_M: f64 = 6.0;
 const EPS: f64 = 1e-9;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -114,6 +118,10 @@ pub struct Assigner {
     /// The last radar car drawn in LF and RF within the stop memory's range, with its world position from ego's pose
     /// at that time. A farther car passing through the slot cannot be remembered and does not replace it.
     side_last: [Option<(Slot, (f64, f64))>; 2],
+    /// The second nearest radar car for LF and RF at the last update.
+    runner_up: [Option<Slot>; 2],
+    /// The vid `split_alongside` draws alongside in LR and RR.
+    alongside: [Option<u32>; 2],
 }
 
 impl Default for Assigner {
@@ -123,6 +131,8 @@ impl Default for Assigner {
             drawings: Vec::with_capacity(MAX_VEHICLES),
             previous_ff: None,
             side_last: [None; 2],
+            runner_up: [None; 2],
+            alongside: [None; 2],
         }
     }
 }
@@ -136,12 +146,11 @@ fn shown_kind(car: &Vehicle) -> Option<crate::vehicles::Kind> {
     car.kind.filter(|k| car.link == Link::Sure || k.inherited)
 }
 
-/// While ego holds, the radar's stop memory owns LF and RF: where the wide camera replaced a remembered car, the
-/// remembered car stays and the camera only confirms it. `radar` is the slots before the camera.
-pub fn keep_remembered(remembered: [bool; 2], radar: &[Option<Slot>; 5], slots: &mut [Option<Slot>; 5]) {
-    for side in 0..2 {
-        let index = side + 1;
-        if let Some(kept) = radar[index].filter(|_| remembered[side]) {
+/// The radar's own rules (the stop memory, a side pair) own their slots: where the wide camera replaced such a car,
+/// it stays and the camera only confirms it. `radar` is the slots before the camera.
+pub fn keep_radar(protected: [bool; 5], radar: &[Option<Slot>; 5], slots: &mut [Option<Slot>; 5]) {
+    for (index, kept) in radar.iter().enumerate() {
+        if let Some(kept) = kept.filter(|_| protected[index]) {
             if slots[index].is_some_and(|s| s.vision != VISION_NONE) {
                 slots[index] = Some(Slot { vision: VISION_CONFIRMS, ..kept });
             }
@@ -172,6 +181,7 @@ impl Assigner {
             self.drawings.clear();
             self.previous_ff = None;
             self.side_last = [None; 2];
+            self.alongside = [None; 2];
         }
         if !now.is_finite() || !world.accepts_radar() || !world.u_ego().is_finite() {
             return [None; 5];
@@ -206,6 +216,7 @@ impl Assigner {
         // Keep a qualifying FF across small distance changes when no lead matches.
         let preferred_ff = followed.or(self.previous_ff);
         let mut best: [Option<Slot>; 5] = [None; 5];
+        let mut second: [Option<Slot>; 2] = [None; 2];
         for car in vehicles {
             if !current(car.seen_radar.max(car.seen_vision)) {
                 continue;
@@ -297,9 +308,15 @@ impl Assigner {
                 (s.distance.abs() - advantage, s.vid)
             };
             if best[slot].is_none_or(|old| rank(candidate) < rank(old)) {
+                if slot == 1 || slot == 2 {
+                    second[slot - 1] = best[slot];
+                }
                 best[slot] = Some(candidate);
+            } else if (slot == 1 || slot == 2) && second[slot - 1].is_none_or(|old| rank(candidate) < rank(old)) {
+                second[slot - 1] = Some(candidate);
             }
         }
+        self.runner_up = second;
         self.previous_ff = best[0].map(|s| s.vid);
         let ego = world.pose.at(now);
         for side in 0..2 {
@@ -308,6 +325,28 @@ impl Assigner {
             }
         }
         best
+    }
+
+    /// Two radar cars in one side lane, the nearer 0-5 m ahead (until 6 m): draw the nearer one alongside, at 0 m in
+    /// that side's rear slot, and the next one in the front slot. It replaces any rear handover drawing there: the car
+    /// alongside is nearer and measured. With one car the front slot keeps it until it falls behind and the handover
+    /// takes it. Kind, camera mark, v_rel and lateral go with the vid. Returns the sides split.
+    pub fn split_alongside(&mut self, slots: &mut [Option<Slot>; 5]) -> [bool; 2] {
+        let mut split = [false; 2];
+        for side in 0..2 {
+            let (front, rear) = (side + 1, side + 3);
+            let pair = slots[front].zip(self.runner_up[side]).filter(|(near, next)| {
+                let limit = if self.alongside[side] == Some(near.vid) { ALONGSIDE_EXIT_M } else { ALONGSIDE_ENTER_M };
+                near.vid != next.vid && (0. ..=limit).contains(&f64::from(near.distance))
+            });
+            self.alongside[side] = pair.map(|(near, _)| near.vid);
+            if let Some((near, next)) = pair {
+                slots[rear] = Some(Slot { distance: 0., ..near });
+                slots[front] = Some(next);
+                split[side] = true;
+            }
+        }
+        split
     }
 
     /// The vids `hold_stopped` may draw, for the tracker to keep while ego holds.
