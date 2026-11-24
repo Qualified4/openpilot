@@ -8,6 +8,13 @@ import numpy as np
 
 RECOVERY_TAU = (5.0, 4.0, 3.0, 2.0, 1.0)
 MAX_TOTAL_TF = 2.5
+# Headroom kept above a safety-distance gap: it reads as 2.3-2.5 s TF on levels 3-4 at 90-100 km/h,
+# which left no headroom under MAX_TOTAL_TF and turned the opening-gap hold off there.
+MIN_HEADROOM_TF = 0.5
+
+
+def headroom_cap(base_tf, min_headroom=0.0):
+  return max(min_headroom, MAX_TOTAL_TF - base_tf)
 CAPTURE_FRACTION = 0.5
 MIN_CAPTURE_SPEED = 1.0
 STOPPED_SPEED = 0.3
@@ -31,16 +38,18 @@ class LeadGapState:
     self.distance = 0.0
     self.desired_distance = 0.0
     self.relative_speed = 0.0
+    self.min_headroom = 0.0
 
   def update(self, *, level, track_id, enabled, dt, ego_speed, lead_speed, relative_speed,
-             distance, desired_distance, base_tf, stop_distance=6.0):
+             distance, desired_distance, base_tf, stop_distance=6.0, min_headroom=0.0):
     values = (dt, ego_speed, lead_speed, relative_speed, distance, desired_distance, base_tf, stop_distance)
     if (not enabled or level not in range(len(RECOVERY_TAU)) or track_id < 0
         or not all(map(math.isfinite, values)) or dt <= 0.0 or ego_speed < 0.0 or distance <= 0.0 or base_tf < 0.0 or stop_distance < 0.0):
       self.__init__()
       return 0.0
 
-    cap = max(0.0, MAX_TOTAL_TF - base_tf)
+    self.min_headroom = min_headroom
+    cap = headroom_cap(base_tf, min_headroom)
     candidate = min(cap, CAPTURE_FRACTION * max(0.0, distance - desired_distance) / max(ego_speed, MIN_CAPTURE_SPEED))
     key = (level, track_id)
     acquired = key != self.key
@@ -95,7 +104,7 @@ class LeadGapState:
                          ego_speed=float(ego_speeds[i]), lead_speed=float(lead_speeds[i]),
                          relative_speed=float(relative_speeds[i]), distance=max(1e-3, float(lead_distances[i])),
                          desired_distance=float(desired_distances[i]), base_tf=base_tf, stop_distance=stop_distance)
-      margins[i] = max(0.0, ego_speeds[i]) * min(predicted.extra_tf, max(0.0, MAX_TOTAL_TF - base_tf)) * entry_weight(predicted.strength)
+      margins[i] = max(0.0, ego_speeds[i]) * min(predicted.extra_tf, headroom_cap(base_tf, self.min_headroom)) * entry_weight(predicted.strength)
       previous_time = t
     return margins
 

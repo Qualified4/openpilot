@@ -185,26 +185,29 @@ On vehicles with adjustable gains, tune delay first only if acceleration and bra
 <a id="following-gap"></a>
 ## 5. Following gap
 
-The gap to a lead is set by the safety-distance levels below. `TFollowGap1`–`TFollowGap4` set the base time gap for the cruise target, traffic stops and blended mode.
+The gap to a lead is set by the safety-distance levels below (ACC and blended mode). `TFollowGap1`–`TFollowGap4` set the base time gap for the cruise target and traffic stops.
 
 ### Following a lead: safety-distance gap levels
 
-When following a lead, gap levels 1–4 no longer pick a time gap but how hard the lead may brake at most. This is always on, with no setting (openpilot longitudinal control, ACC mode).
+When following a lead, gap levels 1–4 no longer pick a time gap but how hard the lead may brake at most. This is always on, with no setting (openpilot longitudinal control, ACC and blended mode).
 
-| Level | Assumed lead maximum braking | Same-speed following gap at 30 / 50 / 80 / 100 km/h (stop distance 3.7 m) |
+| Level | Assumed lead maximum braking | Same-speed following gap at 10 / 30 / 50 / 80 / 100 km/h (stop distance 3.7 m) |
 |---|---:|---|
-| 1 | 5.0 m/s² | 13.4 / 21.7 / 37.2 / 49.4m |
-| 2 | 6.0 m/s² | 14.5 / 24.9 / 45.4 / 62.2m |
-| 3 | 7.0 m/s² | 15.3 / 27.2 / 51.3 / 71.4m |
-| 4 | 8.0 m/s² | 16.0 / 29.0 / 55.7 / 78.3m |
+| 1 | 5.0 m/s² | 6.3 / 12.9 / 20.7 / 33.7 / 43.5m |
+| 2 | 6.0 m/s² | 6.6 / 14.5 / 24.6 / 43.0 / 57.8m |
+| 3 | 7.0 m/s² | 6.8 / 15.8 / 27.7 / 50.2 / 68.5m |
+| 4 | 8.0 m/s² | 7.4 / 18.0 / 31.7 / 56.6 / 76.6m |
 
 - Minimum gap `d_min = 0.6 s × ego speed + ego speed²/(2 × 4.0) − lead speed²/(2 × assumed braking) + StopDistanceCarrot`: from this gap ego, braking at up to 4.0 m/s² after 0.6 s, still stops at the stop distance behind a lead braking that hard. Inside it is treated as the danger zone.
-- The comfort target is `d_min + 0.35 s × ego speed`. While closing on a slower lead, it adds 1.0 m per m/s of speed difference plus the distance needed to shed that difference at `ComfortBrake`, so braking starts earlier. At equal speed nothing is added. From 3.0 m/s (about 11 km/h) down to 0.5 m/s ego speed this whole comfort margin fades to 0, so behind a stopped lead the car stops at the `StopDistanceCarrot` distance. While ego brakes hard (less fade from −1.5 m/s², none at −2.0 m/s² or below) the margin is kept.
-- When closing at 15 km/h or more on a stopped or slow lead with a time gap (distance ÷ ego speed) of at least 1.5 s, the plan follows a stop at the constant deceleration fixed when the lead was found (0.5–2.0 m/s²), braking early and softly. It fades out over 0.5 s when the lead pulls away 30 m or more ahead or speeds up, and releases at once for a lead change or driver brake/accelerator input. Obstacles and the danger constraint are unchanged.
-- A lead cutting in closer than the comfort target while closing at 1.5 m/s or less and not braking is not chased: the part of the missing gap beyond the comfort margin is recovered at 1.5 m per second. The danger zone and the target may shrink with it, but never below the previous time-gap danger zone and target, so a cut-in is never handled more loosely than before. The easing ends at once when that car brakes (below −0.5 m/s²). A faster-closing or braking cut-in gets the full response at once. A new track for what looks like the same car (within 1.5 m), a lead seen again after a dropout, and the lead after an ego lane change get no easing. Ego lane changes keep their existing handling.
+- The comfort target is `d_min + comfort time × ego speed`. The comfort time is 0.30/0.35/0.41/0.60 s for levels 1–4 at 40 km/h and below and 0.14/0.19/0.245/0.29 s at 100 km/h and above, changing with speed in between. A level change moves it together with the assumed lead braking (about 3 s toward a longer gap). While closing on a slower lead, it adds 1.0 m per m/s of speed difference plus the distance needed to shed that difference at `ComfortBrake`, so braking starts earlier. At equal speed nothing is added. From 3.0 m/s (about 11 km/h) down to 0.5 m/s ego speed this whole comfort margin fades to 0, so behind a stopped lead the car stops at the `StopDistanceCarrot` distance. While ego brakes hard (less fade from −1.5 m/s², none at −2.0 m/s² or below) the margin is kept.
+- While the lead accelerates, the target calculation assumes that acceleration ends sooner (half the predicted speed gain), so ego does not copy every lead acceleration. Lead braking, the danger-zone calculation and closing on the lead by more than 2 m/s keep the full prediction.
+- With a gap above the comfort target, the early-deceleration preview for a small lead slowdown pulls in less (a quarter with a reserve of 1 s of ego speed). A lead braking harder than −1.0 m/s² gets the full preview regardless.
+- When closing at 15 km/h or more on a stopped or slow lead with a time gap (distance ÷ ego speed) of at least 1.5 s, the plan follows a stop at the constant deceleration fixed when the lead was found (0.5–2.0 m/s²), braking early and softly. Above about 22 km/h the closing distance is left out and the plan follows that stop, so the gap at 20 km/h is about 15 m (below about 11 km/h it is kept for a soft stop). It fades out over 0.5 s when the lead pulls away 30 m or more ahead or speeds up (including by more than 0.3 m/s within 1 s), and releases at once for a lead change or driver brake/accelerator input. Obstacles and the danger constraint are unchanged.
+- A lead cutting in closer than the comfort target (without the closing distance) while closing at 1.5 m/s or less and not braking is not chased: the part of the missing gap beyond the comfort margin is recovered at 1.5 m per second. The danger zone and the target may shrink with it, but never below the previous time-gap danger zone and target, so a cut-in is never handled more loosely than before. The easing ends at once when that car brakes (below −0.5 m/s²). A faster-closing or braking cut-in gets the full response at once. A new track for what looks like the same car (within 1.5 m), a lead seen again within 2 s, and the lead after an ego lane change get no easing. Only radar track numbers identify the same car (camera-only leads are never one car). Ego lane changes keep their existing handling; the cut-in easing and the cut-out / lane-change easing do not add up, the larger one applies.
 - Without a lead, and for a lead faster than the set speed, the set speed is the limit as before: obstacles are compared by their own target distance.
-- `TFollowGap1`–`TFollowGap4` and `SpeedTFFactor` now set the cruise target, traffic-stop and Tesla-stop calculations and lead following in blended (e2e) mode. Drive-mode scaling and the `TFollowDecelBoost` addition are added as comfort seconds. The level number still selects `LeadAccelResponseTF1`–`LeadAccelResponseTF4`.
-- Same-speed gaps are longer than the old time gaps (for example at 100 km/h: level 1 28→49 m, level 4 57→78 m). Checked only by log replay; not validated on a vehicle. At level 4, when a lead brakes at −3, releases and then stops at −6, the stop gap was 0.02–0.05 m shorter than before.
+- In blended (e2e) mode the lead constrains at the same comfort target, so a mode change keeps the target gap.
+- `TFollowGap1`–`TFollowGap4` and `SpeedTFFactor` set the cruise target, traffic-stop and Tesla-stop calculations and the floor of the cut-in easing (the previous time-gap danger zone); they do not set the lead-following gap. Drive-mode scaling and the `TFollowDecelBoost` addition are not added to the lead-following gap either. The level number still selects `LeadAccelResponseTF1`–`LeadAccelResponseTF4`.
+- Same-speed gaps are longer than the old time gaps (for example at 100 km/h: level 1 28→44 m, level 4 57→77 m). Checked only by log replay; not validated on a vehicle. At level 4, when a lead brakes at −3, releases and then stops at −6, the stop gap was 0.02–0.05 m shorter than before.
 
 ### Gap cycle levels
 

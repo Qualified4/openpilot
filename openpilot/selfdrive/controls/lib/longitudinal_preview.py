@@ -314,12 +314,28 @@ def get_lead_accel_mpc_request(
   )
 
 
+# Gap reserve above the steady comfort target, in s of ego speed: the preview shrinks to
+# PREVIEW_RESERVE_SCALE_MIN at PREVIEW_RESERVE_FULL_S, so a small lead slowdown far behind the
+# target pulls the braking in less. The reserve is 0 while the lead brakes harder than -1.0 m/s^2.
+PREVIEW_RESERVE_FULL_S = 1.0
+PREVIEW_RESERVE_SCALE_MIN = 0.25
+
+
+def preview_reserve_scale(gap_reserve: float, v_ego: float) -> float:
+  if not math.isfinite(gap_reserve) or not math.isfinite(v_ego) or gap_reserve <= 0.0:
+    return 1.0
+  frac = min(1.0, gap_reserve / max(1.0, v_ego) / PREVIEW_RESERVE_FULL_S)
+  return 1.0 - frac * (1.0 - PREVIEW_RESERVE_SCALE_MIN)
+
+
 def get_lead_preview_request(
   driving_mode,
   *,
   lead_status: bool,
   a_lead: float,
   a_ego: float = 0.0,
+  gap_reserve: float = 0.0,
+  v_ego: float = 0.0,
 ) -> PreviewRequest:
   """Map negative relative acceleration to an early-deceleration preview."""
   tuning = MODE_TUNING.get(_mode_value(driving_mode))
@@ -328,7 +344,7 @@ def get_lead_preview_request(
 
   lead_accel_signal = _lead_accel_signal(a_lead, a_ego, tuning.ego_accel_factor)
   offset_s = (
-    min(-lead_accel_signal * tuning.decel_factor, tuning.decel_preview_max)
+    min(-lead_accel_signal * tuning.decel_factor, tuning.decel_preview_max) * preview_reserve_scale(gap_reserve, v_ego)
     if lead_accel_signal < 0.0 else 0.0
   )
   return PreviewRequest(float(offset_s), float(lead_accel_signal), True)

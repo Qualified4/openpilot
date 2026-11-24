@@ -10,7 +10,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, N
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import A_CHANGE_COST_RAMP_TIME, LongitudinalMpc, N
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, is_volkswagen_meb
 from openpilot.selfdrive.controls.lib.cutin_predecel import (
@@ -73,6 +73,7 @@ class LongitudinalPlanner:
     self._signal_prepare_time = None
     self._signal_prepare_previous = None
     self.lead_preview = 0.0
+    self.a_change_cost_ramp = 1.0
     self.lead_preview_action_time = 0.0
     self.lead_preview_accel = 0.0
     self.lead_track_ids = [-1, -1]
@@ -205,6 +206,11 @@ class LongitudinalPlanner:
 
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
+    # After a standstill the change cost ramps back in (a step to A_CHANGE_COST halved the aTarget rise).
+    if sm['carState'].standstill and not reset_state:
+      self.a_change_cost_ramp = 0.0
+    else:
+      self.a_change_cost_ramp = min(1.0, self.a_change_cost_ramp + self.dt / A_CHANGE_COST_RAMP_TIME)
 
     if self.mpc.mode == 'acc':
       #accel_limits = [A_CRUISE_MIN, get_max_accel(v_ego)]
@@ -291,6 +297,7 @@ class LongitudinalPlanner:
       prev_accel_constraint=prev_accel_constraint,
       jerk_factor=carrot.jerk_factor,
       a_change_cost_starting=carrot.aChangeCostStarting,
+      a_change_cost_ramp=self.a_change_cost_ramp,
       lead_accel_response_enabled=lead_accel_response_enabled,
       lead_gap_enabled=(
         not reset_state and not sm['carState'].gasPressed
@@ -369,6 +376,8 @@ class LongitudinalPlanner:
       ),
       a_lead=lead.aLeadK,
       a_ego=sm['carState'].aEgo,
+      gap_reserve=self.mpc.gap_reserves[lead_index],
+      v_ego=v_ego,
     )
     if preview_enabled:
       # Losing radar support stops requesting preview; it must not erase an

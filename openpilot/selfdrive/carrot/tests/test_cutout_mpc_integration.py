@@ -32,7 +32,8 @@ def run_update(*, confidence=0., mode="acc", reset=False, enabled=True, second_d
   methods = [node for node in mpc.body if isinstance(node, ast.FunctionDef)
              and node.name in ("update", "update_predicted_danger_margin", "process_lead", "extrapolate_lead", "set_weights")]
   helpers = [node for node in tree.body if isinstance(node, ast.FunctionDef)
-             and node.name in ("get_stopped_equivalence_factor", "get_safe_obstacle_distance", "desired_follow_distance", "get_a_change_cost")]
+             and node.name in ("get_stopped_equivalence_factor", "get_safe_obstacle_distance", "desired_follow_distance", "get_a_change_cost",
+                                               "bind_obstacles", "binding_reference")]
   times = np.array([10.*(i/12)**2 for i in range(13)])
   namespace = {"np": np, "gap_safe": TF_LEAD_PATH, "COMFORT_RELIEF_MIN_TF": COMFORT_RELIEF_MIN_TF, "log": NS(LongitudinalPersonality=NS(standard=1)),
                    "COMFORT_BRAKE": 2.5, "STOP_DISTANCE": 6., "ACCEL_MIN": -3.5, "N": 12,
@@ -43,6 +44,7 @@ def run_update(*, confidence=0., mode="acc", reset=False, enabled=True, second_d
                    "A_CHANGE_COST": 200., "X_EGO_OBSTACLE_COST": 5.,
                    "X_EGO_COST": 0., "V_EGO_COST": 0., "A_EGO_COST": 0.,
                    "LIMIT_COST": 1e6, "DANGER_ZONE_COST": 100., "LEAD_ACCEL_TAU": 1.5,
+                   "LEAD_ACCEL_COST_POS_TAU_FACTOR": 4., "LEAD_ACCEL_COST_POS_REL_SPEEDS": (-2., -.5), "MIN_HEADROOM_TF": .5,
                    "LEAD_ACCEL_MIN_TRACK_FRAMES": 3,
                    "gap_reference": gap_reference, "displayed_follow_distance": displayed_follow_distance,
                    "braking_gap_reference": braking_gap_reference,
@@ -74,7 +76,8 @@ def run_update(*, confidence=0., mode="acc", reset=False, enabled=True, second_d
             x_sol=np.column_stack([15.*times, np.full(13,15.), np.zeros(13)]), run=lambda:None)
   def process_lead(l):
     distance, speed = (l.dRel, l.vLead) if l.status else (50., 25.)
-    return np.column_stack([distance + speed * times, np.full(13, speed)]), speed
+    xv = np.column_stack([distance + speed * times, np.full(13, speed)])
+    return xv, speed, xv
   self.process_lead = process_lead
   self.weight_calls = []
   self.set_cost_weights = lambda *args:self.weight_calls.append(args)
