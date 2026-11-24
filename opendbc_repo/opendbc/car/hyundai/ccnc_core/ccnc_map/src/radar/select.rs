@@ -115,6 +115,29 @@ pub fn approach_only(o: &MapObject) -> bool {
     !(o.radar_moving || o.forward_samples != 0 || o.vision_seen || o.admitted)
 }
 
+/// `_stop_memory`'s test for one object at ego distance `x`, apart from its slot and how long it has been unseen:
+/// a vehicle that left radar coverage resting or alongside, and that a stopping ego keeps drawing.
+pub(crate) fn rememberable(k: &Consts, frame: Frame, now: f64, o: &MapObject, x: f64) -> bool {
+    if o.departed
+        || o.superseded
+        || o.structure
+        || (o.vehicle < 0.6 && !o.admitted)
+        || o.hits < 3
+        || o.existence < 0.5
+        || !(k.memory_min_x <= x && x <= k.memory_max_x)
+    {
+        return false;
+    }
+    // A vehicle that was crossing, turning or oncoming when it left coverage is gone, not waiting.
+    let (forward, lateral) = o.last_motion;
+    let resting = o.stationary || hypot(forward, lateral) <= 0.6;
+    let alongside = lateral.abs() <= 0.6 && (0. ..=3.).contains(&forward) && now - o.seen <= k.memory_moving_hold;
+    (resting || alongside)
+        && !crossing(o, frame, k.crossing_travel)
+        && (o.motion_confirmed || (o.tracked as f64) >= k.memory_tracked)
+        && !approach_only(o)
+}
+
 /// `_wall_outside(x, y)`.
 pub(crate) fn wall_outside(walls: &[Vec<Xy>], x: f64, y: f64) -> bool {
     walls
@@ -591,29 +614,9 @@ impl Selector<'_> {
         for o in self.st.objects.values() {
             let (x, _) = self.st.local_xy(o.key)?;
             if o.slot != Some(slot as i64)
-                || o.departed
-                || o.superseded
-                || o.structure
-                || (o.vehicle < 0.6 && !o.admitted)
-                || o.hits < 3
-                || o.existence < 0.5
                 || self.now - o.seen <= k.prediction_hold + 1e-6
-                || !(k.memory_min_x <= x && x <= k.memory_max_x)
+                || !rememberable(k, self.frame, self.now, o, x)
             {
-                continue;
-            }
-            // A vehicle that was crossing, turning or oncoming when it left coverage is gone, not waiting.
-            let (forward, lateral) = o.last_motion;
-            let resting = o.stationary || hypot(forward, lateral) <= 0.6;
-            let alongside =
-                lateral.abs() <= 0.6 && (0. ..=3.).contains(&forward) && self.now - o.seen <= k.memory_moving_hold;
-            if !(resting || alongside)
-                || crossing(o, self.frame, k.crossing_travel)
-                || (!o.motion_confirmed && (o.tracked as f64) < k.memory_tracked)
-            {
-                continue;
-            }
-            if approach_only(o) {
                 continue;
             }
             let candidate = (Some(o.key) != self.st.selected[slot], x.abs(), o.key);

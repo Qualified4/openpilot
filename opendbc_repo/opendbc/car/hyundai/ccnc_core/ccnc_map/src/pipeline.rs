@@ -9,13 +9,14 @@ use crate::input::{
 use crate::radar::{
     associate::RadarPoint,
     consts::Consts,
+    select::rememberable,
     lanes::GeometryInput,
     state::{Observation, UpdateIn},
     Frame, MapState, Range, Result,
 };
 use crate::rear::{WorldInput, WorldRear};
 use crate::slots::{Assigner, Slot};
-use crate::vehicles::{Tracker, MAX_VEHICLES};
+use crate::vehicles::{Tracker, Vehicle, MAX_VEHICLES};
 use crate::vision::{self, Vision};
 use crate::world::{World, RADAR_LAG, STATUS_FROZEN};
 use std::collections::VecDeque;
@@ -82,6 +83,8 @@ pub struct Pipeline {
     radar: MapState,
     tracker: Tracker,
     slots: Assigner,
+    /// The last radar update's `stopped` (ego at or below 0.3 km/h), for the legacy `holding`.
+    stopped: bool,
     rear: WorldRear,
     generation_base: u32,
     radar_generation: u32,
@@ -112,6 +115,7 @@ impl Pipeline {
             // With its ID history: a classifier answer finds its car at the frame's radar update (`vid_at`).
             tracker: Tracker::default(),
             slots: Assigner::default(),
+            stopped: false,
             rear: WorldRear::default(),
             generation_base,
             radar_generation: 0,
@@ -318,6 +322,12 @@ impl Pipeline {
             .lead
             .filter(|(t, _)| fresh(stamp, *t))
             .and_then(|(_, lead)| lead);
+        // card's `holding` (vehicle_display.rs): stopped, or below 10 km/h and braking unless stopped a frame ago.
+        let speed = car.speed.max(0.);
+        let stopped = speed <= 0.3 / 3.6;
+        let holding = stopped
+            || (!self.stopped && speed <= 10. / 3.6 && car.accel.is_finite() && car.accel < -0.1 / 3.6);
+        self.stopped = stopped;
         let mut tracks = Vec::with_capacity(input.len().min(MAX_VEHICLES));
         let mut measured = Vec::with_capacity(tracks.capacity());
         for point in input.iter().filter(|p| p.source == 0).take(MAX_VEHICLES) {
@@ -355,7 +365,7 @@ impl Pipeline {
             now,
             car.speed,
             yaw,
-            car.standstill,
+            holding,
             None,
             Range {
                 min_x: RADAR.min_x,
@@ -384,7 +394,7 @@ impl Pipeline {
                 radar_stamp: Some(now),
                 a_ego: if car.accel.is_finite() { car.accel } else { 0. },
                 yaw_rate: yaw,
-                holding: car.standstill,
+                holding,
                 ego_change: changing,
                 model_stamp: self.model_stamp.map(seconds),
                 model_changing: changing,
@@ -398,6 +408,7 @@ impl Pipeline {
             },
         )?;
         let ego_changing = self.ego_changing(now, car.blinker);
+        self.tracker.keep(if holding { self.slots.remembered_vids() } else { [None; 2] });
         self.radar.update_vehicles(
             &mut self.tracker,
             now,
@@ -409,6 +420,21 @@ impl Pipeline {
         self.kinds.apply(now, self.world.radar_pose(now).heading, self.tracker.vehicles_mut());
         let cars = self.tracker.vehicles();
         let mut slots = self.slots.update(now, cars, &self.world, lead);
+        let remembered = if holding {
+            // The map's 0.15 s freshness, not the selector's 0.3 s prediction hold, decides when memory takes over.
+            let (map, frame) = (&self.radar, self.radar.frame());
+            let remember = |car: &Vehicle| {
+                car.flags.object.is_some_and(|key| {
+                    map.objects
+                        .get(&key)
+                        .zip(map.local_xy(key).ok())
+                        .is_some_and(|(o, (x, _))| rememberable(&RADAR, frame, now, o, x))
+                })
+            };
+            self.slots.hold_stopped(now, cars, &self.world, car.blind, remember, &mut slots)
+        } else {
+            [false; 2]
+        };
         let ego = self.world.u_ego();
         self.rear.finish(
             &self.world,
@@ -423,6 +449,7 @@ impl Pipeline {
         )?;
         self.radar_slots = slots;
         self.vision.apply(now, car.speed, self.world.pose.at(now), &mut slots);
+        crate::slots::keep_remembered(remembered, &self.radar_slots, &mut slots);
         let asking = self.vision_seen.is_some_and(|seen| stamp.saturating_sub(seen) <= VISION_ALIVE_NS);
         for slot in slots[..3].iter_mut().flatten() {
             slot.kind_wanted = asking

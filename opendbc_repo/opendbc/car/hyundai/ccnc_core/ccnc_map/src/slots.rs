@@ -8,6 +8,8 @@ use crate::world::{PoseAt, World};
 const INNER_RADIUS: f64 = 0.48;
 const OBSERVATION_MAX_AGE: f64 = 0.15;
 const FF_PREFERENCE_M: f32 = 1.0;
+/// The legacy selector's stop memory range ahead (`Consts::memory_max_x`); the map keeps LF and RF at x >= 0.
+const MEMORY_MAX_X: f64 = 15.;
 const EPS: f64 = 1e-9;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -109,6 +111,9 @@ pub struct Assigner {
     generation: u32,
     drawings: Vec<Drawing>,
     previous_ff: Option<u32>,
+    /// The last radar car drawn in LF and RF within the stop memory's range, with its world position from ego's pose
+    /// at that time. A farther car passing through the slot cannot be remembered and does not replace it.
+    side_last: [Option<(Slot, (f64, f64))>; 2],
 }
 
 impl Default for Assigner {
@@ -117,6 +122,29 @@ impl Default for Assigner {
             generation: 0,
             drawings: Vec::with_capacity(MAX_VEHICLES),
             previous_ff: None,
+            side_last: [None; 2],
+        }
+    }
+}
+
+/// A car the slots may draw from a measurement: one in the latest radar frame, at most `OBSERVATION_MAX_AGE` old.
+fn current(world: &World, now: f64, stamp: f64) -> bool {
+    stamp + EPS >= world.radar_stamp().unwrap_or(now) && (0. ..=OBSERVATION_MAX_AGE).contains(&(now - stamp))
+}
+
+fn shown_kind(car: &Vehicle) -> Option<crate::vehicles::Kind> {
+    car.kind.filter(|k| car.link == Link::Sure || k.inherited)
+}
+
+/// While ego holds, the radar's stop memory owns LF and RF: where the wide camera replaced a remembered car, the
+/// remembered car stays and the camera only confirms it. `radar` is the slots before the camera.
+pub fn keep_remembered(remembered: [bool; 2], radar: &[Option<Slot>; 5], slots: &mut [Option<Slot>; 5]) {
+    for side in 0..2 {
+        let index = side + 1;
+        if let Some(kept) = radar[index].filter(|_| remembered[side]) {
+            if slots[index].is_some_and(|s| s.vision != VISION_NONE) {
+                slots[index] = Some(Slot { vision: VISION_CONFIRMS, ..kept });
+            }
         }
     }
 }
@@ -143,6 +171,7 @@ impl Assigner {
             self.generation = world.generation();
             self.drawings.clear();
             self.previous_ff = None;
+            self.side_last = [None; 2];
         }
         if !now.is_finite() || !world.accepts_radar() || !world.u_ego().is_finite() {
             return [None; 5];
@@ -152,10 +181,7 @@ impl Assigner {
         // same pose, so the slot distance is the radar's dRel rather than dRel minus ego's travel over RADAR_LAG.
         let radar = world.radar_pose(now);
         let yaw = world.yaw_at(now);
-        let radar_stamp = world.radar_stamp().unwrap_or(now);
-        let current = |stamp: f64| {
-            stamp + EPS >= radar_stamp && (0. ..=OBSERVATION_MAX_AGE).contains(&(now - stamp))
-        };
+        let current = |stamp: f64| current(world, now, stamp);
         let followed = lead.and_then(|(dx, dy)| {
             vehicles
                 .iter()
@@ -251,7 +277,7 @@ impl Assigner {
             } else if v_rel < -1. {
                 drawing.detect = 2;
             }
-            let kind = car.kind.filter(|k| car.link == Link::Sure || k.inherited);
+            let kind = shown_kind(car);
             let candidate = Slot {
                 vid: car.vid,
                 distance: x as f32,
@@ -281,7 +307,69 @@ impl Assigner {
             }
         }
         self.previous_ff = best[0].map(|s| s.vid);
+        let ego = world.pose.at(now);
+        for side in 0..2 {
+            if let Some(s) = best[side + 1].filter(|s| f64::from(s.distance) <= MEMORY_MAX_X) {
+                self.side_last[side] = Some((s, ego.to_world(f64::from(s.distance), f64::from(s.lateral))));
+            }
+        }
         best
+    }
+
+    /// The vids `hold_stopped` may draw, for the tracker to keep while ego holds.
+    pub fn remembered_vids(&self) -> [Option<u32>; 2] {
+        self.side_last.map(|s| s.map(|(s, _)| s.vid))
+    }
+
+    /// The legacy selector's stop memory, by vid: while ego holds (stopped, or below 10 km/h and braking) and LF or
+    /// RF is empty with no BSD on that side, keep the car last drawn there if the radar map would remember it
+    /// (`remember`) and it is 0-15 m ahead. A new measurement of it, another car in the slot, or ego moving off
+    /// ends it. Returns the sides drawn from memory.
+    pub fn hold_stopped(
+        &mut self,
+        now: f64,
+        vehicles: &[Vehicle],
+        world: &World,
+        blind: [bool; 2],
+        remember: impl Fn(&Vehicle) -> bool,
+        slots: &mut [Option<Slot>; 5],
+    ) -> [bool; 2] {
+        let mut remembered = [false; 2];
+        if self.generation != world.generation() || !now.is_finite() || !world.accepts_radar() {
+            return remembered;
+        }
+        let ego = world.pose.at(now);
+        for side in 0..2 {
+            let index = side + 1;
+            let Some((last, position)) = self.side_last[side] else { continue };
+            if slots[index].is_some() || blind[side] || slots.iter().flatten().any(|s| s.vid == last.vid) {
+                continue;
+            }
+            let Some(car) = vehicles.iter().find(|car| car.vid == last.vid) else {
+                continue;
+            };
+            // Carry the last drawn distance by ego's travel since. The car's world position sits RADAR_LAG behind:
+            // measured from the lagged pose it would come out short by RADAR_LAG x the speed ego lost braking.
+            let (x, _) = ego.to_ego(position.0, position.1);
+            if current(world, now, car.seen_radar.max(car.seen_vision)) || !(0. ..=MEMORY_MAX_X).contains(&x) || !remember(car) {
+                continue;
+            }
+            if let Ok(i) = self.drawings.binary_search_by_key(&car.vid, |d| d.vid) {
+                self.drawings[i].seen = now;
+            }
+            let kind = shown_kind(car);
+            slots[index] = Some(Slot {
+                distance: x as f32,
+                // A remembered car is at rest.
+                v_rel: -world.pose.speed() as f32,
+                kind: kind.map_or(0, |k| k.class),
+                kind_confirmed: kind.is_some_and(|k| k.confirmed_at.is_finite()),
+                vision: VISION_NONE,
+                ..last
+            });
+            remembered[side] = true;
+        }
+        remembered
     }
 }
 

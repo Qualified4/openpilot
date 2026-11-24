@@ -44,6 +44,8 @@ pub struct Flags {
     /// LF and RF ruled out by the radar map's lanes: no adjacent lane (its width − 0.25 m ≤ 1.8 m), beyond the road
     /// edge − 0.95 m or a wall line, or a wall line inside it while the object's motion is unconfirmed.
     pub side_blocked: [bool; 2],
+    /// The radar map object that last reported this car.
+    pub object: Option<i64>,
 }
 
 /// Bounded history with oldest-first iteration. Storage is only needed after the first sample.
@@ -188,6 +190,7 @@ pub struct Tracker {
     generation: u32,
     frames: History<f64, HISTORY_LEN>,
     last_radar: f64,
+    kept: [Option<u32>; 2],
 }
 
 impl Default for Tracker {
@@ -207,7 +210,13 @@ impl Tracker {
             generation: 0,
             frames: History::default(),
             last_radar: f64::NEG_INFINITY,
+            kept: [None; 2],
         }
+    }
+
+    /// Keep these vids past RETAIN without radar updates: the side cars a stopping ego draws from memory.
+    pub fn keep(&mut self, vids: [Option<u32>; 2]) {
+        self.kept = vids;
     }
 
     pub fn vehicles(&self) -> &[Vehicle] {
@@ -241,8 +250,10 @@ impl Tracker {
         if self.record_history {
             self.frames.push(now);
         }
-        self.cars
-            .retain(|car| now - car.seen_radar.max(car.seen_vision) <= RETAIN);
+        let kept = self.kept;
+        self.cars.retain(|car| {
+            now - car.seen_radar.max(car.seen_vision) <= RETAIN || kept.contains(&Some(car.vid))
+        });
         let pose = world.radar_pose(now);
         let (sin, cos) = pose.heading.sin_cos();
         let axes = Axes { cos, sin };

@@ -1,5 +1,5 @@
 use ccnc_map::rear::{WorldInput, WorldRear};
-use ccnc_map::slots::{Assigner, Slot};
+use ccnc_map::slots::{keep_remembered, Assigner, Slot, VISION_CONFIRMS, VISION_NONE, VISION_ONLY};
 use ccnc_map::vehicles::{Flags, Tracker, Vehicle};
 use ccnc_map::world::{World, RADAR_LAG};
 
@@ -437,4 +437,119 @@ fn a_car_the_lanes_rule_out_takes_no_side_slot() {
         let slots = Assigner::default().update(0., &[other], &world, None);
         assert!(slots[index].is_some(), "r={r}: the other side's rule");
     }
+}
+
+/// Ego stopped; a car waits in the left lane 5 m ahead and the radar loses it at 1 s.
+fn stop_memory(blind: [bool; 2], remember: bool, next: impl Fn(f64) -> Vec<Vehicle>) -> Vec<(f64, Option<Slot>)> {
+    let mut world = road();
+    let mut assigner = Assigner::default();
+    let mut out = Vec::new();
+    for i in 0..=80 {
+        let now = f64::from(i) * 0.05;
+        world.car_state(now, 0., false);
+        world.radar(now);
+        let mut waiting = vehicle(&world, 1, now.min(1.), 5., -1.);
+        waiting.vx = 0.;
+        let mut cars = vec![waiting];
+        if now > 1. {
+            cars.extend(next(now));
+        }
+        let mut slots = assigner.update(now, &cars, &world, None);
+        if now <= 1. {
+            assert_eq!(slots[LF].map(|s| s.vid), Some(1), "measured at {now:.2}");
+        } else {
+            assigner.hold_stopped(now, &cars, &world, blind, |car| remember && car.vid == 1, &mut slots);
+            out.push((now, slots[LF]));
+        }
+    }
+    out
+}
+
+#[test]
+fn a_stopped_ego_keeps_a_waiting_side_car_after_the_radar_loses_it() {
+    let kept = stop_memory([false; 2], true, |_| vec![]);
+    assert!(kept.iter().all(|(now, s)| s.is_some_and(|s| s.vid == 1 && (s.distance - 5.).abs() < 1e-3)
+        && *now > 1.), "{kept:?}");
+    // Not when the radar map would not remember it, or with the BSD on that side.
+    assert!(stop_memory([false; 2], false, |_| vec![]).iter().all(|(_, s)| s.is_none()));
+    assert!(stop_memory([true, false], true, |_| vec![]).iter().all(|(_, s)| s.is_none()));
+}
+
+#[test]
+fn another_car_in_the_slot_ends_the_stop_memory() {
+    let shown = stop_memory([false; 2], true, |now| {
+        if now >= 2. { vec![vehicle(&road(), 2, now, 8., -1.)] } else { vec![] }
+    });
+    for (now, s) in shown {
+        assert_eq!(s.map(|s| s.vid), Some(if now >= 2. { 2 } else { 1 }), "at {now:.2}");
+    }
+}
+
+#[test]
+fn a_far_car_passing_through_the_slot_leaves_the_waiting_car_remembered() {
+    let shown = stop_memory([false; 2], true, |now| {
+        if now < 1.5 { vec![vehicle(&road(), 2, now, 70., -1.)] } else { vec![] }
+    });
+    for (now, s) in shown {
+        assert_eq!(s.map(|s| s.vid), Some(if now < 1.5 { 2 } else { 1 }), "at {now:.2}");
+    }
+}
+
+#[test]
+fn a_remembered_distance_follows_ego_travel_after_the_last_measurement() {
+    // Ego brakes from 3 m/s to a stop as the radar loses the waiting car.
+    let mut world = World::new(RADAR_LAG, true);
+    world.model(0., &model(0., 0., 0.));
+    let mut assigner = Assigner::default();
+    let mut last_drawn = None;
+    for i in 0..=60 {
+        let now = f64::from(i) * 0.05;
+        world.car_state(now, if now < 1. { 3. } else { 0. }, false);
+        world.radar(now);
+        let mut waiting = vehicle(&world, 1, now.min(1.), 8., -1.);
+        waiting.vx = 0.;
+        let cars = [waiting];
+        let mut slots = assigner.update(now, &cars, &world, None);
+        if now <= 1. {
+            last_drawn = slots[LF].map(|s| s.distance);
+            continue;
+        }
+        let travel = world.pose.at(now).s - world.pose.at(1.).s;
+        assigner.hold_stopped(now, &cars, &world, [false; 2], |_| true, &mut slots);
+        let kept = slots[LF].expect("remembered").distance;
+        assert!((f64::from(kept) - (f64::from(last_drawn.unwrap()) - travel)).abs() < 0.05, "at {now:.2}: {kept}");
+    }
+}
+
+#[test]
+fn a_remembered_car_stays_when_the_camera_would_replace_it() {
+    let radar_car = Slot {
+        vid: 7,
+        distance: 6.,
+        lateral: 3.5,
+        detect: 1,
+        lane_coord_rel: -1.,
+        v_rel: 0.,
+        kind: 0,
+        kind_confirmed: false,
+        kind_wanted: false,
+        vision: VISION_NONE,
+    };
+    let camera_car = Slot { vid: 0xFFFF_FFF1, distance: 3., vision: VISION_ONLY, ..radar_car };
+    let mut radar = [None; 5];
+    radar[LF] = Some(radar_car);
+    radar[RF] = Some(Slot { lateral: -3.5, ..radar_car });
+    // The camera swaps both sides; only the remembered LF stays the radar's, now confirmed.
+    let mut slots = radar;
+    slots[LF] = Some(camera_car);
+    slots[RF] = Some(Slot { lateral: -3.5, ..camera_car });
+    keep_remembered([true, false], &radar, &mut slots);
+    assert_eq!(slots[LF], Some(Slot { vision: VISION_CONFIRMS, ..radar_car }));
+    assert_eq!(slots[RF].map(|s| s.vision), Some(VISION_ONLY));
+    // A camera confirmation, or no camera answer, leaves the slot as it is.
+    let mut slots = radar;
+    slots[LF] = Some(Slot { vision: VISION_CONFIRMS, ..radar_car });
+    keep_remembered([true, true], &radar, &mut slots);
+    assert_eq!(slots[LF].map(|s| (s.vid, s.vision)), Some((7, VISION_CONFIRMS)));
+    assert_eq!(slots[RF], radar[RF]);
 }

@@ -77,6 +77,19 @@ fn vehicle_deleted_after_2s() {
 }
 
 #[test]
+fn a_kept_vehicle_outlives_2s() {
+    let world = World::default();
+    let mut tracker = tracker();
+    let kept = tracker.update(1., &[point(10, 5., 3.5)], &world)[0].vid;
+    tracker.update(1.05, &[point(11, 30., 0.)], &world);
+    tracker.keep([Some(kept), None]);
+    let cars = tracker.update(4., &[], &world);
+    assert_eq!(cars.iter().map(|car| car.vid).collect::<Vec<_>>(), [kept]);
+    tracker.keep([None; 2]);
+    assert!(tracker.update(4.05, &[], &world).is_empty());
+}
+
+#[test]
 fn ambiguous_link_does_not_carry_kind() {
     let world = World::default();
     let mut tracker = tracker();

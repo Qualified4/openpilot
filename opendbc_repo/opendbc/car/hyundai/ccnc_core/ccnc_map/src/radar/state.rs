@@ -302,6 +302,7 @@ impl MapState {
                 } else {
                     self.side_blocked(&lanes, object)
                 },
+                object: Some(object.key),
             });
         }
         tracker.vehicles()
