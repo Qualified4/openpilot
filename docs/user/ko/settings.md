@@ -235,7 +235,7 @@ VW MEB(ID.4 포함)에도 수동 조향비와 학습 비율이 적용됩니다. 
 
 `TrafficLightDetectMode`는 `0` 미사용, `1` 정지만 감지, `2` 정지와 출발을 모두 감지합니다. 모델 판단에 의존하므로 운전자가 항상 직접 확인해야 합니다.
 
-### 크루즈·차간 — 전체 30개, 현대·기아·제네시스 27개
+### 크루즈·차간 — 전체 31개, 현대·기아·제네시스 28개
 
 아래 표의 **세부 구역 제목을 누르면** 실제 코드 기준의 계산 방식, 값의 방향과 주의사항을 설명한 페이지로 이동합니다.
 
@@ -245,7 +245,7 @@ VW MEB(ID.4 포함)에도 수동 조향비와 학습 비율이 적용됩니다. 
 | [가속 성향·속도별 가속값](cruise-gap.md#acceleration-table) | `CruiseMaxVals0`, `CruiseMaxVals1`, `CruiseMaxVals2`, `CruiseMaxVals3`, `CruiseMaxVals4`, `CruiseMaxVals5`, `CruiseMaxVals6` | 속도 구간별 최대 가속 성향 |
 | [정차·재출발](cruise-gap.md#stop-resume) | `StopDistanceCarrot`, `StoppingAccel`, `VEgoStopping`, `AChangeCostStarting` | 정지 위치, 정지 진입과 재출발 특성 |
 | [가감속 튜닝](cruise-gap.md#longitudinal-tuning) | `LongTuningKpV`, `LongTuningKiV`, `LongTuningKf`, `LongActuatorDelay` | 레이 EV 콤마페달은 저장 게인 적용; 그 외 현기차 `100/0/100`, 토요타·렉서스 `0/0/100` 고정·숨김; VW MEB(ID.4 포함)는 저장 게인 적용 |
-| [차간거리](cruise-gap.md#following-gap) | `TFollowGap1`, `TFollowGap2`, `TFollowGap3`, `TFollowGap4`, `DynamicTFollowLC`, `SpeedTFFactor`, `TFollowDecelBoost` | 차간 단계별 시간, 정상 선택 앞차 기준 차로 변경 완화와 감속 여유(기본 0%) |
+| [차간거리](cruise-gap.md#following-gap) | `TFollowGap1`, `TFollowGap2`, `TFollowGap3`, `TFollowGap4`, `DynamicTFollowLC`, `SpeedTFFactor`, `TFollowDecelBoost`, `ApproachSoftStop` | 차간 단계별 시간, 정상 선택 앞차 기준 차로 변경 완화와 감속 여유(기본 0%), 정지차 접근 시 일찍 부드럽게 감속(시험, 기본 꺼짐) |
 | [추종응답성](cruise-gap.md#lead-response) | `LeadAccelResponse`, `LeadAccelResponseTF1`–`LeadAccelResponseTF4` | 모든 차간 단계의 앞차 출발·가속 추종과 접근 반응 |
 | [당근 크루즈](cruise-gap.md#carrot-cruise) | `CruiseEcoControl`, `CruiseCoastingPercent`, `CarrotCruiseDecel`, `CarrotCruiseAtcDecel` | 연비 제어, 진입 기준속도를 고정하는 코스팅 여유(기본 0%: 기존 제어), 당근 크루즈 감속 특성 |
 
@@ -258,6 +258,8 @@ VW MEB(ID.4 포함)에도 수동 조향비와 학습 비율이 적용됩니다. 
 `TFollowGap1`~`TFollowGap4`는 저장값에 `0.01초`를 곱한 시간 간격입니다. 값을 줄이면 선행차와 가까워집니다. 앞차 가속 추종은 `LeadAccelResponse`로 조절합니다. 1~3은 완만한 반응, 4는 빠른 추종, 5는 최대 추종이며 감속 시작 거리를 별도로 기억해 차간을 늘리지는 않습니다.
 
 `LeadAccelResponse`: 앞차가 출발하거나 속도를 높일 때 따라가는 반응을 조절합니다. 낮을수록 차간을 천천히 좁히고, 높을수록 빠르게 따라갑니다. 0은 가속 반응 강화를 끄고, 5는 가장 적극적으로 따라가는 시험 단계입니다. 자세한 동작은 [추종응답성 설명](cruise-gap.md#lead-response)을 확인하세요. 추가 여유의 유지 조건은 TF 거리(속도×TF＋정지거리)의 1.2배까지 적용하고, 1.2~1.5배에서 점차 해제합니다. 1.5배 이상에서는 앞차 속도와 관계없이 여유를 회수합니다.
+
+`ApproachSoftStop`(정지차 접근 시 일찍 부드럽게 감속)은 기본값이 꺼짐인 시험 기능입니다. 정지했거나 느린 앞차(15km/h 이하, 또는 계획 끝에서 1m/s 이하로 정지)에 15km/h 이상 빠르게 다가가고 시간 간격(거리÷내 속도)이 1.5초 이상일 때 켜집니다. 앞차를 그렇게 잡은 순간 `a = 1.1 × 내 속도² ÷ (2 × (거리 + 앞차 속도²/5 − 정지 거리))`를 0.5~2.0m/s²로 잘라 고정하고, 1초에 걸쳐 계획의 차간 기준을 `정지 거리 + 속도²/(2a)`(지금 목표 거리보다 클 때만)로 옮기며 거리 비용을 최대 ×5로 올립니다. 앞차가 바뀌면 다시 판정하고, 내 차가 더 이상 1m/s 넘게 다가가지 않거나 앞차가 다시 빨라지면(22km/h 초과이면서 정지 예측도 아님) 바로 풉니다. 운전자 브레이크·가속 페달과 종제어 꺼짐 때도 풉니다. 바꾸는 것은 계획의 비용 기준점과 가중뿐이며 장애물, 위험 제약, 최대 −4.0 한계는 그대로라서 앞차가 세게 서는 장면의 제동은 같습니다. 기록 재생의 정지 접근 15건에서 감속 시작 거리 중앙이 48.8에서 56.4m로 늘고 감속 피크 중앙이 −2.06에서 −1.77m/s²로 줄었으며, 정지 거리는 3.10~4.03m였습니다. 급정지 합성에서는 최소 거리가 지금과 같았습니다. 주행 중 바꾸면 약 5초 안에 반영되며 재시작은 필요 없습니다. 실차에서 검증하지 않았습니다.
 
 `SpeedTFFactor`는 선택한 기본 TF에 속도별 선형 배율을 적용합니다. 10은 변화 없음, 20은 100km/h에서 2배입니다. 단계별 `LeadAccelResponseTF1`~`TF4`는 -1이면 공통값, 0~5이면 해당 반응을 사용합니다. 반응 4~5도 속도 배율을 유지합니다. 주행 화면의 거리 바는 동적 보정이 반영된 추종 목표거리를 m로 표시합니다.
 

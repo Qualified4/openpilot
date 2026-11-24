@@ -398,7 +398,8 @@
                 "LeadAccelResponseTF4",
                 "DynamicTFollowLC",
                 "SpeedTFFactor",
-                "TFollowDecelBoost"
+                "TFollowDecelBoost",
+                "ApproachSoftStop"
               ]
             },
             {
@@ -3972,6 +3973,24 @@
       "default": 0,
       "unit": 10,
       "display_unit": "percent"
+    },
+    {
+      "group": "차량간격",
+      "name": "ApproachSoftStop",
+      "title": "정지차 접근 시 일찍 부드럽게 감속",
+      "descr": "멀리서 정지했거나 느린 앞차(15km/h 이하 또는 곧 정지)에 빠르게(15km/h 이상 빠름) 다가갈 때, 시간 간격이 1.5초 이상 남아 있으면 앞차를 처음 잡은 순간의 일정한 감속으로 서는 목표를 따라 더 일찍 약하게 감속합니다. 감속 강도는 그 순간 앞차 뒤 정지 거리에 서는 데 필요한 감속의 1.1배(0.5~2.0m/s²)로 정하고 1초에 걸쳐 적용합니다. 앞차가 다시 빨라지거나 바뀌면, 운전자 페달과 종제어 꺼짐 때는 바로 해제합니다. 장애물과 위험 제약은 그대로이므로 앞차가 세게 서면 기존처럼 제동합니다. 기록 재생의 정지 접근 15건에서 감속 시작 거리 중앙이 48.8에서 56.4m로 늘고 감속 피크 중앙이 −2.06에서 −1.77m/s²로 줄었습니다. 주행 중 바꾸면 약 5초 안에 반영되며 재시작이 필요 없습니다. 실차 미검증 시험 기능이며 기본은 꺼짐입니다.",
+      "egroup": "FDIST",
+      "etitle": "Early Soft Braking for Stopped Leads",
+      "edescr": "When closing fast (15 km/h or more) on a stopped or slow lead (15 km/h or less, or stopping soon) with a time gap of at least 1.5 s, the plan follows a stop target at the constant deceleration fixed when the lead is first seen, so braking starts earlier and softer. That deceleration is 1.1 times what stops ego at the stop distance behind the lead at that moment (0.5 to 2.0 m/s^2), applied over 1 s. It is released at once when the lead speeds up again or changes, on driver pedal input, or when longitudinal control is off. Obstacles and the danger constraint are unchanged, so a lead that brakes hard still gets the existing braking. In log replay of 15 stopped-lead approaches, the median braking-start distance rose from 48.8 to 56.4 m and the median peak deceleration fell from -2.06 to -1.77 m/s^2. Changes while driving apply within about 5 s without restarting. Experimental, not validated on a vehicle, off by default.",
+      "cgroup": "跟车距离",
+      "ctitle": "接近停止车辆时提前平缓减速",
+      "cdescr": "以较快速度（快15km/h以上）接近远处已停止或缓慢的前车（15km/h以下或即将停止）且时间间隔仍有1.5秒以上时，按首次识别前车时固定的恒定减速度设定停车目标，更早、更平缓地减速。该减速度为当时停在前车后方停车距离所需减速度的1.1倍（0.5~2.0m/s²），在1秒内逐步施加。前车重新加速或更换、驾驶员踩踏板或纵向控制关闭时立即解除。障碍物和危险约束不变，前车急停时仍按原方式制动。日志回放的15次停车接近中，开始减速距离中位数从48.8m增至56.4m，减速峰值中位数从-2.06降至-1.77m/s²。行驶中更改约5秒内生效，无需重启。实验功能，未经实车验证，默认关闭。",
+      "min": 0,
+      "max": 1,
+      "default": 0,
+      "unit": 1,
+      "control": "toggle",
+      "risk": "high"
     },
     {
       "group": "감속제어",

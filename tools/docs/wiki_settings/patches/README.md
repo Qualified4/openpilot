@@ -111,3 +111,21 @@ then validate following the authoring guide. The review marker deliberately
 remains unset: the setting is off by default, has not been validated on a
 vehicle and was checked only by fixed-input log replay. This patch has not been
 published.
+
+## Approach soft stop
+
+`approach-soft-stop.patch` fills only the Korean, English and Chinese
+`ApproachSoftStop` manual regions. Its base is the initial pages generated
+from the working catalog that introduces this setting. Generate those pages,
+then check and apply the patch from the staged Wiki directory:
+
+```sh
+git apply --check /absolute/path/to/approach-soft-stop.patch
+git apply /absolute/path/to/approach-soft-stop.patch
+```
+
+Regenerate with that directory as `--wiki-dir` to preserve the manual text,
+then validate following the authoring guide. The review marker deliberately
+remains unset: the setting is off by default, has not been validated on a
+vehicle and was checked only by closed-loop log replay. This patch has not been
+published.

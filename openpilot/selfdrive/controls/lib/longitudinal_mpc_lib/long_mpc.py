@@ -16,6 +16,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_preview import LEAD_ACCEL_MIN
 from openpilot.selfdrive.controls.lib.longitudinal_cutout import cutout_obstacle_relief
 from openpilot.selfdrive.controls.lib.longitudinal_gap_recovery import LeadGapState, displayed_follow_distance
 from openpilot.selfdrive.controls.lib.longitudinal_braking_gap import LeadComfortState, braking_gap_reference, comfort_path_has_reserve
+from openpilot.selfdrive.controls.lib.longitudinal_approach import ApproachState
 from openpilot.selfdrive.controls.lib.longitudinal_stop_gap import StopGapWeightState
 from openpilot.selfdrive.carrot.radar_motion.lane_change_gap import LaneChangeGapPlan
 
@@ -300,6 +301,7 @@ class LongitudinalMpc:
     self.lead_gap_states = (LeadGapState(), LeadGapState())
     self.lead_comfort_states = (LeadComfortState(), LeadComfortState())
     self.stop_gap_state = StopGapWeightState()
+    self.approach_state = ApproachState()
     self.obstacle_cost_factor = 1.0
     self.lead_gap_margins = np.zeros((N+1, 2))
     self.solve_time = 0.0
@@ -423,7 +425,8 @@ class LongitudinalMpc:
              lead_track_frames=(0, 0),
              measured_a_ego=0.0,
              cutout_relief_enabled=False,
-             tesla_stop_distance=None):
+             tesla_stop_distance=None,
+             approach_soft_stop_enabled=False):
     tesla_stop_active = (tesla_stop_distance is not None and not reset_state
                          and math.isfinite(tesla_stop_distance) and 0 <= tesla_stop_distance < 255)
     if tesla_stop_active:
@@ -570,7 +573,16 @@ class LongitudinalMpc:
     # Stopping behind a lead: the lead that sets the end of the horizon stops in the plan.
     stop_lead_index = int(np.argmin(x_obstacles[-1, :2])) if mode == 'acc' else 0
     stop_lead = (radarstate.leadOne, radarstate.leadTwo)[stop_lead_index]
-    self.obstacle_cost_factor = self.stop_gap_state.update(
+    # Fast approach to a slow leadOne from far: early soft braking (reference and gap weight only).
+    if mode == 'acc' and approach_soft_stop_enabled and not reset_state:
+      approach_weight = self.approach_state.update(
+        enabled=True, lead_status=bool(radarstate.leadOne.status), track_id=radarstate.leadOne.radarTrackId,
+        distance=float(radarstate.leadOne.dRel), lead_speed=float(radarstate.leadOne.vLead),
+        lead_end_speed=float(lead_xv_0[-1, 1]), v_ego=float(v_ego), stop_distance=float(stop_distance), dt=self.dt,
+      )
+    else:
+      approach_weight = self.approach_state.reset()
+    self.obstacle_cost_factor = self.approach_state.obstacle_cost_factor() * self.stop_gap_state.update(
       enabled=mode == 'acc' and not reset_state,
       lead_status=bool(stop_lead.status),
       lead_end_speed=float((lead_xv_0, lead_xv_1)[stop_lead_index][-1, 1]),
@@ -626,6 +638,11 @@ class LongitudinalMpc:
                                      danger_margins=danger, times=T_IDXS, stop_distance=stop_distance)
       self.lead_gap_margins[:,lead_index] -= relief
       comfort_reliefs[:,lead_index] = relief
+    if approach_weight > 0.0:
+      # Only where leadOne is the binding obstacle; every obstacle and the danger limit stay as they are.
+      lead_binds = np.argmin(x_obstacles, axis=1) == 0
+      self.lead_gap_margins[:,0] += np.where(lead_binds, self.approach_state.reference_margins(
+        ego_speeds=gap_v, following_distances=gap_safe_distance, stop_distance=stop_distance), 0.0)
     # Display the current following reference, including comfort headroom and
     # any already-authorized cutout/lane-change relief. This does not select
     # control leads or modify solver obstacles.

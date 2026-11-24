@@ -1,0 +1,99 @@
+--- a/EN-Early-Soft-Braking-for-Stopped-Leads.md
++++ b/EN-Early-Soft-Braking-for-Stopped-Leads.md
+@@ -27,6 +27,30 @@ When closing fast (15 km/h or more) on a stopped or slow lead (15 km/h or less,
+ 
+ <!-- CARROT:MANUAL:BEGIN ApproachSoftStop -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++When closing fast on a stopped or slow lead that is still far, the plan follows a stop target at a constant deceleration fixed when the lead is first seen, so braking starts earlier and softer. Only the cost reference and weight change; obstacles and the danger constraint stay as they are.
++
++- **On:** It starts when ego closes at 15 km/h or more on a lead at 15 km/h or less (or one predicted to stop) with a time gap of at least 1.5 s. The deceleration is 1.1 times what stops ego at the stop distance behind the lead at that moment, limited to 0.5–2.0 m/s², applied over 1 s.
++- **Off:** Nothing is computed; behavior is unchanged.
++- **Release:** A lead change re-evaluates it; it ends at once when the lead speeds up again or ego stops closing, on driver brake or accelerator input, or when longitudinal control is off.
++<!-- CARROT:SECTION:END BEHAVIOR -->
++
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### Usage
++
++Turn it on when the car keeps the set speed toward a stopped car seen from far and then brakes late. Changes while driving apply within about 5 s without restarting.
++<!-- CARROT:SECTION:END USAGE -->
++
++<!-- CARROT:SECTION:BEGIN REFERENCE -->
++### Reference
++
++<!-- CARROT:NOTICE level="WARNING" -->
++> [!WARNING]
++> Experimental and not validated on a vehicle. In log replay of 15 stopped-lead approaches, the median braking-start distance rose from 48.8 to 56.4 m and the median peak deceleration fell from -2.06 to -1.77 m/s². A lead detected late or braking hard gets the same braking as before.
++<!-- CARROT:NOTICE:END -->
++<!-- CARROT:SECTION:END REFERENCE -->
+ <!-- CARROT:MANUAL:END ApproachSoftStop -->
+ 
+ <!-- CARROT:SETTING:END ApproachSoftStop -->
+--- "wa/KO-\354\240\225\354\247\200\354\260\250-\354\240\221\352\267\274-\354\213\234-\354\235\274\354\260\215-\353\266\200\353\223\234\353\237\275\352\262\214-\352\260\220\354\206\215.md"
++++ "wb/KO-\354\240\225\354\247\200\354\260\250-\354\240\221\352\267\274-\354\213\234-\354\235\274\354\260\215-\353\266\200\353\223\234\353\237\275\352\262\214-\352\260\220\354\206\215.md"
+@@ -27,6 +27,30 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN ApproachSoftStop -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++아직 먼 정지·저속 앞차에 빠르게 다가갈 때, 앞차를 처음 잡은 순간 고정한 일정한 감속으로 서는 목표를 따라 더 일찍 약하게 감속합니다. 바꾸는 것은 계획의 비용 기준점과 가중뿐이며 장애물과 위험 제약은 그대로입니다.
++
++- **켜짐:** 15km/h 이하(또는 정지 예측) 앞차에 15km/h 이상 빠르게 다가가고 시간 간격이 1.5초 이상일 때 시작합니다. 감속은 그 순간 앞차 뒤 정지 거리에 서는 데 필요한 감속의 1.1배를 0.5~2.0m/s²로 제한한 값이며 1초에 걸쳐 적용합니다.
++- **꺼짐:** 계산하지 않으며 기존 동작과 같습니다.
++- **해제:** 앞차가 바뀌면 다시 판정하고, 앞차가 다시 빨라지거나 더 이상 다가가지 않을 때, 운전자 브레이크·가속 페달, 종제어 꺼짐 때 바로 풉니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
++
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### 사용
++
++멀리 보이는 정지차를 향해 설정 속도로 계속 가다가 늦게 감속한다고 느낄 때 켭니다. 주행 중 바꾸면 약 5초 안에 반영되며 재시작은 필요 없습니다.
++<!-- CARROT:SECTION:END USAGE -->
++
++<!-- CARROT:SECTION:BEGIN REFERENCE -->
++### 참고
++
++<!-- CARROT:NOTICE level="WARNING" -->
++> [!WARNING]
++> 실차에서 검증하지 않은 시험 기능입니다. 기록 재생의 정지 접근 15건에서 감속 시작 거리 중앙이 48.8에서 56.4m로 늘고 감속 피크 중앙이 −2.06에서 −1.77m/s²로 줄었습니다. 늦게 잡힌 앞차나 세게 서는 앞차에 대한 제동은 지금과 같습니다.
++<!-- CARROT:NOTICE:END -->
++<!-- CARROT:SECTION:END REFERENCE -->
+ <!-- CARROT:MANUAL:END ApproachSoftStop -->
+ 
+ <!-- CARROT:SETTING:END ApproachSoftStop -->
+--- "wa/ZH-\346\216\245\350\277\221\345\201\234\346\255\242\350\275\246\350\276\206\346\227\266\346\217\220\345\211\215\345\271\263\347\274\223\345\207\217\351\200\237.md"
++++ "wb/ZH-\346\216\245\350\277\221\345\201\234\346\255\242\350\275\246\350\276\206\346\227\266\346\217\220\345\211\215\345\271\263\347\274\223\345\207\217\351\200\237.md"
+@@ -27,6 +27,30 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN ApproachSoftStop -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++以较快速度接近仍在远处的停止或低速前车时，按首次识别前车时固定的恒定减速度设定停车目标，更早、更平缓地减速。只改变规划的代价参考点和权重，障碍物和危险约束不变。
++
++- **开启：** 前车在15km/h以下（或预测将停止），本车接近速度在15km/h以上且时间间隔在1.5秒以上时开始。减速度为当时停在前车后方停车距离所需减速度的1.1倍，限制在0.5~2.0m/s²，在1秒内逐步施加。
++- **关闭：** 不进行计算，行为与原来相同。
++- **解除：** 前车更换时重新判断；前车重新加速或本车不再接近、驾驶员踩刹车或油门、纵向控制关闭时立即解除。
++<!-- CARROT:SECTION:END BEHAVIOR -->
++
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### 使用
++
++如果朝远处可见的停止车辆一直保持设定速度、随后才较晚减速，可开启此功能。行驶中更改约5秒内生效，无需重启。
++<!-- CARROT:SECTION:END USAGE -->
++
++<!-- CARROT:SECTION:BEGIN REFERENCE -->
++### 参考
++
++<!-- CARROT:NOTICE level="WARNING" -->
++> [!WARNING]
++> 实验功能，未经实车验证。日志回放的15次停车接近中，开始减速距离中位数从48.8m增至56.4m，减速峰值中位数从-2.06降至-1.77m/s²。对较晚识别或急停的前车，制动与原来相同。
++<!-- CARROT:NOTICE:END -->
++<!-- CARROT:SECTION:END REFERENCE -->
+ <!-- CARROT:MANUAL:END ApproachSoftStop -->
+ 
+ <!-- CARROT:SETTING:END ApproachSoftStop -->

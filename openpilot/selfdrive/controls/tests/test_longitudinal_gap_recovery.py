@@ -13,6 +13,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_gap_recovery import (
 )
 from openpilot.selfdrive.controls.lib.longitudinal_braking_gap import LeadComfortState, braking_gap_reference, comfort_path_has_reserve
 from openpilot.selfdrive.controls.lib.longitudinal_stop_gap import StopGapWeightState
+from openpilot.selfdrive.controls.lib.longitudinal_approach import ApproachState
 
 
 def load_mpc_update(path):
@@ -40,7 +41,7 @@ def load_mpc_update(path):
             'LeadGapState': LeadGapState, 'gap_reference': gap_reference, 'displayed_follow_distance': displayed_follow_distance,
             'LeadComfortState': LeadComfortState, 'braking_gap_reference': braking_gap_reference,
             'comfort_path_has_reserve': comfort_path_has_reserve,
-            'StopGapWeightState': StopGapWeightState,
+            'StopGapWeightState': StopGapWeightState, 'ApproachState': ApproachState,
             'get_traffic_stop_distance_adjust': get_traffic_stop_distance_adjust,
             'get_traffic_stop_obstacle_distance': get_traffic_stop_obstacle_distance,
             'LaneChangeGapPlan': LaneChangeGapPlan, 'cutout_obstacle_relief': cutout_obstacle_relief}
