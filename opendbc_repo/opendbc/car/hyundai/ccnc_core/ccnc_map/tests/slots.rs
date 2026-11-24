@@ -404,41 +404,6 @@ fn an_unconfirmed_kind_is_not_kept_after_the_tracker_forgets_the_car() {
     }
 }
 
-#[test]
-fn an_approach_only_object_takes_no_side_slot() {
-    let world = road();
-    let slot_of = |x: f64, r: f64, approach_only: bool| {
-        let mut car = vehicle(&world, 1, 0., x, r);
-        car.flags.approach_only = approach_only;
-        let slots = Assigner::default().update(0., &[car], &world, None);
-        slots.iter().position(Option::is_some)
-    };
-    // A guardrail post proven by its approaching Doppler alone stays out of LF and RF.
-    for r in [-1., 1.] {
-        assert!(slot_of(20., r, false).is_some(), "r={r}");
-        assert_eq!(slot_of(20., r, true), None, "r={r}");
-    }
-    // FF, LR and RR keep the existing rules: a car first seen alongside has no Doppler sample yet.
-    assert_eq!(slot_of(20., 0., true), Some(FF));
-    assert_eq!(slot_of(-5., -1., true), Some(3));
-    assert_eq!(slot_of(-5., 1., true), Some(4));
-}
-
-#[test]
-fn a_car_the_lanes_rule_out_takes_no_side_slot() {
-    let world = road();
-    for (r, side, index) in [(-1., 0, LF), (1., 1, RF)] {
-        let mut car = vehicle(&world, 1, 0., 20., r);
-        car.flags.side_blocked[side] = true;
-        let slots = Assigner::default().update(0., &[car], &world, None);
-        assert_eq!(slots[index], None, "r={r}");
-        let mut other = vehicle(&world, 1, 0., 20., r);
-        other.flags.side_blocked[1 - side] = true;
-        let slots = Assigner::default().update(0., &[other], &world, None);
-        assert!(slots[index].is_some(), "r={r}: the other side's rule");
-    }
-}
-
 /// Ego stopped; a car waits in the left lane 5 m ahead and the radar loses it at 1 s.
 fn stop_memory(blind: [bool; 2], remember: bool, next: impl Fn(f64) -> Vec<Vehicle>) -> Vec<(f64, Option<Slot>)> {
     let mut world = road();

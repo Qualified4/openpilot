@@ -7,10 +7,10 @@ use std::hash::Hash;
 
 use super::associate::{associate, measure, AssociateIn, Ego, Evidence, RadarPoint};
 use super::consts::Consts;
-use super::lanes::{interpolate, LaneCache, Lanes};
+use super::lanes::{LaneCache, Lanes};
 use super::object::{MapObjectData, Ring};
 use super::observe::{crossing, observe, ObserveIn};
-use super::select::{approach_only, lane_reference, vision, wall_outside, Bridge, Selector};
+use super::select::{lane_reference, vision, Bridge, Selector};
 use super::walls::{self, BandData, BandPoint, IntSet, WallData};
 use crate::vehicles::{Flags, Tracker, Vehicle};
 use crate::world::World;
@@ -274,7 +274,6 @@ impl MapState {
         points: &[(u32, f64, f64, f64)],
         world: &World,
         crossing_travel: f64,
-        ego_changing: bool,
     ) -> &'a [Vehicle] {
         tracker.update(stamp, points, world);
         let mut reports = HashMap::with_capacity(points.len());
@@ -284,8 +283,6 @@ impl MapState {
                 reports.insert(object.source, object);
             }
         }
-        // The side checks read the lines only, not the model age, outer margins or lane change of `update`'s view.
-        let lanes = self.lane_cache.view(self.lane_offset, false, (0., 0.), false);
         for car in tracker.vehicles_mut().iter_mut().filter(|car| car.seen_radar == stamp) {
             let Some(id) = car.radar_id else { continue };
             let object = reports.get(&i128::from(id)).copied();
@@ -295,29 +292,10 @@ impl MapState {
                 structure: object.structure,
                 proven: self.vehicle_proven(object, crossing_travel),
                 admitted: object.admitted,
-                approach_only: approach_only(object),
-                // The model relabels its lines while ego changes lanes: the world lane coordinate alone keeps the cars.
-                side_blocked: if ego_changing {
-                    [false; 2]
-                } else {
-                    self.side_blocked(&lanes, object)
-                },
                 object: Some(object.key),
             });
         }
         tracker.vehicles()
-    }
-
-    /// `_select`'s lane and wall exclusions for a side slot, as `Lanes::side_blocked`.
-    fn side_blocked(&self, lanes: &Lanes<'_>, object: &MapObjectData) -> [bool; 2] {
-        let Some(&(x, y)) = self.local.get(&object.key) else {
-            return [false; 2];
-        };
-        let walls: Vec<f64> = self.wall_geometry.iter().filter_map(|points| interpolate(points, x)).collect();
-        let unconfirmed_outside = !object.motion_confirmed && !object.vision && wall_outside(&self.wall_geometry, x, y);
-        lanes
-            .side_blocked(x, y, object.motion_confirmed, &walls)
-            .map(|blocked| blocked || unconfirmed_outside)
     }
 
     /// `self.local[key]`.

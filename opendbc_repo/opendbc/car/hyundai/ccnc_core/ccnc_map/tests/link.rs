@@ -136,32 +136,11 @@ fn vehicle_flags_follow_the_current_map_report() {
     object.radar_moving = true;
     map.objects.insert(object.key, object);
 
-    let cars = map.update_vehicles(&mut tracker, 1., &[point(10, 20., 0.)], &world, 2.4, false);
+    let cars = map.update_vehicles(&mut tracker, 1., &[point(10, 20., 0.)], &world, 2.4);
     assert!(cars[0].flags.motion_confirmed && cars[0].flags.proven && cars[0].flags.admitted);
     let vid = cars[0].vid;
 
-    let cars = map.update_vehicles(&mut tracker, 1.05, &[point(10, 20., 0.)], &world, 2.4, false);
+    let cars = map.update_vehicles(&mut tracker, 1.05, &[point(10, 20., 0.)], &world, 2.4);
     assert_eq!(cars[0].vid, vid);
     assert!(!cars[0].flags.admitted && !cars[0].flags.proven);
-}
-
-#[test]
-fn a_doppler_only_report_marks_the_vehicle_approach_only() {
-    use ccnc_map::radar::{MapObjectData, MapState};
-
-    let world = World::default();
-    let mut tracker = tracker();
-    let mut map = MapState::default();
-    let mut object = MapObjectData::measured(1, 10, 20., 0., 0., 0., 1.);
-    object.report = Some((1., 20., 0.));
-    object.motion_confirmed = true;
-    object.doppler_confirmed = true;
-    map.objects.insert(object.key, object);
-    let cars = map.update_vehicles(&mut tracker, 1., &[point(10, 20., 0.)], &world, 2.4, false);
-    assert!(cars[0].flags.proven && cars[0].flags.approach_only);
-
-    map.objects.get_mut(&1).unwrap().forward_samples = 1;
-    map.objects.get_mut(&1).unwrap().report = Some((1.05, 20., 0.));
-    let cars = map.update_vehicles(&mut tracker, 1.05, &[point(10, 20., 0.)], &world, 2.4, false);
-    assert!(!cars[0].flags.approach_only, "a forward Doppler sample");
 }
