@@ -46,6 +46,24 @@ def test_closing_terms_only_count_a_slower_lead():
   assert full_gap(comfort_brake=5.0).closing_factor == 0.0
 
 
+def test_comfort_margin_fades_out_near_standstill():
+  g = full_gap()
+  lo, hi = gs.COMFORT_FADE_SPEEDS
+
+  def full(v, vl):
+    return gs.COMFORT_TIME * v + gs.CLOSING_TIME * max(0.0, v - vl) + max(0.0, v ** 2 - vl ** 2) * (1 / 4.8 - 1 / 8.0)
+  # Above the fade the margin is the full formula; at or below its low end only d_min is left.
+  assert gs.comfort_margin(hi, 0.0, g) == pytest.approx(full(hi, 0.0))
+  assert gs.comfort_margin(lo, 0.0, g) == 0.0
+  assert gs.desired_distance(lo, 0.0, g, STOP) == pytest.approx(gs.min_distance(lo, 0.0, g, STOP))
+  mid = (lo + hi) / 2
+  assert gs.comfort_margin(mid, 0.0, g) == pytest.approx(0.5 * full(mid, 0.0))
+  # Per node on an array of plan speeds, never more than the full margin.
+  v = np.linspace(0.0, 6.0, 13)
+  m = gs.comfort_margin(v, np.zeros_like(v), g)
+  assert np.all(m <= np.array([full(x, 0.0) for x in v]) + 1e-12) and np.all(np.diff(m) >= 0.0)
+
+
 def test_drive_mode_and_braking_extra_only_add_comfort_time():
   g = full_gap(extra=0.2)
   assert g.comfort_time == pytest.approx(gs.COMFORT_TIME + 0.2)

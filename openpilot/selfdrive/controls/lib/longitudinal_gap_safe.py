@@ -17,6 +17,8 @@ The comfort target (cost reference only) is
 closing on a slower or stopping lead, ego plans to shed the speed difference at comfort_brake, not at
 its limit, and keeps CLOSING_TIME per m/s of closing speed, so it starts braking earlier. At equal
 speed both closing terms are 0, so the steady following gap is d_min + COMFORT_TIME * v.
+The whole comfort margin fades out between the COMFORT_FADE_SPEEDS (ego speed), so the car stops at
+d_min, i.e. at the stop distance, behind a stopped lead.
 
 A lead that cuts in closer than the comfort target at about ego speed or faster (closing at most
 CUTIN_CLOSING_MAX) and is not braking gets a cut-in credit equal to the shortfall beyond the comfort
@@ -52,6 +54,11 @@ CUTIN_RECOVER_RATE = 1.5   # m/s the cut-in credit shrinks by
 CUTIN_CLOSING_MAX = 1.5    # m/s: only a cut-in at about ego speed (or faster) gets the credit
 CUTIN_LEAD_ACCEL_MIN = -0.5  # m/s^2: a braking cut-in gets none, and braking later cancels it
 SAME_LEAD_DISTANCE = 1.5   # m: a new track id this close to the last lead's distance is the same car
+# m/s: the comfort margin is 0 at or below the first ego speed and full from the second. A margin linear
+# in v (comfort time + closing time, ~1.35 s) kept the plan that much behind the stop distance at the
+# low speed where the car stops: replay of 14 stops behind a stopped lead, median 4.36 m for 3.7 m
+# (3.89 m with this fade; the rest is d_min's reaction term at the stop speed).
+COMFORT_FADE_SPEEDS = (0.5, 3.0)
 
 
 class LeadGap(NamedTuple):
@@ -111,11 +118,14 @@ def min_distance(v_ego, v_lead, gap: LeadGap, stop_distance):
 
 
 def comfort_margin(v_ego, v_lead, gap: LeadGap):
-  """Comfort target above d_min: comfort time plus shedding the closing speed at comfort_brake."""
+  """Comfort target above d_min: comfort time plus shedding the closing speed at comfort_brake.
+
+  It fades out between the COMFORT_FADE_SPEEDS, so near standstill the target is d_min alone."""
   v_ego = np.maximum(v_ego, 0.0)
   v_lead = np.maximum(v_lead, 0.0)
   closing = np.maximum(0.0, v_ego**2 - v_lead**2)
-  return gap.comfort_time * v_ego + gap.closing_factor * closing + gap.closing_time * np.maximum(0.0, v_ego - v_lead)
+  margin = gap.comfort_time * v_ego + gap.closing_factor * closing + gap.closing_time * np.maximum(0.0, v_ego - v_lead)
+  return margin * np.interp(v_ego, COMFORT_FADE_SPEEDS, (0.0, 1.0))
 
 
 def desired_distance(v_ego, v_lead, gap: LeadGap, stop_distance):
