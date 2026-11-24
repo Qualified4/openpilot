@@ -233,7 +233,7 @@ While external navigation is connected, deceleration, countdowns, and navigation
 
 `TrafficLightDetectMode` is `0` off, `1` stop detection, or `2` stop and go detection. This is model-based assistance; the driver must always verify the signal.
 
-### Cruise and following gap — 30 settings overall, 27 on Hyundai/Kia/Genesis
+### Cruise and following gap — 36 settings overall, 33 on Hyundai/Kia/Genesis
 
 | Section | Parameters | Purpose |
 |---|---|---|
@@ -241,7 +241,7 @@ While external navigation is connected, deceleration, countdowns, and navigation
 | [Speed-based acceleration](cruise-gap.md#acceleration-table) | `CruiseMaxVals0` through `CruiseMaxVals6` | Maximum acceleration tendency by speed band |
 | [Stopping and restarting](cruise-gap.md#stop-resume) | `StopDistanceCarrot`, `StoppingAccel`, `VEgoStopping`, `AChangeCostStarting` | Stop position, stop entry, and restart behavior |
 | [Longitudinal tuning](cruise-gap.md#longitudinal-tuning) | `LongTuningKpV`, `LongTuningKiV`, `LongTuningKf`, `LongActuatorDelay` | Ray EV Comma Pedal applies saved gains; other Hyundai/Kia/Genesis fix/hide `100/0/100`; Toyota/Lexus fix/hide `0/0/100`; VW MEB, including ID.4, applies saved gains |
-| [Following gap](cruise-gap.md#following-gap) | `TFollowGap1` through `TFollowGap4`, `DynamicTFollowLC`, `SpeedTFFactor`, `TFollowDecelBoost` | Gap times, lane-change relief using selected leads, and deceleration margin (default 0%) |
+| [Following gap](cruise-gap.md#following-gap) | `TFollowGap1` through `TFollowGap4`, `DynamicTFollowLC`, `SpeedTFFactor`, `TFollowDecelBoost`, `GapSafeDistance`, `GapSafeLeadDecel1`–`GapSafeLeadDecel4`, `GapSafeReaction` | Gap times, lane-change relief using selected leads, deceleration margin (default 0%), and safety-distance gap levels set by the assumed lead braking (experimental, off by default) |
 | [Following responsiveness](cruise-gap.md#lead-response) | `LeadAccelResponse`, `LeadAccelResponseTF1`–`LeadAccelResponseTF4` | Lead-start, acceleration and approach response at every following-distance level |
 | [Carrot cruise](cruise-gap.md#carrot-cruise) | `CruiseEcoControl`, `CruiseCoastingPercent`, `CarrotCruiseDecel`, `CarrotCruiseAtcDecel` | Economy control, coasting margin with a fixed entry reference (default 0%: existing control), and cruise deceleration limits |
 
@@ -254,6 +254,8 @@ Eco caps lead response at 2 and Safe at 3; Normal and High retain the selected v
 `TFollowGap1` through `TFollowGap4` are stored in hundredths of a second. Lower values reduce the time gap. Use `LeadAccelResponse` for acceleration response: levels 1–3 are gradual, 4 is quick, and 5 retains maximum response. Braking-onset distance is not separately remembered to enlarge the gap.
 
 `LeadAccelResponse`: Adjusts how the car follows a lead vehicle as it starts or speeds up. Lower levels close the gap more gradually; higher levels follow more quickly. Level 0 turns off the acceleration boost, and level 5 is the most responsive test setting. See [Following responsiveness](cruise-gap.md#lead-response) for details. Extra-headroom hold conditions apply up to 1.2 times TF distance (speed × TF + stopping distance), ease progressively from 1.2 to 1.5 times, and no longer pause recovery at or above 1.5 times regardless of lead speed.
+
+`GapSafeDistance` (Safety-Distance Gap Levels) is an experimental setting that defaults to off. When on, a gap level no longer picks a time gap but how hard the lead may brake at most. The assumed decel for levels 1–4 is `GapSafeLeadDecel1`–`GapSafeLeadDecel4` (default 50/60/70/80 = 5.0/6.0/7.0/8.0 m/s², range 4.0–10.0) and the reaction delay is `GapSafeReaction` (default 60 = 0.6 s, range 0.3–1.2 s). The minimum gap is `reaction delay × speed + speed²/(2 × 4.0) − lead speed²/(2 × assumed decel) + stop distance`, and the following target adds `0.15 s × speed`. 4.0 m/s² is the strongest braking the plan requests (−4.0). Following at the same speed, level 1 keeps about 12/19/33/44 m at 30/50/80/100 km/h and level 4 about 14/26/51/73 m; the gap grows with the square of speed, so at high speed it is longer than the current TF gap. The minimum gap is where the plan's danger zone starts (factor 1.0 instead of 0.8), applied only where a lead obstacle binds the plan; cruise targets and traffic stops keep the TF values. While on, the lead-following distance does not use TF or `SpeedTFFactor`; the drive-mode TF factor and `TFollowDecelBoost` remain only as extra seconds added to the 0.15 s. Lane-change relief, cut-out relief and extra-headroom recovery read the same-speed following gap converted to seconds (equivalent TF), and comfort relief stays within the 0.15 s margin. The driving-screen distance bar and `tFollow` show the new target distance and the equivalent TF. Turning it on while driving blends in over 3 s; a level change that lengthens the gap takes up to 3 s (5 → 8 m/s²), while shortening it or turning it off applies at once. Changes apply within about 5 s without restarting. It has not been validated on a vehicle.
 
 `SpeedTFFactor` applies a linear speed multiplier to the selected base TF: 10 is unchanged; 20 doubles it at 100 km/h. `LeadAccelResponseTF1`–`TF4` use the common response at -1 and a gap-specific response at 0–5. Levels 4–5 retain speed TF. The driving-screen bar shows the dynamically adjusted following target in metres.
 
