@@ -929,3 +929,32 @@ fn an_oncoming_car_that_turns_round_is_drawn_again_after_a_second_our_way() {
     assert!(shown.iter().filter(|(t, _)| *t < 2.7).all(|(_, vid)| vid.is_none()), "{shown:?}");
     assert!(shown.iter().filter(|(t, _)| *t > 2.85).all(|(_, vid)| vid.is_some()), "{shown:?}");
 }
+
+/// Two radar cars ahead in ego lane, the second at `(x, r)`, while the radar's lead moves between them every frame:
+/// the FF vid per frame.
+fn ff_with_lead_between(x: f64, r: f64) -> Vec<Option<u32>> {
+    let world = road();
+    let mut assigner = Assigner::default();
+    (0..10)
+        .map(|i| {
+            let now = f64::from(i) * 0.05;
+            let cars = [vehicle(&world, 1, now, 5., 0.), vehicle(&world, 2, now, x, r)];
+            let lead = if i % 2 == 0 { (5., 0.) } else { (x, -3.5 * r) };
+            assigner.update(now, &cars, &world, Some(lead))[FF].map(|s| s.vid)
+        })
+        .collect()
+}
+
+#[test]
+fn ff_stays_on_one_of_two_radar_tracks_of_one_car_while_the_lead_moves_between_them() {
+    // 0.3 m apart along and 0.18 m across: one truck seen as two tracks (11-24 00000479 segment 10).
+    assert_eq!(ff_with_lead_between(5.3, -0.05), vec![Some(1); 10]);
+}
+
+#[test]
+fn ff_follows_the_lead_to_another_car() {
+    // 0.5 m farther but 1.4 m across: two cars, and the lead's 1 m preference moves FF.
+    let ff = ff_with_lead_between(5.5, -0.4);
+    assert_eq!(ff[0], Some(1));
+    assert_eq!(ff[1], Some(2));
+}

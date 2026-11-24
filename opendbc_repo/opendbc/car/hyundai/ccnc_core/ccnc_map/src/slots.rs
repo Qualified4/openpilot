@@ -231,8 +231,14 @@ impl Assigner {
                 .map(|(_, _, vid)| vid)
         });
 
-        // Keep a qualifying FF across small distance changes when no lead matches.
-        let preferred_ff = followed.or(self.previous_ff);
+        // Keep a qualifying FF across small distance changes when no lead matches. A truck can reach the map as two
+        // radar tracks, two vids side by side, and the radar's lead moves between them: FF went back and forth 102
+        // times in 38 s behind one (11-24 00000479 segment 10). The lead keeps the FF it moved from when the two are
+        // one car (`twins`).
+        let preferred_ff = match (followed, self.previous_ff) {
+            (Some(lead), Some(previous)) if twins(vehicles, world, radar, current, lead, previous) => Some(previous),
+            _ => followed.or(self.previous_ff),
+        };
         let mut best: [Option<Slot>; 5] = [None; 5];
         let mut second: [Option<Slot>; 2] = [None; 2];
         for car in vehicles {
@@ -446,6 +452,24 @@ impl Assigner {
         }
         remembered
     }
+}
+
+/// Two current, eligible radar cars this close along, across (m) and in ground speed (m/s) are one car the radar sees
+/// as two tracks. 11-24 00000479 segment 10: 0-0.5 m, 0.02-0.36 m, the same speed.
+const TWIN_LON_M: f64 = 1.5;
+const TWIN_LAT_M: f64 = 1.0;
+const TWIN_SPEED: f64 = 1.0;
+
+fn twins(vehicles: &[Vehicle], world: &World, radar: PoseAt, current: impl Fn(f64) -> bool, a: u32, b: u32) -> bool {
+    let at = |vid: u32| {
+        let car = vehicles.iter().find(|car| car.vid == vid && current(car.seen_radar) && eligible(car))?;
+        let (x, y) = radar.to_ego(f64::from(car.wx), f64::from(car.wy));
+        Some((x, y, Observation::from_car(car, world, radar)?.speed))
+    };
+    a != b
+        && at(a).zip(at(b)).is_some_and(|((ax, ay, av), (bx, by, bv))| {
+            (ax - bx).abs() <= TWIN_LON_M && (ay - by).abs() <= TWIN_LAT_M && (av - bv).abs() <= TWIN_SPEED
+        })
 }
 
 fn eligible(car: &Vehicle) -> bool {
