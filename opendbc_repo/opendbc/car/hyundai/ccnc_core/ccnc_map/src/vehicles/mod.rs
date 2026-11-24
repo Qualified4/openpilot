@@ -43,6 +43,8 @@ pub struct Flags {
     pub object: Option<i64>,
     /// ... and the radar track it reported.
     pub source: Option<u32>,
+    /// When the car started borrowing its motion proof from an earlier map object of this track (`radar::state`).
+    pub borrowed: Option<f64>,
 }
 
 /// Bounded history with oldest-first iteration. Storage is only needed after the first sample.

@@ -288,12 +288,8 @@ impl MapState {
             let object = reports.get(&i128::from(id)).copied();
             let prior = car.flags;
             car.flags = object.map_or_else(Flags::default, |object| {
-                // The radar map starts a new object for the same radar track when a measurement jumps past its gate
-                // (a car creeping 5 m ahead jumped 0.8 m back in 11-24 0000047c segment 5 at 45.3 s). The new object
-                // has to prove its motion again, and the car lost its slot for 4 frames. The car keeps the motion the
-                // track's earlier object proved (an object never loses its own motion proof, so a car that had it
-                // from an object of this track that is not the reporting one got it from the earlier object).
-                let moved = prior.source == Some(id) && prior.motion_confirmed && !object.structure && !object.superseded;
+                let borrowed = borrowed_motion(&prior, prior.object.and_then(|key| self.objects.get(&key)), object, id, stamp);
+                let moved = borrowed.is_some();
                 Flags {
                     motion_confirmed: object.motion_confirmed || moved,
                     stationary: object.stationary,
@@ -303,6 +299,7 @@ impl MapState {
                     admitted: object.admitted,
                     object: Some(object.key),
                     source: Some(id),
+                    borrowed,
                 }
             });
         }
@@ -514,5 +511,88 @@ impl MapState {
         }
         let now = self.now?;
         (stamp <= now + 1e-6).then_some(self.pose)
+    }
+}
+
+/// The radar map starts a new object for the same radar track when a measurement jumps past its gate (a car creeping
+/// 5 m ahead jumped 0.8 m back in 11-24 0000047c segment 5 at 45.3 s). The new object has to prove its motion again,
+/// and the car lost its slot for 4 frames. A map car keeps the motion proof of its track's earlier object, but only
+/// across a jump that continues that object: seen within `BORROW_GAP_S`, within `BORROW_JUMP_M` of where it was
+/// heading and within `BORROW_SPEED` of its speed. A track that slides onto a standing object (11-24 00000479 segment
+/// 19 at 35.8 s: a ground speed near 0 drawn in FF then LF for 1.9 s) breaks that. The borrowed proof lasts
+/// `BORROW_S` from the first jump unless the new object proves its own motion.
+const BORROW_GAP_S: f64 = 0.5;
+const BORROW_JUMP_M: f64 = 1.5;
+const BORROW_SPEED: f64 = 1.0;
+const BORROW_S: f64 = 1.0;
+
+/// The stamp the car started borrowing its motion proof from an earlier object of radar track `id`, or None when the
+/// reporting `object` has to stand on its own proof.
+fn borrowed_motion(prior: &Flags, earlier: Option<&MapObjectData>, object: &MapObjectData, id: u32, stamp: f64) -> Option<f64> {
+    if object.motion_confirmed || object.structure || object.superseded || prior.source != Some(id) || !prior.motion_confirmed {
+        return None;
+    }
+    if prior.object == Some(object.key) {
+        // The same unproven object: it keeps what it borrowed until the deadline.
+        return prior.borrowed.filter(|since| stamp - since <= BORROW_S);
+    }
+    let earlier = earlier?;
+    let continues = stamp - earlier.seen <= BORROW_GAP_S
+        && (object.x - earlier.x).hypot(object.y - earlier.y) <= BORROW_JUMP_M
+        && (object.vx - earlier.vx).hypot(object.vy - earlier.vy) <= BORROW_SPEED;
+    // A chain of jumps does not restart the deadline.
+    let since = prior.borrowed.unwrap_or(stamp);
+    (continues && stamp - since <= BORROW_S).then_some(since)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn object(key: i64, x: f64, vx: f64, seen: f64) -> MapObjectData {
+        MapObjectData::new(key, 4, x, -3.5, vx, 0., seen - 1., seen)
+    }
+
+    fn proven(key: i64) -> Flags {
+        Flags { motion_confirmed: true, proven: true, object: Some(key), source: Some(4), ..Flags::default() }
+    }
+
+    #[test]
+    fn a_new_object_of_the_track_borrows_the_motion_proof_only_when_it_continues_the_earlier_one() {
+        let earlier = object(1, 5.0, 2.0, 1.0);
+        // 47c-5: 0.8 m back at the same speed, the next frame.
+        assert_eq!(borrowed_motion(&proven(1), Some(&earlier), &object(2, 4.2, 2.0, 1.05), 4, 1.05), Some(1.05));
+        for (why, new, stamp) in [
+            ("3 m jump", object(2, 2.0, 2.0, 1.05), 1.05),
+            ("onto a standing object", object(2, 4.6, 0.0, 1.05), 1.05),
+            ("earlier object gone for 0.6 s", object(2, 4.8, 2.0, 1.6), 1.6),
+        ] {
+            assert_eq!(borrowed_motion(&proven(1), Some(&earlier), &new, 4, stamp), None, "{why}");
+        }
+        assert_eq!(borrowed_motion(&proven(1), None, &object(2, 4.2, 2.0, 1.05), 4, 1.05), None, "no earlier object");
+        let other_track = Flags { source: Some(5), ..proven(1) };
+        assert_eq!(borrowed_motion(&other_track, Some(&earlier), &object(2, 4.2, 2.0, 1.05), 4, 1.05), None);
+    }
+
+    #[test]
+    fn a_borrowed_motion_proof_ends_a_second_after_the_jump_unless_the_new_object_proves_its_own() {
+        let mut flags = proven(1);
+        let mut earlier = object(1, 5.0, 2.0, 1.0);
+        let mut held = Vec::new();
+        for i in 1..40 {
+            let stamp = 1.0 + 0.05 * f64::from(i);
+            // Two jumps: a chain of new objects keeps the first jump's deadline.
+            let key = if i < 10 { 2 } else { 3 };
+            let new = object(key, 5.0 + 2.0 * (stamp - 1.0) - 0.8, 2.0, stamp);
+            let borrowed = borrowed_motion(&flags, Some(&earlier), &new, 4, stamp);
+            held.push((i, borrowed.is_some()));
+            flags = Flags { motion_confirmed: borrowed.is_some(), object: Some(key), borrowed, ..proven(key) };
+            earlier = new;
+        }
+        // The first jump is at 1.05 s: borrowed through 2.0 s, gone from 2.1 s.
+        assert!(held.iter().all(|&(i, on)| i == 21 || on == (i <= 20)), "{held:?}");
+        let mut own = object(3, 7.0, 2.0, 2.5);
+        own.motion_confirmed = true;
+        assert_eq!(borrowed_motion(&flags, Some(&earlier), &own, 4, 2.5), None, "own proof: nothing to borrow");
     }
 }
