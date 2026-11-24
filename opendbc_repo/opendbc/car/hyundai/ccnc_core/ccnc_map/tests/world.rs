@@ -15,8 +15,8 @@ fn car_r(w: &World, t: f64, x: f64, y: f64) -> f64 {
 }
 
 /// What the map carries to 50 m of a 0.7 m shift beyond 25 m (`vehicle_lane_uses_fresh_camera_beyond_mapped_boundaries`):
-/// the 21 m bin moves 0.0049 m (0.07 m at 21 m, blended at 0.07) and the far fit extends it. Measured, in lanes.
-const MAP_TILT: f64 = 0.006537;
+/// the 21 m bin moves 0.0102 m (0.07 m at 21 m, blended at 0.146) and the far fit extends it. Measured, in lanes.
+const MAP_TILT: f64 = 0.01373;
 
 #[test]
 fn vehicle_lane_uses_fresh_camera_beyond_mapped_boundaries() {
@@ -361,8 +361,8 @@ fn every_near_bin_takes_the_lines_while_ego_waits() {
             seen.push((0..10).map(|k| world.lanes.observations(1, s + 1. + 2. * f64::from(k))).collect::<Vec<_>>());
         }
     }
-    // 32 s at a stop, 20 camera frames a second.
-    assert!(seen[1].iter().zip(&seen[0]).all(|(after, before)| after - before >= 600), "{seen:?}");
+    // 32 s at a stop: the grid point bins take every camera frame (20 a second), the others one each STALE_S (0.5 s).
+    assert!(seen[1].iter().zip(&seen[0]).all(|(after, before)| after - before >= 60), "{seen:?}");
 }
 
 #[test]

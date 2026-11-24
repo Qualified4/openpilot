@@ -13,8 +13,9 @@ const PENDING_CAPACITY: usize = 512;
 const NEAR: f64 = 25.;
 /// The near field ends at the bin of the last near grid point (20 m), whose centre is at most 21 m ahead.
 const NEAR_FIELD: f64 = 21.;
-/// The share of near bins the five grid points reached per frame on the move (5 × 2 m of 21 m).
-const NEAR_SHARE: f64 = 5. * BIN_M / NEAR_FIELD;
+/// A near bin off the grid points takes the line when it has not for this long (s). On the move the grid points pass
+/// over every bin more often than this from 10 m/s up; at a stop they never reach the bins between them.
+const STALE_S: f64 = 0.5;
 const EXTRAPOLATION_BINS: i64 = 12;
 const MAX_CURVE_EXTENSION: f64 = 45.;
 const MAX_CURVE_COEFFICIENT: f64 = 0.0007;
@@ -28,6 +29,8 @@ struct Bin {
     index: i64,
     point: Point,
     observations: u32,
+    /// When the bin last took a point.
+    seen: f64,
 }
 
 struct Boundary {
@@ -45,15 +48,14 @@ impl Default for Boundary {
 }
 
 impl Boundary {
-    fn observe(&mut self, index: i64, point: Point, x: f64, degraded: bool) {
+    fn observe(&mut self, index: i64, point: Point, x: f64, degraded: bool, t: f64) {
         let slot = index.rem_euclid(BIN_COUNT as i64) as usize;
-        // The near field takes every bin each frame, where the five grid points used to reach about half of them.
-        let share = if x <= NEAR_FIELD { NEAR_SHARE } else { 1. };
-        let alpha = share * 0.15 * ((60. - x) / 40.).clamp(0.1, 1.);
+        let alpha = 0.15 * ((60. - x) / 40.).clamp(0.1, 1.);
         if let Some(bin) = self.bins[slot].as_mut().filter(|b| b.index == index) {
             bin.point.0 += alpha * (point.0 - bin.point.0);
             bin.point.1 += alpha * (point.1 - bin.point.1);
             bin.observations = bin.observations.saturating_add(1);
+            bin.seen = t;
         } else {
             // When yaw falls back to camera motion, the first far-field batches
             // can disagree with the extrapolated line. Blend from that line.
@@ -69,6 +71,7 @@ impl Boundary {
                 index,
                 point,
                 observations: 1,
+                seen: t,
             });
         }
     }
@@ -475,18 +478,23 @@ impl LaneMap {
         degraded: bool,
         sample: impl Fn(f64) -> Option<f64>,
     ) {
-        // Every bin of the near field (through the one at the 20 m grid point) takes the line each frame. On the
-        // 0/5/10/15/20 m grid only, the bins between the grid points kept their last points while ego stood still and
-        // drifted away from the model (1.1 m after 33 s in 11-24 0000047c segment 6). Farther out the grid points
-        // feed the 1 s queue as before: the far model can still face the old lane during a lane change.
+        // The near field (through the bin of the 20 m grid point) takes the line at the bins of its grid points, and
+        // at every other bin that has not had it for STALE_S. On the grid points only, the bins between them kept their
+        // last points while ego stood still (33 s in 11-24 0000047c segments 5-6). Taking every bin each frame made
+        // the map follow the model's relabelled lines in an ego lane change and lose the change (65 replayed
+        // segments: 50 -> 38 clean changes). Farther out the grid points feed the 1 s queue.
         let (first, frozen) = (bin_number(at.s), self.frozen);
-        let near = (first..).take_while(|&i| (i as f64 + 0.5) * BIN_M - at.s <= NEAR_FIELD);
+        let grid: Vec<i64> = MODEL_GRID[..5].iter().map(|&x| bin_number(at.s + f64::from(x))).collect();
+        let near: Vec<i64> = (first..)
+            .take_while(|&i| (i as f64 + 0.5) * BIN_M - at.s <= NEAR_FIELD)
+            .filter(|i| grid.contains(i) || self.stale(line, id, *i, t))
+            .collect();
         let far = MODEL_GRID[..9]
             .iter()
             .map(|&x| f64::from(x))
             .filter(|&x| x > NEAR && !frozen)
             .map(|x| bin_number(at.s + x));
-        for index in near.chain(far) {
+        for index in near.into_iter().chain(far) {
             // Sample the line at the centre of the bin. A bin's point anywhere in its 2 m made two neighbouring points
             // meet when ego stopped with a grid point at a bin seam, and their tangent turned by 60 to 100 degrees
             // (11-24 0000047c segment 5 at 41.8 s).
@@ -515,6 +523,14 @@ impl LaneMap {
         }
     }
 
+    fn stale(&self, line: usize, id: i32, index: i64, t: f64) -> bool {
+        let bound = if line < BOUNDARY_COUNT { &self.bounds[line] } else { &self.edges[line - BOUNDARY_COUNT] };
+        bound.id != id
+            || bound.bins[index.rem_euclid(BIN_COUNT as i64) as usize]
+                .filter(|b| b.index == index)
+                .is_none_or(|b| t - b.seen >= STALE_S - 1e-6)
+    }
+
     fn apply(&mut self, o: Observation) {
         let bound = if o.line < BOUNDARY_COUNT {
             &mut self.bounds[o.line]
@@ -530,7 +546,7 @@ impl LaneMap {
             bound.id = o.id;
         }
         if !self.frozen || bound.last().is_none_or(|last| o.index > last) {
-            bound.observe(o.index, o.point, o.x, o.degraded);
+            bound.observe(o.index, o.point, o.x, o.degraded, o.t);
         }
     }
 
@@ -711,7 +727,7 @@ mod tests {
         let mut boundary = Boundary::default();
         for index in 0..=12 {
             let s = index as f64 * BIN_M;
-            boundary.observe(index, (s, 0.0005 * s * s), s, false);
+            boundary.observe(index, (s, 0.0005 * s * s), s, false, 0.);
         }
         let ((_, near_y), _) = boundary.point(30.).unwrap();
         assert!((near_y - 0.402).abs() < 1e-9);
@@ -725,10 +741,10 @@ mod tests {
     fn two_bins_that_meet_take_their_tangent_from_a_farther_bin() {
         let mut boundary = Boundary::default();
         // Bins 4 and 5 hold points 0.05 m apart along the road and 0.6 m apart across it.
-        boundary.observe(3, (7., 5.), 7., false);
-        boundary.observe(4, (9.95, 5.), 10., false);
-        boundary.observe(5, (10., 5.6), 10., false);
-        boundary.observe(6, (13., 5.6), 13., false);
+        boundary.observe(3, (7., 5.), 7., false, 0.);
+        boundary.observe(4, (9.95, 5.), 10., false, 0.);
+        boundary.observe(5, (10., 5.6), 10., false, 0.);
+        boundary.observe(6, (13., 5.6), 13., false, 0.);
         let (_, (dx, dy)) = boundary.point(9.).unwrap();
         assert!(dy.atan2(dx).to_degrees().abs() < 15., "{dx} {dy}");
     }
