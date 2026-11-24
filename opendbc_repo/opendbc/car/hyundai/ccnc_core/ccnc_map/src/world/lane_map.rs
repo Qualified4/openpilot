@@ -256,15 +256,19 @@ impl Default for LaneMap {
     }
 }
 
+const BACK_SLOPE_M: f64 = 3.;
+
 pub(super) fn line_at(line: &Line, x: f64) -> Option<f64> {
     if line.x.len() != line.y.len() || line.x.len() < 2 {
         return None;
     }
-    // The bin ego stands in has its centre up to 1 m behind: carry the first model segment back that far.
+    // The bin ego stands in has its centre up to 1 m behind: carry the line back that far along its slope over the
+    // first `BACK_SLOPE_M`. The first modelV2 segment is only 0.19 m long, so its slope is about 5 times noisier.
     let first = f64::from(line.x[0]);
     if x < first && x >= first - 0.5 * BIN_M {
-        let (a, b) = (first, f64::from(line.x[1]));
-        let (ya, yb) = (f64::from(line.y[0]), f64::from(line.y[1]));
+        let points = line.x.iter().zip(&line.y).map(|(&x, &y)| (f64::from(x), f64::from(y)));
+        let (b, yb) = points.clone().skip(1).find(|&(b, _)| b >= first + BACK_SLOPE_M).or(points.last())?;
+        let (a, ya) = (first, f64::from(line.y[0]));
         return (b > a && ya.is_finite() && yb.is_finite()).then(|| -(ya + (yb - ya) * (x - a) / (b - a)));
     }
     for (xs, ys) in line.x.windows(2).zip(line.y.windows(2)) {
@@ -721,6 +725,21 @@ fn wall_at(wall: &[Point], x: f64) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_carried_behind_its_first_point_follows_its_slope_over_the_first_metres() {
+        // modelV2 X_IDXS starts 0, 0.1875, 0.75, 1.6875, 3 m. A straight line 0.1 m/m with 2 cm of noise on its second
+        // point: the first segment alone would put the line 1 m behind at 0.2 m from where it is.
+        let x = [0., 0.1875, 0.75, 1.6875, 3., 4.6875, 6.75];
+        let mut y: Vec<f32> = x.iter().map(|x| 0.1 * x).collect();
+        y[1] += 0.02;
+        let line = Line { x: x.to_vec(), y };
+        let behind = line_at(&line, -1.).unwrap();
+        assert!((behind - 0.1).abs() < 1e-6, "{behind}");
+        assert_eq!(line_at(&line, -1.1), None, "only one metre back");
+        let short = Line { x: vec![0., 0.1875], y: vec![0., 0.01875] };
+        assert!((line_at(&short, -1.).unwrap() - 0.1).abs() < 1e-6, "a short line takes its last point");
+    }
 
     #[test]
     fn boundary_extends_a_curve_past_its_last_observation() {
