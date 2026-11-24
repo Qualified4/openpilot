@@ -7,7 +7,7 @@
 +<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
 +### Behavior
 +
-+In laneless driving, when the model path sits inside the lane center in a corner, the set share of that difference is added to the target curvature toward the lane center. The correction only points outward and changes by 20% every 0.05 s, so it turns on and off without a step.
++In laneless driving, when the model path sits inside the lane center in a corner, the set share of that difference is added to the target curvature toward the lane center. The correction only points outward. It blends in gradually over about 2 s and also fades out gradually when it stops, so it turns on and off without a step (about 0.15 s when the driver steers).
 +
 +- **Higher:** Changes the target curvature to remove more of the inside bias.
 +- **0:** Nothing is computed; behavior is unchanged.
@@ -42,7 +42,7 @@
 +<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
 +### 동작
 +
-+레인리스 주행 중 코너에서 모델 경로가 차선 중앙보다 안쪽에 있으면, 그 차이의 설정 비율만큼 목표 곡률을 차선 중앙 쪽으로 더합니다. 보정은 바깥쪽 방향으로만 하며 0.05초마다 20%씩 바뀌어 계단 없이 켜지고 꺼집니다.
++레인리스 주행 중 코너에서 모델 경로가 차선 중앙보다 안쪽에 있으면, 그 차이의 설정 비율만큼 목표 곡률을 차선 중앙 쪽으로 더합니다. 보정은 바깥쪽 방향으로만 하며 약 2초에 걸쳐 서서히 섞고 끊을 때도 서서히 줄여 계단 없이 켜지고 꺼집니다(운전자 조향 시 약 0.15초).
 +
 +- **높이면:** 안쪽 치우침을 더 많이 줄이도록 목표 곡률을 바꿉니다.
 +- **0:** 계산하지 않으며 기존 동작과 같습니다.
@@ -77,7 +77,7 @@
 +<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
 +### 行为
 +
-+无车道线模式下，弯道中模型路径位于车道中心内侧时，按设定比例将该差值加到目标曲率上，使车辆朝车道中心校正。校正只朝外侧，每 0.05 秒变化 20%，开启和关闭时没有阶跃。
++无车道线模式下，弯道中模型路径位于车道中心内侧时，按设定比例将该差值加到目标曲率上，使车辆朝车道中心校正。校正只朝外侧，约 2 秒内逐渐混入，停止时也逐渐减小，开启和关闭时没有阶跃(驾驶员转向时约 0.15 秒)。
 +
 +- **调高：** 更多地减少内侧偏移。
 +- **0：** 不进行计算，行为与原来相同。

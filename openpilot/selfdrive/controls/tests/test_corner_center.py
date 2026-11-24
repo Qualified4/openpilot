@@ -7,7 +7,7 @@ import pytest
 from openpilot.cereal import car, custom, log
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib import corner_center as cc_mod
-from openpilot.selfdrive.controls.lib.corner_center import CornerCenter, block_names, corner_center_curvature
+from openpilot.selfdrive.controls.lib.corner_center import CornerCenter, CornerCenterOutput, block_names, corner_center_curvature
 
 T = np.array(ModelConstants.T_IDXS)
 X = np.array(ModelConstants.X_IDXS)
@@ -88,6 +88,14 @@ def step(c, s, t, mpc_ok=True, lane_mode=False):
                   path, np.full(33, v), T, v, mpc_ok, lane_mode)
 
 
+def step_bound(v, j=cc_mod.J_RAMP, dt=DT):
+  return j / max(v, 8.0) ** 2 * dt * (1 + 1e-9)
+
+
+def assert_rate_limited(dks, v=20.0, j=cc_mod.J_RAMP):
+  assert np.all(np.abs(np.diff([0.0] + list(dks))) <= step_bound(v, j))
+
+
 def run(s, frames=40, blend=50, c=None, t0=0.0):
   c = c or CornerCenter(blend)
   c.set_delay_params(0, 13)
@@ -105,9 +113,63 @@ def test_base_corner_activates_outward_and_ramps():
   first = next(i for i, dk in enumerate(dks) if dk != 0.0)
   assert first == 12
   assert all(dk < 0.0 for dk in dks[first:])  # right corner, inside bias right → correction to the left
-  assert abs(dks[first + 1]) > abs(dks[first])  # 20 % per frame approach, no step to the full value
+  assert abs(dks[first + 1]) > abs(dks[first])  # no step to the full value
+  assert_rate_limited(dks)  # turning on stays within J_RAMP
   assert out[-1][1] == 0 and out[-1][2] == pytest.approx(1.0)
   assert max(abs(d) for d in dks) <= cc_mod.DK_LAT_ACC_MAX / 20.0 ** 2
+
+
+def test_rate_reaches_ninety_percent_in_two_seconds():
+  assert 1 - (1 - cc_mod.RATE) ** round(2.0 / DT) == pytest.approx(0.9, abs=0.01)
+
+
+def _far_points(kind):
+  s = scenario()
+  px = np.array(s['md'].position.x)
+  first = int(np.flatnonzero(px > cc_mod.USE_X)[0])
+  tail = px[first + 1:]
+  if kind == 'stalled':      # stopping plan: x stops growing beyond 60 m
+    px[first + 1:] = np.maximum(px[first], 60.0) - 0.01 * np.arange(len(tail))
+  elif kind == 'backward':   # runs back inside 55 m after the first point beyond it
+    px[first + 1:] = 45.0 - 0.1 * np.arange(len(tail))
+  elif kind == 'nan':
+    px[first + 1:] = math.nan
+  s['md'].position.x = px.tolist()
+  return s
+
+
+@pytest.mark.parametrize('kind', ['stalled', 'backward', 'nan'])
+def test_far_path_points_are_not_read(kind):
+  _, ref = run(scenario(), 80)
+  _, out = run(_far_points(kind), 80)
+  assert ref[-1][0] != 0.0
+  assert all('input' not in block_names(m) for _, m, _ in out)
+  assert [dk for dk, _, _ in out] == pytest.approx([dk for dk, _, _ in ref], rel=1e-6, abs=1e-12)
+
+
+def test_non_monotonic_path_inside_use_range_still_fails_input():
+  s = scenario()
+  px = list(s['md'].position.x)
+  px[10] = px[9] - 0.1  # x ≈ 2 m
+  s['md'].position.x = px
+  _, out = run(s)
+  assert all(dk == 0.0 for dk, _, _ in out) and 'input' in block_names(out[-1][1])
+
+
+def test_one_input_failure_frame_ramps_within_bound():
+  s = scenario()
+  c, out = run(s, 80)
+  assert out[-1][0] != 0.0
+  good = list(s['md'].position.x)
+  bad = list(good)
+  bad[12] = bad[11]  # not increasing at about 5 m
+  dks = [out[-1][0]]
+  for i in range(60):
+    s['md'].position.x = bad if i == 0 else good
+    dks.append(step(c, s, (80 + i) * DT))
+    if i == 0:
+      assert 'input' in block_names(c.block) and not c.dy.any() and dks[-1] != 0.0
+  assert np.all(np.abs(np.diff(dks)) <= step_bound(20.0))
 
 
 def test_mirror_symmetry_is_exact():
@@ -168,22 +230,32 @@ def test_measured_lateral_acceleration_must_match_direction():
 
 
 @pytest.mark.parametrize('field', ['leftBlinker', 'steeringPressed'])
-def test_lane_change_and_driver_zero_at_once_then_rest(field):
-  rest, reason = (cc_mod.LANE_CHANGE_REST_S, 'lanechange') if field == 'leftBlinker' else (cc_mod.DRIVER_REST_S, 'driver')
+def test_lane_change_and_driver_ramp_out_then_rest(field):
+  driver = field == 'steeringPressed'
+  rest, reason, j = (cc_mod.DRIVER_REST_S, 'driver', cc_mod.J_DRIVER) if driver else (cc_mod.LANE_CHANGE_REST_S, 'lanechange', cc_mod.J_RAMP)
   s = scenario()
-  c, out = run(s)
-  assert out[-1][0] != 0.0
-  t = 40 * DT
+  c, out = run(s, 80)
+  start = out[-1][0]
+  assert start != 0.0
+  t = 80 * DT
   setattr(s['cs'], field, True)
-  assert step(c, s, t) == 0.0 and not c.dy.any()
+  dks = [start, step(c, s, t)]
+  assert not c.dy.any() and abs(dks[-1]) == pytest.approx(abs(start) - step_bound(20.0, j), rel=1e-6)
   setattr(s['cs'], field, False)
   n_rest = round(rest / DT)
   for i in range(1, n_rest):
-    assert step(c, s, t + i * DT) == 0.0
+    dks.append(step(c, s, t + i * DT))
     assert reason in block_names(c.block)
+  assert np.all(np.abs(np.diff(dks)) <= step_bound(20.0, j))
+  assert all(abs(b) <= abs(a) for a, b in zip(dks, dks[1:], strict=False))
+  if driver:
+    assert all(dk == 0.0 for dk in dks[1 + round(0.2 / DT):])  # at 0 within 0.2 s
+    assert abs(start) > 0.5 * cc_mod.DK_LAT_ACC_MAX / 20.0 ** 2
+  assert dks[-1] == 0.0
   dks = [step(c, s, t + i * DT) for i in range(n_rest, n_rest + 5)]
   first = next(i for i, dk in enumerate(dks) if dk != 0.0)
   assert first in (2, 3)  # rest over (float boundary), then the 3-frame on rule
+  assert abs(dks[-1]) <= 3 * step_bound(20.0)
 
 
 def test_atc_and_desire_block():
@@ -249,17 +321,31 @@ def test_nan_input_zeroes_that_frame(target):
   else:
     md.position.y = bad
   dk = step(c, s, 40 * DT)
-  assert dk == 0.0 and not c.dy.any() and 'input' in block_names(c.block)
+  assert not c.dy.any() and 'input' in block_names(c.block)
+  assert dk != 0.0 and abs(out[-1][0] - dk) <= step_bound(20.0)
 
 
-def test_mpc_failure_and_lane_mode_zero_at_once():
+def test_non_finite_result_zeroes_at_once(monkeypatch):
   s = scenario()
-  c, _ = run(s)
-  assert step(c, s, 2.0, mpc_ok=False) == 0.0 and 'mpc' in block_names(c.block)
-  # an MPC reset restarts the 0.5 s startup hold
-  assert all(step(c, s, 2.0 + i * DT) == 0.0 for i in range(1, 10))
-  c, _ = run(s)
-  assert step(c, s, 2.0, lane_mode=True) == 0.0 and 'laneMode' in block_names(c.block)
+  c, out = run(s)
+  assert out[-1][0] != 0.0
+  monkeypatch.setattr(cc_mod, 'get_curvature_from_plan', lambda *a: math.nan)
+  assert step(c, s, 40 * DT) == 0.0 and not c.dy.any() and 'nan' in block_names(c.block)
+
+
+def test_mpc_failure_and_lane_mode_ramp_out_lat_inactive_zeroes_at_once():
+  s = scenario()
+  c, out = run(s)
+  dks = [out[-1][0], step(c, s, 2.0, mpc_ok=False)]
+  assert 'mpc' in block_names(c.block) and not c.dy.any() and dks[-1] != 0.0
+  # an MPC reset restarts the 0.5 s startup hold; the output ramps to 0 meanwhile
+  dks += [step(c, s, 2.0 + i * DT) for i in range(1, 10)]
+  assert 'startup' in block_names(c.block)
+  assert np.all(np.abs(np.diff(dks)) <= step_bound(20.0))
+  assert all(abs(b) <= abs(a) for a, b in zip(dks, dks[1:], strict=False))
+  c, out = run(s)
+  dk = step(c, s, 2.0, lane_mode=True)
+  assert 'laneMode' in block_names(c.block) and abs(out[-1][0] - dk) <= step_bound(20.0) and dk != 0.0
   s['lat_active'] = False
   assert step(c, s, 2.05) == 0.0 and 'latActive' in block_names(c.block)
 
@@ -267,16 +353,20 @@ def test_mpc_failure_and_lane_mode_zero_at_once():
 def test_residual_inward_correction_is_dropped():
   s = scenario()
   c, _ = run(s)
+  prev = c.curvature
   c.dy[:] = -c.dy  # residual from a previous corner now pointing to this corner's inside
-  assert step(c, s, 2.0) == 0.0 and 'residualInward' in block_names(c.block)
+  dk = step(c, s, 2.0)
+  assert 'residualInward' in block_names(c.block) and not c.dy.any()
+  assert abs(prev - dk) <= step_bound(20.0) and abs(dk) < abs(prev)
 
 
 def test_released_gate_decays_without_step():
   s = scenario()
   c, out = run(s)
   s['md'].laneLineProbs = [0.9, 0.3, 0.9, 0.9]
-  dks = [step(c, s, 2.0 + i * DT) for i in range(60)]
+  dks = [step(c, s, 2.0 + i * DT) for i in range(150)]
   assert abs(dks[0]) < abs(out[-1][0]) and abs(dks[0]) > 0.7 * abs(out[-1][0])
+  assert np.all(np.abs(np.diff([out[-1][0]] + dks)) <= step_bound(20.0))
   assert all(abs(b) <= abs(a) for a, b in zip(dks, dks[1:], strict=False))
   assert dks[-1] == 0.0 and not c.dy.any()
 
@@ -288,12 +378,19 @@ def test_invariant_violation_gives_zero():
   for i in range(40):
     assert step(c, s, i * DT) == 0.0
   assert c.dy.any() and 'invariant' in block_names(c.block)
+  # a violation after Δκ was nonzero keeps Δy and ramps the output to 0
+  c, out = run(s)
+  assert out[-1][0] != 0.0
+  c.set_delay_params(300, 13)
+  dks = [out[-1][0]] + [step(c, s, (40 + i) * DT) for i in range(20)]
+  assert 'invariant' in block_names(c.block) and c.dy.any() and dks[-1] == 0.0
+  assert np.all(np.abs(np.diff(dks)) <= step_bound(20.0))
 
 
 def test_blend_is_clipped_and_scales():
-  _, a = run(scenario(), blend=25)
-  _, b = run(scenario(), blend=80)
-  _, c = run(scenario(), blend=50)
+  _, a = run(scenario(), 120, blend=25)
+  _, b = run(scenario(), 120, blend=80)
+  _, c = run(scenario(), 120, blend=50)
   assert b[-1][0] == c[-1][0]
   assert abs(a[-1][0]) == pytest.approx(abs(c[-1][0]) / 2, rel=0.05)
 
@@ -323,6 +420,32 @@ def test_controls_helper_accepts_only_fresh_valid_plans():
     assert corner_center_curvature(sm, 20.0, pressed) == 0.0
   lim = cc_mod.DK_LAT_ACC_MAX / 20.0 ** 2
   assert corner_center_curvature(make_sm(dk=0.01), 20.0, False) == pytest.approx(lim)
+
+
+def test_controls_output_ramps_from_the_last_value():
+  out = CornerCenterOutput()
+  v = 20.0
+  lim = cc_mod.DK_LAT_ACC_MAX / v ** 2
+  fresh = make_sm(dk=-lim)
+  dks = [out.update(fresh, v, False) for _ in range(100)]
+  assert dks[-1] == pytest.approx(-lim)
+  assert np.all(np.abs(np.diff([0.0] + dks)) <= step_bound(v, dt=cc_mod.DT_CTRL))
+  # a stale plan (and any other rejected plan) ramps the output to 0 at J_RAMP instead of a step
+  for stale in (make_sm(dk=-lim, age_frames=21), make_sm(dk=-lim, mpcSolutionValid=False), make_sm(dk=math.nan)):
+    out.curvature = -lim
+    dks = [-lim] + [out.update(stale, v, False) for _ in range(70)]
+    assert np.all(np.abs(np.diff(dks)) <= step_bound(v, dt=cc_mod.DT_CTRL))
+    assert dks[1] != 0.0 and dks[-1] == 0.0
+  # driver steering: J_DRIVER to 0, held at 0 during the press and 0.5 s after, then J_RAMP back
+  out.curvature = -lim
+  dks = [-lim] + [out.update(fresh, v, True) for _ in range(5)]
+  dks += [out.update(fresh, v, False) for _ in range(round(cc_mod.DRIVER_REST_S / cc_mod.DT_CTRL) - 1)]
+  assert np.all(np.abs(np.diff(dks)) <= step_bound(v, cc_mod.J_DRIVER, cc_mod.DT_CTRL))
+  assert all(dk == 0.0 for dk in dks[1 + round(0.2 / cc_mod.DT_CTRL):])
+  back = [out.update(fresh, v, False) for _ in range(3)]
+  assert back[0] != 0.0 and np.all(np.abs(np.diff([0.0] + back)) <= step_bound(v, dt=cc_mod.DT_CTRL))
+  out.reset()
+  assert out.curvature == 0.0 and out.driver_frames == 0
 
 
 def _controls(lane_full=False):
@@ -368,6 +491,17 @@ def test_controls_laneless_branch_adds_curvature_and_ignores_inactive_plans():
   lp.mpcSolutionValid = False
   out = _curvatures(c, s, 60)
   assert out[-1] == pytest.approx(base[149], abs=2e-6)
+  assert c.corner_center.curvature == 0.0
+  # the planner dropping its correction (cornerCenterActive false) also ramps out from the last value
+  lp.mpcSolutionValid = True
+  _curvatures(c, s, 60)
+  assert c.corner_center.curvature == pytest.approx(-2e-4)
+  lp.cornerCenterActive = False
+  lp.cornerCenterCurvature = 0.0
+  _curvatures(c, s, 1)
+  assert -2e-4 < c.corner_center.curvature < 0.0
+  _curvatures(c, s, 60)
+  assert c.corner_center.curvature == 0.0
 
 
 @pytest.mark.parametrize('meb', [False, True])

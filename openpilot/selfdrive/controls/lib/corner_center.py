@@ -11,9 +11,17 @@ plannerd, 20 Hz (CornerCenter.update):
   Δy_raw(x) = lane_center(x) - modelV2.position.y(x), interpolated on path x
   keep only the outward direction, minus a 3 cm deadband, |Δy| <= 0.4 m, faded to 0 over 40..50 m
   Δy_tgt(x) = gate * blend * Δy_raw(x) * taper(x), taper = u²(3-2u), u = clip(x / max(v*T_L, L_MIN))
-  Δy <- Δy + RATE * (Δy_tgt - Δy)
-  Δκ = gcfp(yaw(P0 + Δy)) - gcfp(yaw(P0)), gcfp = get_curvature_from_plan at modeld's lat_action_t
+  Δy <- Δy + RATE * (Δy_tgt - Δy)       (90 % of a step in about 2 s)
+  Δκ_tgt = gcfp(yaw(P0 + Δy)) - gcfp(yaw(P0)), gcfp = get_curvature_from_plan at modeld's lat_action_t
+  Δκ moves toward Δκ_tgt by at most J_RAMP / max(v, 8)² per second (J_DRIVER while the driver steers
+  and for DRIVER_REST_S after), so turning on, fading out and every condition that clears Δy reach
+  the output as a ramp. Only latActive off and a non-finite result zero Δκ at once.
   |Δκ| <= DK_LAT_ACC_MAX / max(v, 8)²
+Only path points up to the first one beyond USE_X are read; farther points may run backward
+while the model plans a stop, and Δy is 0 there.
+
+controlsd, 100 Hz (CornerCenterOutput.update): the same ramp from the last value it added, toward the
+plan's Δκ, or toward 0 for a stale or invalid plan and while the driver steers.
 
 Coordinates: modelV2 and lane-line y are positive to the right, sgn = +1 in a right-hand corner.
 radarState.leadsLeft holds dPath > 0 (left), leadsRight dPath < 0.
@@ -32,12 +40,15 @@ BLEND_MAX = 50  # LatCornerCenterBlend upper bound, percent
 # Correction shape
 T_L = 2.5             # taper length, seconds of travel
 L_MIN = 15.0          # taper length floor, m
-RATE = 0.2            # per-frame approach of Δy to its target
+RATE = 0.056          # per-frame approach of Δy to its target: 90 % in 2 s
 DEADBAND = 0.03       # m
 DY_MAX = 0.4          # m
 VIEW = (40.0, 50.0)   # Δy fades to 0 over this x range, m
 SNAP = 0.0005         # residual Δy below this with a zero target is dropped, m
 DK_LAT_ACC_MAX = 0.3  # |Δκ| <= this / max(v, 8)²
+J_RAMP = 0.5          # |dΔκ/dt| <= this / max(v, 8)², m/s³ of lateral jerk
+J_DRIVER = 2.0        # the same while the driver steers and for DRIVER_REST_S after: 0.15 s from the bound to 0
+USE_X = 55.0          # m, path points read: up to and including the first one beyond this
 INVARIANT_K = 2.5     # require L > INVARIANT_K * v * lat_action_t, else Δκ = 0
 STARTUP_S = 0.5
 PLAN_MAX_AGE_S = 0.2  # controlsd ignores an older lateralPlan
@@ -121,6 +132,20 @@ def _finite(values):
   return bool(np.all(np.isfinite(np.asarray(values, float))))
 
 
+def used_points(px):
+  """Number of leading path points corner centering reads: up to and including the first one beyond USE_X."""
+  beyond = np.flatnonzero(np.asarray(px, float) > USE_X)
+  return int(beyond[0]) + 1 if len(beyond) else len(px)
+
+
+def ramp(prev, target, v, j, dt):
+  """prev moved toward target by at most j / max(v, 8)² * dt, then held within ±DK_LAT_ACC_MAX / max(v, 8)²."""
+  v2 = max(v, 8.0) ** 2
+  step = j / v2 * dt
+  lim = DK_LAT_ACC_MAX / v2
+  return float(np.clip(np.clip(target, prev - step, prev + step), -lim, lim))
+
+
 class CornerGate:
   """Decides whether, and how strongly, corner centering may act this frame."""
 
@@ -135,6 +160,7 @@ class CornerGate:
     self.prob_ok = False
     self.corner_ok = False
     self.meas_ok = False
+    self.n_used = TRAJECTORY_SIZE
 
   def restart(self, t):
     self.t_start = t
@@ -148,8 +174,9 @@ class CornerGate:
     v = max(float(cs.vEgo), 0.1)
     ok_in = len(md.laneLines) >= 4 and len(md.position.x) == TRAJECTORY_SIZE and len(md.laneLineProbs) >= 4 and len(md.laneLineStds) >= 4
     if ok_in:
-      px = np.asarray(md.position.x, float)
-      py = np.asarray(md.position.y, float)
+      self.n_used = used_points(md.position.x)
+      px = np.asarray(md.position.x, float)[:self.n_used]
+      py = np.asarray(md.position.y, float)[:self.n_used]
       lx, ly = np.asarray(md.laneLines[1].x, float), np.asarray(md.laneLines[1].y, float)
       rx, ry = np.asarray(md.laneLines[2].x, float), np.asarray(md.laneLines[2].y, float)
       ok_in = (_finite(px) and _finite(py) and _finite(lx) and _finite(ly) and _finite(rx) and _finite(ry)
@@ -270,6 +297,7 @@ class CornerCenter:
     self.curvature = 0.0
     self.gate_value = 0.0
     self.block = 0
+    self.driver_until = -1.0
 
   def set_blend(self, blend_pct):
     self.blend = float(np.clip(blend_pct, 0, BLEND_MAX)) * 0.01
@@ -303,6 +331,8 @@ class CornerCenter:
     gate, sgn, fails = self.gate.update(t, md, cs, rs, atc_active, measured_curvature)
     lat_t = self.lat_action_t(md, live_delay)
     v = max(float(cs.vEgo), 0.1)
+    if cs.steeringPressed:
+      self.driver_until = t + DRIVER_REST_S
 
     zero = None
     if 'input' in fails:
@@ -319,27 +349,31 @@ class CornerCenter:
       zero = 'mpc'
       self.gate.restart(t)
 
+    nan = False
     if zero is not None:
       self.dy[:] = 0.0
     else:
-      px = np.asarray(md.position.x, float)
+      n = self.gate.n_used
+      px = np.asarray(md.position.x, float)[:n]
       center = (np.interp(px, np.asarray(md.laneLines[1].x, float), np.asarray(md.laneLines[1].y, float)) +
                 np.interp(px, np.asarray(md.laneLines[2].x, float), np.asarray(md.laneLines[2].y, float))) / 2
-      raw = center - np.asarray(md.position.y, float)
+      raw = center - np.asarray(md.position.y, float)[:n]
       out = np.maximum(-raw * sgn - DEADBAND, 0.0)
       dy_raw = -sgn * np.minimum(out, DY_MAX) * np.interp(px, VIEW, [1.0, 0.0])
       u = np.clip(px / max(v * T_L, L_MIN), 0.0, 1.0)
-      tgt = gate * self.blend * dy_raw * (u * u * (3 - 2 * u))
+      tgt = np.zeros(TRAJECTORY_SIZE)
+      tgt[:n] = gate * self.blend * dy_raw * (u * u * (3 - 2 * u))
       self.dy += RATE * (tgt - self.dy)
       if not np.any(tgt != 0.0) and float(np.max(np.abs(self.dy))) < SNAP:
         self.dy[:] = 0.0
       near = (px >= 10.0) & (px <= 25.0)
-      if sgn != 0 and float(np.mean(self.dy[near])) * sgn > 1e-6:
+      if sgn != 0 and float(np.mean(self.dy[:n][near])) * sgn > 1e-6:
         self.dy[:] = 0.0
         zero = 'residualInward'
       if not _finite(self.dy):
         self.dy[:] = 0.0
         zero = 'nan'
+        nan = True
 
     dk = 0.0
     if np.any(self.dy != 0.0):
@@ -356,13 +390,15 @@ class CornerCenter:
           dk = 0.0
           self.dy[:] = 0.0
           zero = zero or 'nan'
-        lim = DK_LAT_ACC_MAX / max(v, 8.0) ** 2
-        dk = float(np.clip(dk, -lim, lim))
+          nan = True
 
-    self.curvature = dk
+    if nan or not lat_active:
+      self.curvature = 0.0
+    else:
+      self.curvature = ramp(self.curvature, dk, v, J_DRIVER if t < self.driver_until else J_RAMP, DT)
     self.gate_value = float(gate)
     self.block = block_mask(fails + ([zero] if zero else []))
-    return dk
+    return self.curvature
 
 
 def corner_center_curvature(sm, v_ego, steering_pressed):
@@ -374,3 +410,25 @@ def corner_center_curvature(sm, v_ego, steering_pressed):
     return 0.0
   lim = DK_LAT_ACC_MAX / max(v_ego, 8.0) ** 2
   return float(np.clip(dk, -lim, lim))
+
+
+class CornerCenterOutput:
+  """controlsd side: the Δκ added to the laneless target curvature, ramped from the value added last."""
+
+  def __init__(self):
+    self.curvature = 0.0
+    self.driver_frames = 0
+
+  def reset(self):
+    self.curvature = 0.0
+    self.driver_frames = 0
+
+  def update(self, sm, v_ego, steering_pressed):
+    if steering_pressed:
+      self.driver_frames = round(DRIVER_REST_S / DT_CTRL)
+    elif self.driver_frames > 0:
+      self.driver_frames -= 1
+    driver = self.driver_frames > 0
+    target = 0.0 if driver else corner_center_curvature(sm, v_ego, False)
+    self.curvature = ramp(self.curvature, target, v_ego, J_DRIVER if driver else J_RAMP, DT_CTRL)
+    return self.curvature
