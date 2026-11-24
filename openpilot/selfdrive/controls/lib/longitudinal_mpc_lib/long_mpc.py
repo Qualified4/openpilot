@@ -478,7 +478,7 @@ class LongitudinalMpc:
     lead_gap = None
     if mode == 'acc' and self.gap_safe_state.active:
       lead_gap = self.gap_safe_state.lead_gap(
-        extra_time=getattr(carrot, 't_follow_gap_safe_extra', 0.0), comfort_brake=comfort_brake,
+        extra_time=getattr(carrot, 't_follow_gap_safe_extra', 0.0), comfort_brake=comfort_brake, a_ego=float(a_ego),
       )
     self.lead_gap = lead_gap
     # Per lead: the safety-distance gap for a real lead, the TF computation for the fake far lead

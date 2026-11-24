@@ -18,7 +18,8 @@ closing on a slower or stopping lead, ego plans to shed the speed difference at 
 its limit, and keeps CLOSING_TIME per m/s of closing speed, so it starts braking earlier. At equal
 speed both closing terms are 0, so the steady following gap is d_min + COMFORT_TIME * v.
 The whole comfort margin fades out between the COMFORT_FADE_SPEEDS (ego speed), so the car stops at
-d_min, i.e. at the stop distance, behind a stopped lead.
+d_min, i.e. at the stop distance, behind a stopped lead. While ego brakes hard (COMFORT_FADE_ACCELS)
+the margin stays full.
 
 A lead that cuts in closer than the comfort target at about ego speed or faster (closing at most
 CUTIN_CLOSING_MAX) and is not braking gets a cut-in credit equal to the shortfall beyond the comfort
@@ -59,6 +60,10 @@ SAME_LEAD_DISTANCE = 1.5   # m: a new track id this close to the last lead's dis
 # low speed where the car stops: replay of 14 stops behind a stopped lead, median 4.36 m for 3.7 m
 # (3.89 m with this fade; the rest is d_min's reaction term at the stop speed).
 COMFORT_FADE_SPEEDS = (0.5, 3.0)
+# m/s^2: no fade while ego brakes at or below the first accel, full fade from the second. A hard stop
+# ending inside the stop distance keeps the full margin (synthetic F30 -4: 3.11 m, 3.01 m with the
+# fade alone); the stops above all ended at -0.6 to -1.0 below 3 m/s.
+COMFORT_FADE_ACCELS = (-2.0, -1.5)
 
 
 class LeadGap(NamedTuple):
@@ -70,6 +75,7 @@ class LeadGap(NamedTuple):
   comfort_time: float
   closing_factor: float = 0.0
   closing_time: float = 0.0
+  fade_weight: float = 1.0  # how much of the low-speed comfort fade applies (COMFORT_FADE_ACCELS)
 
 
 class GapSafeState:
@@ -92,7 +98,7 @@ class GapSafeState:
     else:
       self.inv_lead_decel = max(target, self.inv_lead_decel - LEAD_DECEL_INV_RATE * dt)
 
-  def lead_gap(self, *, extra_time, comfort_brake):
+  def lead_gap(self, *, extra_time, comfort_brake, a_ego=0.0):
     return LeadGap(
       t_follow=REACTION,
       comfort_brake=EGO_MAX_DECEL,
@@ -101,6 +107,7 @@ class GapSafeState:
       comfort_time=COMFORT_TIME + max(0.0, extra_time),
       closing_factor=max(0.0, 1.0 / (2.0 * comfort_brake) - 1.0 / (2.0 * EGO_MAX_DECEL)),
       closing_time=CLOSING_TIME,
+      fade_weight=float(np.interp(a_ego, COMFORT_FADE_ACCELS, (0.0, 1.0))),
     )
 
 
@@ -120,12 +127,13 @@ def min_distance(v_ego, v_lead, gap: LeadGap, stop_distance):
 def comfort_margin(v_ego, v_lead, gap: LeadGap):
   """Comfort target above d_min: comfort time plus shedding the closing speed at comfort_brake.
 
-  It fades out between the COMFORT_FADE_SPEEDS, so near standstill the target is d_min alone."""
+  It fades out between the COMFORT_FADE_SPEEDS, so near standstill the target is d_min alone, unless
+  ego brakes hard (gap.fade_weight)."""
   v_ego = np.maximum(v_ego, 0.0)
   v_lead = np.maximum(v_lead, 0.0)
   closing = np.maximum(0.0, v_ego**2 - v_lead**2)
   margin = gap.comfort_time * v_ego + gap.closing_factor * closing + gap.closing_time * np.maximum(0.0, v_ego - v_lead)
-  return margin * np.interp(v_ego, COMFORT_FADE_SPEEDS, (0.0, 1.0))
+  return margin * (1.0 - gap.fade_weight * (1.0 - np.interp(v_ego, COMFORT_FADE_SPEEDS, (0.0, 1.0))))
 
 
 def desired_distance(v_ego, v_lead, gap: LeadGap, stop_distance):

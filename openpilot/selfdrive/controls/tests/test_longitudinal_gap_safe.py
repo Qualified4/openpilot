@@ -62,6 +62,15 @@ def test_comfort_margin_fades_out_near_standstill():
   v = np.linspace(0.0, 6.0, 13)
   m = gs.comfort_margin(v, np.zeros_like(v), g)
   assert np.all(m <= np.array([full(x, 0.0) for x in v]) + 1e-12) and np.all(np.diff(m) >= 0.0)
+  # While ego brakes hard the full margin stays; the fade comes back over COMFORT_FADE_ACCELS.
+  hard_lo, hard_hi = gs.COMFORT_FADE_ACCELS
+  s = gs.GapSafeState()
+  s.update(enabled=True, lead_decel=6.0, snap=True, dt=DT)
+  hard = s.lead_gap(extra_time=0.0, comfort_brake=2.4, a_ego=hard_lo - 0.5)
+  assert hard.fade_weight == 0.0 and gs.comfort_margin(lo, 0.0, hard) == pytest.approx(full(lo, 0.0))
+  half = s.lead_gap(extra_time=0.0, comfort_brake=2.4, a_ego=(hard_lo + hard_hi) / 2)
+  assert gs.comfort_margin(lo, 0.0, half) == pytest.approx(0.5 * full(lo, 0.0))
+  assert s.lead_gap(extra_time=0.0, comfort_brake=2.4, a_ego=hard_hi).fade_weight == 1.0
 
 
 def test_drive_mode_and_braking_extra_only_add_comfort_time():
