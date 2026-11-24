@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 
 // carState is 100 Hz. Keep 4 s of history so slow little-core camera frames (up to LATE_S = 3 s) get exact poses.
 const HISTORY_CAPACITY: usize = 512;
+/// The yaw rate the pose takes is at most this times the speed (1/m): a 3.3 m turning radius, under any car's.
+const MAX_CURVATURE: f64 = 0.3;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PoseAt {
@@ -51,10 +53,15 @@ impl Pose {
         let mut next = self.current();
         if let Some(last) = self.stamp() {
             let dt = (t - last).min(0.25);
-            let distance = 0.5 * (self.speed + v_ego.max(0.)) * dt;
+            let speed = 0.5 * (self.speed + v_ego.max(0.));
+            let distance = speed * dt;
+            // A car turns only as it moves. livePose kept a 0.0014 rad/s yaw bias through a 41 s stop (11-24
+            // 0000047c segment 5), which turned the map 3.2 degrees: 0.56 m at 10 m ahead.
+            let turn = MAX_CURVATURE * speed;
             let rotation = yaw_live
                 .filter(|yaw| yaw.is_finite())
                 .unwrap_or(self.lane_yaw)
+                .clamp(-turn, turn)
                 * dt;
             let (sin, cos) = (next.heading + 0.5 * rotation).sin_cos();
             next.x += distance * cos;

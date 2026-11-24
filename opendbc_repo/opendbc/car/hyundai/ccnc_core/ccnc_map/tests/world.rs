@@ -364,3 +364,25 @@ fn every_near_bin_takes_the_lines_while_ego_waits() {
     // 32 s at a stop, 20 camera frames a second.
     assert!(seen[1].iter().zip(&seen[0]).all(|(after, before)| after - before >= 600), "{seen:?}");
 }
+
+#[test]
+fn a_yaw_rate_bias_does_not_turn_the_map_while_ego_waits() {
+    let mut world = World::default();
+    let mut heading = Vec::new();
+    for step in 0..4000u32 {
+        let t = f64::from(step) * 0.01;
+        // livePose keeps 0.0014 rad/s through the stop, as in 11-24 0000047c segment 5.
+        world.live_pose(t, 0.0014);
+        world.car_state(t, if t < 5. { 5. } else { 0. }, false);
+        if step % 5 == 0 {
+            world.model(t, &model(0., 0., 0.));
+            world.radar(t);
+        }
+        if step == 600 || step == 3999 {
+            heading.push(world.pose.current().heading);
+        }
+    }
+    assert!((heading[1] - heading[0]).abs() < 1e-9, "{heading:?}");
+    // On the move the same yaw rate turns ego: 5 s at 0.0014 rad/s.
+    assert!((heading[0] - 0.007).abs() < 1e-3, "{heading:?}");
+}
