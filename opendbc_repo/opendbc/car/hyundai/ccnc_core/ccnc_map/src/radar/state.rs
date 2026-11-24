@@ -515,12 +515,14 @@ impl MapState {
 }
 
 /// The radar map starts a new object for the same radar track when a measurement jumps past its gate (a car creeping
-/// 5 m ahead jumped 0.8 m back in 11-24 0000047c segment 5 at 45.3 s). The new object has to prove its motion again,
-/// and the car lost its slot for 4 frames. A map car keeps the motion proof of its track's earlier object, but only
-/// across a jump that continues that object: seen within `BORROW_GAP_S`, within `BORROW_JUMP_M` of where it was
-/// heading and within `BORROW_SPEED` of its speed. A track that slides onto a standing object (11-24 00000479 segment
-/// 19 at 35.8 s: a ground speed near 0 drawn in FF then LF for 1.9 s) breaks that. The borrowed proof lasts
+/// 5 m ahead at 2 m/s jumped 0.8 m back in 11-24 0000047c segment 5 at 45.3 s). The new object has to prove its motion
+/// again, and the car lost its slot for 4 frames. A map car keeps the motion proof of its track's earlier object, but
+/// only across a jump of a moving car that continues that object: both at `BORROW_MOVING` or faster, the earlier one
+/// seen within `BORROW_GAP_S`, within `BORROW_JUMP_M` of where it was heading and within `BORROW_SPEED` of its speed.
+/// A standing object proves itself: an earlier object at 0-0.6 m/s gave its proof to a new one at 0-0.5 m/s in
+/// 00000479 segment 19 at 35.8 s and 0000047c segment 2 at 27.9 s, drawn in FF for 0.5-1.2 s. The borrowed proof lasts
 /// `BORROW_S` from the first jump unless the new object proves its own motion.
+const BORROW_MOVING: f64 = 1.0;
 const BORROW_GAP_S: f64 = 0.5;
 const BORROW_JUMP_M: f64 = 1.5;
 const BORROW_SPEED: f64 = 1.0;
@@ -537,7 +539,9 @@ fn borrowed_motion(prior: &Flags, earlier: Option<&MapObjectData>, object: &MapO
         return prior.borrowed.filter(|since| stamp - since <= BORROW_S);
     }
     let earlier = earlier?;
-    let continues = stamp - earlier.seen <= BORROW_GAP_S
+    let continues = earlier.vx.hypot(earlier.vy) >= BORROW_MOVING
+        && object.vx.hypot(object.vy) >= BORROW_MOVING
+        && stamp - earlier.seen <= BORROW_GAP_S
         && (object.x - earlier.x).hypot(object.y - earlier.y) <= BORROW_JUMP_M
         && (object.vx - earlier.vx).hypot(object.vy - earlier.vy) <= BORROW_SPEED;
     // A chain of jumps does not restart the deadline.
@@ -565,11 +569,15 @@ mod tests {
         for (why, new, stamp) in [
             ("3 m jump", object(2, 2.0, 2.0, 1.05), 1.05),
             ("onto a standing object", object(2, 4.6, 0.0, 1.05), 1.05),
+            ("a slow object onto a standing one (479-19)", object(2, 4.6, 0.5, 1.05), 1.05),
             ("earlier object gone for 0.6 s", object(2, 4.8, 2.0, 1.6), 1.6),
         ] {
             assert_eq!(borrowed_motion(&proven(1), Some(&earlier), &new, 4, stamp), None, "{why}");
         }
         assert_eq!(borrowed_motion(&proven(1), None, &object(2, 4.2, 2.0, 1.05), 4, 1.05), None, "no earlier object");
+        let resting = object(1, 5.0, 0.5, 1.0);
+        let new = object(2, 4.6, 0.5, 1.05);
+        assert_eq!(borrowed_motion(&proven(1), Some(&resting), &new, 4, 1.05), None, "a standing car proves itself");
         let other_track = Flags { source: Some(5), ..proven(1) };
         assert_eq!(borrowed_motion(&other_track, Some(&earlier), &object(2, 4.2, 2.0, 1.05), 4, 1.05), None);
     }
