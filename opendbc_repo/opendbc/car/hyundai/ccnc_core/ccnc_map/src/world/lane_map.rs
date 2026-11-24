@@ -14,6 +14,8 @@ const NEAR: f64 = 25.;
 const EXTRAPOLATION_BINS: i64 = 12;
 const MAX_CURVE_EXTENSION: f64 = 45.;
 const MAX_CURVE_COEFFICIENT: f64 = 0.0007;
+/// Two bins this close give no tangent (`Boundary::spread`); bins are 2 m apart.
+const MIN_TANGENT_M: f64 = 0.5;
 
 type Point = (f64, f64);
 
@@ -76,7 +78,7 @@ impl Boundary {
         let before = bins().filter(|b| b.index <= index).max_by_key(|b| b.index);
         let after = bins().filter(|b| b.index > index).min_by_key(|b| b.index);
         let (a, b) = match (before, after) {
-            (Some(a), Some(b)) => (a, b),
+            (Some(a), Some(b)) => self.spread(a, b),
             (Some(b), _) => (
                 bins()
                     .filter(|a| (5..=15).contains(&(b.index - a.index)))
@@ -119,6 +121,29 @@ impl Boundary {
             }
         }
         Some((linear, tangent))
+    }
+
+    /// Two neighbouring bins less than `MIN_TANGENT_M` apart along the road give no direction: their lateral
+    /// difference would set it. Reach one bin farther on either side until the pair spans that much along the road,
+    /// measured on the chord of the bins around the pair.
+    fn spread<'a>(&'a self, mut a: &'a Bin, mut b: &'a Bin) -> (&'a Bin, &'a Bin) {
+        let bins = || self.bins.iter().flatten();
+        loop {
+            let earlier = bins().filter(|x| x.index < a.index).max_by_key(|x| x.index);
+            let later = bins().filter(|x| x.index > b.index).min_by_key(|x| x.index);
+            let (from, to) = (earlier.unwrap_or(a).point, later.unwrap_or(b).point);
+            let (rx, ry) = (to.0 - from.0, to.1 - from.1);
+            let along = (rx * (b.point.0 - a.point.0) + ry * (b.point.1 - a.point.1)) / rx.hypot(ry).max(1e-9);
+            if along >= MIN_TANGENT_M {
+                return (a, b);
+            }
+            match (earlier, later) {
+                (Some(e), Some(l)) if l.index - b.index < a.index - e.index => b = l,
+                (Some(e), _) => a = e,
+                (None, Some(l)) => b = l,
+                (None, None) => return (a, b),
+            }
+        }
     }
 
     fn extrapolate(&self, s: f64, edge: &Bin) -> Option<(Point, Point)> {
@@ -437,10 +462,15 @@ impl LaneMap {
         degraded: bool,
         sample: impl Fn(f64) -> Option<f64>,
     ) {
-        for x in MODEL_GRID[..9].iter().copied().map(f64::from) {
-            if self.frozen && x > NEAR {
+        for grid in MODEL_GRID[..9].iter().copied().map(f64::from) {
+            if self.frozen && grid > NEAR {
                 break;
             }
+            // Sample the line at the centre of the bin the grid point falls in. A bin's point anywhere in its 2 m made
+            // two neighbouring points meet when ego stopped with a grid point at a bin seam, and their tangent turned
+            // by 60 to 100 degrees (11-24 0000047c segment 5 at 41.8 s).
+            let index = bin_number(at.s + grid);
+            let x = (index as f64 + 0.5) * BIN_M - at.s;
             let Some(y) = sample(x) else {
                 continue;
             };
@@ -448,7 +478,7 @@ impl LaneMap {
                 t,
                 line,
                 id,
-                index: bin_number(at.s + x),
+                index,
                 point: at.to_world(x, y),
                 x,
                 degraded,
@@ -669,5 +699,17 @@ mod tests {
         assert!((far_x - 74.).abs() < 1e-9);
         assert!((far_y - 2.7255).abs() < 1e-9);
         assert!((dy / dx - 0.069).abs() < 1e-9);
+    }
+
+    #[test]
+    fn two_bins_that_meet_take_their_tangent_from_a_farther_bin() {
+        let mut boundary = Boundary::default();
+        // Bins 4 and 5 hold points 0.05 m apart along the road and 0.6 m apart across it.
+        boundary.observe(3, (7., 5.), 7., false);
+        boundary.observe(4, (9.95, 5.), 10., false);
+        boundary.observe(5, (10., 5.6), 10., false);
+        boundary.observe(6, (13., 5.6), 13., false);
+        let (_, (dx, dy)) = boundary.point(9.).unwrap();
+        assert!(dy.atan2(dx).to_degrees().abs() < 15., "{dx} {dy}");
     }
 }

@@ -32,7 +32,9 @@ fn vehicle_lane_uses_fresh_camera_beyond_mapped_boundaries() {
     let near = (15., 0.);
     let mapped_far = world.lanes.coord(50., far);
     let updated_far = world.vehicle_lane_coord(0.05, 50., far);
-    assert!((updated_far.unwrap() - mapped_far.unwrap() - 0.2).abs() < 1e-4);
+    // The last mapped bin is sampled at its centre, 21 m, inside the model segment 20-30 m that the shift tilts: the
+    // map itself carries 0.015 lane of the shift to 50 m.
+    assert!((updated_far.unwrap() - mapped_far.unwrap() - 0.2).abs() < 0.02, "{updated_far:?} {mapped_far:?}");
     assert_eq!(
         world.vehicle_lane_coord(0.05, 15., near),
         world.lanes.coord(15., near)
@@ -287,4 +289,51 @@ fn a_lane_map_miss_longer_than_half_a_second_leaves_ego_unknown() {
     assert!((long[unknown].0 - long[mapped].0 - 0.55).abs() < 1e-6, "{long:?}");
     assert!(long[unknown..50].iter().all(|r| !r.1.is_finite()), "{long:?}");
     assert!(long[51..].iter().all(|r| r.1.is_finite()), "{long:?}");
+}
+
+/// Straight road, lanes at ±1.75 and ±5.25 m, a left road edge at `edge` m (left positive). modelV2 is right-positive.
+fn road_model(edge: f64) -> ccnc_map::input::model_v2::Model {
+    let mut m = model(0., 0., 0.);
+    let grid: Vec<f32> = m.lane_lines[0].x.clone();
+    m.road_edges = vec![
+        ccnc_map::input::model_v2::Line { x: grid.clone(), y: vec![-edge as f32; grid.len()] },
+        ccnc_map::input::model_v2::Line { x: grid.clone(), y: vec![9.; grid.len()] },
+    ];
+    m
+}
+
+/// Ego slows from 2 m/s to a stop and waits while modelV2 moves the left road edge 1 m out (5.5 -> 6.5 m, the model
+/// wobbling as it did in 11-24 0000047c segment 5). A car waits 8.2 m ahead at 2.65 m left, 3 m inside that edge:
+/// its lane coordinate per camera frame of the wait.
+fn car_inside_the_edge_while_ego_waits() -> Vec<Option<f64>> {
+    let mut world = World::default();
+    let mut out = Vec::new();
+    let mut stopped = None;
+    for step in 0..2000u32 {
+        let t = f64::from(step) * 0.01;
+        let v = (2. * (1. - (t - 8.) / 2.)).clamp(0., 2.);
+        world.live_pose(t, 0.);
+        world.car_state(t, v, false);
+        if step % 5 != 0 {
+            continue;
+        }
+        let wait = stopped.map_or(0., |since| t - since);
+        if v == 0. && stopped.is_none() {
+            stopped = Some(t);
+        }
+        world.model(t, &road_model(5.5 + (wait / 3.).min(1.)));
+        world.radar(t);
+        if stopped.is_some() {
+            let ego = world.pose.current();
+            out.push(world.lanes.coord(ego.s + 8.2, ego.to_world(8.2, 2.65)));
+        }
+    }
+    out
+}
+
+#[test]
+fn a_car_inside_the_road_edge_keeps_its_lane_coordinate_while_ego_waits() {
+    let coords = car_inside_the_edge_while_ego_waits();
+    assert!(coords.len() > 100);
+    assert!(coords.iter().all(|u| u.is_some_and(|u| (0.6..0.9).contains(&u))), "{coords:?}");
 }
