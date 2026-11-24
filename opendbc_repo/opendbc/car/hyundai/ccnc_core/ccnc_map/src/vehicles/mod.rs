@@ -111,9 +111,12 @@ pub struct Vehicle {
     pub u_mapped: f64,
 }
 
-/// A car the lane map cannot place keeps its last coordinate this long, as ego does (`World::lane_held`): a road
-/// edge or the lane widths jittering past it would take it out of its slot for a few frames.
+/// A moving car the lane map cannot place keeps its last coordinate this long, as ego does (`World::lane_held`): a
+/// road edge or the lane widths jittering past it would take it out of its slot for a few frames ...
 const U_HOLD_S: f64 = 0.5;
+/// ... when it moves over ground at least this fast (m/s). A standing object the map cannot place is usually off the
+/// road (a bollard at the edge was drawn 0.4 s longer in RF with every car held).
+const U_HOLD_SPEED: f64 = 2.;
 
 /// Ground speed along ego's heading at or below which a radar measurement comes at us (m/s) ...
 const ONCOMING_SPEED: f64 = -2.;
@@ -199,7 +202,8 @@ impl Vehicle {
         if u.is_some() {
             self.u_mapped = now;
         }
-        let held = world.lane_held() || now - self.u_mapped <= U_HOLD_S;
+        let moving = sample.speed.abs() >= U_HOLD_SPEED;
+        let held = world.lane_held() || (moving && now - self.u_mapped <= U_HOLD_S);
         self.u = smooth(self.u, u, 0.17, 0.1, held);
         self.u_slot = smooth(self.u_slot, u_slot, 0.5, 0.25, held);
     }
