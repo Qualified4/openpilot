@@ -14,8 +14,8 @@ plannerd, 20 Hz (CornerCenter.update):
   Δy <- Δy + RATE * (Δy_tgt - Δy)       (90 % of a step in about 2 s)
   Δκ_tgt = gcfp(yaw(P0 + Δy)) - gcfp(yaw(P0)), gcfp = get_curvature_from_plan at modeld's lat_action_t
   Δκ moves toward Δκ_tgt by at most J_RAMP / max(v, 8)² per second (J_DRIVER while the driver steers
-  and for DRIVER_REST_S after), so turning on, fading out and every condition that clears Δy reach
-  the output as a ramp. Only latActive off and a non-finite result zero Δκ at once.
+  and for DRIVER_REST_S after), so turning on, fading out, driver steering and every condition that
+  clears Δy reach the output as a ramp. Only latActive off and a non-finite result zero Δκ at once.
   |Δκ| <= DK_LAT_ACC_MAX / max(v, 8)²
 Only path points up to the first one beyond USE_X are read; farther points may run backward
 while the model plans a stop, and Δy is 0 there.
@@ -47,7 +47,7 @@ VIEW = (40.0, 50.0)   # Δy fades to 0 over this x range, m
 SNAP = 0.0005         # residual Δy below this with a zero target is dropped, m
 DK_LAT_ACC_MAX = 0.3  # |Δκ| <= this / max(v, 8)²
 J_RAMP = 0.5          # |dΔκ/dt| <= this / max(v, 8)², m/s³ of lateral jerk
-J_DRIVER = 2.0        # the same while the driver steers and for DRIVER_REST_S after: 0.15 s from the bound to 0
+J_DRIVER = 0.5        # while the driver steers and for DRIVER_REST_S after: 0.6 s from the bound to 0 (replay: 1.0 and 2.0 left jolts)
 USE_X = 55.0          # m, path points read: up to and including the first one beyond this
 INVARIANT_K = 2.5     # require L > INVARIANT_K * v * lat_action_t, else Δκ = 0
 STARTUP_S = 0.5

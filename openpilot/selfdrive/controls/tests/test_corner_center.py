@@ -249,7 +249,8 @@ def test_lane_change_and_driver_ramp_out_then_rest(field):
   assert np.all(np.abs(np.diff(dks)) <= step_bound(20.0, j))
   assert all(abs(b) <= abs(a) for a, b in zip(dks, dks[1:], strict=False))
   if driver:
-    assert all(dk == 0.0 for dk in dks[1 + round(0.2 / DT):])  # at 0 within 0.2 s
+    n0 = math.ceil(abs(start) / step_bound(20.0, j))
+    assert n0 < len(dks) and all(dk == 0.0 for dk in dks[n0:])  # at 0 after the J_DRIVER ramp, within the rest
     assert abs(start) > 0.5 * cc_mod.DK_LAT_ACC_MAX / 20.0 ** 2
   assert dks[-1] == 0.0
   dks = [step(c, s, t + i * DT) for i in range(n_rest, n_rest + 5)]
@@ -437,11 +438,13 @@ def test_controls_output_ramps_from_the_last_value():
     assert np.all(np.abs(np.diff(dks)) <= step_bound(v, dt=cc_mod.DT_CTRL))
     assert dks[1] != 0.0 and dks[-1] == 0.0
   # driver steering: J_DRIVER to 0, held at 0 during the press and 0.5 s after, then J_RAMP back
-  out.curvature = -lim
-  dks = [-lim] + [out.update(fresh, v, True) for _ in range(5)]
+  start = -lim / 2
+  out.curvature = start
+  dks = [start] + [out.update(fresh, v, True) for _ in range(5)]
   dks += [out.update(fresh, v, False) for _ in range(round(cc_mod.DRIVER_REST_S / cc_mod.DT_CTRL) - 1)]
   assert np.all(np.abs(np.diff(dks)) <= step_bound(v, cc_mod.J_DRIVER, cc_mod.DT_CTRL))
-  assert all(dk == 0.0 for dk in dks[1 + round(0.2 / cc_mod.DT_CTRL):])
+  n0 = math.ceil(abs(start) / step_bound(v, cc_mod.J_DRIVER, cc_mod.DT_CTRL))
+  assert n0 + 1 < len(dks) and all(dk == 0.0 for dk in dks[n0 + 1:])  # +1: float residual of an exact multiple
   back = [out.update(fresh, v, False) for _ in range(3)]
   assert back[0] != 0.0 and np.all(np.abs(np.diff([0.0] + back)) <= step_bound(v, dt=cc_mod.DT_CTRL))
   out.reset()
