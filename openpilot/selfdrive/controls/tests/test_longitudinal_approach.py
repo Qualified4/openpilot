@@ -11,9 +11,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_approach import (
   APPROACH_DECEL_MAX,
   APPROACH_DECEL_MIN,
   APPROACH_HOLD_LEAD_SPEED_MARGIN,
+  APPROACH_LEAD_ACCEL_MAX,
   APPROACH_LEAD_SPEED_MAX,
   APPROACH_OBSTACLE_COST_GAIN,
   APPROACH_RAMP_TIME,
+  APPROACH_RELEASE_TIME,
   APPROACH_TIME_GAP_MIN,
   ApproachState,
   approach_decel,
@@ -26,7 +28,7 @@ V60 = 60 / 3.6
 
 def args(**kw):
   a = {"enabled": True, "lead_status": True, "track_id": 1, "distance": 90.0, "lead_speed": 0.0, "lead_end_speed": 0.0,
-       "v_ego": V60, "stop_distance": STOP, "dt": DT}
+       "lead_accel": 0.0, "v_ego": V60, "stop_distance": STOP, "dt": DT}
   a.update(kw)
   return a
 
@@ -72,6 +74,9 @@ def test_lead_that_stops_within_the_horizon_counts_as_slow():
   {"lead_speed": float("inf")},
   {"v_ego": float("nan")},
   {"distance": 0.0},
+  {"lead_accel": float("nan")},
+  {"lead_speed": 1.0, "lead_end_speed": 6.0, "lead_accel": APPROACH_LEAD_ACCEL_MAX + 0.1},  # pulling away
+  {"distance": 30.0},                                                     # needs > 2.0 m/s^2: not a soft stop
 ])
 def test_no_entry(kw):
   s = ApproachState()
@@ -88,12 +93,13 @@ def test_hold_and_exit_when_the_lead_speeds_up_again():
   # Hysteresis: a lead creeping slightly above 15 km/h keeps the approach.
   assert s.update(**args(lead_speed=APPROACH_LEAD_SPEED_MAX + APPROACH_HOLD_LEAD_SPEED_MARGIN - 0.1,
                          lead_end_speed=6.0)) == pytest.approx(1.0)
-  # Lead re-accelerates: released at once, no lingering weight.
-  assert s.update(**args(lead_speed=8.0, lead_end_speed=9.0)) == 0.0
+  # Lead faster than the hold limit: released over APPROACH_RELEASE_TIME.
+  assert s.update(**args(lead_speed=8.0, lead_end_speed=9.0)) == pytest.approx(1.0 - DT / APPROACH_RELEASE_TIME)
+  assert ramp(s, steps=round(APPROACH_RELEASE_TIME / DT), lead_speed=8.0, lead_end_speed=9.0) == 0.0
   assert s.obstacle_cost_factor() == 1.0
-  # Ego no longer closing: released.
+  # Ego no longer closing: released the same way.
   ramp(s)
-  assert s.update(**args(lead_speed=2.0, v_ego=2.5)) == 0.0
+  assert ramp(s, steps=round(APPROACH_RELEASE_TIME / DT), lead_speed=2.0, v_ego=2.5) == 0.0
 
 
 @pytest.mark.parametrize("kw", [
@@ -191,3 +197,30 @@ def test_on_matches_off_outside_the_approach(native, kw):
   assert on.approach_state.weight == 0.0
   for name in ("params", "yref", "x_sol", "lead_gap_margins"):
     np.testing.assert_array_equal(getattr(on, name), getattr(off, name))
+
+
+def test_lead_pulling_away_releases_over_half_a_second():
+  """47c 10:44: a lead starting from standstill must not be held up to 22 km/h."""
+  s = ApproachState()
+  ramp(s, lead_speed=0.2, lead_end_speed=0.0)
+  decel = s.decel
+  away = {"lead_speed": 2.0, "lead_end_speed": 8.0, "lead_accel": APPROACH_LEAD_ACCEL_MAX + 0.2}
+  weights = [s.update(**args(**away)) for _ in range(round(APPROACH_RELEASE_TIME / DT))]
+  assert not s.active
+  np.testing.assert_allclose(weights, 1.0 - DT / APPROACH_RELEASE_TIME * np.arange(1, len(weights) + 1), atol=1e-9)
+  assert s.decel == decel  # the curve keeps its decel while it fades
+  # A lead that brakes back toward a stop may be approached again.
+  assert s.update(**args(lead_speed=2.0, lead_end_speed=0.0, lead_accel=-0.5)) > 0.0
+  # A braking/stopping prediction keeps the hold even with a positive aLeadK sample.
+  ramp(s)
+  assert s.update(**args(lead_speed=1.0, lead_end_speed=0.0, lead_accel=1.0)) == pytest.approx(1.0)
+
+
+def test_no_entry_when_the_soft_curve_would_need_more_than_the_maximum():
+  """446 5:38: entry at 26 m with a capped 2.0 curve only moved the stop closer."""
+  v = 42 / 3.6
+  limit = APPROACH_DECEL_GAIN * v ** 2 / (2 * APPROACH_DECEL_MAX) + STOP   # distance where the request is exactly 2.0
+  assert ApproachState().update(**args(v_ego=v, distance=limit - 0.5)) == 0.0
+  s = ApproachState()
+  assert s.update(**args(v_ego=v, distance=limit + 0.5)) > 0.0
+  assert s.decel <= APPROACH_DECEL_MAX

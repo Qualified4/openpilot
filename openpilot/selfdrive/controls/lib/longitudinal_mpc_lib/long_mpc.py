@@ -578,7 +578,8 @@ class LongitudinalMpc:
       approach_weight = self.approach_state.update(
         enabled=True, lead_status=bool(radarstate.leadOne.status), track_id=radarstate.leadOne.radarTrackId,
         distance=float(radarstate.leadOne.dRel), lead_speed=float(radarstate.leadOne.vLead),
-        lead_end_speed=float(lead_xv_0[-1, 1]), v_ego=float(v_ego), stop_distance=float(stop_distance), dt=self.dt,
+        lead_end_speed=float(lead_xv_0[-1, 1]), lead_accel=float(radarstate.leadOne.aLeadK),
+        v_ego=float(v_ego), stop_distance=float(stop_distance), dt=self.dt,
       )
     else:
       approach_weight = self.approach_state.reset()
