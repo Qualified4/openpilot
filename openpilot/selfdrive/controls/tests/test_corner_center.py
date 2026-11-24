@@ -293,6 +293,24 @@ def test_side_radar_uses_corner_outside_by_dpath(k):
   assert out[-1][0] != 0.0
 
 
+@pytest.mark.parametrize('kind', ['side', 'bsd'])
+def test_side_traffic_appearing_clears_dy_and_ramps_out(kind):
+  s = scenario()
+  c, out = run(s, 80)
+  start = out[-1][0]
+  assert start != 0.0
+  if kind == 'side':
+    s['rs'].leadsLeft = [log.RadarState.LeadData.new_message(dRel=8, vLead=20, dPath=3.5, yRel=-3.5)]
+  else:
+    s['cs'].leftBlindspot = True
+  dks = [start]
+  for i in range(round(0.65 / DT)):
+    dks.append(step(c, s, (80 + i) * DT))
+    assert kind in block_names(c.block) and not c.dy.any()
+  assert np.all(np.abs(np.diff(dks)) <= step_bound(20.0))
+  assert dks[1] != 0.0 and dks[-1] == 0.0  # ramp, not a step; at 0 within 0.65 s
+
+
 def test_bsd_on_outside_blocks_and_holds():
   s = scenario()
   s['cs'].rightBlindspot = True  # inside side

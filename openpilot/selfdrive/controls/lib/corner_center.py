@@ -15,7 +15,7 @@ plannerd, 20 Hz (CornerCenter.update):
   Δκ_tgt = gcfp(yaw(P0 + Δy)) - gcfp(yaw(P0)), gcfp = get_curvature_from_plan at modeld's lat_action_t
   Δκ moves toward Δκ_tgt by at most J_RAMP / max(v, 8)² per second (J_DRIVER while the driver steers
   and for DRIVER_REST_S after), so turning on, fading out, driver steering and every condition that
-  clears Δy reach the output as a ramp. Only latActive off and a non-finite result zero Δκ at once.
+  clears Δy (including side traffic or BSD on the corner outside) reach the output as a ramp. Only latActive off and a non-finite result zero Δκ at once.
   |Δκ| <= DK_LAT_ACC_MAX / max(v, 8)²
 Only path points up to the first one beyond USE_X are read; farther points may run backward
 while the model plans a stop, and Δy is 0 there.
@@ -348,6 +348,9 @@ class CornerCenter:
     elif not mpc_ok:
       zero = 'mpc'
       self.gate.restart(t)
+    elif 'side' in fails or 'bsd' in fails:
+      # traffic on the side the correction moves toward: drop Δy, ramp the output out instead of fading over RATE
+      zero = 'side' if 'side' in fails else 'bsd'
 
     nan = False
     if zero is not None:
