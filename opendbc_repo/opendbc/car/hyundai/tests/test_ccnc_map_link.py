@@ -47,21 +47,23 @@ def test_stale_after_0_25s_uses_mode0():
   assert not link.use_process(NS + NS // 2, packet(NS + NS // 2), NS + NS // 2)
 
 
-def test_invalid_uses_mode0():
+def test_invalid_keeps_the_map_for_0_25s_then_uses_mode0():
   link = ccnc_core_loader.load().MapLink()
   assert link.use_process(NS, packet(NS), NS)
-  assert not link.use_process(NS + TICK, packet(NS + TICK, valid=False), NS + TICK)
+  for i in range(1, 6):
+    stamp = NS + i * TICK
+    assert link.use_process(stamp, packet(stamp, valid=False), stamp) == (i * TICK <= STALE)
 
 
-def test_recover_only_after_5s_stable():
+def test_recover_only_after_2s_stable():
   link = ccnc_core_loader.load().MapLink()
   assert not link.use_process(NS, None, None)
-  for i in range(100):
+  for i in range(40):
     stamp = 2 * NS + i * TICK
     assert not link.use_process(stamp, packet(stamp), stamp)
-  assert link.use_process(7 * NS, packet(7 * NS), 7 * NS)
+  assert link.use_process(4 * NS, packet(4 * NS), 4 * NS)
   # A gap that has already ended when card next checks still breaks continuity.
-  assert not link.use_process(8 * NS, packet(8 * NS), 8 * NS)
+  assert not link.use_process(5 * NS, packet(5 * NS), 5 * NS)
 
 
 def test_generation_change_drops_the_old_slots():

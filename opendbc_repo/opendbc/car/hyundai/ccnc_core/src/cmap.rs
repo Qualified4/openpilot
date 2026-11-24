@@ -12,7 +12,11 @@ use crate::{
     vehicle_display::{FRONT_FIELDS, REAR_FIELDS},
 };
 
-const RECOVERY_NS: u64 = 5_000_000_000;
+/// After falling back to mode 0, the map has to be healthy this long before card draws from it again.
+const RECOVERY_NS: u64 = 2_000_000_000;
+/// While drawing from the map, a message that is invalid, late or missing for at most this long since the last valid
+/// one keeps that one's slots instead of falling back.
+const GRACE_NS: u64 = 250_000_000;
 
 fn valid_map(bytes: &[u8]) -> Option<MapOut> {
     let map = cmap::decode(bytes)?;
@@ -34,6 +38,8 @@ pub(crate) struct MapLink {
     last: Option<(u64, u32)>,
     healthy_since: Option<u64>,
     recovering: bool,
+    /// The last valid map card drew from, and its message time.
+    held: Option<(u64, MapOut)>,
     #[pyo3(get)]
     using_process: bool,
 }
@@ -68,6 +74,13 @@ impl MapLink {
                 && map.radar_log_mono_time <= *stamp
                 && fresh(map.radar_log_mono_time)
         }) else {
+            if let Some((_, map)) = self
+                .held
+                .filter(|(stamp, _)| self.using_process && now.saturating_sub(*stamp) <= GRACE_NS)
+            {
+                return Some(map);
+            }
+            self.held = None;
             self.last = None;
             self.healthy_since = None;
             self.recovering = true;
@@ -90,6 +103,7 @@ impl MapLink {
             self.recovering = now.saturating_sub(since) < RECOVERY_NS;
         }
         self.using_process = !self.recovering;
+        self.held = self.using_process.then_some((stamp, map));
         self.using_process.then_some(map)
     }
 }
@@ -189,6 +203,47 @@ mod tests {
 
     fn slot(detect: u8, kind: u8, kind_confirmed: bool) -> Slot {
         Slot { vid: 4, distance: 12., lateral: 0.5, detect, lane_coord_rel: 0., v_rel: 0., kind, kind_confirmed, kind_wanted: false, vision: 0 }
+    }
+
+    const TICK: u64 = 50_000_000;
+
+    fn message(stamp: u64, valid: bool) -> Vec<u8> {
+        let slots = [Some(slot(2, KIND_CAR, true)), None, None, None, None];
+        cmap::encode(&MapOut { radar_log_mono_time: stamp, generation: 1, status: 0, ego_lane_coord: 0.5, slots, valid })
+    }
+
+    /// card's link after `healthy` map messages a tick apart, then `invalid` invalid ones, then valid ones again:
+    /// whether it drew from the map at each later tick.
+    fn after_invalid(healthy: u64, invalid: u64, then: u64) -> Vec<bool> {
+        let mut link = MapLink::new();
+        let mut drawn = Vec::new();
+        for i in 0..healthy + invalid + then {
+            let stamp = 1_000_000_000 + i * TICK;
+            let used = link.select(stamp + 1_000_000, Some(&message(stamp, i < healthy || i >= healthy + invalid)), Some(stamp));
+            if i >= healthy {
+                drawn.push(used.is_some_and(|map| map.slots[0].is_some()));
+            }
+        }
+        drawn
+    }
+
+    #[test]
+    fn a_short_invalid_stretch_keeps_the_last_valid_slots() {
+        let healthy = RECOVERY_NS / TICK + 2;
+        for invalid in 1..=4 {
+            assert!(after_invalid(healthy, invalid, 20).iter().all(|&drawn| drawn), "{invalid} invalid messages");
+        }
+    }
+
+    #[test]
+    fn a_longer_invalid_stretch_falls_back_until_the_map_is_healthy_again() {
+        let healthy = RECOVERY_NS / TICK + 2;
+        let ticks = RECOVERY_NS / TICK;
+        let drawn = after_invalid(healthy, 6, ticks + 5);
+        // Four invalid messages are within 0.25 s of the last valid one (card reads each 1 ms after it).
+        assert!(drawn[..4].iter().all(|&d| d), "{drawn:?}");
+        assert!(drawn[4..6 + ticks as usize].iter().all(|&d| !d), "mode 0 until healthy for RECOVERY_NS: {drawn:?}");
+        assert!(drawn[6 + ticks as usize..].iter().all(|&d| d), "{drawn:?}");
     }
 
     #[test]
