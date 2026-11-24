@@ -101,7 +101,7 @@ pub struct Pipeline {
     /// logMonoTime of the last CcncVision message.
     vision_seen: Option<u64>,
     /// Until when ego counts as changing lanes for the radar map's side-slot lane rules.
-    changing_until: f64,
+    changing_until: Option<f64>,
 }
 
 impl Pipeline {
@@ -126,7 +126,7 @@ impl Pipeline {
             speed_at: History::default(),
             lprob_at: History::default(),
             radar_slots: [None; 5],
-            changing_until: f64::NEG_INFINITY,
+            changing_until: None,
             kinds: vision::Kinds::default(),
             vision_seen: None,
         }
@@ -164,6 +164,7 @@ impl Pipeline {
             self.radar = MapState::for_observation();
             self.model_stamp = None;
             self.vision.reset_positions();
+            self.changing_until = None;
         }
     }
 
@@ -296,9 +297,9 @@ impl Pipeline {
     fn ego_changing(&mut self, now: f64, blinker: bool) -> bool {
         let u = self.world.u_ego();
         if blinker || (u.is_finite() && (u - (u.floor() + 0.5)).abs() > 0.25) {
-            self.changing_until = now + 3.;
+            self.changing_until = Some(now + 3.);
         }
-        now <= self.changing_until
+        self.changing_until.is_some_and(|until| now <= until)
     }
 
     fn update_radar(&mut self, stamp: u64, input: Vec<live_tracks::RawPoint>) -> Result<MapOut> {
@@ -336,14 +337,17 @@ impl Pipeline {
                 tracks.push((id, x, y, v_rel));
             }
             if point.measured {
-                measured.push(RadarPoint {
-                    track: i128::from(id),
-                    x,
-                    y,
-                    speed: v_rel,
-                    moving: point.motion_state == 2,
-                    tracked: point.track_state == 2,
-                });
+                let speed = f64::from(point.v_lead);
+                if speed.is_finite() {
+                    measured.push(RadarPoint {
+                        track: i128::from(id),
+                        x,
+                        y,
+                        speed,
+                        moving: point.motion_state == 2,
+                        tracked: point.track_state == 2,
+                    });
+                }
             }
         }
         let yaw = self.world.yaw_at(now).unwrap_or(0.);
@@ -411,7 +415,7 @@ impl Pipeline {
             &self.world,
             WorldInput {
                 now,
-                changing,
+                changing: changing || car.blinker,
                 can_valid: true,
                 blind: car.blind,
                 vehicles: cars,
@@ -471,6 +475,85 @@ mod tests {
         assert!(pipe.ego_changing(1.0, true));
         assert!(pipe.ego_changing(3.9, false), "the model relabels its lines after the crossing");
         assert!(!pipe.ego_changing(4.1, false));
+    }
+
+    #[test]
+    fn sync_generation_clears_changing_until() {
+        let mut pipe = Pipeline::new(0);
+        assert!(pipe.ego_changing(1.0, true));
+        assert!(pipe.changing_until.is_some());
+        pipe.world.reset();
+        pipe.sync_generation();
+        assert!(pipe.changing_until.is_none());
+        assert!(!pipe.ego_changing(2.0, false));
+    }
+
+    #[test]
+    fn v_lead_marks_stationary_guardrail_as_wall_and_keeps_slower_real_car() {
+        let mut pipe = Pipeline::new(0);
+        let point = |track_id: u64, d_rel: f32, y_rel: f32, v_rel: f32, v_lead: f32| live_tracks::RawPoint {
+            track_id,
+            d_rel,
+            y_rel,
+            v_rel,
+            a_rel: 0.,
+            yv_rel: 0.,
+            measured: true,
+            v_lead,
+            a_lead: 0.,
+            j_lead: 0.,
+            source: 0,
+            track_state: 2,
+            motion_state: 0,
+        };
+        // Warm up the pose ring past RADAR_LAG (0.2 s) so pose_at(now - RADAR_LAG) tracks ego at 20 m/s.
+        for i in 0..16u64 {
+            let stamp = 1_000_000_000 + i * 50_000_000;
+            let now = seconds(stamp);
+            pipe.world.car_state(now, 20., false);
+            pipe.car = Some((
+                stamp,
+                CarState {
+                    speed: 20.,
+                    can_valid: true,
+                    ..CarState::default()
+                },
+            ));
+            let points = if i < 6 {
+                Vec::new()
+            } else {
+                let dt_total = (i - 6) as f32 * 0.05;
+                vec![
+                    // Three stationary guardrail posts along the right within max_x (20 m) and wall_max_gap (3.5 m).
+                    point(1, 14. - 20. * dt_total, -3.5, -20., 0.),
+                    point(2, 17. - 20. * dt_total, -3.5, -20., 0.),
+                    point(3, 20. - 20. * dt_total, -3.5, -20., 0.),
+                    // Slower real car in the left lane (v_lead=15, v_rel=-5, motionState != 2).
+                    point(4, 18. - 5. * dt_total, 3.5, -5., 15.),
+                    // Non-finite v_lead must be ignored in radar measurement.
+                    point(99, 15., 0., -20., f32::NAN),
+                ]
+            };
+            pipe.update_radar(stamp, points).unwrap();
+        }
+        assert!(!pipe.radar.walls.is_empty(), "stationary guardrail posts must form a wall");
+        assert!(!pipe.radar.wall_geometry.is_empty(), "wall geometry must be populated");
+        for id in [1i128, 2, 3] {
+            let obj = pipe.radar.objects.values().find(|o| o.source == id).expect("guardrail object");
+            assert!(obj.stationary, "guardrail {id} should be stationary");
+            assert!(!obj.motion_confirmed, "guardrail {id} must not be motion_confirmed");
+            assert!(!obj.doppler_confirmed, "guardrail {id} must not be doppler_confirmed");
+            assert!(obj.structure, "guardrail {id} should belong to a wall structure");
+        }
+        let car_obj = pipe.radar.objects.values().find(|o| o.source == 4).expect("slower real car object");
+        assert!(car_obj.forward_samples > 0, "slower real car (v_lead=15) must have forward Doppler samples");
+        assert!(car_obj.motion_confirmed && !car_obj.stationary);
+        let car = pipe.tracker.vehicles().iter().find(|v| v.radar_id == Some(4)).expect("tracked slower car");
+        assert!(car.flags.proven && !car.flags.approach_only, "slower real car must not be blocked by approach_only");
+        assert!(
+            !pipe.radar.objects.values().any(|o| o.source == 99),
+            "non-finite v_lead must be filtered out of radar measurements"
+        );
     }
 
     #[test]

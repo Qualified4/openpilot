@@ -311,9 +311,10 @@ fn run() -> io::Result<()> {
             eprintln!("ccnc_visiond: liveCalibration {}", if calibrated { "calibrated" } else { "not calibrated, nothing is processed" });
         }
         let latest = calib.usable().copied().unwrap_or(Calibration::UNKNOWN);
-        let answers = classifier.answers();
-        if !answers.is_empty() {
-            quiet.kinds(&publisher, answers, latest)?;
+        for (answers, calibration) in classifier.answers() {
+            if !answers.is_empty() {
+                quiet.kinds(&publisher, answers, calibration)?;
+            }
         }
         if front_pace.is_some() && !classifier.alive() {
             // No restart: the side views go on, the road camera stops (its boxes are only for the classifier).
@@ -346,7 +347,7 @@ fn run() -> io::Result<()> {
                             let frame_mono = frame_mono_time(frame.timestamp_sof, boot_now, mono_now);
                             let dets: Vec<_> = found.boxes.iter().map(|(d, _)| *d).collect();
                             let picked = classify::pick(&dets, |d| found.boxes.iter().any(|(b, cut)| *cut && b.b == d.b));
-                            classifier.submit(classify::Job::new(frame_mono, View::CropFront, &found.image, &picked));
+                            classifier.submit(classify::Job::new(frame_mono, View::CropFront, latest, &found.image, &picked));
                             let out = VisionOut {
                                 status: Status::Frame,
                                 frame_id: frame.frame_id,
@@ -442,7 +443,7 @@ fn run() -> io::Result<()> {
         let frame_mono = frame_mono_time(frame.timestamp_sof, boot_now, mono_now);
         if classify::SIDE_KINDS && target != gate::Target::Raw && !found.night {
             let picked = classify::pick(&found.boxes, |_| false);
-            classifier.submit(classify::Job::new(frame_mono, target.view(), &found.image, &picked));
+            classifier.submit(classify::Job::new(frame_mono, target.view(), calibration, &found.image, &picked));
         }
         let out = VisionOut {
             status: Status::Frame,

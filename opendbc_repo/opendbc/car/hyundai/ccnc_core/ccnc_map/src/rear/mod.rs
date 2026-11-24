@@ -442,8 +442,11 @@ impl WorldRear {
         if context_changed {
             self.kinds.clear();
         }
-        for car in input.vehicles.iter().filter(|car| car.link == Link::Sure) {
-            if let Some(kind) = car.kind.filter(|k| k.confirmed_at.is_finite()) {
+        for car in input.vehicles {
+            if let Some(kind) = car
+                .kind
+                .filter(|k| (car.link == Link::Sure || k.inherited) && k.confirmed_at.is_finite())
+            {
                 match self.kinds.iter_mut().find(|(vid, _)| *vid == car.vid) {
                     Some(kept) => kept.1 = kind,
                     None => self.kinds.push((car.vid, kind)),
@@ -563,7 +566,7 @@ impl WorldRear {
                 -drawn.y.value()
             };
             let kind = match to_car(vid) {
-                Some(car) => car.kind.filter(|_| car.link == Link::Sure),
+                Some(car) => car.kind.filter(|k| car.link == Link::Sure || k.inherited),
                 None => self.kinds.iter().find(|(kept, _)| *kept == vid).map(|&(_, kind)| kind),
             };
             slots[i + 3] = Some(WorldSlot {
