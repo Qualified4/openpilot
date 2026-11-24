@@ -336,14 +336,17 @@ impl Pipeline {
                 tracks.push((id, x, y, v_rel));
             }
             if point.measured {
-                measured.push(RadarPoint {
-                    track: i128::from(id),
-                    x,
-                    y,
-                    speed: v_rel,
-                    moving: point.motion_state == 2,
-                    tracked: point.track_state == 2,
-                });
+                let speed = f64::from(point.v_lead);
+                if speed.is_finite() {
+                    measured.push(RadarPoint {
+                        track: i128::from(id),
+                        x,
+                        y,
+                        speed,
+                        moving: point.motion_state == 2,
+                        tracked: point.track_state == 2,
+                    });
+                }
             }
         }
         let yaw = self.world.yaw_at(now).unwrap_or(0.);
