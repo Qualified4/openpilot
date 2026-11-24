@@ -555,6 +555,43 @@ mod tests {
     }
 
     #[test]
+    fn a_car_whose_radar_point_jumps_keeps_its_motion_proof() {
+        let mut pipe = Pipeline::new(0);
+        let point = |d_rel: f32, v_lead: f32| live_tracks::RawPoint {
+            track_id: 4,
+            d_rel,
+            y_rel: -3.5,
+            v_rel: v_lead,
+            a_rel: 0.,
+            yv_rel: 0.,
+            measured: true,
+            v_lead,
+            a_lead: 0.,
+            j_lead: 0.,
+            source: 0,
+            track_state: 2,
+            motion_state: 0,
+        };
+        let mut proven = Vec::new();
+        // Ego stands; a car on the right creeps away from 5 m at 2 m/s, and its point jumps 3 m back at 1.5 s.
+        for i in 0..50u64 {
+            let stamp = 1_000_000_000 + i * 50_000_000;
+            let now = seconds(stamp);
+            pipe.world.car_state(now, 0., false);
+            pipe.car = Some((stamp, CarState { speed: 0., can_valid: true, ..CarState::default() }));
+            let t = i as f32 * 0.05;
+            let d = 5. + 2. * t - if i >= 30 { 3. } else { 0. };
+            pipe.update_radar(stamp, vec![point(d, 2.)]).unwrap();
+            let car = pipe.tracker.vehicles().iter().find(|v| v.radar_id == Some(4));
+            proven.push((i, car.map(|c| (c.vid, c.flags.proven))));
+        }
+        let (before, after) = (proven[29].1.unwrap(), proven[30].1.unwrap());
+        assert!(before.1, "{proven:?}");
+        assert_eq!(before.0, after.0, "the same map car");
+        assert!(proven[30..].iter().all(|(_, c)| c.is_some_and(|c| c.1)), "{proven:?}");
+    }
+
+    #[test]
     fn a_car_state_newer_than_the_tracks_still_runs_the_radar_update() {
         // The daemon reads carState when liveTracks arrives; one published while radarcan was sending is newer.
         for (car_after_ms, runs) in [(5, true), (0, true), (-5, true), (260, false), (-260, false)] {

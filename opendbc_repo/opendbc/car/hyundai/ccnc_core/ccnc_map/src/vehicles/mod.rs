@@ -39,8 +39,10 @@ pub struct Flags {
     pub structure: bool,
     pub proven: bool,
     pub admitted: bool,
-    /// The radar map object that last reported this car.
+    /// The radar map object that last reported this car ...
     pub object: Option<i64>,
+    /// ... and the radar track it reported.
+    pub source: Option<u32>,
 }
 
 /// Bounded history with oldest-first iteration. Storage is only needed after the first sample.

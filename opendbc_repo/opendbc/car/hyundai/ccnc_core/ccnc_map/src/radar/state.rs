@@ -286,13 +286,24 @@ impl MapState {
         for car in tracker.vehicles_mut().iter_mut().filter(|car| car.seen_radar == stamp) {
             let Some(id) = car.radar_id else { continue };
             let object = reports.get(&i128::from(id)).copied();
-            car.flags = object.map_or_else(Flags::default, |object| Flags {
-                motion_confirmed: object.motion_confirmed,
-                stationary: object.stationary,
-                structure: object.structure,
-                proven: self.vehicle_proven(object, crossing_travel),
-                admitted: object.admitted,
-                object: Some(object.key),
+            let prior = car.flags;
+            car.flags = object.map_or_else(Flags::default, |object| {
+                // The radar map starts a new object for the same radar track when a measurement jumps past its gate
+                // (a car creeping 5 m ahead jumped 0.8 m back in 11-24 0000047c segment 5 at 45.3 s). The new object
+                // has to prove its motion again, and the car lost its slot for 4 frames. The car keeps the motion the
+                // track's earlier object proved (an object never loses its own motion proof, so a car that had it
+                // from an object of this track that is not the reporting one got it from the earlier object).
+                let moved = prior.source == Some(id) && prior.motion_confirmed && !object.structure && !object.superseded;
+                Flags {
+                    motion_confirmed: object.motion_confirmed || moved,
+                    stationary: object.stationary,
+                    structure: object.structure,
+                    proven: self.vehicle_proven(object, crossing_travel)
+                        || (moved && prior.proven && !crossing(object, self.frame(), crossing_travel)),
+                    admitted: object.admitted,
+                    object: Some(object.key),
+                    source: Some(id),
+                }
             });
         }
         tracker.vehicles()
