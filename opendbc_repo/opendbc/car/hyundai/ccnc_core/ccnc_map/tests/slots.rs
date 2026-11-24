@@ -567,13 +567,18 @@ fn a_remembered_car_stays_when_the_camera_would_replace_it() {
 }
 
 const LR: usize = 3;
+const RR: usize = 4;
 
-/// Cars in the left lane at these distances, drawn and then split.
-fn left_pair(assigner: &mut Assigner, world: &World, now: f64, xs: &[f64]) -> [Option<Slot>; 5] {
-    let cars: Vec<_> = xs.iter().enumerate().map(|(i, &x)| vehicle(world, i as u32 + 1, now, x, -1.)).collect();
+/// Cars in one side lane (r -1 left, 1 right) at these distances, vids 1, 2, ..., drawn and then split.
+fn side_pair(assigner: &mut Assigner, world: &World, now: f64, xs: &[f64], r: f64) -> [Option<Slot>; 5] {
+    let cars: Vec<_> = xs.iter().enumerate().map(|(i, &x)| vehicle(world, i as u32 + 1, now, x, r)).collect();
     let mut slots = assigner.update(now, &cars, world, None);
-    assigner.split_alongside(&mut slots);
+    assigner.split_alongside(now, &mut slots);
     slots
+}
+
+fn left_pair(assigner: &mut Assigner, world: &World, now: f64, xs: &[f64]) -> [Option<Slot>; 5] {
+    side_pair(assigner, world, now, xs, -1.)
 }
 
 #[test]
@@ -624,6 +629,58 @@ fn the_car_alongside_replaces_a_rear_handover_drawing() {
     let cars = [vehicle(&world, 1, 0., 3., -1.), vehicle(&world, 2, 0., 35., -1.)];
     let mut slots = assigner.update(0., &cars, &world, None);
     slots[LR] = Some(Slot { vid: 9, distance: -8., ..slots[LF].unwrap() });
-    assert_eq!(assigner.split_alongside(&mut slots), [true, false]);
+    assert_eq!(assigner.split_alongside(0., &mut slots), [true, false]);
     assert_eq!(slots[LR].map(|s| s.vid), Some(1));
+}
+
+#[test]
+fn a_split_side_stays_split_while_the_next_car_drops_out_briefly() {
+    let world = road();
+    let mut assigner = Assigner::default();
+    let mut front = Vec::new();
+    for i in 0..40 {
+        let now = f64::from(i) * 0.05;
+        // The car 35 m ahead drops out for 0.3 s from 0.5 s.
+        let gone = (10..16).contains(&i);
+        let slots = left_pair(&mut assigner, &world, now, if gone { &[3.] } else { &[3., 35.] });
+        assert_eq!(slots[LR].map(|s| (s.vid, s.distance)), Some((1, 0.)), "at {now:.2}");
+        let lf = slots[LF].map(|s| s.vid);
+        if front.last() != Some(&lf) {
+            front.push(lf);
+        }
+    }
+    assert_eq!(front, [Some(2), None, Some(2)]);
+}
+
+#[test]
+fn a_split_side_without_its_next_car_for_over_1_s_returns_the_near_car_to_the_front_once() {
+    let world = road();
+    let mut assigner = Assigner::default();
+    let mut drawn = Vec::new();
+    for i in 0..60 {
+        let now = f64::from(i) * 0.05;
+        // The car 35 m ahead is gone from 0.5 s on, more than 1.2 s.
+        let slots = left_pair(&mut assigner, &world, now, if i < 10 { &[3., 35.] } else { &[3.] });
+        let state = (slots[LF].map(|s| (s.vid, s.distance)), slots[LR].map(|s| (s.vid, s.distance)));
+        if drawn.last().is_none_or(|(_, last)| *last != state) {
+            drawn.push((now, state));
+        }
+    }
+    let states: Vec<_> = drawn.iter().map(|d| d.1).collect();
+    assert_eq!(
+        states,
+        [(Some((2, 35.)), Some((1, 0.))), (None, Some((1, 0.))), (Some((1, 3.)), None)],
+        "{drawn:?}"
+    );
+    // Held 1 s from the frame the next car went missing.
+    assert!((drawn[2].0 - 1.55).abs() < 1e-9, "{drawn:?}");
+}
+
+#[test]
+fn a_car_alongside_on_the_right_with_another_ahead_is_drawn_in_rr() {
+    let world = road();
+    let slots = side_pair(&mut Assigner::default(), &world, 0., &[3., 35.], 1.);
+    assert_eq!(slots[RR].map(|s| (s.vid, s.distance)), Some((1, 0.)));
+    assert_eq!(slots[RF].map(|s| (s.vid, s.distance)), Some((2, 35.)));
+    assert_eq!((slots[LF], slots[LR]), (None, None));
 }

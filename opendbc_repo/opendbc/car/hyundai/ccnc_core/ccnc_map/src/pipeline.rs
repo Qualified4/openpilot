@@ -431,7 +431,7 @@ impl Pipeline {
             },
             &mut slots,
         )?;
-        let split = self.slots.split_alongside(&mut slots);
+        let split = self.slots.split_alongside(now, &mut slots);
         self.radar_slots = slots;
         self.vision.apply(now, car.speed, self.world.pose.at(now), &mut slots);
         let protected = [false, remembered[0] || split[0], remembered[1] || split[1], split[0], split[1]];

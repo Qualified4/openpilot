@@ -14,6 +14,8 @@ const MEMORY_MAX_X: f64 = 15.;
 const ALONGSIDE_ENTER_M: f64 = 5.0;
 /// ... and back in the front slot beyond this.
 const ALONGSIDE_EXIT_M: f64 = 6.0;
+/// A split side stays split this long after the next car drops out, with the front slot empty.
+const ALONGSIDE_HOLD_S: f64 = 1.0;
 const EPS: f64 = 1e-9;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -122,6 +124,8 @@ pub struct Assigner {
     runner_up: [Option<Slot>; 2],
     /// The vid `split_alongside` draws alongside in LR and RR.
     alongside: [Option<u32>; 2],
+    /// When the next car of a split side dropped out, while the side stays split without it.
+    alongside_alone: [Option<f64>; 2],
 }
 
 impl Default for Assigner {
@@ -133,6 +137,7 @@ impl Default for Assigner {
             side_last: [None; 2],
             runner_up: [None; 2],
             alongside: [None; 2],
+            alongside_alone: [None; 2],
         }
     }
 }
@@ -182,6 +187,7 @@ impl Assigner {
             self.previous_ff = None;
             self.side_last = [None; 2];
             self.alongside = [None; 2];
+            self.alongside_alone = [None; 2];
         }
         if !now.is_finite() || !world.accepts_radar() || !world.u_ego().is_finite() {
             return [None; 5];
@@ -330,19 +336,35 @@ impl Assigner {
     /// Two radar cars in one side lane, the nearer 0-5 m ahead (until 6 m): draw the nearer one alongside, at 0 m in
     /// that side's rear slot, and the next one in the front slot. It replaces any rear handover drawing there: the car
     /// alongside is nearer and measured. With one car the front slot keeps it until it falls behind and the handover
-    /// takes it. Kind, camera mark, v_rel and lateral go with the vid. Returns the sides split.
-    pub fn split_alongside(&mut self, slots: &mut [Option<Slot>; 5]) -> [bool; 2] {
+    /// takes it. Kind, camera mark, v_rel and lateral go with the vid. When the next car drops out, a split side stays
+    /// split for up to 1 s with the front slot empty, and draws the next car as soon as one is back. Returns the sides
+    /// split.
+    pub fn split_alongside(&mut self, now: f64, slots: &mut [Option<Slot>; 5]) -> [bool; 2] {
         let mut split = [false; 2];
         for side in 0..2 {
             let (front, rear) = (side + 1, side + 3);
-            let pair = slots[front].zip(self.runner_up[side]).filter(|(near, next)| {
-                let limit = if self.alongside[side] == Some(near.vid) { ALONGSIDE_EXIT_M } else { ALONGSIDE_ENTER_M };
-                near.vid != next.vid && (0. ..=limit).contains(&f64::from(near.distance))
-            });
-            self.alongside[side] = pair.map(|(near, _)| near.vid);
-            if let Some((near, next)) = pair {
+            let held = slots[front].filter(|near| self.alongside[side] == Some(near.vid));
+            let limit = if held.is_some() { ALONGSIDE_EXIT_M } else { ALONGSIDE_ENTER_M };
+            let near = slots[front].filter(|near| (0. ..=limit).contains(&f64::from(near.distance)));
+            let next = self.runner_up[side].filter(|next| near.is_some_and(|near| near.vid != next.vid));
+            let shown = match (near, next) {
+                (Some(near), Some(next)) => {
+                    self.alongside_alone[side] = None;
+                    Some((near, Some(next)))
+                }
+                (Some(near), None) if held.is_some() => {
+                    let alone = *self.alongside_alone[side].get_or_insert(now);
+                    (now - alone <= ALONGSIDE_HOLD_S).then_some((near, None))
+                }
+                _ => None,
+            };
+            self.alongside[side] = shown.map(|(near, _)| near.vid);
+            if shown.is_none() {
+                self.alongside_alone[side] = None;
+            }
+            if let Some((near, next)) = shown {
                 slots[rear] = Some(Slot { distance: 0., ..near });
-                slots[front] = Some(next);
+                slots[front] = next;
                 split[side] = true;
             }
         }
