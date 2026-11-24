@@ -12,7 +12,7 @@ use super::object::{MapObjectData, Ring};
 use super::observe::{crossing, observe, ObserveIn};
 use super::select::{lane_reference, vision, Bridge, Selector};
 use super::walls::{self, BandData, BandPoint, IntSet, WallData};
-use crate::vehicles::{Flags, Tracker, Vehicle};
+use crate::vehicles::{Flags, Reported, Tracker, Vehicle};
 use crate::world::World;
 
 /// A failure of the map update, as the Python reference raises it (the extension turns it into that exception).
@@ -288,7 +288,7 @@ impl MapState {
             let object = reports.get(&i128::from(id)).copied();
             let prior = car.flags;
             car.flags = object.map_or_else(Flags::default, |object| {
-                let borrowed = borrowed_motion(&prior, prior.object.and_then(|key| self.objects.get(&key)), object, id, stamp);
+                let borrowed = borrowed_motion(&prior, object, id, stamp);
                 let moved = borrowed.is_some();
                 Flags {
                     motion_confirmed: object.motion_confirmed || moved,
@@ -300,6 +300,7 @@ impl MapState {
                     object: Some(object.key),
                     source: Some(id),
                     borrowed,
+                    reported: Some(Reported { x: object.x, y: object.y, vx: object.vx, vy: object.vy, at: stamp }),
                 }
             });
         }
@@ -517,20 +518,22 @@ impl MapState {
 /// The radar map starts a new object for the same radar track when a measurement jumps past its gate (a car creeping
 /// 5 m ahead at 2 m/s jumped 0.8 m back in 11-24 0000047c segment 5 at 45.3 s). The new object has to prove its motion
 /// again, and the car lost its slot for 4 frames. A map car keeps the motion proof of its track's earlier object, but
-/// only across a jump of a moving car that continues that object: both at `BORROW_MOVING` or faster, the earlier one
-/// seen within `BORROW_GAP_S`, within `BORROW_JUMP_M` of where it was heading and within `BORROW_SPEED` of its speed.
-/// A standing object proves itself: an earlier object at 0-0.6 m/s gave its proof to a new one at 0-0.5 m/s in
-/// 00000479 segment 19 at 35.8 s and 0000047c segment 2 at 27.9 s, drawn in FF for 0.5-1.2 s. The borrowed proof lasts
-/// `BORROW_S` from the first jump unless the new object proves its own motion.
+/// only across a jump of a moving car that continues that object's last report: both at `BORROW_MOVING` or faster,
+/// within `BORROW_GAP_S`, within `BORROW_JUMP_M` of where it was heading and within `BORROW_SPEED` of its velocity.
+/// - A standing object proves itself: an earlier object at 0-0.6 m/s gave its proof to a new one at 0-0.5 m/s in
+///   00000479 segment 19 at 35.8 s and 0000047c segment 2 at 27.9 s, drawn in FF for 0.5-1.2 s.
+/// - One car's radar velocity moves 1.3 m/s across a jump at 10 m/s (00000454 segment 34), under the tracker's own
+///   2.5 m/s gate. The earlier object can be gone by then (00000450 segment 16 at 25 m/s), so the car keeps its report.
+/// The borrowed proof lasts `BORROW_S` from the first jump unless the new object proves its own motion.
 const BORROW_MOVING: f64 = 1.0;
 const BORROW_GAP_S: f64 = 0.5;
 const BORROW_JUMP_M: f64 = 1.5;
-const BORROW_SPEED: f64 = 1.0;
+const BORROW_SPEED: f64 = 2.0;
 const BORROW_S: f64 = 1.0;
 
 /// The stamp the car started borrowing its motion proof from an earlier object of radar track `id`, or None when the
 /// reporting `object` has to stand on its own proof.
-fn borrowed_motion(prior: &Flags, earlier: Option<&MapObjectData>, object: &MapObjectData, id: u32, stamp: f64) -> Option<f64> {
+fn borrowed_motion(prior: &Flags, object: &MapObjectData, id: u32, stamp: f64) -> Option<f64> {
     if object.motion_confirmed || object.structure || object.superseded || prior.source != Some(id) || !prior.motion_confirmed {
         return None;
     }
@@ -538,11 +541,12 @@ fn borrowed_motion(prior: &Flags, earlier: Option<&MapObjectData>, object: &MapO
         // The same unproven object: it keeps what it borrowed until the deadline.
         return prior.borrowed.filter(|since| stamp - since <= BORROW_S);
     }
-    let earlier = earlier?;
+    let earlier = prior.reported?;
+    let dt = stamp - earlier.at;
     let continues = earlier.vx.hypot(earlier.vy) >= BORROW_MOVING
         && object.vx.hypot(object.vy) >= BORROW_MOVING
-        && stamp - earlier.seen <= BORROW_GAP_S
-        && (object.x - earlier.x).hypot(object.y - earlier.y) <= BORROW_JUMP_M
+        && dt <= BORROW_GAP_S
+        && (object.x - earlier.x - earlier.vx * dt).hypot(object.y - earlier.y - earlier.vy * dt) <= BORROW_JUMP_M
         && (object.vx - earlier.vx).hypot(object.vy - earlier.vy) <= BORROW_SPEED;
     // A chain of jumps does not restart the deadline.
     let since = prior.borrowed.unwrap_or(stamp);
@@ -553,54 +557,62 @@ fn borrowed_motion(prior: &Flags, earlier: Option<&MapObjectData>, object: &MapO
 mod tests {
     use super::*;
 
-    fn object(key: i64, x: f64, vx: f64, seen: f64) -> MapObjectData {
-        MapObjectData::new(key, 4, x, -3.5, vx, 0., seen - 1., seen)
+    fn object(key: i64, x: f64, vx: f64) -> MapObjectData {
+        MapObjectData::new(key, 4, x, -3.5, vx, 0., 0., 0.)
     }
 
-    fn proven(key: i64) -> Flags {
-        Flags { motion_confirmed: true, proven: true, object: Some(key), source: Some(4), ..Flags::default() }
+    /// The flags of a car whose proven object `key` reported at `x`, moving `vx`, at `at`.
+    fn proven(key: i64, x: f64, vx: f64, at: f64) -> Flags {
+        Flags {
+            motion_confirmed: true,
+            proven: true,
+            object: Some(key),
+            source: Some(4),
+            reported: Some(Reported { x, y: -3.5, vx, vy: 0., at }),
+            ..Flags::default()
+        }
     }
 
     #[test]
     fn a_new_object_of_the_track_borrows_the_motion_proof_only_when_it_continues_the_earlier_one() {
-        let earlier = object(1, 5.0, 2.0, 1.0);
-        // 47c-5: 0.8 m back at the same speed, the next frame.
-        assert_eq!(borrowed_motion(&proven(1), Some(&earlier), &object(2, 4.2, 2.0, 1.05), 4, 1.05), Some(1.05));
-        for (why, new, stamp) in [
-            ("3 m jump", object(2, 2.0, 2.0, 1.05), 1.05),
-            ("onto a standing object", object(2, 4.6, 0.0, 1.05), 1.05),
-            ("a slow object onto a standing one (479-19)", object(2, 4.6, 0.5, 1.05), 1.05),
-            ("earlier object gone for 0.6 s", object(2, 4.8, 2.0, 1.6), 1.6),
+        let prior = proven(1, 5.0, 2.0, 1.0);
+        // 47c-5: 0.8 m back from where it was heading (5.1 m) at the same speed, the next frame.
+        assert_eq!(borrowed_motion(&prior, &object(2, 4.3, 2.0), 4, 1.05), Some(1.05));
+        assert_eq!(borrowed_motion(&prior, &object(2, 4.3, 3.8), 4, 1.05), Some(1.05), "radar speed moved 1.8 m/s");
+        for (why, prior, new, stamp) in [
+            ("3 m jump", prior, object(2, 2.1, 2.0), 1.05),
+            ("2.5 m/s faster", prior, object(2, 4.3, 4.5), 1.05),
+            ("onto a standing object", prior, object(2, 4.6, 0.0), 1.05),
+            ("a slow object onto a standing one (479-19)", proven(1, 5.0, 0.5, 1.0), object(2, 4.6, 0.5), 1.05),
+            ("last report 0.6 s ago", prior, object(2, 6.0, 2.0), 1.6),
+            ("another track", Flags { source: Some(5), ..prior }, object(2, 4.3, 2.0), 1.05),
+            ("no report", Flags { reported: None, ..prior }, object(2, 4.3, 2.0), 1.05),
         ] {
-            assert_eq!(borrowed_motion(&proven(1), Some(&earlier), &new, 4, stamp), None, "{why}");
+            assert_eq!(borrowed_motion(&prior, &new, 4, stamp), None, "{why}");
         }
-        assert_eq!(borrowed_motion(&proven(1), None, &object(2, 4.2, 2.0, 1.05), 4, 1.05), None, "no earlier object");
-        let resting = object(1, 5.0, 0.5, 1.0);
-        let new = object(2, 4.6, 0.5, 1.05);
-        assert_eq!(borrowed_motion(&proven(1), Some(&resting), &new, 4, 1.05), None, "a standing car proves itself");
-        let other_track = Flags { source: Some(5), ..proven(1) };
-        assert_eq!(borrowed_motion(&other_track, Some(&earlier), &object(2, 4.2, 2.0, 1.05), 4, 1.05), None);
     }
 
     #[test]
     fn a_borrowed_motion_proof_ends_a_second_after_the_jump_unless_the_new_object_proves_its_own() {
-        let mut flags = proven(1);
-        let mut earlier = object(1, 5.0, 2.0, 1.0);
+        let mut flags = proven(1, 5.0, 2.0, 1.0);
         let mut held = Vec::new();
         for i in 1..40 {
             let stamp = 1.0 + 0.05 * f64::from(i);
             // Two jumps: a chain of new objects keeps the first jump's deadline.
             let key = if i < 10 { 2 } else { 3 };
-            let new = object(key, 5.0 + 2.0 * (stamp - 1.0) - 0.8, 2.0, stamp);
-            let borrowed = borrowed_motion(&flags, Some(&earlier), &new, 4, stamp);
+            let new = object(key, 5.0 + 2.0 * (stamp - 1.0) - 0.8, 2.0);
+            let borrowed = borrowed_motion(&flags, &new, 4, stamp);
             held.push((i, borrowed.is_some()));
-            flags = Flags { motion_confirmed: borrowed.is_some(), object: Some(key), borrowed, ..proven(key) };
-            earlier = new;
+            flags = Flags {
+                motion_confirmed: borrowed.is_some(),
+                borrowed,
+                ..proven(key, new.x, new.vx, stamp)
+            };
         }
         // The first jump is at 1.05 s: borrowed through 2.0 s, gone from 2.1 s.
         assert!(held.iter().all(|&(i, on)| i == 21 || on == (i <= 20)), "{held:?}");
-        let mut own = object(3, 7.0, 2.0, 2.5);
+        let mut own = object(4, 7.0, 2.0);
         own.motion_confirmed = true;
-        assert_eq!(borrowed_motion(&flags, Some(&earlier), &own, 4, 2.5), None, "own proof: nothing to borrow");
+        assert_eq!(borrowed_motion(&flags, &own, 4, 2.5), None, "own proof: nothing to borrow");
     }
 }
