@@ -21,6 +21,7 @@ def load_mpc_update(path):
   from openpilot.selfdrive.carrot.traffic_stop import get_traffic_stop_distance_adjust, get_traffic_stop_obstacle_distance
   from openpilot.selfdrive.carrot.radar_motion.lane_change_gap import LaneChangeGapPlan
   from openpilot.selfdrive.controls.lib.longitudinal_cutout import cutout_obstacle_relief
+  from openpilot.selfdrive.controls.lib import longitudinal_lead_release as lead_release
 
   class RecordingSolver:
     def __init__(self, *args): self.weights = {}
@@ -43,7 +44,8 @@ def load_mpc_update(path):
             'StopGapWeightState': StopGapWeightState,
             'get_traffic_stop_distance_adjust': get_traffic_stop_distance_adjust,
             'get_traffic_stop_obstacle_distance': get_traffic_stop_obstacle_distance,
-            'LaneChangeGapPlan': LaneChangeGapPlan, 'cutout_obstacle_relief': cutout_obstacle_relief}
+            'LaneChangeGapPlan': LaneChangeGapPlan, 'cutout_obstacle_relief': cutout_obstacle_relief,
+            'lead_release': lead_release}
   ns['T_IDXS'] = 10*(np.arange(13)/12)**2
   ns['T_DIFFS'] = np.diff(ns['T_IDXS'], prepend=0.)
   ns['A_CHANGE_FACTORS'] = tuple(np.interp(t, [0., 1., 2.], [1., 1., 0.]) for t in ns['T_IDXS'][:12])

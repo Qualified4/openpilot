@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from openpilot.selfdrive.controls.lib.longitudinal_cutout import cutout_obstacle_relief
+from openpilot.selfdrive.controls.lib import longitudinal_lead_release as lead_release
 from openpilot.selfdrive.controls.lib.longitudinal_gap_recovery import LeadGapState, gap_reference, displayed_follow_distance
 from openpilot.selfdrive.controls.lib.longitudinal_braking_gap import LeadComfortState, braking_gap_reference, comfort_path_has_reserve
 from openpilot.selfdrive.controls.lib.longitudinal_stop_gap import StopGapWeightState
@@ -42,7 +43,8 @@ def run_update(*, confidence=0., mode="acc", reset=False, enabled=True, second_d
                    "get_lead_accel_mpc_request": get_lead_accel_mpc_request,
                    "get_traffic_stop_distance_adjust": get_traffic_stop_distance_adjust,
                    "get_traffic_stop_obstacle_distance": get_traffic_stop_obstacle_distance,
-                   "cutout_obstacle_relief": cutout_obstacle_relief, "LaneChangeGapPlan": LaneChangeGapPlan}
+                   "cutout_obstacle_relief": cutout_obstacle_relief, "LaneChangeGapPlan": LaneChangeGapPlan,
+                   "lead_release": lead_release}
   jerk_cost = next(node for node in tree.body if isinstance(node, ast.Assign)
                    and any(isinstance(target, ast.Name) and target.id == 'J_EGO_COST' for target in node.targets))
   exec(compile(ast.Module(body=[jerk_cost]+helpers+methods, type_ignores=[]), str(path), "exec"), namespace)
@@ -60,10 +62,11 @@ def run_update(*, confidence=0., mode="acc", reset=False, enabled=True, second_d
             lead_gap_states=(LeadGapState(), LeadGapState()), lead_gap_margins=np.zeros((13,2)),
             lead_comfort_states=(LeadComfortState(), LeadComfortState()),
             stop_gap_state=StopGapWeightState(),
+            lead_release_states=(lead_release.LeadBrakeReleaseState(), lead_release.LeadBrakeReleaseState()),
             params=np.zeros((13,8)), prev_a=np.zeros(13), yref=np.zeros((13,6)),
             solver=NS(set=lambda *a:None), set_weights=lambda *a,**kw:None, crash_cnt=0,
             x_sol=np.column_stack([15.*times, np.full(13,15.), np.zeros(13)]), run=lambda:None)
-  def process_lead(l):
+  def process_lead(l, release_state=None):
     distance, speed = (l.dRel, l.vLead) if l.status else (50., 25.)
     return np.column_stack([distance + speed * times, np.full(13, speed)]), speed
   self.process_lead = process_lead
@@ -72,7 +75,7 @@ def run_update(*, confidence=0., mode="acc", reset=False, enabled=True, second_d
   self.set_weights = lambda *args, **kwargs:namespace['set_weights'](self, *args, **kwargs)
   if lead_tau is not None:
     self.extrapolate_lead = namespace['extrapolate_lead']
-    self.process_lead = lambda lead:namespace['process_lead'](self, lead)
+    self.process_lead = lambda lead, release_state=None: namespace['process_lead'](self, lead, release_state)
   self.update_predicted_danger_margin=lambda *a:namespace["update_predicted_danger_margin"](self,*a)
   arrays=[np.zeros(13) for _ in range(4)]
   namespace["update"](self, carrot, reset, NS(leadOne=lead, leadTwo=second), 20., *arrays, cutout_relief_enabled=enabled)

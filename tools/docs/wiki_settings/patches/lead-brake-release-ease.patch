@@ -1,0 +1,102 @@
+--- a/EN-Ease-Braking-When-Lead-Releases.md
++++ b/EN-Ease-Braking-When-Lead-Releases.md
+@@ -27,6 +27,31 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN LeadBrakeReleaseEase -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++When following closely and the lead is seen to release its brake, it stops predicting that the lead keeps braking to a stop and lowers the accel-change and jerk costs so braking eases sooner. If the lead brakes again, the original prediction returns from the next planning cycle.
++
++- **On:** When a radar lead within a 1.2 s time gap releases its brake, the predicted deceleration is reduced once ego is no faster than the lead, and the costs are lowered while ego closes at no more than 0.5 m/s.
++- **Off:** Nothing is computed; behavior is unchanged.
++- **Renewed braking:** If the lead brakes again within 2 s of a release, the lower costs stay for 1 s so braking is re-applied quickly.
++- **Reset:** A lead change, invalid values, driver braking or longitudinal control off clears the state.
++<!-- CARROT:SECTION:END BEHAVIOR -->
++
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### Usage
++
++Turn it on when, in close-following stops, the car keeps braking hard after the lead has let go. Changes while driving apply within about 5 s without restarting. Turn it off if the minimum distance feels too close.
++<!-- CARROT:SECTION:END USAGE -->
++
++<!-- CARROT:SECTION:BEGIN REFERENCE -->
++### Reference
++
++<!-- CARROT:NOTICE level="WARNING" -->
++> [!WARNING]
++> Experimental and not validated on a vehicle. In log replay, under-speed after a lead braking at -3 for 1.3 s and releasing dropped from 6.5 to 4.7 km/h, and the minimum distance in recorded close-following stops shrank by at most 0.3 m. Braking for a lead's hard stop is unchanged.
++<!-- CARROT:NOTICE:END -->
++<!-- CARROT:SECTION:END REFERENCE -->
+ <!-- CARROT:MANUAL:END LeadBrakeReleaseEase -->
+ 
+ <!-- CARROT:SETTING:END LeadBrakeReleaseEase -->
+--- a/KO-앞차-제동-해제-시-감속-완화.md
++++ b/KO-앞차-제동-해제-시-감속-완화.md
+@@ -27,6 +27,31 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN LeadBrakeReleaseEase -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++근접 추종 중 앞차가 브레이크를 푸는 것이 보이면, 앞차가 계속 감속해 멈춘다는 예측을 풀고 감속 변화·저크 비용을 낮춰 감속을 더 빨리 줄입니다. 앞차가 다시 밟으면 다음 계획 주기부터 원래 예측으로 돌아갑니다.
++
++- **켜짐:** 시간 차간 1.2초 이내의 레이더 앞차가 제동을 풀면, 내 차가 앞차보다 느려진 뒤 예측 감속을 줄이고, 내 차가 0.5m/s보다 빠르게 다가가지 않을 때 비용을 낮춥니다.
++- **꺼짐:** 계산하지 않으며 기존 동작과 같습니다.
++- **재제동:** 해제 뒤 2초 안에 앞차가 다시 밟으면 1초 동안 낮은 비용을 유지해 제동을 빨리 다시 겁니다.
++- **초기화:** 앞차 교체, 값 이상, 운전자 브레이크, 종제어 꺼짐 때 상태를 지웁니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
++
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### 사용
++
++근접 추종 정지에서 앞차가 풀었는데도 오래 세게 감속한다고 느낄 때 켭니다. 주행 중 바꾸면 약 5초 안에 반영되며 재시작은 필요 없습니다. 최소 거리가 가깝게 느껴지면 끕니다.
++<!-- CARROT:SECTION:END USAGE -->
++
++<!-- CARROT:SECTION:BEGIN REFERENCE -->
++### 참고
++
++<!-- CARROT:NOTICE level="WARNING" -->
++> [!WARNING]
++> 실차에서 검증하지 않은 시험 기능입니다. 기록 재생에서 앞차가 −3으로 1.3초 밟고 푸는 장면의 과감속이 6.5에서 4.7km/h로 줄었고, 실제 근접 정지의 최소 거리는 최대 0.3m 줄었습니다. 앞차 급정지 때의 감속은 바꾸지 않습니다.
++<!-- CARROT:NOTICE:END -->
++<!-- CARROT:SECTION:END REFERENCE -->
+ <!-- CARROT:MANUAL:END LeadBrakeReleaseEase -->
+ 
+ <!-- CARROT:SETTING:END LeadBrakeReleaseEase -->
+--- a/ZH-前车松刹车时减缓减速.md
++++ b/ZH-前车松刹车时减缓减速.md
+@@ -27,6 +27,31 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN LeadBrakeReleaseEase -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++近距离跟车时，若看到前车松开刹车，则不再预测前车会持续减速至停止，并降低加速度变化和加加速度代价，使减速更早减弱。前车再次刹车时，从下一个规划周期起恢复原预测。
++
++- **开启：** 时距1.2秒以内的雷达前车松开刹车时，本车降到不快于前车后减小预测减速；本车接近速度不超过0.5m/s时降低代价。
++- **关闭：** 不进行计算，行为与原来相同。
++- **再次刹车：** 解除后2秒内前车再次刹车时，保持低代价1秒，以便迅速重新制动。
++- **重置：** 前车更换、数值异常、驾驶员踩刹车或纵向控制关闭时清除状态。
++<!-- CARROT:SECTION:END BEHAVIOR -->
++
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### 使用
++
++近距离跟车停车时，如果前车已松开刹车但本车仍长时间强力减速，可开启此功能。行驶中更改约5秒内生效，无需重启。若最小距离感觉过近，请关闭。
++<!-- CARROT:SECTION:END USAGE -->
++
++<!-- CARROT:SECTION:BEGIN REFERENCE -->
++### 参考
++
++<!-- CARROT:NOTICE level="WARNING" -->
++> [!WARNING]
++> 实验功能，未经实车验证。日志回放中，前车以-3制动1.3秒后松开的场景，过度减速从6.5降至4.7km/h；实际近距离跟车停车的最小距离最多减少0.3m。前车急停时的减速不变。
++<!-- CARROT:NOTICE:END -->
++<!-- CARROT:SECTION:END REFERENCE -->
+ <!-- CARROT:MANUAL:END LeadBrakeReleaseEase -->
+ 
+ <!-- CARROT:SETTING:END LeadBrakeReleaseEase -->

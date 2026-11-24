@@ -152,6 +152,7 @@ class CarrotPlanner:
     self.dynamicTFollowLC = 1.0
     self.speedTFFactor = 10
     self.tFollowDecelBoost = 0.0
+    self.leadBrakeReleaseEase = 0
     self._tf_decel_extra = 0.0
     self._tf_decel_base = None
     self._tf_mode_factor = None
@@ -218,6 +219,7 @@ class CarrotPlanner:
       self.dynamicTFollowLC = self.params.get_float("DynamicTFollowLC") / 100.
       self.speedTFFactor = int(np.clip(self.params.get_int("SpeedTFFactor"), 10, 30))
       self.tFollowDecelBoost = self.params.get_float("TFollowDecelBoost") / 100.
+      self.leadBrakeReleaseEase = int(np.clip(self.params.get_int("LeadBrakeReleaseEase"), 0, 1))
     elif self.params_count == 30:
       self.cruiseMaxVals0 = self.params.get_float("CruiseMaxVals0") / 100.
       self.cruiseMaxVals1 = self.params.get_float("CruiseMaxVals1") / 100.

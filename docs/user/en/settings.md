@@ -233,7 +233,7 @@ While external navigation is connected, deceleration, countdowns, and navigation
 
 `TrafficLightDetectMode` is `0` off, `1` stop detection, or `2` stop and go detection. This is model-based assistance; the driver must always verify the signal.
 
-### Cruise and following gap — 30 settings overall, 27 on Hyundai/Kia/Genesis
+### Cruise and following gap — 31 settings overall, 28 on Hyundai/Kia/Genesis
 
 | Section | Parameters | Purpose |
 |---|---|---|
@@ -242,7 +242,7 @@ While external navigation is connected, deceleration, countdowns, and navigation
 | [Stopping and restarting](cruise-gap.md#stop-resume) | `StopDistanceCarrot`, `StoppingAccel`, `VEgoStopping`, `AChangeCostStarting` | Stop position, stop entry, and restart behavior |
 | [Longitudinal tuning](cruise-gap.md#longitudinal-tuning) | `LongTuningKpV`, `LongTuningKiV`, `LongTuningKf`, `LongActuatorDelay` | Ray EV Comma Pedal applies saved gains; other Hyundai/Kia/Genesis fix/hide `100/0/100`; Toyota/Lexus fix/hide `0/0/100`; VW MEB, including ID.4, applies saved gains |
 | [Following gap](cruise-gap.md#following-gap) | `TFollowGap1` through `TFollowGap4`, `DynamicTFollowLC`, `SpeedTFFactor`, `TFollowDecelBoost` | Gap times, lane-change relief using selected leads, and deceleration margin (default 0%) |
-| [Following responsiveness](cruise-gap.md#lead-response) | `LeadAccelResponse`, `LeadAccelResponseTF1`–`LeadAccelResponseTF4` | Lead-start, acceleration and approach response at every following-distance level |
+| [Following responsiveness](cruise-gap.md#lead-response) | `LeadAccelResponse`, `LeadAccelResponseTF1`–`LeadAccelResponseTF4`, `LeadBrakeReleaseEase` | Lead-start, acceleration and approach response at every following-distance level, and easing braking when the lead releases its brake (experimental, off by default) |
 | [Carrot cruise](cruise-gap.md#carrot-cruise) | `CruiseEcoControl`, `CruiseCoastingPercent`, `CarrotCruiseDecel`, `CarrotCruiseAtcDecel` | Economy control, coasting margin with a fixed entry reference (default 0%: existing control), and cruise deceleration limits |
 
 `MyDrivingMode` is `1` eco, `2` safe, `3` normal, or `4` high speed. High-speed mode ignores traffic-light control and increases acceleration tendency, so read its behavior before selecting it.
@@ -254,6 +254,8 @@ Eco caps lead response at 2 and Safe at 3; Normal and High retain the selected v
 `TFollowGap1` through `TFollowGap4` are stored in hundredths of a second. Lower values reduce the time gap. Use `LeadAccelResponse` for acceleration response: levels 1–3 are gradual, 4 is quick, and 5 retains maximum response. Braking-onset distance is not separately remembered to enlarge the gap.
 
 `LeadAccelResponse`: Adjusts how the car follows a lead vehicle as it starts or speeds up. Lower levels close the gap more gradually; higher levels follow more quickly. Level 0 turns off the acceleration boost, and level 5 is the most responsive test setting. See [Following responsiveness](cruise-gap.md#lead-response) for details. Extra-headroom hold conditions apply up to 1.2 times TF distance (speed × TF + stopping distance), ease progressively from 1.2 to 1.5 times, and no longer pause recovery at or above 1.5 times regardless of lead speed.
+
+`LeadBrakeReleaseEase` (Ease Braking When Lead Releases) is an experimental setting that defaults to off. When following within a 1.2 s time gap and the radar lead is seen to release its brake (jLead above 1.0 m/s³, or 0.5 m/s² recovered from this braking's minimum), it stops predicting that the lead keeps braking to a stop: the predicted deceleration becomes `aLeadK + 0.5×jLead` (capped at 0) and the decay factor at least 1.5. This prediction release applies only after ego has slowed to the lead's speed. While the lead's braking eases (aLeadK above -0.5, or jLead above 1.0 with aLeadK above -1.5) and the planned deceleration is harder than -1.0 and 0.5 harder than the lead, with predicted danger margin left and ego closing at no more than 0.5 m/s, the accel-change cost is multiplied by 0.02 and the jerk cost by 0.1. If the lead brakes again (jLead below -1.0), the original prediction returns from the next planning cycle; renewed braking within 2 s of a release keeps the lower costs for 1 s so braking is re-applied quickly. A lead change, invalid values, driver braking or longitudinal control off clears the state. Braking for a lead's hard stop and the -4.0 limit are unchanged. In log replay, under-speed after a lead braking at -3 for 1.3 s and releasing dropped from 6.5 to 4.7 km/h; across five recorded close-following stops the average under-speed went from 4.8 to 4.5 km/h and minimum distance shrank by at most 0.3 m. Changes while driving apply within about 5 s without restarting. It has not been validated on a vehicle.
 
 `SpeedTFFactor` applies a linear speed multiplier to the selected base TF: 10 is unchanged; 20 doubles it at 100 km/h. `LeadAccelResponseTF1`–`TF4` use the common response at -1 and a gap-specific response at 0–5. Levels 4–5 retain speed TF. The driving-screen bar shows the dynamically adjusted following target in metres.
 

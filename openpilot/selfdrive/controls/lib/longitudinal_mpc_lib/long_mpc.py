@@ -17,6 +17,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_cutout import cutout_obstacle
 from openpilot.selfdrive.controls.lib.longitudinal_gap_recovery import LeadGapState, displayed_follow_distance
 from openpilot.selfdrive.controls.lib.longitudinal_braking_gap import LeadComfortState, braking_gap_reference, comfort_path_has_reserve
 from openpilot.selfdrive.controls.lib.longitudinal_stop_gap import StopGapWeightState
+from openpilot.selfdrive.controls.lib import longitudinal_lead_release as lead_release
 from openpilot.selfdrive.carrot.radar_motion.lane_change_gap import LaneChangeGapPlan
 
 if __name__ == '__main__':  # generating code
@@ -300,6 +301,8 @@ class LongitudinalMpc:
     self.lead_gap_states = (LeadGapState(), LeadGapState())
     self.lead_comfort_states = (LeadComfortState(), LeadComfortState())
     self.stop_gap_state = StopGapWeightState()
+    self.lead_release_states = (lead_release.LeadBrakeReleaseState(), lead_release.LeadBrakeReleaseState())
+    self.lead_release_cost_eased = False
     self.obstacle_cost_factor = 1.0
     self.lead_gap_margins = np.zeros((N+1, 2))
     self.solve_time = 0.0
@@ -383,13 +386,15 @@ class LongitudinalMpc:
     lead_xv = np.column_stack((x_lead_traj, v_lead_traj))
     return lead_xv
 
-  def process_lead(self, lead):
+  def process_lead(self, lead, release_state=None):
     v_ego = self.x0[1]
     if lead is not None and lead.status:
       x_lead = lead.dRel
       v_lead = lead.vLead
       a_lead = lead.aLeadK
       a_lead_tau = lead.aLeadTau
+      if release_state is not None:
+        a_lead, a_lead_tau = release_state.prediction(lead, a_lead, a_lead_tau, self.dt)
     else:
       # Fake a fast lead car, so mpc can keep running in the same mode
       x_lead = 50.0
@@ -423,7 +428,8 @@ class LongitudinalMpc:
              lead_track_frames=(0, 0),
              measured_a_ego=0.0,
              cutout_relief_enabled=False,
-             tesla_stop_distance=None):
+             tesla_stop_distance=None,
+             lead_brake_release_enabled=False):
     tesla_stop_active = (tesla_stop_distance is not None and not reset_state
                          and math.isfinite(tesla_stop_distance) and 0 <= tesla_stop_distance < 255)
     if tesla_stop_active:
@@ -434,8 +440,13 @@ class LongitudinalMpc:
     t_follow = carrot.get_T_FOLLOW(personality, v_ego, a_ego)
     jerk_factor = carrot.jerk_factor
 
-    lead_xv_0, lead_v_0 = self.process_lead(radarstate.leadOne)
-    lead_xv_1, lead_v_1 = self.process_lead(radarstate.leadTwo)
+    release_active = lead_brake_release_enabled and self.mode == 'acc' and not reset_state
+    if not release_active:
+      for state in self.lead_release_states:
+        state.reset()
+    release_states = self.lead_release_states if release_active else (None, None)
+    lead_xv_0, lead_v_0 = self.process_lead(radarstate.leadOne, release_states[0])
+    lead_xv_1, lead_v_1 = self.process_lead(radarstate.leadTwo, release_states[1])
 
     mode = self.mode
     comfort_brake = carrot.comfort_brake
@@ -580,13 +591,21 @@ class LongitudinalMpc:
                   if stop_lead.status else float('inf')),
       dt=self.dt,
     )
+    a_change_cost_factor = response_request.a_change_cost_factor
+    jerk_cost_factor = response_request.jerk_cost_factor
+    self.lead_release_cost_eased = release_active and (
+      self.lead_release_states[0].rebrake_boost > 0.0
+      or lead_release.release_cost_ease(radarstate.leadOne, a_ego, self.predicted_danger_margin))
+    if self.lead_release_cost_eased:
+      a_change_cost_factor *= lead_release.A_CHANGE_COST_FACTOR
+      jerk_cost_factor *= lead_release.JERK_COST_FACTOR
     self.set_weights(
       prev_accel_constraint,
       personality=personality,
       jerk_factor=jerk_factor,
       a_change_cost_starting=a_change_cost_starting,
-      a_change_cost_factor=response_request.a_change_cost_factor,
-      jerk_cost_factor=response_request.jerk_cost_factor,
+      a_change_cost_factor=a_change_cost_factor,
+      jerk_cost_factor=jerk_cost_factor,
       obstacle_cost_factor=self.obstacle_cost_factor,
     )
 

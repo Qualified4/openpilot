@@ -235,7 +235,7 @@ VW MEB(ID.4 포함)에도 수동 조향비와 학습 비율이 적용됩니다. 
 
 `TrafficLightDetectMode`는 `0` 미사용, `1` 정지만 감지, `2` 정지와 출발을 모두 감지합니다. 모델 판단에 의존하므로 운전자가 항상 직접 확인해야 합니다.
 
-### 크루즈·차간 — 전체 30개, 현대·기아·제네시스 27개
+### 크루즈·차간 — 전체 31개, 현대·기아·제네시스 28개
 
 아래 표의 **세부 구역 제목을 누르면** 실제 코드 기준의 계산 방식, 값의 방향과 주의사항을 설명한 페이지로 이동합니다.
 
@@ -246,7 +246,7 @@ VW MEB(ID.4 포함)에도 수동 조향비와 학습 비율이 적용됩니다. 
 | [정차·재출발](cruise-gap.md#stop-resume) | `StopDistanceCarrot`, `StoppingAccel`, `VEgoStopping`, `AChangeCostStarting` | 정지 위치, 정지 진입과 재출발 특성 |
 | [가감속 튜닝](cruise-gap.md#longitudinal-tuning) | `LongTuningKpV`, `LongTuningKiV`, `LongTuningKf`, `LongActuatorDelay` | 레이 EV 콤마페달은 저장 게인 적용; 그 외 현기차 `100/0/100`, 토요타·렉서스 `0/0/100` 고정·숨김; VW MEB(ID.4 포함)는 저장 게인 적용 |
 | [차간거리](cruise-gap.md#following-gap) | `TFollowGap1`, `TFollowGap2`, `TFollowGap3`, `TFollowGap4`, `DynamicTFollowLC`, `SpeedTFFactor`, `TFollowDecelBoost` | 차간 단계별 시간, 정상 선택 앞차 기준 차로 변경 완화와 감속 여유(기본 0%) |
-| [추종응답성](cruise-gap.md#lead-response) | `LeadAccelResponse`, `LeadAccelResponseTF1`–`LeadAccelResponseTF4` | 모든 차간 단계의 앞차 출발·가속 추종과 접근 반응 |
+| [추종응답성](cruise-gap.md#lead-response) | `LeadAccelResponse`, `LeadAccelResponseTF1`–`LeadAccelResponseTF4`, `LeadBrakeReleaseEase` | 모든 차간 단계의 앞차 출발·가속 추종과 접근 반응, 앞차 제동 해제 시 감속 완화(시험, 기본 꺼짐) |
 | [당근 크루즈](cruise-gap.md#carrot-cruise) | `CruiseEcoControl`, `CruiseCoastingPercent`, `CarrotCruiseDecel`, `CarrotCruiseAtcDecel` | 연비 제어, 진입 기준속도를 고정하는 코스팅 여유(기본 0%: 기존 제어), 당근 크루즈 감속 특성 |
 
 `MyDrivingMode`는 `1` 연비, `2` 안전, `3` 일반, `4` 고속 모드입니다. 고속 모드는 신호 감지를 무시하고 가속 성향을 높이므로 모드 이름만 보고 선택하지 말고 설명을 확인하세요.
@@ -258,6 +258,8 @@ VW MEB(ID.4 포함)에도 수동 조향비와 학습 비율이 적용됩니다. 
 `TFollowGap1`~`TFollowGap4`는 저장값에 `0.01초`를 곱한 시간 간격입니다. 값을 줄이면 선행차와 가까워집니다. 앞차 가속 추종은 `LeadAccelResponse`로 조절합니다. 1~3은 완만한 반응, 4는 빠른 추종, 5는 최대 추종이며 감속 시작 거리를 별도로 기억해 차간을 늘리지는 않습니다.
 
 `LeadAccelResponse`: 앞차가 출발하거나 속도를 높일 때 따라가는 반응을 조절합니다. 낮을수록 차간을 천천히 좁히고, 높을수록 빠르게 따라갑니다. 0은 가속 반응 강화를 끄고, 5는 가장 적극적으로 따라가는 시험 단계입니다. 자세한 동작은 [추종응답성 설명](cruise-gap.md#lead-response)을 확인하세요. 추가 여유의 유지 조건은 TF 거리(속도×TF＋정지거리)의 1.2배까지 적용하고, 1.2~1.5배에서 점차 해제합니다. 1.5배 이상에서는 앞차 속도와 관계없이 여유를 회수합니다.
+
+`LeadBrakeReleaseEase`(앞차 제동 해제 시 감속 완화)는 기본값이 꺼짐인 시험 기능입니다. 시간 차간 1.2초 이내로 따라가다 앞차가 브레이크를 푸는 것이 보이면(레이더 앞차, jLead 1.0m/s³ 초과 또는 이번 제동의 최저 감속보다 0.5m/s² 이상 회복), 앞차가 계속 감속해 멈춘다는 예측을 풀어 감속 예측을 `aLeadK + 0.5×jLead`(0 이하), 감쇠 계수를 1.5 이상으로 바꿉니다. 이 예측 해제는 내 차가 앞차보다 느려진 뒤에만 적용합니다. 앞차 감속이 풀리고(aLeadK −0.5 초과, 또는 jLead 1.0 초과이면서 −1.5 초과) 계획 감속이 −1.0보다 세고 앞차보다 0.5 이상 셀 때, 예측 위험 여유가 있고 내 차가 0.5m/s보다 빠르게 다가가지 않으면 가속 변화 비용을 ×0.02, 저크 비용을 ×0.1로 낮춥니다. 앞차가 다시 밟으면(jLead −1.0 미만) 다음 계획 주기부터 원래 예측으로 돌아가고, 해제 뒤 2초 안의 재제동이면 1초 동안 낮은 비용을 유지해 제동을 빨리 다시 겁니다. 앞차 교체·값 이상·운전자 브레이크·종제어 꺼짐 때는 상태를 지웁니다. 앞차 급정지 때의 감속과 최대 −4.0 한계는 바꾸지 않습니다. 기록 재생에서 앞차가 −3으로 1.3초 밟고 푸는 장면의 과감속이 6.5에서 4.7km/h로 줄었고, 실제 근접 정지 5건의 과감속 평균은 4.8에서 4.5km/h, 최소 거리는 최대 0.3m 줄었습니다. 주행 중 바꾸면 약 5초 안에 반영되며 재시작은 필요 없습니다. 실차에서 검증하지 않았습니다.
 
 `SpeedTFFactor`는 선택한 기본 TF에 속도별 선형 배율을 적용합니다. 10은 변화 없음, 20은 100km/h에서 2배입니다. 단계별 `LeadAccelResponseTF1`~`TF4`는 -1이면 공통값, 0~5이면 해당 반응을 사용합니다. 반응 4~5도 속도 배율을 유지합니다. 주행 화면의 거리 바는 동적 보정이 반영된 추종 목표거리를 m로 표시합니다.
 

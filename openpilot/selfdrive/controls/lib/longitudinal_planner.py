@@ -302,6 +302,9 @@ class LongitudinalPlanner:
       ),
       lead_track_frames=lead_track_frames,
       measured_a_ego=sm['carState'].aEgo,
+      lead_brake_release_enabled=(
+        carrot.leadBrakeReleaseEase > 0 and not reset_state and not sm['carState'].brakePressed
+      ),
       tesla_stop_distance=(
         max(0.0, self.tesla_traffic_decision.distance - STOP_BUFFER)
         if self.tesla_traffic_decision is not None and self.tesla_traffic_decision.active else None
