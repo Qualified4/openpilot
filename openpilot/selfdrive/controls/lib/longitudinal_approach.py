@@ -23,6 +23,10 @@ APPROACH_TIME_GAP_MIN = 1.5
 # Replay 47c 10:44: a lead starting from 0.8 km/h at 124 m was held for 5.1 s up to 22 km/h,
 # planning up to 1.17 m/s^2 more braking than without the approach.
 APPROACH_LEAD_ACCEL_MAX = 0.3
+# Once held, that release applies only while the lead is still this far: close to the stop, the hold
+# itself ends when ego stops closing. Replay 47c 14:30: a stopped lead crept to 0.7 m/s 9.9 m ahead
+# (aLeadK > 0.3 for 1.1 s) and the release at 4.1 m/s moved the stop 3.68 -> 3.53 m; 10:44 released at 98 m.
+APPROACH_PULL_HOLD_DISTANCE_MIN = 30.0
 # Hold on the same track until ego no longer closes or the lead speeds up again.
 APPROACH_HOLD_CLOSING_MIN = 1.0
 APPROACH_HOLD_LEAD_SPEED_MARGIN = 2.0
@@ -72,7 +76,8 @@ class ApproachState:
     not_pulling_away = stops or lead_accel <= APPROACH_LEAD_ACCEL_MAX
     same_track = track_id == self.track_id
     if self.active and same_track:
-      self.active = bool(closing > APPROACH_HOLD_CLOSING_MIN and not_pulling_away and (
+      self.active = bool(closing > APPROACH_HOLD_CLOSING_MIN
+                         and (not_pulling_away or distance < APPROACH_PULL_HOLD_DISTANCE_MIN) and (
         lead_speed <= APPROACH_LEAD_SPEED_MAX + APPROACH_HOLD_LEAD_SPEED_MARGIN or stops))
     else:
       if not same_track:

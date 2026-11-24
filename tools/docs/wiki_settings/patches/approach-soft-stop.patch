@@ -11,7 +11,7 @@
 +
 +- **On:** It starts when ego closes at 15 km/h or more on a lead at 15 km/h or less (or one predicted to stop) with a time gap of at least 1.5 s. The deceleration is 1.1 times what stops ego at the stop distance behind the lead at that moment (at least 0.5 m/s²), applied over 1 s. It does not start when that exceeds 2.0 m/s² or when the lead is clearly pulling away.
 +- **Off:** Nothing is computed; behavior is unchanged.
-+- **Release:** It fades out over 0.5 s when the lead pulls away or speeds up, or ego stops closing. A lead change, driver brake or accelerator input, or longitudinal control off ends it at once.
++- **Release:** It fades out over 0.5 s when the lead pulls away (while 30 m or more ahead) or speeds up, or ego stops closing. A lead change, driver brake or accelerator input, or longitudinal control off ends it at once.
 +<!-- CARROT:SECTION:END BEHAVIOR -->
 +
 +<!-- CARROT:SECTION:BEGIN USAGE -->
@@ -44,7 +44,7 @@
 +
 +- **켜짐:** 15km/h 이하(또는 정지 예측) 앞차에 15km/h 이상 빠르게 다가가고 시간 간격이 1.5초 이상일 때 시작합니다. 감속은 그 순간 앞차 뒤 정지 거리에 서는 데 필요한 감속의 1.1배(0.5m/s² 이상)이며 1초에 걸쳐 적용합니다. 이 값이 2.0m/s²를 넘거나 앞차가 뚜렷이 출발 중이면 켜지 않습니다.
 +- **꺼짐:** 계산하지 않으며 기존 동작과 같습니다.
-+- **해제:** 앞차가 출발하거나 빨라지거나 더 이상 다가가지 않으면 0.5초에 걸쳐 풉니다. 앞차 교체, 운전자 브레이크·가속 페달, 종제어 꺼짐 때는 바로 풉니다.
++- **해제:** 앞차가 출발하거나(30m 이상 앞일 때) 빨라지거나 더 이상 다가가지 않으면 0.5초에 걸쳐 풉니다. 앞차 교체, 운전자 브레이크·가속 페달, 종제어 꺼짐 때는 바로 풉니다.
 +<!-- CARROT:SECTION:END BEHAVIOR -->
 +
 +<!-- CARROT:SECTION:BEGIN USAGE -->

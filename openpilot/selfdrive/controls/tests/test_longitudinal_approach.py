@@ -14,6 +14,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_approach import (
   APPROACH_LEAD_ACCEL_MAX,
   APPROACH_LEAD_SPEED_MAX,
   APPROACH_OBSTACLE_COST_GAIN,
+  APPROACH_PULL_HOLD_DISTANCE_MIN,
   APPROACH_RAMP_TIME,
   APPROACH_RELEASE_TIME,
   APPROACH_TIME_GAP_MIN,
@@ -100,6 +101,18 @@ def test_hold_and_exit_when_the_lead_speeds_up_again():
   # Ego no longer closing: released the same way.
   ramp(s)
   assert ramp(s, steps=round(APPROACH_RELEASE_TIME / DT), lead_speed=2.0, v_ego=2.5) == 0.0
+
+
+def test_lead_pulling_away_releases_the_hold_only_while_far():
+  pulling = {"lead_speed": 1.0, "lead_end_speed": 6.0, "lead_accel": APPROACH_LEAD_ACCEL_MAX + 0.4}
+  # Far (47c 10:44): a lead pulling away is no approach any more.
+  s = ApproachState()
+  ramp(s)
+  assert s.update(**args(distance=APPROACH_PULL_HOLD_DISTANCE_MIN + 1.0, **pulling)) == pytest.approx(1.0 - DT / APPROACH_RELEASE_TIME)
+  # Close to the stop (47c 14:30): a stopped lead creeping off keeps the hold while ego still closes.
+  s = ApproachState()
+  ramp(s)
+  assert s.update(**args(distance=APPROACH_PULL_HOLD_DISTANCE_MIN - 1.0, v_ego=4.0, **pulling)) == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize("kw", [
