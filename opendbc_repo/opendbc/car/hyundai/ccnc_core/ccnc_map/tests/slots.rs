@@ -376,6 +376,53 @@ fn a_confirmed_truck_and_bus_keep_their_kind_in_the_rear_slots_after_the_tracker
 }
 
 #[test]
+fn an_ambiguous_inherited_truck_keeps_its_kind_in_the_rear_slots_including_after_2s() {
+    use ccnc_map::vehicles::{Kind, Link};
+    use ccnc_map::vision::kind::{KIND_BUS, KIND_TRUCK};
+    let mut world = road();
+    let mut assigner = Assigner::default();
+    let mut rear = WorldRear::default();
+    let lost = 4.5;
+    let mut checked_tracked = 0;
+    let mut checked_forgotten = 0;
+    for i in 0..=((lost + 9.5) * 20.) as i32 {
+        let now = f64::from(i) * 0.05;
+        world.car_state(now, 10., false);
+        if i % 20 == 0 {
+            world.model(now, &model(0., 0., 0.));
+        }
+        world.radar(now);
+        let seen = now.min(lost);
+        let mut left_car = vehicle(&world, 1, seen, 8. * seen + 6., -1.);
+        left_car.link = Link::Ambiguous;
+        left_car.kind = Some(Kind { class: KIND_TRUCK, conf: 0.9, confirmed_at: 0., frames: 2, inherited: true });
+        let mut right_car = vehicle(&world, 2, seen, 8. * seen + 6., 1.);
+        right_car.link = Link::Ambiguous;
+        right_car.kind = Some(Kind { class: KIND_BUS, conf: 0.9, confirmed_at: 0., frames: 2, inherited: false });
+        let cars = if now - lost > 2. { vec![] } else { vec![left_car, right_car] };
+        let blind = [now >= lost - 1.; 2];
+        let mut slots = assigner.update(now, &cars, &world, None);
+        rear.finish(&world, WorldInput { now, changing: false, can_valid: true, blind, vehicles: &cars }, &mut slots).unwrap();
+        let after = now - lost;
+        if (after - 0.5).abs() < 1e-6 {
+            assert!(!cars.is_empty());
+            let (left, right) = (slots[3].unwrap(), slots[4].unwrap());
+            assert_eq!((left.vid, left.kind, left.kind_confirmed), (1, KIND_TRUCK, true), "inherited ambiguous truck kept in LR");
+            assert_eq!((right.vid, right.kind, right.kind_confirmed), (2, 0, false), "non-inherited ambiguous bus stays hidden in RR");
+            checked_tracked += 1;
+        }
+        if [2.05, 5., 9.].iter().any(|t| (after - t).abs() < 1e-6) {
+            assert!(cars.is_empty(), "tracker has forgotten them at {after:.2} s");
+            let (left, right) = (slots[3].unwrap(), slots[4].unwrap());
+            assert_eq!((left.vid, left.kind, left.kind_confirmed), (1, KIND_TRUCK, true), "inherited ambiguous truck kept in LR after 2 s");
+            assert_eq!((right.vid, right.kind, right.kind_confirmed), (2, 0, false), "non-inherited ambiguous bus not saved in RR");
+            checked_forgotten += 1;
+        }
+    }
+    assert_eq!((checked_tracked, checked_forgotten), (1, 3));
+}
+
+#[test]
 fn an_unconfirmed_kind_is_not_kept_after_the_tracker_forgets_the_car() {
     use ccnc_map::vehicles::Kind;
     use ccnc_map::vision::kind::KIND_TRUCK;

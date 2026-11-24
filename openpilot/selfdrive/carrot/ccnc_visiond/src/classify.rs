@@ -9,7 +9,7 @@
 
 use crate::{engine::Engine, pre::Img, yolox::Det};
 use anyhow::{Context, Result};
-use ccnc_vision_msg::{KindResult, View, KIND_BUS, KIND_CAR, KIND_TRUCK};
+use ccnc_vision_msg::{Calibration, KindResult, View, KIND_BUS, KIND_CAR, KIND_TRUCK};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 
 pub const MODEL: &str = "kind_mnv3s_128.onnx";
@@ -34,6 +34,8 @@ pub const SIDE_KINDS: bool = false;
 pub struct Job {
     pub frame_mono_time: u64,
     pub view: View,
+    /// Calibration active when the frame was captured, carried through to `Status::Kinds`.
+    pub calibration: Calibration,
     pub boxes: Vec<[f32; 4]>,
     /// NCHW, `boxes.len()` crops.
     pub input: Vec<f32>,
@@ -83,12 +85,12 @@ fn crop_into(image: &Img, b: [f64; 4], out: &mut Vec<f32>) {
 }
 
 impl Job {
-    pub fn new(frame_mono_time: u64, view: View, image: &Img, boxes: &[&Det]) -> Self {
+    pub fn new(frame_mono_time: u64, view: View, calibration: Calibration, image: &Img, boxes: &[&Det]) -> Self {
         let mut input = Vec::with_capacity(boxes.len() * 3 * SIZE * SIZE);
         for d in boxes {
             crop_into(image, d.b, &mut input);
         }
-        Self { frame_mono_time, view, boxes: boxes.iter().map(|d| d.b.map(|v| v as f32)).collect(), input }
+        Self { frame_mono_time, view, calibration, boxes: boxes.iter().map(|d| d.b.map(|v| v as f32)).collect(), input }
     }
 }
 
@@ -113,7 +115,7 @@ struct Slot {
 /// The classifier thread. Dropping it stops the thread.
 pub struct Classifier {
     slot: Arc<(Mutex<Slot>, Condvar)>,
-    answers: mpsc::Receiver<Vec<KindResult>>,
+    answers: mpsc::Receiver<(Vec<KindResult>, Calibration)>,
     thread: Option<std::thread::JoinHandle<()>>,
     /// Jobs replaced by a newer one before the thread took them.
     pub dropped: u64,
@@ -159,7 +161,7 @@ impl Classifier {
                 let n = job.boxes.len();
                 match engine.run([n, 3, SIZE, SIZE], job.input.clone()) {
                     Ok((shape, probs)) if shape == [n, KINDS.len()] => {
-                        if answer_tx.send(answer_job(&job, &probs)).is_err() {
+                        if answer_tx.send((answer_job(&job, &probs), job.calibration)).is_err() {
                             return;
                         }
                     }
@@ -196,9 +198,9 @@ impl Classifier {
         self.thread.as_ref().is_some_and(|thread| !thread.is_finished())
     }
 
-    /// Every answer since the last call.
-    pub fn answers(&self) -> Vec<KindResult> {
-        self.answers.try_iter().flatten().collect()
+    /// Every completed job's answers paired with its capture-time calibration since the last call.
+    pub fn answers(&self) -> Vec<(Vec<KindResult>, Calibration)> {
+        self.answers.try_iter().collect()
     }
 
     fn stop(&mut self) {
@@ -294,7 +296,7 @@ mod tests {
         let mut slowest = Duration::ZERO;
         for i in 0..20u64 {
             let t = Instant::now();
-            classifier.submit(Job::new(i, View::CropFront, &img, &picked));
+            classifier.submit(Job::new(i, View::CropFront, Calibration::UNKNOWN, &img, &picked));
             slowest = slowest.max(t.elapsed());
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -302,7 +304,7 @@ mod tests {
         assert!(slowest < Duration::from_millis(20), "submit took {slowest:?}");
         assert!(detect < Duration::from_millis(20 * 50 + 300), "the detector loop took {detect:?}");
         std::thread::sleep(Duration::from_millis(400));
-        let got = classifier.answers();
+        let got: Vec<_> = classifier.answers().into_iter().flat_map(|(kinds, _)| kinds).collect();
         let frames: Vec<u64> = got.iter().map(|a| a.frame_mono_time).collect();
         assert!(classifier.dropped >= 10, "about two of every three jobs replaced, {} dropped", classifier.dropped);
         assert_eq!(got.len(), 2 * (classifier.submitted - classifier.dropped) as usize);
@@ -326,14 +328,14 @@ mod tests {
         assert!(classifier.alive());
         let img = image();
         let boxes = [det([0., 0., 40., 40.], 2, 0.9)];
-        classifier.submit(Job::new(1, View::CropFront, &img, &boxes.iter().collect::<Vec<_>>()));
+        classifier.submit(Job::new(1, View::CropFront, Calibration::UNKNOWN, &img, &boxes.iter().collect::<Vec<_>>()));
         let start = Instant::now();
         while classifier.alive() && start.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!classifier.alive());
         assert!(classifier.answers().is_empty());
-        classifier.submit(Job::new(2, View::CropFront, &img, &boxes.iter().collect::<Vec<_>>()));
+        classifier.submit(Job::new(2, View::CropFront, Calibration::UNKNOWN, &img, &boxes.iter().collect::<Vec<_>>()));
         drop(classifier);
     }
 
@@ -341,5 +343,53 @@ mod tests {
     fn an_engine_that_cannot_load_fails_the_start() {
         let err = Classifier::start(|| anyhow::bail!("no model")).err().unwrap();
         assert!(format!("{err:#}").contains("no model"));
+    }
+
+    #[test]
+    fn answers_carry_capture_time_calibration_after_live_calibration_is_lost() {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let mut classifier =
+            Classifier::start(move || Ok(Box::new(Slow { delay: Duration::from_millis(50), runs }) as Box<dyn Engine>)).unwrap();
+        let img = image();
+        let boxes = [det([0., 0., 40., 40.], 7, 0.9)];
+        let picked: Vec<&Det> = boxes.iter().collect();
+        let captured = Calibration {
+            rpy_calib: [0.01, 0.02, -0.01],
+            wide_from_device_euler: [0.0, 0.01, -0.005],
+            height: 1.22,
+        };
+        let mut latest = captured;
+        classifier.submit(Job::new(100, View::CropFront, latest, &img, &picked));
+        // Calibration is lost before the classifier finishes.
+        latest = Calibration::UNKNOWN;
+        assert!(latest.rpy_calib.iter().all(|v| v.is_nan()));
+        let start = Instant::now();
+        let mut batches = Vec::new();
+        while batches.is_empty() && start.elapsed() < Duration::from_secs(2) {
+            batches = classifier.answers();
+            if batches.is_empty() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        assert_eq!(batches.len(), 1);
+        let (kinds, cal) = &batches[0];
+        assert_eq!(kinds.len(), 1);
+        assert_eq!(*cal, captured);
+        assert!(cal.rpy_calib.iter().all(|v| v.is_finite()) && cal.height.is_finite());
+        let out = ccnc_vision_msg::VisionOut {
+            status: ccnc_vision_msg::Status::Kinds,
+            frame_id: 0,
+            timestamp_sof: 0,
+            frame_mono_time: 0,
+            view: View::CropFront,
+            processing_ms: 0.0,
+            night_corrected: false,
+            calibration: *cal,
+            boxes: Vec::new(),
+            kinds: kinds.clone(),
+        };
+        let encoded = ccnc_vision_msg::encode(&out, 200);
+        assert!(!encoded.is_empty());
+        assert_eq!(out.calibration, captured);
     }
 }

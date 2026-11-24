@@ -249,11 +249,11 @@ impl Vote {
 
     /// Count an answer; whether it counted.
     fn observe(&mut self, t: f64, kind: u8, prob: f64) -> bool {
-        if !matches!(kind, KIND_CAR | KIND_TRUCK | KIND_BUS) || prob < MIN_PROB {
+        if !matches!(kind, KIND_CAR | KIND_TRUCK | KIND_BUS) || !(prob >= MIN_PROB) {
             return false;
         }
         let answer = shape(kind);
-        if prob < min_prob(answer) {
+        if !(prob >= min_prob(answer)) {
             // Too unsure a truck to count, but not a car either.
             if self.streak.0 == KIND_CAR {
                 self.streak = (0, 0);
@@ -541,7 +541,7 @@ impl Kinds {
                 let (lon, lat) = (cos * dx + sin * dy, -sin * dx + cos * dy);
                 let dv = cos * f64::from(car.vx - old.vx) + sin * f64::from(car.vy - old.vy);
                 let length = if is_truck(vote.shown) { SAME_TRUCK_LON_M } else { SAME_CAR_LON_M };
-                if lon.abs() > length || lat.abs() > SAME_CAR_LAT_M || dv.abs() > SAME_CAR_SPEED {
+                if !(lon.abs() <= length && lat.abs() <= SAME_CAR_LAT_M && dv.abs() <= SAME_CAR_SPEED) {
                     continue;
                 }
                 shapes[usize::from(is_truck(vote.shown))] = true;
@@ -1027,5 +1027,56 @@ mod tests {
         let before = kinds.votes.clone();
         kinds.observe(&side, Some(&cam), |t| Some((t, tracks.clone())), |_, _| Some(vec![Cand::at(det_rules::View::SideL, 20.0, 0.0)]), vid_of);
         assert_eq!(kinds.votes, before, "side answers are not used");
+    }
+
+    #[test]
+    fn nan_probability_and_nan_coordinates_are_rejected() {
+        let mut vote = Vote::new();
+        assert!(vote.observe(0.0, KIND_CAR, 0.9));
+        assert_eq!(vote.streak, (KIND_CAR, 1));
+        assert!(!vote.observe(1.0, KIND_TRUCK, f64::NAN), "NaN prob must not count");
+        assert_eq!(vote.streak, (KIND_CAR, 1), "NaN prob must not break an active car streak");
+        assert!(!vote.observe(1.0, KIND_CAR, f64::NAN), "NaN prob must not confirm");
+        assert!(!vote.confirmed());
+
+        use crate::vehicles::{Flags, History, Link};
+        let make_car = |vid, born, seen_radar, wx, wy| Vehicle {
+            vid,
+            wx,
+            wy,
+            vx: 10.,
+            vy: 0.,
+            off: 0.,
+            u: 0.5,
+            ids: History::default(),
+            hist: History::default(),
+            link: Link::Sure,
+            kind: None,
+            seen_radar,
+            seen_vision: f64::NEG_INFINITY,
+            born,
+            flags: Flags::default(),
+            radar_id: Some(vid),
+        };
+        let mut kinds = Kinds::default();
+        kinds.count(1, 0.0, KIND_TRUCK, 0.9);
+        kinds.count(1, 1.0, KIND_TRUCK, 0.9);
+        assert!(kinds.votes[&1].confirmed());
+
+        let mut cars = vec![
+            make_car(1, 0.0, 1.5, 20., 0.),
+            make_car(2, 2.0, 2.0, f32::NAN, 0.),
+            make_car(3, 2.0, 2.0, 25., f32::NAN),
+        ];
+        kinds.apply(2.0, 0.0, &mut cars);
+        assert!(!kinds.votes.contains_key(&2), "NaN wx must not inherit confirmed kind");
+        assert!(!kinds.votes.contains_key(&3), "NaN wy must not inherit confirmed kind");
+
+        let mut cars_nan_heading = vec![
+            make_car(1, 0.0, 1.5, 20., 0.),
+            make_car(4, 2.0, 2.0, 25., 0.),
+        ];
+        kinds.apply(2.0, f64::NAN, &mut cars_nan_heading);
+        assert!(!kinds.votes.contains_key(&4), "NaN heading must not inherit confirmed kind");
     }
 }
