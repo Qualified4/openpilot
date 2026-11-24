@@ -40,6 +40,7 @@ fn vehicle(world: &World, vid: u32, now: f64, x: f64, r: f64) -> Vehicle {
         radar_id: Some(vid),
         oncoming: false,
         oncoming_since: f64::NAN,
+        onward_since: f64::NAN,
     }
 }
 
@@ -916,4 +917,15 @@ fn a_side_car_near_its_outer_line_stays_in_the_side_slot() {
         let slots = assigner.update(now, &[vehicle(&world, 4, now, 10., r)], &world, None);
         assert_eq!(slots[LF].is_some(), drawn, "r {r}");
     }
+}
+
+#[test]
+fn an_oncoming_car_that_turns_round_is_drawn_again_after_a_second_our_way() {
+    // 20 m ahead at -5 m/s, turning to 3 m/s our way at 4 m/s² (oncoming to 0.75 s, our way from 1.75 s).
+    let x = |t: f64| if t < 2. { 20. - 5. * t + 2. * t * t } else { 18. + 3. * (t - 2.) };
+    let v = |t: f64| (-5. + 4. * t).min(3.);
+    let (shown, oncoming) = left_lane_car(x, v);
+    assert!(!oncoming);
+    assert!(shown.iter().filter(|(t, _)| *t < 2.7).all(|(_, vid)| vid.is_none()), "{shown:?}");
+    assert!(shown.iter().filter(|(t, _)| *t > 2.85).all(|(_, vid)| vid.is_some()), "{shown:?}");
 }

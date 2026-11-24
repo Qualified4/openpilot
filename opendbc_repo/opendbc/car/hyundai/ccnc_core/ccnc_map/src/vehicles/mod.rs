@@ -107,12 +107,19 @@ pub struct Vehicle {
     pub oncoming: bool,
     /// Since when the current run of oncoming measurements lasts.
     pub oncoming_since: f64,
+    /// Since when the current run of measurements going our way (`ONWARD_SPEED`) lasts: after `ONWARD_S` an oncoming
+    /// car is traffic of our direction again (it turned round, or it was a car reversing before it pulled away).
+    pub onward_since: f64,
 }
 
 /// Ground speed along ego's heading at or below which a radar measurement comes at us (m/s) ...
 const ONCOMING_SPEED: f64 = -2.;
 /// ... and for how long in a row (s). 35 of 7,333 radar objects on our right in the two 11-24 drives had such a run.
 const ONCOMING_S: f64 = 0.3;
+/// Ground speed along ego's heading at or above which a radar measurement goes our way (m/s) ...
+const ONWARD_SPEED: f64 = 2.;
+/// ... and for how long in a row (s) before an oncoming car counts as traffic of our direction again.
+const ONWARD_S: f64 = 1.;
 
 impl Vehicle {
     fn new(vid: u32, now: f64, link: Link) -> Self {
@@ -136,6 +143,7 @@ impl Vehicle {
             radar_id: None,
             oncoming: false,
             oncoming_since: f64::NAN,
+            onward_since: f64::NAN,
         }
     }
 
@@ -173,6 +181,14 @@ impl Vehicle {
             self.oncoming |= now - self.oncoming_since >= ONCOMING_S - 1e-6;
         } else {
             self.oncoming_since = f64::NAN;
+        }
+        if sample.speed >= ONWARD_SPEED {
+            if self.onward_since.is_nan() {
+                self.onward_since = now;
+            }
+            self.oncoming &= now - self.onward_since < ONWARD_S - 1e-6;
+        } else {
+            self.onward_since = f64::NAN;
         }
         (self.wx, self.wy) = (sample.wx as f32, sample.wy as f32);
         (self.vx, self.vy) = (

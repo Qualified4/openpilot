@@ -1060,6 +1060,7 @@ mod tests {
             radar_id: Some(vid),
             oncoming: false,
             oncoming_since: f64::NAN,
+        onward_since: f64::NAN,
         };
         let mut kinds = Kinds::default();
         kinds.count(1, 0.0, KIND_TRUCK, 0.9);
