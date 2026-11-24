@@ -11,6 +11,14 @@ from openpilot.selfdrive.controls.lib.longitudinal_cutout import cutout_obstacle
 from openpilot.selfdrive.controls.lib.longitudinal_gap_recovery import LeadGapState, gap_reference, displayed_follow_distance
 from openpilot.selfdrive.controls.lib.longitudinal_braking_gap import LeadComfortState, braking_gap_reference, comfort_path_has_reserve
 from openpilot.selfdrive.controls.lib.longitudinal_stop_gap import StopGapWeightState
+from openpilot.selfdrive.controls.lib.longitudinal_approach import ApproachState
+from openpilot.selfdrive.controls.lib import longitudinal_gap_safe as gap_safe
+
+# These tests pin the arithmetic of the TF lead path (still used in blended mode and for an
+# unknown gap level): no gap level maps to the safety-distance gap here. The safety-distance
+# path is covered by test_longitudinal_gap_safe.py and the approach tests.
+TF_LEAD_PATH = NS(**{**{k: getattr(gap_safe, k) for k in dir(gap_safe) if not k.startswith('__')}, 'GAP_LEVELS': 0})
+from openpilot.selfdrive.controls.lib.longitudinal_braking_gap import COMFORT_RELIEF_MIN_TF
 from openpilot.selfdrive.carrot.radar_motion.lane_change_gap import GapLead, LaneChangeGapPlan
 from openpilot.selfdrive.controls.lib.longitudinal_preview import LeadAccelResponseState, get_lead_accel_mpc_request
 from openpilot.selfdrive.carrot.traffic_stop import get_traffic_stop_distance_adjust, get_traffic_stop_obstacle_distance
@@ -26,7 +34,7 @@ def run_update(*, confidence=0., mode="acc", reset=False, enabled=True, second_d
   helpers = [node for node in tree.body if isinstance(node, ast.FunctionDef)
              and node.name in ("get_stopped_equivalence_factor", "get_safe_obstacle_distance", "desired_follow_distance", "get_a_change_cost")]
   times = np.array([10.*(i/12)**2 for i in range(13)])
-  namespace = {"np": np, "log": NS(LongitudinalPersonality=NS(standard=1)),
+  namespace = {"np": np, "gap_safe": TF_LEAD_PATH, "COMFORT_RELIEF_MIN_TF": COMFORT_RELIEF_MIN_TF, "log": NS(LongitudinalPersonality=NS(standard=1)),
                    "COMFORT_BRAKE": 2.5, "STOP_DISTANCE": 6., "ACCEL_MIN": -3.5, "N": 12,
                    "T_IDXS": times, "T_DIFFS": np.diff(times, prepend=0.),
                    "FCW_IDXS": times<5., "PRED_DANGER_IDXS": (times>.2)&(times<3.),
@@ -59,7 +67,8 @@ def run_update(*, confidence=0., mode="acc", reset=False, enabled=True, second_d
   self = NS(dt=.05, lead_response_state=LeadAccelResponseState(), x0=np.array([0., 15., 0.]), source="lead0", mode=mode, max_a=1.5, cruise_min_a=-1.2,
             lead_gap_states=(LeadGapState(), LeadGapState()), lead_gap_margins=np.zeros((13,2)),
             lead_comfort_states=(LeadComfortState(), LeadComfortState()),
-            stop_gap_state=StopGapWeightState(),
+            stop_gap_state=StopGapWeightState(), approach_state=ApproachState(), gap_safe_state=gap_safe.GapSafeState(),
+            cutin_credit=gap_safe.CutinCredit(),
             params=np.zeros((13,8)), prev_a=np.zeros(13), yref=np.zeros((13,6)),
             solver=NS(set=lambda *a:None), set_weights=lambda *a,**kw:None, crash_cnt=0,
             x_sol=np.column_stack([15.*times, np.full(13,15.), np.zeros(13)]), run=lambda:None)

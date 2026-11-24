@@ -4,6 +4,8 @@ import math
 
 import numpy as np
 
+COMFORT_RELIEF_MIN_TF = 0.7  # relief never takes base_tf below this many seconds
+
 
 def comfort_path_has_reserve(ego_speeds, physical_gaps, danger_margins, times, stop_distance):
   near = times <= 3.0
@@ -44,7 +46,7 @@ class LeadComfortState:
     """
     v = float(ego_speeds[0])
     eligible = (enabled and self.age >= 1.0
-                and base_tf > 0.7 and v > 5.0 and lead_speeds[0] > 2.0
+                and base_tf > COMFORT_RELIEF_MIN_TF and v > 5.0 and lead_speeds[0] > 2.0
                 and lead_accel < -0.3 and -2.5 < self.relative_speed < 0.0
                 and self.distance - stop_distance > v * (base_tf + 0.2)
                 and comfort_path_has_reserve(ego_speeds, physical_gaps, danger_margins, times, stop_distance))
@@ -52,7 +54,7 @@ class LeadComfortState:
     self.relief = min(1.0, self.relief + dt / 0.5) if eligible else 0.0
     if not eligible:
       return np.zeros_like(ego_speeds)
-    return self.relief * min(0.4, max(0.0, base_tf - 0.7)) * np.maximum(ego_speeds, 0.0)
+    return self.relief * min(0.4, max(0.0, base_tf - COMFORT_RELIEF_MIN_TF)) * np.maximum(ego_speeds, 0.0)
 
 
 def braking_gap_reference(obstacles, margins, ego_speeds):
