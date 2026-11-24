@@ -708,12 +708,26 @@ fn a_split_near_car_stays_alongside_while_its_reports_drop_out_briefly() {
 }
 
 #[test]
-fn a_split_near_car_unreported_for_over_1_s_leaves_the_rear_slot_once() {
+fn a_split_near_car_unreported_for_1_2_s_stays_alongside() {
+    let world = road();
+    let mut assigner = Assigner::default();
+    for i in 0..50 {
+        let now = f64::from(i) * 0.05;
+        // Unreported for 1.2 s from 0.5 s.
+        let slots = near_lost(&mut assigner, &world, now, (10..34).contains(&i));
+        assert_eq!(slots[LR].map(|s| (s.vid, s.distance)), Some((1, 0.)), "at {now:.2}");
+        assert_eq!(slots[LF].map(|s| s.vid), Some(2), "at {now:.2}");
+    }
+}
+
+#[test]
+fn a_split_near_car_unreported_for_over_2_s_leaves_the_rear_slot_once() {
     let world = road();
     let mut assigner = Assigner::default();
     let mut rear = Vec::new();
     for i in 0..60 {
         let now = f64::from(i) * 0.05;
+        // Unreported from 0.5 s on, 2.3 s and more.
         let slots = near_lost(&mut assigner, &world, now, i >= 10);
         let lr = slots[LR].map(|s| s.vid);
         if rear.last().is_none_or(|(_, last)| *last != lr) {
@@ -722,7 +736,7 @@ fn a_split_near_car_unreported_for_over_1_s_leaves_the_rear_slot_once() {
         assert_eq!(slots[LF].map(|s| s.vid), Some(2), "at {now:.2}");
     }
     assert_eq!(rear.iter().map(|r| r.1).collect::<Vec<_>>(), [Some(1), None], "{rear:?}");
-    assert!((rear[1].0 - 1.55).abs() < 1e-9, "{rear:?}");
+    assert!((rear[1].0 - 2.55).abs() < 1e-9, "{rear:?}");
     // Gone from the tracker, it is not drawn at all.
     let mut assigner = Assigner::default();
     near_lost(&mut assigner, &world, 0., false);
