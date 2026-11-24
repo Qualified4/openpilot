@@ -6,6 +6,9 @@ use crate::vehicles::{Link, Vehicle, MAX_VEHICLES};
 use crate::world::{PoseAt, World};
 
 const INNER_RADIUS: f64 = 0.48;
+/// A side car moves on to the lane beyond (no slot) only this close to that lane's center: a car near the outer line
+/// of a side lane went in and out of LF or RF while the map's line wobbled across it.
+const OUTER_RADIUS: f64 = 0.35;
 const OBSERVATION_MAX_AGE: f64 = 0.15;
 const FF_PREFERENCE_M: f32 = 1.0;
 /// The legacy selector's stop memory range ahead (`Consts::memory_max_x`); the map keeps LF and RF at x >= 0.
@@ -100,7 +103,8 @@ impl Drawing {
 
     fn observe_lane(&mut self, r: f64) {
         let lane = lane_at(r);
-        if (r - f64::from(lane)).abs() <= INNER_RADIUS {
+        let outward = self.lane.abs() == 1 && lane == 2 * self.lane;
+        if (r - f64::from(lane)).abs() <= if outward { OUTER_RADIUS } else { INNER_RADIUS } {
             self.lane = lane;
         }
     }
