@@ -21,8 +21,11 @@ speed both closing terms are 0, so the steady following gap is d_min + COMFORT_T
 A lead that cuts in closer than the comfort target at about ego speed or faster (closing at most
 CUTIN_CLOSING_MAX) and is not braking gets a cut-in credit equal to the shortfall beyond the comfort
 cushion (COMFORT_TIME * v); the credit then shrinks at CUTIN_RECOVER_RATE, so the gap is reopened
-gradually instead of braking for it at once. The credit lowers the cost reference only, never below
-d_min; the obstacle and the danger zone stay where they are. It ends at once if that lead brakes, and
+gradually instead of braking for it at once. The credit moves the lead obstacle, and with it the
+danger floor d_min, back, but never below the TF danger floor (LEAD_DANGER_FACTOR x TF distance -
+v_lead^2 / (2 x COMFORT_BRAKE)), and lowers the cost reference to max(TF following target, comfort
+target - credit): with a credit the plan is never looser than the TF one.
+It ends at once if that lead brakes, and
 a track id change of what looks like the same car (distance within SAME_LEAD_DISTANCE of the last
 lead), a lead seen again after a dropout or the lead found after a lane change get none. Lane changes
 keep their own credit.
@@ -136,7 +139,7 @@ def target_offset(v_ego, gap: LeadGap, t_follow, comfort_brake, stop_distance):
 
 
 class CutinCredit:
-  """Cost-reference credit (m) for a lead that cut in inside the comfort target; it only shrinks."""
+  """Credit (m) for a lead that cut in inside the comfort target; it only shrinks."""
 
   def __init__(self):
     self.track_id = None

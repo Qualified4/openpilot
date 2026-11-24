@@ -266,6 +266,7 @@ class LongitudinalMpc:
     self.gap_safe_state = gap_safe.GapSafeState()
     self.cutin_credit = gap_safe.CutinCredit()
     self.lead_gap = None
+    self.cutin_shift = 0.0
 
     self.reset()
     self.source = SOURCES[2]
@@ -498,6 +499,20 @@ class LongitudinalMpc:
     # Ego speeds of the previous plan, moved to the current speed (also the comfort-margin speeds below).
     gap_v = np.maximum(0.0, self.x_sol[:,1] + v_ego - self.x_sol[0,1])
 
+    lead_one = radarstate.leadOne
+    if lead_gaps[0] is None:
+      # Off (blended, unknown level): forget the lead. No leadOne: keep it, so it gets no credit on return.
+      cutin_credit = self.cutin_credit.reset() if lead_gap is None else self.cutin_credit.hold()
+    else:
+      cutin_credit = self.cutin_credit.update(
+        enabled=True, track_id=lead_one.radarTrackId, distance=float(lead_one.dRel),
+        desired=float(self.base_desired_distances[0]), closing_speed=-float(lead_one.vRel),
+        lead_accel=float(lead_one.aLeadK), cushion=lead_gap.comfort_time * v_ego, dt=self.dt,
+        grant=not reset_state and not getattr(carrot, 'lane_change_gap', LaneChangeGapPlan()).active,
+      )
+    cutin_shift = 0.0
+    tf_desired_excess = 0.0
+
     self.params[:,0] = ACCEL_MIN if not reset_state else a_ego
     # negative accel constraint causes problems because negative speed is not allowed
     self.params[:,1] = max(0.0, self.max_a if not reset_state else a_ego)
@@ -534,6 +549,18 @@ class LongitudinalMpc:
           lead_0_follow_obstacle = lead_0_obstacle + cutout_obstacle_relief(
             radarstate.leadOne, v_ego, T_IDXS, lead_t_follow, stop_distance,
           )
+      if cutin_credit > 0.0:
+        # The credit never makes the plan looser than the TF one (5250bdff). It moves leadOne's obstacle,
+        # and with it the danger floor d_min, at most down to the TF danger floor
+        # (LEAD_DANGER_FACTOR x TF distance - v_lead^2 / (2 x COMFORT_BRAKE)), and the cost reference
+        # at most down to the TF following target (below).
+        tf_distance = get_safe_obstacle_distance(gap_v, t_follow, comfort_brake, stop_distance)
+        tf_floor = LEAD_DANGER_FACTOR * tf_distance - get_stopped_equivalence_factor(lead_xv_0[:,1])
+        d_min = gap_safe.min_distance(gap_v, lead_xv_0[:,1], lead_gaps[0], stop_distance)
+        cutin_shift = np.clip(d_min - tf_floor, 0.0, cutin_credit)
+        # How far the TF following target lies above the moved danger floor.
+        tf_desired_excess = np.maximum(0.0, tf_distance - get_stopped_equivalence_factor(lead_xv_0[:,1]) - (d_min - cutin_shift))
+        lead_0_follow_obstacle = lead_0_follow_obstacle + cutin_shift
       x_obstacles = np.column_stack([lead_0_follow_obstacle, lead_1_obstacle, cruise_obstacle, x2])
 
       #elif self.source in ['cruise', 'e2e']:
@@ -716,21 +743,12 @@ class LongitudinalMpc:
       if gap is not None:
         comfort_margins[:, lead_index] = gap_safe.comfort_margin(gap_v, lead_xv[:,1], gap)
     self.lead_gap_margins += comfort_margins
-    # Cut-in credit: lowers leadOne's cost reference only, never below its d_min (margin 0); the
-    # obstacle and the danger zone are left as they are.
-    lead_one = radarstate.leadOne
-    if lead_gaps[0] is None:
-      # Off (blended, unknown level): forget the lead. No leadOne: keep it, so it gets no credit on return.
-      cutin_credit = self.cutin_credit.reset() if lead_gap is None else self.cutin_credit.hold()
-    else:
-      cutin_credit = self.cutin_credit.update(
-        enabled=True, track_id=lead_one.radarTrackId, distance=float(lead_one.dRel),
-        desired=float(self.base_desired_distances[0]), closing_speed=-float(lead_one.vRel),
-        lead_accel=float(lead_one.aLeadK), cushion=lead_gap.comfort_time * v_ego, dt=self.dt,
-        grant=not reset_state and not getattr(carrot, 'lane_change_gap', LaneChangeGapPlan()).active,
-      )
+    # leadOne's cost reference with a cut-in credit: max(TF following target, comfort target - credit), and
+    # never more than the comfort target. The moved obstacle already took cutin_shift of the credit.
+    self.cutin_shift = cutin_shift
     if cutin_credit > 0.0:
-      self.lead_gap_margins[:, 0] -= np.minimum(cutin_credit, np.maximum(self.lead_gap_margins[:, 0], 0.0))
+      margin = self.lead_gap_margins[:, 0]
+      self.lead_gap_margins[:, 0] = np.maximum(np.minimum(margin + cutin_shift, tf_desired_excess), margin - (cutin_credit - cutin_shift))
     # Display the current following reference, including comfort headroom and
     # any already-authorized cutout/lane-change relief. This does not select
     # control leads or modify solver obstacles.

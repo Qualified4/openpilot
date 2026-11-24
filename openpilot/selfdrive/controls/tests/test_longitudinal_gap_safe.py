@@ -198,8 +198,9 @@ def test_lead_nodes_use_the_safety_distance(native):
   expected = 0.6 * V80 + V80 ** 2 / 8.0 - V80 ** 2 / 12.0 + STOP + gs.COMFORT_TIME * V80
   assert on.base_desired_distances[0] == pytest.approx(expected)
   assert on.t_follow == pytest.approx(gs.equivalent_t_follow(V80, g))
-  # The lead obstacle uses v_lead^2 / (2 * 6); a cut-in credit never moves it.
-  assert on.params[0, 2] == pytest.approx(30.0 + V80 ** 2 / 12.0, abs=0.5)
+  # The lead obstacle uses v_lead^2 / (2 * 6), moved out by at most what is left of the first-sight credit.
+  obstacle = 30.0 + V80 ** 2 / 12.0
+  assert obstacle - 0.5 <= on.params[0, 2] <= obstacle + on.cutin_credit.credit + 0.5
   # Comfort time rides on the reference (yref) only.
   assert np.all(on.lead_gap_margins[:, 0] > 0.0)
 
@@ -250,17 +251,22 @@ def test_unknown_gap_level_keeps_the_tf_lead_path(native):
 
 
 @pytest.mark.parametrize("closing,credited", [(1.4, True), (3.0, False)])
-def test_cutin_credit_lowers_the_reference_not_the_obstacle(native, closing, credited):
+def test_cutin_credit_never_lowers_the_danger_floor_below_tf(native, closing, credited):
   mpc = solve(native, distance=45.0, cycles=80)        # settled behind track 1, first-sight credit spent
   assert mpc.cutin_credit.credit == 0.0
   cut = solve(native, mpc=mpc, distance=20.0, lead_speed=V80 - closing, track_id=2, cycles=1)
   assert (cut.cutin_credit.credit > 10.0) == credited
-  # Obstacle and danger zone (d_min) stay; the reference never goes below d_min.
-  assert cut.params[0, 2] == pytest.approx(20.0 + (V80 - closing) ** 2 / 12.0, abs=0.5)
-  np.testing.assert_allclose(cut.params[:, 5], 1.0)
-  assert np.all(cut.lead_gap_margins[:, 0] >= -1e-9)
-  base_margin = gs.comfort_margin(V80, V80 - closing, cut.lead_gap)
-  assert (cut.lead_gap_margins[0, 0] < base_margin - 1.0) == credited
+  vl = V80 - closing
+  shift = np.broadcast_to(cut.cutin_shift, (native.N + 1,))[0]   # obstacle move at node 0 (ego at V80)
+  d_min = 0.6 * V80 + V80 ** 2 / 8.0 - vl ** 2 / 12.0 + STOP
+  tf_floor = 0.8 * (V80 ** 2 / 4.8 + 0.62 * V80 + STOP) - vl ** 2 / 5.0
+  assert shift == pytest.approx(min(cut.cutin_credit.credit, max(0.0, d_min - tf_floor)), abs=0.5)
+  assert d_min - shift >= tf_floor - 0.5               # danger floor: d_min - shift, never below TF
+  lead_nodes = np.isclose(cut.params[:, 4], 0.6)
+  np.testing.assert_allclose(cut.params[lead_nodes, 5], 1.0)
+  assert np.all(cut.lead_gap_margins[:, 0] >= -1e-9)   # the reference never goes below that floor
+  tf_target = V80 ** 2 / 4.8 + 0.62 * V80 + STOP - vl ** 2 / 5.0
+  assert d_min - shift + cut.lead_gap_margins[0, 0] >= min(tf_target, gs.desired_distance(V80, vl, cut.lead_gap, STOP)) - 0.5
 
 
 def nolead_mpc(native, v, v_cruise, personality, cycles=40, lead_speed=None):
