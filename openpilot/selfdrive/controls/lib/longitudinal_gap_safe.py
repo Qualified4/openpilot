@@ -50,13 +50,14 @@ from opendbc.car.interfaces import ACCEL_MIN
 # The planner never requests more braking than ACCEL_MIN = -4.0 (opendbc/car/interfaces.py;
 # Hyundai CarControllerParams.ACCEL_MIN is also -4.0), so that is ego's assumed maximum.
 EGO_MAX_DECEL = -ACCEL_MIN
-# s x v above d_min for the steady comfort target per level (1-4), at COMFORT_SPEEDS (m/s, 40 / 100 km/h).
-# Equal-speed gaps (stop distance 3.7 m): 10 km/h 6.4/6.6/6.8/7.4 m, 30 km/h 12.9/14.5/15.8/18.0 m,
-# 100 km/h 43.5/57.8/68.5/76.6 m. A fixed 0.35 s gave 6.5-6.8 m at 10 km/h and 49 m at 100 km/h on level 1.
-# Levels 1-2 keep 0.30/0.35 s in town: 0.15/0.27 s (11.7/13.9 m at 30 km/h) raised the steady-following
-# brake entries from 2.02/2.09 to 2.52/2.31 per minute (replay, 13 windows), 0.25 s on level 1 to 2.09.
+# s x v above d_min for the steady comfort target per level (1-4), at COMFORT_SPEEDS (m/s, 40 / 100 km/h);
+# a level change blends them with the lead decel. All 0.35 s for now (the 0a704cf3 gaps, equal speed with
+# stop distance 3.7 m: 30 km/h 13.4/14.5/15.3/16.0 m, 100 km/h 49.4/62.2/71.4/78.3 m). Replayed and not
+# taken: less than 0.35 s from 40 km/h cost a meter at a hard stop beyond the assumed lead decel for every
+# meter of steady gap (level 1 with 0.19 s at 80 km/h: F80 -6 -0.88 -> -3.55 m), and 0.15 / 0.27 s in town
+# on levels 1-2 raised the steady-following brake entries (2.02 -> 2.52, 2.09 -> 2.31 per minute).
 COMFORT_SPEEDS = (40.0 / 3.6, 100.0 / 3.6)
-COMFORT_TIMES = ((0.30, 0.14), (0.35, 0.19), (0.41, 0.245), (0.60, 0.29))
+COMFORT_TIMES = ((0.35, 0.35), (0.35, 0.35), (0.35, 0.35), (0.35, 0.35))
 DANGER_FACTOR = 1.0        # d_min is already the minimum, so no 0.8 shrink
 LEAD_DECEL_INV_RATE = 0.025  # 1/(m/s^2) per s: a level change that lengthens the gap (5 -> 8) takes 3 s
 LEAD_DECELS = (5.0, 6.0, 7.0, 8.0)  # m/s^2 assumed lead braking for gap levels 1-4
@@ -92,7 +93,6 @@ class LeadGap(NamedTuple):
   closing_time: float = 0.0
   fade_weight: float = 1.0  # how much of the low-speed comfort fade applies (COMFORT_FADE_ACCELS)
   comfort_curve: tuple = ()  # comfort time at COMFORT_SPEEDS; empty: comfort_time at every speed
-  closing_scale: float = 1.0  # share of the closing terms kept (approach to a stopping lead; per node)
 
 
 class GapSafeState:
@@ -161,7 +161,6 @@ def comfort_margin(v_ego, v_lead, gap: LeadGap):
   v_ego = np.maximum(v_ego, 0.0)
   v_lead = np.maximum(v_lead, 0.0)
   closing = gap.closing_factor * np.maximum(0.0, v_ego**2 - v_lead**2) + gap.closing_time * np.maximum(0.0, v_ego - v_lead)
-  closing = gap.closing_scale * closing
   margin = comfort_times(v_ego, gap) * v_ego + closing
   return margin * fade(v_ego, gap)
 

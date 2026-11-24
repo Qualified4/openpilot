@@ -41,7 +41,7 @@ def load_mpc_update(path):
             'DT_MDL': .05, 'N': 12, 'COMFORT_BRAKE': 2.5, 'STOP_DISTANCE': 6., 'ACCEL_MIN': -3.5, 'LEAD_ACCEL_TAU': 1.5,
             'MODEL_NAME': 'long', 'ACADOS_SOLVER_TYPE': 'SQP_RTI', 'COST_DIM': 6, 'COST_E_DIM': 5, 'X_DIM': 3, 'PARAM_DIM': 8,
             'A_CHANGE_COST': 200., 'A_CHANGE_COST_STARTING': 10., 'LEAD_DANGER_FACTOR': .8, 'LIMIT_COST': 1e6,
-            'LEAD_ACCEL_COST_POS_TAU_FACTOR': 4., 'LEAD_ACCEL_COST_POS_REL_SPEEDS': (-2., -.5), 'MIN_HEADROOM_TF': .5,
+            'LEAD_ACCEL_COST_POS_TAU_FACTOR': 4., 'LEAD_ACCEL_COST_POS_REL_SPEEDS': (-2., -.5), 'LEAD_ACCEL_COST_POS_EGO_SPEEDS': (0., 0.), 'BLENDED_CLOSING_SPEEDS': (4., 7.), 'MIN_HEADROOM_TF': .5,
             'DANGER_ZONE_COST': 100., 'CRASH_DISTANCE': .25, 'X_EGO_OBSTACLE_COST': 5., 'X_EGO_COST': 0.,
             'V_EGO_COST': 0., 'A_EGO_COST': 0., 'SOURCES': ['lead0','lead1','cruise','e2e'],
             'AcadosOcpSolverCython': RecordingSolver, 'LEAD_ACCEL_MIN_TRACK_FRAMES': 3,

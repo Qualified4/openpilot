@@ -60,6 +60,13 @@ LEAD_DANGER_FACTOR = 0.8 # 0.75
 # the full extrapolation: closing at 28 km/h on a lead speeding up, the weaker one added a brake entry.
 LEAD_ACCEL_COST_POS_TAU_FACTOR = 4.0
 LEAD_ACCEL_COST_POS_REL_SPEEDS = (-2.0, -0.5)
+# Ego speed (m/s): full prediction at or below the first, the weaker one from the second. Level-1 closed-loop
+# replay (FOL 47c/479): weaker at every speed added a brake entry per 15 min (2.02 -> 2.09) and lead-departure
+# rubber banding 19 -> 22 %; gated to 22-32 km/h it kept 2.02 brake entries, cut sign changes 6.63 -> 6.20/min.
+LEAD_ACCEL_COST_POS_EGO_SPEEDS = (6.0, 9.0)
+# Blended lead constraint: share of the closing terms kept on top of the steady comfort target, full at or
+# below the first planned ego speed (m/s), none from the second.
+BLENDED_CLOSING_SPEEDS = (4.0, 7.0)
 # s: a_change_cost rises from the starting value to A_CHANGE_COST over this time after a standstill.
 A_CHANGE_COST_RAMP_TIME = 0.75
 LIMIT_COST = 1e6
@@ -108,9 +115,11 @@ def binding_reference(x_targets, preferred, binding, ego_speeds):
 
 
 def bind_obstacles(x_targets, preferred):
-  """A lead (columns 0, 1) binds where its preferred target is the closest; otherwise the closest obstacle."""
+  """Where cruise (column 2) is the closest obstacle, a lead (columns 0, 1) whose preferred target is the
+  closest binds instead; any other closest obstacle (leadTwo, traffic or Tesla stop) keeps its constraint."""
   by_pref = np.argmin(preferred, axis=1)
-  return np.where(by_pref < 2, by_pref, np.argmin(x_targets, axis=1))
+  by_target = np.argmin(x_targets, axis=1)
+  return np.where((by_pref < 2) & (by_target == 2), by_pref, by_target)
 
 
 def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
@@ -444,7 +453,10 @@ class LongitudinalMpc:
     a_lead = np.clip(a_lead, -10., 5.)
 
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
-    tau_factor = float(np.interp(v_lead - v_ego, LEAD_ACCEL_COST_POS_REL_SPEEDS, (1.0, LEAD_ACCEL_COST_POS_TAU_FACTOR)))
+    weak = float(np.interp(v_lead - v_ego, LEAD_ACCEL_COST_POS_REL_SPEEDS, (0.0, 1.0)))
+    if LEAD_ACCEL_COST_POS_EGO_SPEEDS[1] > 0.0:
+      weak *= float(np.interp(v_ego, LEAD_ACCEL_COST_POS_EGO_SPEEDS, (0.0, 1.0)))
+    tau_factor = 1.0 + (LEAD_ACCEL_COST_POS_TAU_FACTOR - 1.0) * weak
     lead_xv_cost = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau, tau_factor)
     return lead_xv, v_lead, lead_xv_cost
 
@@ -529,7 +541,6 @@ class LongitudinalMpc:
     ])
     # Ego speeds of the previous plan, moved to the current speed (also the comfort-margin speeds below).
     gap_v = np.maximum(0.0, self.x_sol[:,1] + v_ego - self.x_sol[0,1])
-    # Cost-side gaps: the closing terms give way to the gap reserve and, for leadOne, to a held approach.
     if mode == 'acc' and approach_soft_stop_enabled and not reset_state:
       approach_weight = self.approach_state.update(
         enabled=True, lead_status=bool(radarstate.leadOne.status), track_id=radarstate.leadOne.radarTrackId,
@@ -540,8 +551,6 @@ class LongitudinalMpc:
       )
     else:
       approach_weight = self.approach_state.reset()
-    cost_gaps = tuple(None if gap is None else gap._replace(closing_scale=self.approach_state.closing_scale(gap_v))
-                      if lead_index == 0 else gap for lead_index, gap in enumerate(lead_gaps))
     # The closing terms keep the full lead prediction: a slower cost-side lead there raised the target and
     # added brake entries (replay level 2: 2.09 -> 2.31 /min). Only the lead position moves (cost_shifts).
     cost_lead_speeds = (lead_xv_0[:,1], lead_xv_1[:,1])
@@ -628,12 +637,22 @@ class LongitudinalMpc:
     elif mode == 'blended':
       self.params[:,5] = 1.0
 
-      # Blended keeps the lead as a constraint only (factor 1.0): a safety-distance lead constrains at
-      # its comfort target, the gap ACC aims at, so a mode change keeps the following gap.
-      x_obstacles = np.column_stack([
-        lead_obstacle - (0.0 if gap is None else gap_safe.comfort_margin(gap_v, lead_v_cost, gap) + shift)
-        for lead_obstacle, gap, lead_v_cost, shift in zip((lead_0_obstacle, lead_1_obstacle), cost_gaps, cost_lead_speeds,
-                                                          cost_shifts.T, strict=True)])
+      # Blended keeps the lead as a constraint only (factor 1.0): a safety-distance lead constrains at its
+      # steady comfort target (d_min + comfort time, the equal-speed gap ACC aims at), so a mode change keeps
+      # the following gap. The closing terms stay out (BLENDED_CLOSING_SHARE): as a constraint they braked a
+      # stopped lead far ahead at once (MPC synthetic: -2.75 to -2.95 m/s^2 in the first second).
+      share = np.interp(gap_v, BLENDED_CLOSING_SPEEDS, (1.0, 0.0))
+      blended_margins = [
+        np.zeros(N+1) if gap is None else gap_safe.comfort_margin(gap_v, lead_xv[:,1], gap._replace(
+          closing_time=gap.closing_time * share, closing_factor=gap.closing_factor * share))
+        for gap, lead_xv in zip(lead_gaps, (lead_xv_0, lead_xv_1), strict=True)]
+      lead_0_blended = lead_0_obstacle - blended_margins[0]
+      if cutin_credit > 0.0:
+        # A cut-in gets the credit here too, never looser than the TF constraint blended used before.
+        tf_target = get_safe_obstacle_distance(gap_v, t_follow, comfort_brake, stop_distance) - get_stopped_equivalence_factor(lead_xv_0[:,1])
+        target = gap_safe.min_distance(gap_v, lead_xv_0[:,1], lead_gaps[0], stop_distance) + blended_margins[0]
+        lead_0_blended = lead_0_blended + np.clip(target - tf_target, 0.0, cutin_credit)
+      x_obstacles = np.column_stack([lead_0_blended, lead_1_obstacle - blended_margins[1]])
       cruise_target = T_IDXS * np.clip(v_cruise, v_ego - 2.0, 1e3) + x[0]
       xforward = ((v[1:] + v[:-1]) / 2) * (T_IDXS[1:] - T_IDXS[:-1])
       x = np.cumsum(np.insert(xforward, 0, x[0]))
@@ -724,22 +743,21 @@ class LongitudinalMpc:
       comfort_reliefs[:,lead_index] = relief
     base_margins = self.lead_gap_margins.copy()
     def lead_margins(approach):
-      """Margins on the lead targets. Without the approach (closing terms and curve) they choose the binding
-      obstacle, so the approach stays a reference-only change; with it they set the cost reference."""
-      gaps = cost_gaps if approach else tuple(None if g is None else g._replace(closing_scale=1.0) for g in cost_gaps)
+      """Margins on the lead targets. Without the approach curve they choose the binding obstacle, so the
+      approach stays a reference-only change; with it they set the cost reference."""
       margins = base_margins.copy()
       if approach and approach_weight > 0.0:
-        # The curve leads the comfort target: its closing terms already give way (closing_scale).
+        # Only where the curve asks for more than the comfort target (the two never stack).
         if lead_gaps[0] is None:
           following = get_safe_obstacle_distance(gap_v, t_follow, comfort_brake, stop_distance)
         else:
-          following = gap_safe.safe_distance(gap_v, lead_gaps[0], stop_distance) + gap_safe.comfort_margin(gap_v, cost_lead_speeds[0], gaps[0])
+          following = gap_safe.safe_distance(gap_v, lead_gaps[0], stop_distance) + gap_safe.comfort_margin(gap_v, cost_lead_speeds[0], lead_gaps[0])
         margins[:,0] += self.approach_state.reference_margins(
           ego_speeds=gap_v, following_distances=following, stop_distance=stop_distance)
       # The safety-distance comfort margin rides on the cost reference like any margin; the
       # displayed target already contains it through base_desired_distances.
       comfort = np.zeros_like(margins)
-      for lead_index, gap in enumerate(gaps):
+      for lead_index, gap in enumerate(lead_gaps):
         if gap is not None:
           comfort[:, lead_index] = gap_safe.comfort_margin(gap_v, cost_lead_speeds[lead_index], gap)
       margins += comfort

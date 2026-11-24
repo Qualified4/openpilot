@@ -44,7 +44,7 @@ def run_update(*, confidence=0., mode="acc", reset=False, enabled=True, second_d
                    "A_CHANGE_COST": 200., "X_EGO_OBSTACLE_COST": 5.,
                    "X_EGO_COST": 0., "V_EGO_COST": 0., "A_EGO_COST": 0.,
                    "LIMIT_COST": 1e6, "DANGER_ZONE_COST": 100., "LEAD_ACCEL_TAU": 1.5,
-                   "LEAD_ACCEL_COST_POS_TAU_FACTOR": 4., "LEAD_ACCEL_COST_POS_REL_SPEEDS": (-2., -.5), "MIN_HEADROOM_TF": .5,
+                   "LEAD_ACCEL_COST_POS_TAU_FACTOR": 4., "LEAD_ACCEL_COST_POS_REL_SPEEDS": (-2., -.5), "LEAD_ACCEL_COST_POS_EGO_SPEEDS": (0., 0.), "BLENDED_CLOSING_SPEEDS": (4., 7.), "MIN_HEADROOM_TF": .5,
                    "LEAD_ACCEL_MIN_TRACK_FRAMES": 3,
                    "gap_reference": gap_reference, "displayed_follow_distance": displayed_follow_distance,
                    "braking_gap_reference": braking_gap_reference,

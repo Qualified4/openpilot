@@ -49,12 +49,6 @@ LEAD_STOP_DECEL = 2.5
 # starting at 124 m (aLeadK still 0.00, then 0.43) stayed "stops" for 1.45 s, -1.48 m/s^2 of request.
 APPROACH_LEAD_RISE = 0.3
 APPROACH_LEAD_RISE_TIME = 1.0
-# While held, the closing terms of the comfort target give way to the approach curve: share removed at
-# full weight, from the second planned ego speed (m/s) up, none at or below the first. They kept the gap
-# at 20 km/h near 20 m behind a stopped lead (15 m before the safety-distance gap). Below ~11 km/h they
-# stay: without them the plan stopped at -0.74 m/s^2 over the last 2 s instead of -0.42.
-APPROACH_CLOSING_RELIEF = 1.0
-APPROACH_CLOSING_RELIEF_SPEEDS = (3.0, 6.0)
 
 
 def approach_decel_request(*, distance, lead_speed, v_ego, stop_distance, lead_stop_decel=LEAD_STOP_DECEL):
@@ -121,11 +115,6 @@ class ApproachState:
 
   def obstacle_cost_factor(self):
     return 1.0 + APPROACH_OBSTACLE_COST_GAIN * self.weight
-
-  def closing_scale(self, ego_speeds):
-    """Share of the comfort target's closing terms kept per node while the approach curve leads."""
-    return 1.0 - APPROACH_CLOSING_RELIEF * self.weight * np.interp(ego_speeds, APPROACH_CLOSING_RELIEF_SPEEDS, (0.0, 1.0))
-
   def reference_margins(self, *, ego_speeds, following_distances, stop_distance):
     """Extra following distance (m) per node; reference only, never an obstacle."""
     if self.weight <= 0.0:

@@ -26,9 +26,10 @@ def test_owner_constants():
   assert gs.LEAD_DECELS == (5.0, 6.0, 7.0, 8.0) and gs.REACTION == 0.6 and gs.GAP_LEVELS == 4
 
 
-@pytest.mark.parametrize("kph,gaps", [(10, (6.4, 6.6, 6.8, 7.4)), (30, (12.9, 14.5, 15.8, 18.0)), (100, (43.5, 57.8, 68.5, 76.6))])
+@pytest.mark.parametrize("kph,gaps", [(10, (6.5, 6.6, 6.7, 6.8)), (30, (13.4, 14.5, 15.3, 16.0)), (100, (49.4, 62.2, 71.4, 78.3))])
 def test_steady_gap_per_level_and_speed(kph, gaps):
-  """Equal-speed comfort targets: the levels differ in town, level 1 stays near 43 m at 100 km/h."""
+  """Equal-speed comfort targets (the 0a704cf3 gaps); no level below 0.35 s from 40 km/h."""
+  assert all(min(times) >= 0.35 for times in gs.COMFORT_TIMES)
   v = kph / 3.6
   for decel, expected in zip(gs.LEAD_DECELS, gaps, strict=True):
     g = full_gap(lead_decel=decel, v_ego=v)
@@ -38,8 +39,15 @@ def test_steady_gap_per_level_and_speed(kph, gaps):
 def test_level_ramp_blends_the_comfort_curve():
   lo, hi = gs.comfort_curve(1 / 5.0), gs.comfort_curve(1 / 8.0)
   assert lo == pytest.approx(gs.COMFORT_TIMES[0]) and hi == pytest.approx(gs.COMFORT_TIMES[3])
-  mid = gs.comfort_curve(1 / 6.5)
-  assert all(a < m < b for a, m, b in zip(lo, mid, hi, strict=True))
+  mid = gs.comfort_curve(1 / 6.5)   # halfway from level 2 to level 3
+  assert mid == pytest.approx(tuple(0.5 * (a + b) for a, b in zip(gs.COMFORT_TIMES[1], gs.COMFORT_TIMES[2], strict=True)))
+  # The ramp itself, on a table with level differences.
+  table = ((0.1, 0.2), (0.3, 0.4), (0.5, 0.6), (0.7, 0.8))
+  old, gs.COMFORT_TIMES = gs.COMFORT_TIMES, table
+  try:
+    assert gs.comfort_curve(1 / 6.5) == pytest.approx((0.4, 0.5))
+  finally:
+    gs.COMFORT_TIMES = old
 
 
 def test_formula_at_full_weight():
@@ -105,9 +113,6 @@ def test_gap_reserve_above_the_steady_target():
   assert gs.gap_reserve(distance=float("nan"), v_ego=v, v_lead=vl, lead_accel=0.0, gap=g, stop_distance=STOP) == 0.0
 
 
-def test_closing_scale_keeps_the_comfort_time():
-  g = full_gap()
-  assert gs.comfort_margin(V80, 0.0, g._replace(closing_scale=0.0)) == pytest.approx(ct(V80, g) * V80)
 
 
 def test_on_and_off_at_once():
@@ -293,9 +298,16 @@ def test_blended_mode_constrains_at_the_comfort_target(native):
   np.testing.assert_allclose(on.params[:, 4], 0.6)
   np.testing.assert_allclose(on.params[:, 5], 1.0)
   np.testing.assert_allclose(on.params[:, 6], 4.0)
-  # obstacle - safe distance = lead position - comfort target (same speed: d_min + comfort time)
+  # obstacle - safe distance = lead position - constraint distance. A lead first seen inside the steady comfort
+  # target (d_min + comfort time, no closing terms) gets the cut-in credit, never looser than the TF target.
+  steady = gs.desired_distance(V80, V80, g, STOP)
+  tf_target = native.desired_follow_distance(V80, V80, 2.4, STOP, 0.62)
   floor = on.params[0, 2] - gs.safe_distance(V80, g, STOP)
-  assert floor == pytest.approx(30.0 - gs.desired_distance(V80, V80, g, STOP), abs=0.5)
+  assert 30.0 - steady - 0.5 <= floor <= 30.0 - tf_target + 0.5
+  # Once the credit has run out, the constraint sits at the steady comfort target.
+  on = solve(native, mode="blended", cycles=400, mpc=on)
+  floor = on.params[0, 2] - gs.safe_distance(V80, g, STOP)
+  assert on.cutin_credit.credit == 0.0 and floor == pytest.approx(30.0 - steady, abs=0.5)
 
 
 def test_lead_inside_the_comfort_target_binds(native):
@@ -386,3 +398,16 @@ def test_lead_faster_than_cruise_does_not_bind(native):
   mpc = nolead_mpc(native, v, v, log.LongitudinalPersonality.aggressive, lead_speed=v + 4.0)
   assert mpc.source == "cruise"
   assert mpc.a_solution[0] < 0.05
+
+
+def test_comfort_binding_only_takes_over_from_cruise(native):
+  """N1: a lead's comfort target replaces only a cruise binding; leadTwo / traffic / Tesla stops keep theirs."""
+  # columns: leadOne, leadTwo, cruise, traffic stop
+  targets = np.array([[50., 90., 40., 90.],    # cruise closest, leadOne preferred -> leadOne
+                      [50., 90., 60., 45.],    # traffic stop closest -> stays the traffic stop
+                      [50., 48., 90., 90.],    # leadTwo closest -> stays leadTwo
+                      [50., 90., 40., 90.]])   # leadOne looser than cruise even with its margin -> cruise
+  margins = np.array([[15., 0.], [15., 0.], [15., 0.], [5., 0.]])
+  preferred = targets.copy()
+  preferred[:, :2] -= margins
+  np.testing.assert_array_equal(native.bind_obstacles(targets, preferred), [0, 3, 1, 2])
