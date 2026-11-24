@@ -15,7 +15,10 @@ from openpilot.selfdrive.carrot.traffic_stop import get_traffic_stop_distance_ad
 from openpilot.selfdrive.controls.lib.longitudinal_preview import LEAD_ACCEL_MIN_TRACK_FRAMES, LeadAccelResponseState, get_lead_accel_mpc_request
 from openpilot.selfdrive.controls.lib.longitudinal_cutout import cutout_obstacle_relief
 from openpilot.selfdrive.controls.lib.longitudinal_gap_recovery import LeadGapState, displayed_follow_distance
-from openpilot.selfdrive.controls.lib.longitudinal_braking_gap import LeadComfortState, braking_gap_reference, comfort_path_has_reserve
+from openpilot.selfdrive.controls.lib.longitudinal_braking_gap import (
+  COMFORT_RELIEF_MIN_TF, LeadComfortState, braking_gap_reference, comfort_path_has_reserve,
+)
+from openpilot.selfdrive.controls.lib import longitudinal_gap_safe as gap_safe
 from openpilot.selfdrive.controls.lib.longitudinal_approach import ApproachState
 from openpilot.selfdrive.controls.lib.longitudinal_stop_gap import StopGapWeightState
 from openpilot.selfdrive.carrot.radar_motion.lane_change_gap import LaneChangeGapPlan
@@ -259,6 +262,9 @@ class LongitudinalMpc:
     self.lead_accel_response_active = False
     self.lead_accel_response_level = 0
     self.obstacle_cost_factor = 1.0
+    # Not part of reset(): a solver reset must not restart the GapSafeDistance blend.
+    self.gap_safe_state = gap_safe.GapSafeState()
+    self.lead_gap = None
 
     self.reset()
     self.source = SOURCES[2]
@@ -362,11 +368,15 @@ class LongitudinalMpc:
     self.jerk_cost_factor = float(applied_jerk_cost_factor if self.mode == 'acc' else 1.0)
     self.set_cost_weights(cost_weights, constraint_cost_weights)
 
-  def update_predicted_danger_margin(self, lead, lead_obstacle, t_follow, comfort_brake, stop_distance):
+  def update_predicted_danger_margin(self, lead, lead_obstacle, t_follow, comfort_brake, stop_distance, lead_gap=None):
     self.predicted_danger_margin = 1e3
     if lead.status:
-      safe_distance = get_safe_obstacle_distance(self.x_sol[:,1], t_follow, comfort_brake, stop_distance)
-      danger_margin = lead_obstacle - self.x_sol[:,0] - self.lead_danger_factor * safe_distance
+      if lead_gap is None:
+        safe_distance = get_safe_obstacle_distance(self.x_sol[:,1], t_follow, comfort_brake, stop_distance)
+        danger_margin = lead_obstacle - self.x_sol[:,0] - self.lead_danger_factor * safe_distance
+      else:
+        danger_margin = (lead_obstacle - self.x_sol[:,0]
+                         - lead_gap.danger_factor * gap_safe.safe_distance(self.x_sol[:,1], lead_gap, stop_distance))
       self.predicted_danger_margin = float(np.min(danger_margin[PRED_DANGER_IDXS]))
 
   def set_cur_state(self, v, a):
@@ -426,6 +436,7 @@ class LongitudinalMpc:
              measured_a_ego=0.0,
              cutout_relief_enabled=False,
              tesla_stop_distance=None,
+             gap_safe_enabled=False,
              approach_soft_stop_enabled=False):
     tesla_stop_active = (tesla_stop_distance is not None and not reset_state
                          and math.isfinite(tesla_stop_distance) and 0 <= tesla_stop_distance < 255)
@@ -454,11 +465,38 @@ class LongitudinalMpc:
       v_cruise, stop_x = carrot.v_cruise, carrot.stop_dist
       mode = 'acc' if tesla_stop_active else carrot.mode
 
+    # Gap level index as in CarrotPlanner._get_base_t_follow: aggressive (0) = level 1 ... moreRelaxed (3) = level 4.
+    gap_level = int(getattr(personality, 'raw', personality))
+    gap_safe_on = bool(gap_safe_enabled) and 0 <= gap_level < gap_safe.GAP_LEVELS
+    self.gap_safe_state.update(
+      enabled=gap_safe_on, snap=reset_state, dt=self.dt,
+      lead_decel=carrot.gapSafeLeadDecel[gap_level] if gap_safe_on else 0.0,
+    )
+    # GapSafeDistance: lead nodes use the safety-distance parameters. Off (or before the
+    # first blend step), every lead quantity below is the TF computation unchanged.
+    lead_gap = None
+    if mode == 'acc' and self.gap_safe_state.weight > 0.0:
+      lead_gap = self.gap_safe_state.lead_gap(
+        reaction=carrot.gapSafeReaction, extra_time=carrot.t_follow_gap_safe_extra, t_follow=t_follow,
+        comfort_brake=comfort_brake, danger_factor=LEAD_DANGER_FACTOR, inv_base_lead_decel=1.0 / COMFORT_BRAKE,
+      )
+      self.base_desired_distances = np.array([
+        gap_safe.desired_distance(v_ego, lead_v_0, lead_gap, stop_distance),
+        gap_safe.desired_distance(v_ego, lead_v_1, lead_gap, stop_distance),
+      ])
+    self.lead_gap = lead_gap
+    # TF seconds as read by lane-change credit, cutout relief and gap recovery.
+    lead_t_follow = t_follow if lead_gap is None else gap_safe.equivalent_t_follow(v_ego, lead_gap)
+
     # To estimate a safe distance from a moving lead, we calculate how much stopping
     # distance that lead needs as a minimum. We can add that to the current distance
     # and then treat that as a stopped car/obstacle at this new distance.
-    lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
-    lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
+    if lead_gap is None:
+      lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
+      lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
+    else:
+      lead_0_obstacle = lead_xv_0[:,0] + gap_safe.stopped_equivalence(lead_xv_0[:,1], lead_gap)
+      lead_1_obstacle = lead_xv_1[:,0] + gap_safe.stopped_equivalence(lead_xv_1[:,1], lead_gap)
 
     self.params[:,0] = ACCEL_MIN if not reset_state else a_ego
     # negative accel constraint causes problems because negative speed is not allowed
@@ -490,11 +528,11 @@ class LongitudinalMpc:
       if cutout_relief_enabled and not reset_state:
         if lane_change.active:
           lead_0_follow_obstacle = lead_0_obstacle + lane_change.credit(
-            radarstate.leadOne, T_IDXS, v_ego, self.max_a, t_follow, stop_distance, carrot.dynamicTFollowLC,
+            radarstate.leadOne, T_IDXS, v_ego, self.max_a, lead_t_follow, stop_distance, carrot.dynamicTFollowLC,
           )
         else:
           lead_0_follow_obstacle = lead_0_obstacle + cutout_obstacle_relief(
-            radarstate.leadOne, v_ego, T_IDXS, t_follow, stop_distance,
+            radarstate.leadOne, v_ego, T_IDXS, lead_t_follow, stop_distance,
           )
       x_obstacles = np.column_stack([lead_0_follow_obstacle, lead_1_obstacle, cruise_obstacle, x2])
       # Only currently selected leadOne/leadTwo may constrain braking.
@@ -608,7 +646,15 @@ class LongitudinalMpc:
     # opening-gap memory. Braking onset never adds a remembered distance.
     gap_v = np.maximum(0.0, self.x_sol[:,1] + v_ego - self.x_sol[0,1])
     gap_x = np.cumsum(T_DIFFS * np.concatenate(([gap_v[0]], (gap_v[1:] + gap_v[:-1]) * 0.5)))
-    gap_safe_distance = get_safe_obstacle_distance(gap_v, t_follow, comfort_brake, stop_distance)
+    if lead_gap is None:
+      gap_safe_distance = get_safe_obstacle_distance(gap_v, t_follow, comfort_brake, stop_distance)
+      relief_base_tf = t_follow
+    else:
+      gap_safe_distance = gap_safe.safe_distance(gap_v, lead_gap, stop_distance)
+      # Comfort relief may spend the comfort time above d_min, never d_min itself.
+      relief_base_tf = ((1.0 - lead_gap.weight) * t_follow + lead_gap.weight * COMFORT_RELIEF_MIN_TF
+                        + lead_gap.comfort_time)
+    lead_danger_factor = self.params[0,5] if lead_gap is None else lead_gap.danger_factor
     self.lead_gap_margins[:] = 0.0
     comfort_reliefs = np.zeros_like(self.lead_gap_margins)
     for lead_index, (lead, lead_xv) in enumerate(((radarstate.leadOne, lead_xv_0), (radarstate.leadTwo, lead_xv_1))):
@@ -620,36 +666,49 @@ class LongitudinalMpc:
       )
       state = self.lead_gap_states[lead_index]
       physical_gaps = lead_xv[:,0] - gap_x
-      desired_distances = desired_follow_distance(gap_v, lead_xv[:,1], comfort_brake, stop_distance, t_follow)
+      if lead_gap is None:
+        desired_distances = desired_follow_distance(gap_v, lead_xv[:,1], comfort_brake, stop_distance, t_follow)
+        lead_equivalence = get_stopped_equivalence_factor(lead_xv[:,1])
+      else:
+        desired_distances = gap_safe.desired_distance(gap_v, lead_xv[:,1], lead_gap, stop_distance)
+        lead_equivalence = gap_safe.stopped_equivalence(lead_xv[:,1], lead_gap)
       state.update(level=carrot.leadAccelResponse, track_id=lead.radarTrackId, enabled=eligible, dt=self.dt,
                    ego_speed=v_ego, lead_speed=lead.vLead if eligible else 0.0, relative_speed=lead.vRel if eligible else 0.0,
                    distance=lead.dRel if eligible else 0.0, desired_distance=self.base_desired_distances[lead_index],
-                   base_tf=t_follow, stop_distance=stop_distance)
+                   base_tf=lead_t_follow, stop_distance=stop_distance)
       self.lead_gap_margins[:,lead_index] = state.margins(
-        level=carrot.leadAccelResponse, times=T_IDXS, ego_speeds=gap_v, lead_speeds=lead_xv[:,1], base_tf=t_follow,
+        level=carrot.leadAccelResponse, times=T_IDXS, ego_speeds=gap_v, lead_speeds=lead_xv[:,1], base_tf=lead_t_follow,
         lead_distances=physical_gaps, desired_distances=desired_distances, stop_distance=stop_distance)
       comfort = self.lead_comfort_states[lead_index]
       comfort.update(enabled=eligible, track_id=lead.radarTrackId, dt=self.dt,
                      distance=lead.dRel if eligible else 0.0,
                      relative_speed=lead.vRel if eligible else 0.0)
-      danger = lead_xv[:,0] + get_stopped_equivalence_factor(lead_xv[:,1]) - gap_x - self.params[0,5] * gap_safe_distance
+      danger = lead_xv[:,0] + lead_equivalence - gap_x - lead_danger_factor * gap_safe_distance
       relief = comfort.comfort_relief(dt=self.dt, enabled=eligible and self.lead_gap_margins[0,lead_index] <= 0.01,
-                                     base_tf=t_follow, ego_speeds=gap_v, lead_speeds=lead_xv[:,1],
+                                     base_tf=relief_base_tf, ego_speeds=gap_v, lead_speeds=lead_xv[:,1],
                                      lead_accel=lead.aLeadK if eligible else 0.0, physical_gaps=physical_gaps,
                                      danger_margins=danger, times=T_IDXS, stop_distance=stop_distance)
       self.lead_gap_margins[:,lead_index] -= relief
       comfort_reliefs[:,lead_index] = relief
     if approach_weight > 0.0:
       # Only where leadOne is the binding obstacle; every obstacle and the danger limit stay as they are.
+      # Merge: with GapSafeDistance the current target includes its comfort time.
       lead_binds = np.argmin(x_obstacles, axis=1) == 0
+      following = gap_safe_distance + (0.0 if lead_gap is None else lead_gap.comfort_time * gap_v)
       self.lead_gap_margins[:,0] += np.where(lead_binds, self.approach_state.reference_margins(
-        ego_speeds=gap_v, following_distances=gap_safe_distance, stop_distance=stop_distance), 0.0)
+        ego_speeds=gap_v, following_distances=following, stop_distance=stop_distance), 0.0)
+    # GapSafeDistance comfort time rides on the cost reference like any margin; the
+    # displayed target already contains it through base_desired_distances.
+    comfort_margins = np.zeros_like(self.lead_gap_margins)
+    if lead_gap is not None:
+      comfort_margins[:] = (lead_gap.comfort_time * gap_v)[:, None]
+      self.lead_gap_margins += comfort_margins
     # Display the current following reference, including comfort headroom and
     # any already-authorized cutout/lane-change relief. This does not select
     # control leads or modify solver obstacles.
     self.desired_distance = displayed_follow_distance(
       self.base_desired_distances, np.array([lead_0_obstacle[0], lead_1_obstacle[0]]),
-      x_obstacles[0, :2], self.lead_gap_margins[0],
+      x_obstacles[0, :2], self.lead_gap_margins[0] - comfort_margins[0],
       (radarstate.leadOne.status, radarstate.leadTwo.status),
     )
     self.yref[:,0] = braking_gap_reference(x_obstacles, self.lead_gap_margins, gap_v)
@@ -666,18 +725,26 @@ class LongitudinalMpc:
     self.params[:,4] = t_follow
     self.params[:,6] = comfort_brake
     self.params[:,7] = stop_distance
+    if lead_gap is not None:
+      lead_nodes = np.argmin(x_obstacles, axis=1) < 2
+      self.params[lead_nodes,4] = lead_gap.t_follow
+      self.params[lead_nodes,5] = lead_gap.danger_factor
+      self.params[lead_nodes,6] = lead_gap.comfort_brake
 
-    self.t_follow = t_follow
+    self.t_follow = lead_t_follow
 
     self.run()
     if np.any(comfort_reliefs) and self.solution_status == 0 and any(state.relief > 0.0 for state in self.lead_comfort_states):
       # The previous trajectory only admits a trial. Validate the resulting
       # trajectory too, and resolve once without slack if it spends the reserve.
-      safe = get_safe_obstacle_distance(self.x_sol[:,1], t_follow, comfort_brake, stop_distance)
+      if lead_gap is None:
+        danger_floor = self.params[:,5] * get_safe_obstacle_distance(self.x_sol[:,1], t_follow, comfort_brake, stop_distance)
+      else:
+        danger_floor = lead_gap.danger_factor * gap_safe.safe_distance(self.x_sol[:,1], lead_gap, stop_distance)
       reserve_ok = all(
         not np.any(comfort_reliefs[:, i]) or comfort_path_has_reserve(
           self.x_sol[:,1], lead_xv[:,0] - self.x_sol[:,0],
-          obstacle - self.x_sol[:,0] - self.params[:,5] * safe, T_IDXS, stop_distance)
+          obstacle - self.x_sol[:,0] - danger_floor, T_IDXS, stop_distance)
         for i, (lead_xv, obstacle) in enumerate(((lead_xv_0, lead_0_obstacle), (lead_xv_1, lead_1_obstacle)))
       )
       if not reserve_ok:
@@ -690,7 +757,7 @@ class LongitudinalMpc:
         self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
         self.desired_distance = displayed_follow_distance(
           self.base_desired_distances, np.array([lead_0_obstacle[0], lead_1_obstacle[0]]),
-          x_obstacles[0, :2], self.lead_gap_margins[0], (radarstate.leadOne.status, radarstate.leadTwo.status))
+          x_obstacles[0, :2], self.lead_gap_margins[0] - comfort_margins[0], (radarstate.leadOne.status, radarstate.leadTwo.status))
         trial_times = (self.solve_time, self.time_qp_solution, self.time_linearization, self.time_integrator)
         self.run()
         self.solve_time += trial_times[0]
@@ -698,7 +765,7 @@ class LongitudinalMpc:
         self.time_linearization += trial_times[2]
         self.time_integrator += trial_times[3]
     if mode == 'acc':
-      self.update_predicted_danger_margin(radarstate.leadOne, lead_0_obstacle, t_follow, comfort_brake, stop_distance)
+      self.update_predicted_danger_margin(radarstate.leadOne, lead_0_obstacle, t_follow, comfort_brake, stop_distance, lead_gap)
 
     if (np.any(lead_xv_0[FCW_IDXS,0] - self.x_sol[FCW_IDXS,0] < CRASH_DISTANCE) and
             radarstate.leadOne.modelProb > 0.9):

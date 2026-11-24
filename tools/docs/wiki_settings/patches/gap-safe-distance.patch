@@ -1,0 +1,390 @@
+diff --git a/EN-Safety-Distance-Gap-Levels.md b/EN-Safety-Distance-Gap-Levels.md
+index 161a80c..9c8ad6c 100644
+--- a/EN-Safety-Distance-Gap-Levels.md
++++ b/EN-Safety-Distance-Gap-Levels.md
+@@ -27,6 +27,30 @@ When on, gap levels 1-4 mean how hard the lead may brake at most. The car keeps
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeDistance -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++When on, a gap level picks how hard the lead may brake at most instead of a time gap, and the minimum gap from which ego can still stop under that assumption becomes the danger floor. The following target is 0.15 s × speed beyond the minimum gap.
++
++- **On:** The minimum gap is reaction delay × speed + speed²/8 − lead speed²/(2 × assumed decel) + stop distance. It applies only where a lead obstacle binds the plan; cruise targets and traffic stops keep the TF values. The gap grows faster with speed than now.
++- **Off:** Nothing is computed; behavior is unchanged.
++- **Changes:** Turning it on while driving blends in over 3 s, and a level change that lengthens the gap takes up to 3 s. Shortening the gap or turning it off applies at once.
++<!-- CARROT:SECTION:END BEHAVIOR -->
++
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### Usage
++
++Turn it on when the gap to the lead feels short at high speed. Adjust the per-level assumption with GapSafeLeadDecel1-4 and the reaction delay with GapSafeReaction; changes apply within about 5 s without restarting.
++<!-- CARROT:SECTION:END USAGE -->
++
++<!-- CARROT:SECTION:BEGIN REFERENCE -->
++### Reference
++
++<!-- CARROT:NOTICE level="WARNING" -->
++> [!WARNING]
++> Experimental and not validated on a vehicle. In log replay of 15 stopped-lead approaches with only this setting on, the median peak deceleration grew at level 1 (−2.12 → −2.34 m/s²). At level 4 the minimum gap in 30–50 km/h hard-braking synthetic cases was 0.1–0.7 m shorter than the current level 4.
++<!-- CARROT:NOTICE:END -->
++<!-- CARROT:SECTION:END REFERENCE -->
+ <!-- CARROT:MANUAL:END GapSafeDistance -->
+ 
+ <!-- CARROT:SETTING:END GapSafeDistance -->
+diff --git a/EN-Safety-Gap-(1)-Assumed-Lead-Max-Decel-x0.1-m-s2-(50).md b/EN-Safety-Gap-(1)-Assumed-Lead-Max-Decel-x0.1-m-s2-(50).md
+index 7f70ea7..ab86a28 100644
+--- a/EN-Safety-Gap-(1)-Assumed-Lead-Max-Decel-x0.1-m-s2-(50).md
++++ b/EN-Safety-Gap-(1)-Assumed-Lead-Max-Decel-x0.1-m-s2-(50).md
+@@ -28,6 +28,14 @@ With GapSafeDistance on, gap level 1 sets its minimum gap assuming the lead brak
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeLeadDecel1 -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++With GapSafeDistance on, gap level 1 sets its minimum gap assuming the lead brakes at most this hard.
++
++- **Higher:** The gap grows, more so at high speed.
++- **Lower:** The gap shrinks. At 4.0 m/s² or less, only the reaction-delay distance remains when the lead brakes harder than ego can.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeLeadDecel1 -->
+ 
+ <!-- CARROT:SETTING:END GapSafeLeadDecel1 -->
+diff --git a/EN-Safety-Gap-(2)-Assumed-Lead-Max-Decel-x0.1-m-s2-(60).md b/EN-Safety-Gap-(2)-Assumed-Lead-Max-Decel-x0.1-m-s2-(60).md
+index c764906..87a27a1 100644
+--- a/EN-Safety-Gap-(2)-Assumed-Lead-Max-Decel-x0.1-m-s2-(60).md
++++ b/EN-Safety-Gap-(2)-Assumed-Lead-Max-Decel-x0.1-m-s2-(60).md
+@@ -28,6 +28,14 @@ With GapSafeDistance on, gap level 2 sets its minimum gap assuming the lead brak
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeLeadDecel2 -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++With GapSafeDistance on, gap level 2 sets its minimum gap assuming the lead brakes at most this hard.
++
++- **Higher:** The gap grows, more so at high speed.
++- **Lower:** The gap shrinks. At 4.0 m/s² or less, only the reaction-delay distance remains when the lead brakes harder than ego can.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeLeadDecel2 -->
+ 
+ <!-- CARROT:SETTING:END GapSafeLeadDecel2 -->
+diff --git a/EN-Safety-Gap-(3)-Assumed-Lead-Max-Decel-x0.1-m-s2-(70).md b/EN-Safety-Gap-(3)-Assumed-Lead-Max-Decel-x0.1-m-s2-(70).md
+index 270a845..05b44a0 100644
+--- a/EN-Safety-Gap-(3)-Assumed-Lead-Max-Decel-x0.1-m-s2-(70).md
++++ b/EN-Safety-Gap-(3)-Assumed-Lead-Max-Decel-x0.1-m-s2-(70).md
+@@ -28,6 +28,14 @@ With GapSafeDistance on, gap level 3 sets its minimum gap assuming the lead brak
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeLeadDecel3 -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++With GapSafeDistance on, gap level 3 sets its minimum gap assuming the lead brakes at most this hard.
++
++- **Higher:** The gap grows, more so at high speed.
++- **Lower:** The gap shrinks. At 4.0 m/s² or less, only the reaction-delay distance remains when the lead brakes harder than ego can.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeLeadDecel3 -->
+ 
+ <!-- CARROT:SETTING:END GapSafeLeadDecel3 -->
+diff --git a/EN-Safety-Gap-(4)-Assumed-Lead-Max-Decel-x0.1-m-s2-(80).md b/EN-Safety-Gap-(4)-Assumed-Lead-Max-Decel-x0.1-m-s2-(80).md
+index 5ae1831..a402384 100644
+--- a/EN-Safety-Gap-(4)-Assumed-Lead-Max-Decel-x0.1-m-s2-(80).md
++++ b/EN-Safety-Gap-(4)-Assumed-Lead-Max-Decel-x0.1-m-s2-(80).md
+@@ -28,6 +28,14 @@ With GapSafeDistance on, gap level 4 sets its minimum gap assuming the lead brak
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeLeadDecel4 -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++With GapSafeDistance on, gap level 4 sets its minimum gap assuming the lead brakes at most this hard.
++
++- **Higher:** The gap grows, more so at high speed.
++- **Lower:** The gap shrinks. At 4.0 m/s² or less, only the reaction-delay distance remains when the lead brakes harder than ego can.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeLeadDecel4 -->
+ 
+ <!-- CARROT:SETTING:END GapSafeLeadDecel4 -->
+diff --git a/EN-Safety-Gap-Reaction-Delay-x0.01-s-(60).md b/EN-Safety-Gap-Reaction-Delay-x0.01-s-(60).md
+index 987c16d..7b0f797 100644
+--- a/EN-Safety-Gap-Reaction-Delay-x0.01-s-(60).md
++++ b/EN-Safety-Gap-Reaction-Delay-x0.01-s-(60).md
+@@ -28,6 +28,14 @@ With GapSafeDistance on, the time assumed from the lead's braking until ego's br
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeReaction -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++With GapSafeDistance on, the time assumed from the lead's braking until ego's braking actually starts.
++
++- **Higher:** Every level's minimum gap grows by speed × the added time.
++- **Lower:** It shrinks by the same amount.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeReaction -->
+ 
+ <!-- CARROT:SETTING:END GapSafeReaction -->
+diff --git "a/KO-\354\225\210\354\240\204\352\261\260\353\246\254(1)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(50).md" "b/KO-\354\225\210\354\240\204\352\261\260\353\246\254(1)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(50).md"
+index 5d6be9b..967da80 100644
+--- "a/KO-\354\225\210\354\240\204\352\261\260\353\246\254(1)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(50).md"
++++ "b/KO-\354\225\210\354\240\204\352\261\260\353\246\254(1)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(50).md"
+@@ -28,6 +28,14 @@ GapSafeDistance를 켰을 때 차간 1단계에서 앞차가 최대 이만큼 
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeLeadDecel1 -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++GapSafeDistance가 켜져 있을 때 차간 1단계에서 앞차가 최대 이만큼 밟는다고 보고 최소 간격을 정합니다.
++
++- **높이면:** 간격이 커지며 고속일수록 많이 늘어납니다.
++- **낮추면:** 간격이 줄어듭니다. 4.0m/s² 이하이면 앞차가 내 차보다 세게 밟을 때 반응 지연분 외에는 여유가 없습니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeLeadDecel1 -->
+ 
+ <!-- CARROT:SETTING:END GapSafeLeadDecel1 -->
+diff --git "a/KO-\354\225\210\354\240\204\352\261\260\353\246\254(2)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(60).md" "b/KO-\354\225\210\354\240\204\352\261\260\353\246\254(2)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(60).md"
+index 4d7698a..76bb07f 100644
+--- "a/KO-\354\225\210\354\240\204\352\261\260\353\246\254(2)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(60).md"
++++ "b/KO-\354\225\210\354\240\204\352\261\260\353\246\254(2)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(60).md"
+@@ -28,6 +28,14 @@ GapSafeDistance를 켰을 때 차간 2단계에서 앞차가 최대 이만큼 
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeLeadDecel2 -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++GapSafeDistance가 켜져 있을 때 차간 2단계에서 앞차가 최대 이만큼 밟는다고 보고 최소 간격을 정합니다.
++
++- **높이면:** 간격이 커지며 고속일수록 많이 늘어납니다.
++- **낮추면:** 간격이 줄어듭니다. 4.0m/s² 이하이면 앞차가 내 차보다 세게 밟을 때 반응 지연분 외에는 여유가 없습니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeLeadDecel2 -->
+ 
+ <!-- CARROT:SETTING:END GapSafeLeadDecel2 -->
+diff --git "a/KO-\354\225\210\354\240\204\352\261\260\353\246\254(3)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(70).md" "b/KO-\354\225\210\354\240\204\352\261\260\353\246\254(3)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(70).md"
+index d2ae05d..9c572c1 100644
+--- "a/KO-\354\225\210\354\240\204\352\261\260\353\246\254(3)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(70).md"
++++ "b/KO-\354\225\210\354\240\204\352\261\260\353\246\254(3)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(70).md"
+@@ -28,6 +28,14 @@ GapSafeDistance를 켰을 때 차간 3단계에서 앞차가 최대 이만큼 
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeLeadDecel3 -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++GapSafeDistance가 켜져 있을 때 차간 3단계에서 앞차가 최대 이만큼 밟는다고 보고 최소 간격을 정합니다.
++
++- **높이면:** 간격이 커지며 고속일수록 많이 늘어납니다.
++- **낮추면:** 간격이 줄어듭니다. 4.0m/s² 이하이면 앞차가 내 차보다 세게 밟을 때 반응 지연분 외에는 여유가 없습니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeLeadDecel3 -->
+ 
+ <!-- CARROT:SETTING:END GapSafeLeadDecel3 -->
+diff --git "a/KO-\354\225\210\354\240\204\352\261\260\353\246\254(4)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(80).md" "b/KO-\354\225\210\354\240\204\352\261\260\353\246\254(4)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(80).md"
+index 0f0a3e9..7f92f45 100644
+--- "a/KO-\354\225\210\354\240\204\352\261\260\353\246\254(4)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(80).md"
++++ "b/KO-\354\225\210\354\240\204\352\261\260\353\246\254(4)-\354\225\236\354\260\250-\354\265\234\353\214\200-\352\260\220\354\206\215-\352\260\200\354\240\225-x0.1m-s2(80).md"
+@@ -28,6 +28,14 @@ GapSafeDistance를 켰을 때 차간 4단계에서 앞차가 최대 이만큼 
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeLeadDecel4 -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++GapSafeDistance가 켜져 있을 때 차간 4단계에서 앞차가 최대 이만큼 밟는다고 보고 최소 간격을 정합니다.
++
++- **높이면:** 간격이 커지며 고속일수록 많이 늘어납니다.
++- **낮추면:** 간격이 줄어듭니다. 4.0m/s² 이하이면 앞차가 내 차보다 세게 밟을 때 반응 지연분 외에는 여유가 없습니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeLeadDecel4 -->
+ 
+ <!-- CARROT:SETTING:END GapSafeLeadDecel4 -->
+diff --git "a/KO-\354\225\210\354\240\204\352\261\260\353\246\254-\353\260\230\354\235\221-\354\247\200\354\227\260-x0.01s(60).md" "b/KO-\354\225\210\354\240\204\352\261\260\353\246\254-\353\260\230\354\235\221-\354\247\200\354\227\260-x0.01s(60).md"
+index d710d6c..b6a7e13 100644
+--- "a/KO-\354\225\210\354\240\204\352\261\260\353\246\254-\353\260\230\354\235\221-\354\247\200\354\227\260-x0.01s(60).md"
++++ "b/KO-\354\225\210\354\240\204\352\261\260\353\246\254-\353\260\230\354\235\221-\354\247\200\354\227\260-x0.01s(60).md"
+@@ -28,6 +28,14 @@ GapSafeDistance를 켰을 때 앞차 감속을 보고 내 차 감속이 실제
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeReaction -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++GapSafeDistance가 켜져 있을 때 앞차 감속부터 내 차 감속이 실제로 시작될 때까지로 보는 시간입니다.
++
++- **높이면:** 모든 단계의 최소 간격이 속도×늘린 시간만큼 커집니다.
++- **낮추면:** 같은 만큼 줄어듭니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeReaction -->
+ 
+ <!-- CARROT:SETTING:END GapSafeReaction -->
+diff --git "a/KO-\354\225\210\354\240\204\352\261\260\353\246\254\354\213\235-\354\260\250\352\260\204-\353\213\250\352\263\204.md" "b/KO-\354\225\210\354\240\204\352\261\260\353\246\254\354\213\235-\354\260\250\352\260\204-\353\213\250\352\263\204.md"
+index 050ca58..350d4ab 100644
+--- "a/KO-\354\225\210\354\240\204\352\261\260\353\246\254\354\213\235-\354\260\250\352\260\204-\353\213\250\352\263\204.md"
++++ "b/KO-\354\225\210\354\240\204\352\261\260\353\246\254\354\213\235-\354\260\250\352\260\204-\353\213\250\352\263\204.md"
+@@ -27,6 +27,30 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeDistance -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++켜면 차간 단계가 시간 간격 대신 앞차가 최대 얼마나 세게 밟는다고 볼지를 고르고, 그 가정에서도 설 수 있는 최소 간격을 위험 하한으로 둡니다. 따라가는 목표는 최소 간격보다 0.15초×속도 더 멉니다.
++
++- **켜짐:** 최소 간격은 반응 지연×속도 + 속도²/8 − 앞차 속도²/(2×가정 감속) + 정지 거리입니다. 앞차 장애물이 계획을 묶는 시점에만 적용하고 크루즈 목표와 신호 정지는 기존 TF를 씁니다. 고속일수록 지금보다 간격이 커집니다.
++- **꺼짐:** 계산하지 않으며 기존 동작과 같습니다.
++- **전환:** 주행 중 켜면 3초에 걸쳐, 단계를 바꿔 간격이 늘면 최대 3초에 걸쳐 적용합니다. 간격이 줄거나 끄면 바로 반영합니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
++
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### 사용
++
++고속에서 앞차와의 간격이 짧게 느껴질 때 켭니다. 단계별 가정은 GapSafeLeadDecel1~4, 반응 지연은 GapSafeReaction으로 조정하며 약 5초 안에 반영되고 재시작은 필요 없습니다.
++<!-- CARROT:SECTION:END USAGE -->
++
++<!-- CARROT:SECTION:BEGIN REFERENCE -->
++### 참고
++
++<!-- CARROT:NOTICE level="WARNING" -->
++> [!WARNING]
++> 실차 미검증 시험 기능입니다. 기록 재생(정지 접근 15건)에서 이 설정만 켜면 감속 피크 중앙이 1단계 (−2.12→−2.34m/s²)로 커졌습니다. 4단계는 30~50km/h 급정지 합성에서 최소 간격이 지금 4단계보다 0.1~0.7m 줄었습니다.
++<!-- CARROT:NOTICE:END -->
++<!-- CARROT:SECTION:END REFERENCE -->
+ <!-- CARROT:MANUAL:END GapSafeDistance -->
+ 
+ <!-- CARROT:SETTING:END GapSafeDistance -->
+diff --git "a/ZH-\345\256\211\345\205\250\350\267\235\347\246\273\345\274\217\350\275\246\350\267\235\346\241\243\344\275\215.md" "b/ZH-\345\256\211\345\205\250\350\267\235\347\246\273\345\274\217\350\275\246\350\267\235\346\241\243\344\275\215.md"
+index 6f0a4a9..47fac26 100644
+--- "a/ZH-\345\256\211\345\205\250\350\267\235\347\246\273\345\274\217\350\275\246\350\267\235\346\241\243\344\275\215.md"
++++ "b/ZH-\345\256\211\345\205\250\350\267\235\347\246\273\345\274\217\350\275\246\350\267\235\346\241\243\344\275\215.md"
+@@ -27,6 +27,30 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeDistance -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++开启后，车距档位不再选择时间车距，而是选择假定前车最大会以多大减速度制动，并把在该假定下仍能停下的最小车距作为危险下限。跟车目标比最小车距再远0.15秒×车速。
++
++- **开启：** 最小车距为反应延迟×车速 + 车速²/8 − 前车车速²/(2×假定减速度) + 停车距离。仅在前车障碍物约束计划的时刻适用，巡航目标和信号停车仍使用原TF。车速越高，车距比现在越大。
++- **关闭：** 不计算，与原有行为相同。
++- **切换：** 行驶中开启时在3秒内逐步生效；切换档位使车距变大时最多用3秒。车距变小或关闭时立即生效。
++<!-- CARROT:SECTION:END BEHAVIOR -->
++
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### 使用
++
++在高速时觉得与前车距离偏近时开启。各档假定用GapSafeLeadDecel1~4、反应延迟用GapSafeReaction调整，约5秒内生效，无需重启。
++<!-- CARROT:SECTION:END USAGE -->
++
++<!-- CARROT:SECTION:BEGIN REFERENCE -->
++### 参考
++
++<!-- CARROT:NOTICE level="WARNING" -->
++> [!WARNING]
++> 实验功能，未经实车验证。日志回放15次停车接近中仅开启此设置时，1档减速峰值中位数增大（−2.12→−2.34m/s²）。4档在30~50km/h急刹合成场景中的最小车距比当前4档短0.1~0.7m。
++<!-- CARROT:NOTICE:END -->
++<!-- CARROT:SECTION:END REFERENCE -->
+ <!-- CARROT:MANUAL:END GapSafeDistance -->
+ 
+ <!-- CARROT:SETTING:END GapSafeDistance -->
+diff --git "a/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(1)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(50).md" "b/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(1)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(50).md"
+index 3d5858a..ea4e17c 100644
+--- "a/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(1)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(50).md"
++++ "b/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(1)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(50).md"
+@@ -28,6 +28,14 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeLeadDecel1 -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++开启GapSafeDistance时，车距1档假定前车最大以此减速度制动来确定最小车距。
++
++- **调高：** 车距变大，车速越高增加越多。
++- **调低：** 车距变小。为4.0m/s²及以下时，前车制动比本车更猛时只剩反应延迟部分的余量。
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeLeadDecel1 -->
+ 
+ <!-- CARROT:SETTING:END GapSafeLeadDecel1 -->
+diff --git "a/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(2)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(60).md" "b/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(2)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(60).md"
+index 183bac4..0d381c2 100644
+--- "a/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(2)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(60).md"
++++ "b/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(2)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(60).md"
+@@ -28,6 +28,14 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeLeadDecel2 -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++开启GapSafeDistance时，车距2档假定前车最大以此减速度制动来确定最小车距。
++
++- **调高：** 车距变大，车速越高增加越多。
++- **调低：** 车距变小。为4.0m/s²及以下时，前车制动比本车更猛时只剩反应延迟部分的余量。
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeLeadDecel2 -->
+ 
+ <!-- CARROT:SETTING:END GapSafeLeadDecel2 -->
+diff --git "a/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(3)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(70).md" "b/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(3)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(70).md"
+index 9dffbed..9ce1d6a 100644
+--- "a/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(3)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(70).md"
++++ "b/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(3)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(70).md"
+@@ -28,6 +28,14 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeLeadDecel3 -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++开启GapSafeDistance时，车距3档假定前车最大以此减速度制动来确定最小车距。
++
++- **调高：** 车距变大，车速越高增加越多。
++- **调低：** 车距变小。为4.0m/s²及以下时，前车制动比本车更猛时只剩反应延迟部分的余量。
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeLeadDecel3 -->
+ 
+ <!-- CARROT:SETTING:END GapSafeLeadDecel3 -->
+diff --git "a/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(4)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(80).md" "b/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(4)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(80).md"
+index 9a23206..dae80c6 100644
+--- "a/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(4)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(80).md"
++++ "b/ZH-\345\256\211\345\205\250\350\275\246\350\267\235(4)-\345\201\207\345\256\232\345\211\215\350\275\246\346\234\200\345\244\247\345\207\217\351\200\237\345\272\246-x0.1m-s2(80).md"
+@@ -28,6 +28,14 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeLeadDecel4 -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++开启GapSafeDistance时，车距4档假定前车最大以此减速度制动来确定最小车距。
++
++- **调高：** 车距变大，车速越高增加越多。
++- **调低：** 车距变小。为4.0m/s²及以下时，前车制动比本车更猛时只剩反应延迟部分的余量。
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeLeadDecel4 -->
+ 
+ <!-- CARROT:SETTING:END GapSafeLeadDecel4 -->
+diff --git "a/ZH-\345\256\211\345\205\250\350\275\246\350\267\235\345\217\215\345\272\224\345\273\266\350\277\237-x0.01s(60).md" "b/ZH-\345\256\211\345\205\250\350\275\246\350\267\235\345\217\215\345\272\224\345\273\266\350\277\237-x0.01s(60).md"
+index 8b4c5ee..69a9116 100644
+--- "a/ZH-\345\256\211\345\205\250\350\275\246\350\267\235\345\217\215\345\272\224\345\273\266\350\277\237-x0.01s(60).md"
++++ "b/ZH-\345\256\211\345\205\250\350\275\246\350\267\235\345\217\215\345\272\224\345\273\266\350\277\237-x0.01s(60).md"
+@@ -28,6 +28,14 @@
+ 
+ <!-- CARROT:MANUAL:BEGIN GapSafeReaction -->
+ <!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++开启GapSafeDistance时，从前车制动到本车实际开始制动所假定的时间。
++
++- **调高：** 所有档位的最小车距增加车速×增加的时间。
++- **调低：** 按同样幅度减小。
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END GapSafeReaction -->
+ 
+ <!-- CARROT:SETTING:END GapSafeReaction -->
