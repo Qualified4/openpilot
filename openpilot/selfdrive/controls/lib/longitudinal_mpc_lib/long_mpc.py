@@ -475,28 +475,28 @@ class LongitudinalMpc:
     # ACC lead nodes use the safety-distance gap. Only blended (e2e) mode and an unknown gap
     # level keep the TF computation for leads.
     lead_gap = None
-    if mode == 'acc' and self.gap_safe_state.weight > 0.0:
+    if mode == 'acc' and self.gap_safe_state.active:
       lead_gap = self.gap_safe_state.lead_gap(
-        extra_time=getattr(carrot, 't_follow_gap_safe_extra', 0.0), t_follow=t_follow,
-        comfort_brake=comfort_brake, danger_factor=LEAD_DANGER_FACTOR, inv_base_lead_decel=1.0 / COMFORT_BRAKE,
+        extra_time=getattr(carrot, 't_follow_gap_safe_extra', 0.0), comfort_brake=comfort_brake,
       )
-      self.base_desired_distances = np.array([
-        gap_safe.desired_distance(v_ego, lead_v_0, lead_gap, stop_distance),
-        gap_safe.desired_distance(v_ego, lead_v_1, lead_gap, stop_distance),
-      ])
     self.lead_gap = lead_gap
+    # Per lead: the safety-distance gap for a real lead, the TF computation for the fake far lead
+    # process_lead() puts in when there is none.
+    lead_gaps = tuple(lead_gap if lead.status else None for lead in (radarstate.leadOne, radarstate.leadTwo))
+    for lead_index, (gap, lead_v) in enumerate(zip(lead_gaps, (lead_v_0, lead_v_1))):
+      if gap is not None:
+        self.base_desired_distances[lead_index] = gap_safe.desired_distance(v_ego, lead_v, gap, stop_distance)
     # TF seconds as read by lane-change credit, cutout relief and gap recovery.
     lead_t_follow = t_follow if lead_gap is None else gap_safe.equivalent_t_follow(v_ego, lead_gap)
 
     # To estimate a safe distance from a moving lead, we calculate how much stopping
     # distance that lead needs as a minimum. We can add that to the current distance
     # and then treat that as a stopped car/obstacle at this new distance.
-    if lead_gap is None:
-      lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
-      lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
-    else:
-      lead_0_obstacle = lead_xv_0[:,0] + gap_safe.stopped_equivalence(lead_xv_0[:,1], lead_gap)
-      lead_1_obstacle = lead_xv_1[:,0] + gap_safe.stopped_equivalence(lead_xv_1[:,1], lead_gap)
+    lead_0_obstacle, lead_1_obstacle = (
+      lead_xv[:,0] + (get_stopped_equivalence_factor(lead_xv[:,1]) if gap is None else gap_safe.stopped_equivalence(lead_xv[:,1], gap))
+      for lead_xv, gap in ((lead_xv_0, lead_gaps[0]), (lead_xv_1, lead_gaps[1])))
+    # Ego speeds of the previous plan, moved to the current speed (also the comfort-margin speeds below).
+    gap_v = np.maximum(0.0, self.x_sol[:,1] + v_ego - self.x_sol[0,1])
 
     self.params[:,0] = ACCEL_MIN if not reset_state else a_ego
     # negative accel constraint causes problems because negative speed is not allowed
@@ -525,14 +525,6 @@ class LongitudinalMpc:
 
       lane_change = getattr(carrot, 'lane_change_gap', LaneChangeGapPlan())
       lead_0_follow_obstacle = lead_0_obstacle
-      if lead_gap is not None and not reset_state and radarstate.leadOne.status and not lane_change.active:
-        cutin_credit = self.cutin_credit.update(
-          enabled=True, track_id=radarstate.leadOne.radarTrackId, distance=float(radarstate.leadOne.dRel),
-          desired=float(self.base_desired_distances[0]), closing_speed=-float(radarstate.leadOne.vRel),
-          lead_accel=float(radarstate.leadOne.aLeadK), cushion=lead_gap.comfort_time * v_ego, dt=self.dt,
-        )
-      else:
-        cutin_credit = self.cutin_credit.reset()
       if cutout_relief_enabled and not reset_state:
         if lane_change.active:
           lead_0_follow_obstacle = lead_0_obstacle + lane_change.credit(
@@ -542,14 +534,8 @@ class LongitudinalMpc:
           lead_0_follow_obstacle = lead_0_obstacle + cutout_obstacle_relief(
             radarstate.leadOne, v_ego, T_IDXS, lead_t_follow, stop_distance,
           )
-      lead_0_follow_obstacle = lead_0_follow_obstacle + cutin_credit
       x_obstacles = np.column_stack([lead_0_follow_obstacle, lead_1_obstacle, cruise_obstacle, x2])
-      # Only currently selected leadOne/leadTwo may constrain braking.
-      # Entry snapshots and lane-change credit guards never add obstacles.
-      self.source = SOURCES[np.argmin(x_obstacles[0])]
 
-      if v_cruise == 0 and self.source == 'cruise':
-        self.params[:,0] = - carrot.autoNaviSpeedDecelRate
       #elif self.source in ['cruise', 'e2e']:
       #  self.params[:,0] = - COMFORT_BRAKE
 
@@ -582,8 +568,22 @@ class LongitudinalMpc:
       # Cancel the standstill gap in the solver's obstacle representation.
       obstacle = tesla_stop_distance + stop_distance
       x_obstacles = np.column_stack((x_obstacles, np.full(N+1, obstacle)))
-      if np.argmin(x_obstacles[0]) == x_obstacles.shape[1] - 1:
-        self.source = 'e2e'
+    # A gap-safe lead obstacle subtracts its own distance in the solver, so obstacles are compared
+    # on the TF scale: the smallest of these is the obstacle with the closest target at each node.
+    x_targets = x_obstacles.copy()
+    if mode == 'acc':
+      for lead_index, gap in enumerate(lead_gaps):
+        if gap is not None:
+          x_targets[:, lead_index] -= gap_safe.target_offset(gap_v, gap, t_follow, comfort_brake, stop_distance)
+    binding = np.argmin(x_targets, axis=1)
+    if mode == 'acc':
+      # Only currently selected leadOne/leadTwo may constrain braking.
+      # Entry snapshots and lane-change credit guards never add obstacles.
+      self.source = SOURCES[np.argmin(x_targets[0, :4])]
+      if v_cruise == 0 and self.source == 'cruise':
+        self.params[:,0] = - carrot.autoNaviSpeedDecelRate
+    if tesla_stop_active and binding[0] == x_obstacles.shape[1] - 1:
+      self.source = 'e2e'
 
     response_lead_index = 1 if self.source == 'lead1' else 0
     response_lead = (radarstate.leadOne, radarstate.leadTwo)[response_lead_index]
@@ -618,7 +618,7 @@ class LongitudinalMpc:
     self.lead_accel_response_active = response_request.active
     self.lead_accel_response_level = response_request.level if response_request.active else 0
     # Stopping behind a lead: the lead that sets the end of the horizon stops in the plan.
-    stop_lead_index = int(np.argmin(x_obstacles[-1, :2])) if mode == 'acc' else 0
+    stop_lead_index = int(np.argmin(x_targets[-1, :2])) if mode == 'acc' else 0
     stop_lead = (radarstate.leadOne, radarstate.leadTwo)[stop_lead_index]
     # Fast approach to a slow leadOne from far: early soft braking (reference and gap weight only).
     if mode == 'acc' and approach_soft_stop_enabled and not reset_state:
@@ -634,7 +634,7 @@ class LongitudinalMpc:
       enabled=mode == 'acc' and not reset_state,
       lead_status=bool(stop_lead.status),
       lead_end_speed=float((lead_xv_0, lead_xv_1)[stop_lead_index][-1, 1]),
-      lead_sets_stop=mode == 'acc' and bool(x_obstacles[-1, stop_lead_index] <= np.min(x_obstacles[-1]) + 1e-6),
+      lead_sets_stop=mode == 'acc' and bool(x_targets[-1, stop_lead_index] <= np.min(x_targets[-1]) + 1e-6),
       v_ego=v_ego,
       gap_excess=(float(stop_lead.dRel - self.base_desired_distances[stop_lead_index])
                   if stop_lead.status else float('inf')),
@@ -653,20 +653,20 @@ class LongitudinalMpc:
     # Extra TF is a comfort preference, not a change to physical lead obstacles,
     # base TF, cruise/map targets or braking constraints. Level 5 bypasses the
     # opening-gap memory. Braking onset never adds a remembered distance.
-    gap_v = np.maximum(0.0, self.x_sol[:,1] + v_ego - self.x_sol[0,1])
     gap_x = np.cumsum(T_DIFFS * np.concatenate(([gap_v[0]], (gap_v[1:] + gap_v[:-1]) * 0.5)))
-    if lead_gap is None:
-      gap_safe_distance = get_safe_obstacle_distance(gap_v, t_follow, comfort_brake, stop_distance)
-      relief_base_tf = t_follow
-    else:
-      gap_safe_distance = gap_safe.safe_distance(gap_v, lead_gap, stop_distance)
-      # Comfort relief may spend the comfort time above d_min, never d_min itself.
-      relief_base_tf = ((1.0 - lead_gap.weight) * t_follow + lead_gap.weight * COMFORT_RELIEF_MIN_TF
-                        + lead_gap.comfort_time)
-    lead_danger_factor = self.params[0,5] if lead_gap is None else lead_gap.danger_factor
     self.lead_gap_margins[:] = 0.0
     comfort_reliefs = np.zeros_like(self.lead_gap_margins)
     for lead_index, (lead, lead_xv) in enumerate(((radarstate.leadOne, lead_xv_0), (radarstate.leadTwo, lead_xv_1))):
+      gap = lead_gaps[lead_index]
+      if gap is None:
+        gap_safe_distance = get_safe_obstacle_distance(gap_v, t_follow, comfort_brake, stop_distance)
+        relief_base_tf = t_follow
+        lead_danger_factor = self.params[0,5]
+      else:
+        gap_safe_distance = gap_safe.safe_distance(gap_v, gap, stop_distance)
+        # Comfort relief may spend the comfort time above d_min, never d_min itself.
+        relief_base_tf = COMFORT_RELIEF_MIN_TF + gap.comfort_time
+        lead_danger_factor = gap.danger_factor
       eligible = (
         mode == 'acc' and lead_gap_enabled and not reset_state
         and not getattr(carrot, 'lane_change_active', False)
@@ -675,12 +675,12 @@ class LongitudinalMpc:
       )
       state = self.lead_gap_states[lead_index]
       physical_gaps = lead_xv[:,0] - gap_x
-      if lead_gap is None:
+      if gap is None:
         desired_distances = desired_follow_distance(gap_v, lead_xv[:,1], comfort_brake, stop_distance, t_follow)
         lead_equivalence = get_stopped_equivalence_factor(lead_xv[:,1])
       else:
-        desired_distances = gap_safe.desired_distance(gap_v, lead_xv[:,1], lead_gap, stop_distance)
-        lead_equivalence = gap_safe.stopped_equivalence(lead_xv[:,1], lead_gap)
+        desired_distances = gap_safe.desired_distance(gap_v, lead_xv[:,1], gap, stop_distance)
+        lead_equivalence = gap_safe.stopped_equivalence(lead_xv[:,1], gap)
       state.update(level=carrot.leadAccelResponse, track_id=lead.radarTrackId, enabled=eligible, dt=self.dt,
                    ego_speed=v_ego, lead_speed=lead.vLead if eligible else 0.0, relative_speed=lead.vRel if eligible else 0.0,
                    distance=lead.dRel if eligible else 0.0, desired_distance=self.base_desired_distances[lead_index],
@@ -702,17 +702,35 @@ class LongitudinalMpc:
     if approach_weight > 0.0:
       # Only where leadOne is the binding obstacle; every obstacle and the danger limit stay as they are.
       # The current target includes the safety-distance comfort margin, so the two never stack.
-      lead_binds = np.argmin(x_obstacles, axis=1) == 0
-      following = gap_safe_distance + (0.0 if lead_gap is None else gap_safe.comfort_margin(gap_v, lead_xv_0[:,1], lead_gap))
+      lead_binds = binding == 0
+      if lead_gaps[0] is None:
+        following = get_safe_obstacle_distance(gap_v, t_follow, comfort_brake, stop_distance)
+      else:
+        following = gap_safe.safe_distance(gap_v, lead_gaps[0], stop_distance) + gap_safe.comfort_margin(gap_v, lead_xv_0[:,1], lead_gaps[0])
       self.lead_gap_margins[:,0] += np.where(lead_binds, self.approach_state.reference_margins(
         ego_speeds=gap_v, following_distances=following, stop_distance=stop_distance), 0.0)
     # The safety-distance comfort margin rides on the cost reference like any margin; the
     # displayed target already contains it through base_desired_distances.
     comfort_margins = np.zeros_like(self.lead_gap_margins)
-    if lead_gap is not None:
-      comfort_margins[:, 0] = gap_safe.comfort_margin(gap_v, lead_xv_0[:,1], lead_gap)
-      comfort_margins[:, 1] = gap_safe.comfort_margin(gap_v, lead_xv_1[:,1], lead_gap)
-      self.lead_gap_margins += comfort_margins
+    for lead_index, (gap, lead_xv) in enumerate(zip(lead_gaps, (lead_xv_0, lead_xv_1))):
+      if gap is not None:
+        comfort_margins[:, lead_index] = gap_safe.comfort_margin(gap_v, lead_xv[:,1], gap)
+    self.lead_gap_margins += comfort_margins
+    # Cut-in credit: lowers leadOne's cost reference only, never below its d_min (margin 0); the
+    # obstacle and the danger zone are left as they are.
+    lead_one = radarstate.leadOne
+    if lead_gaps[0] is None:
+      # Off (blended, unknown level): forget the lead. No leadOne: keep it, so it gets no credit on return.
+      cutin_credit = self.cutin_credit.reset() if lead_gap is None else self.cutin_credit.hold()
+    else:
+      cutin_credit = self.cutin_credit.update(
+        enabled=True, track_id=lead_one.radarTrackId, distance=float(lead_one.dRel),
+        desired=float(self.base_desired_distances[0]), closing_speed=-float(lead_one.vRel),
+        lead_accel=float(lead_one.aLeadK), cushion=lead_gap.comfort_time * v_ego, dt=self.dt,
+        grant=not reset_state and not getattr(carrot, 'lane_change_gap', LaneChangeGapPlan()).active,
+      )
+    if cutin_credit > 0.0:
+      self.lead_gap_margins[:, 0] -= np.minimum(cutin_credit, np.maximum(self.lead_gap_margins[:, 0], 0.0))
     # Display the current following reference, including comfort headroom and
     # any already-authorized cutout/lane-change relief. This does not select
     # control leads or modify solver obstacles.
@@ -721,7 +739,7 @@ class LongitudinalMpc:
       x_obstacles[0, :2], self.lead_gap_margins[0] - comfort_margins[0],
       (radarstate.leadOne.status, radarstate.leadTwo.status),
     )
-    self.yref[:,0] = braking_gap_reference(x_obstacles, self.lead_gap_margins, gap_v)
+    self.yref[:,0] = braking_gap_reference(x_targets, self.lead_gap_margins, gap_v)
     self.yref[:,1] = x
     self.yref[:,2] = v
     self.yref[:,3] = a
@@ -730,16 +748,17 @@ class LongitudinalMpc:
       self.solver.set(i, "yref", self.yref[i])
     self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
 
-    self.params[:,2] = np.min(x_obstacles, axis=1)
+    self.params[:,2] = x_obstacles[np.arange(N+1), binding]
     self.params[:,3] = np.copy(self.prev_a)
     self.params[:,4] = t_follow
     self.params[:,6] = comfort_brake
     self.params[:,7] = stop_distance
-    if lead_gap is not None:
-      lead_nodes = np.argmin(x_obstacles, axis=1) < 2
-      self.params[lead_nodes,4] = lead_gap.t_follow
-      self.params[lead_nodes,5] = lead_gap.danger_factor
-      self.params[lead_nodes,6] = lead_gap.comfort_brake
+    for lead_index, gap in enumerate(lead_gaps):
+      if gap is not None:
+        lead_nodes = binding == lead_index
+        self.params[lead_nodes,4] = gap.t_follow
+        self.params[lead_nodes,5] = gap.danger_factor
+        self.params[lead_nodes,6] = gap.comfort_brake
 
     self.t_follow = lead_t_follow
 
@@ -761,7 +780,7 @@ class LongitudinalMpc:
         self.lead_gap_margins += comfort_reliefs
         for state in self.lead_comfort_states:
           state.relief = 0.0
-        self.yref[:,0] = braking_gap_reference(x_obstacles, self.lead_gap_margins, gap_v)
+        self.yref[:,0] = braking_gap_reference(x_targets, self.lead_gap_margins, gap_v)
         for i in range(N):
           self.solver.set(i, "yref", self.yref[i])
         self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])

@@ -12,11 +12,10 @@ STOP = 3.7
 V80 = 80 / 3.6
 
 
-def full_gap(lead_decel=6.0, extra=0.0, t_follow=1.0, comfort_brake=2.4):
+def full_gap(lead_decel=6.0, extra=0.0, comfort_brake=2.4):
   s = gs.GapSafeState()
   s.update(enabled=True, lead_decel=lead_decel, snap=True, dt=DT)
-  return s.lead_gap(extra_time=extra, t_follow=t_follow, comfort_brake=comfort_brake,
-                    danger_factor=0.8, inv_base_lead_decel=1 / 2.5)
+  return s.lead_gap(extra_time=extra, comfort_brake=comfort_brake)
 
 
 def test_owner_constants():
@@ -53,29 +52,19 @@ def test_drive_mode_and_braking_extra_only_add_comfort_time():
   assert gs.min_distance(V80, V80, g, STOP) == pytest.approx(gs.min_distance(V80, V80, full_gap(), STOP))
 
 
-def test_blend_in_over_enable_time_and_off_at_once():
+def test_on_and_off_at_once():
   s = gs.GapSafeState()
-  steps = round(gs.ENABLE_TIME / DT)
-  for i in range(steps):
-    s.update(enabled=True, lead_decel=6.0, snap=False, dt=DT)
-    if i == 0:
-      assert s.weight == pytest.approx(DT / gs.ENABLE_TIME)
-  assert s.weight == pytest.approx(1.0)
-  half = gs.GapSafeState()
-  half.weight, half.inv_lead_decel = 0.5, 1 / 6.0
-  g = half.lead_gap(extra_time=0.0, t_follow=1.0, comfort_brake=2.4, danger_factor=0.8, inv_base_lead_decel=0.4)
-  # Linear in tF, 1/comfort_brake, 1/lead_decel and the comfort terms, so the target is the mix of the two.
-  old = 1.0 * V80 + V80 ** 2 / 4.8 + STOP - 15.0 ** 2 / 5.0
-  new = gs.desired_distance(V80, 15.0, full_gap(t_follow=1.0), STOP)
-  assert gs.desired_distance(V80, 15.0, g, STOP) == pytest.approx(0.5 * old + 0.5 * new)
+  assert not s.active
+  s.update(enabled=True, lead_decel=6.0, snap=False, dt=DT)
+  assert s.active and s.inv_lead_decel == pytest.approx(1 / 6.0)
   s.update(enabled=False, lead_decel=6.0, snap=False, dt=DT)
-  assert s.weight == 0.0 and s.inv_lead_decel is None
+  assert not s.active and s.inv_lead_decel is None
 
 
 def test_snap_while_not_engaged():
   s = gs.GapSafeState()
   s.update(enabled=True, lead_decel=8.0, snap=True, dt=DT)
-  assert s.weight == 1.0 and s.inv_lead_decel == pytest.approx(1 / 8.0)
+  assert s.active and s.inv_lead_decel == pytest.approx(1 / 8.0)
 
 
 def test_level_change_lengthens_gradually_and_shortens_at_once():
@@ -95,7 +84,7 @@ def test_invalid_input_resets(kw):
   s = gs.GapSafeState()
   s.update(enabled=True, lead_decel=6.0, snap=True, dt=DT)
   s.update(**{"enabled": True, "lead_decel": 6.0, "snap": False, "dt": DT, **kw})
-  assert s.weight == 0.0 and s.inv_lead_decel is None
+  assert not s.active and s.inv_lead_decel is None
 
 
 def test_negative_extra_time_is_ignored():
@@ -131,6 +120,24 @@ def test_cutin_credit_ends_when_that_lead_brakes():
   assert cutin(c) > 0.0
   assert cutin(c, lead_accel=-1.0) == 0.0
   assert cutin(c) == 0.0   # same track: no new credit
+
+
+def test_cutin_credit_not_for_the_same_car_under_a_new_track_id():
+  c = gs.CutinCredit()
+  cutin(c, track_id=1, distance=30.0, desired=20.0)   # settled, no shortfall
+  assert cutin(c, track_id=5, distance=30.0 + gs.SAME_LEAD_DISTANCE - 0.1) == 0.0
+  assert cutin(c, track_id=6, distance=20.0) > 0.0     # a different car closer in
+
+
+def test_cutin_credit_not_for_a_lead_seen_again():
+  c = gs.CutinCredit()
+  cutin(c, distance=30.0, desired=20.0)
+  assert c.hold() == 0.0                                 # dropout: the last lead is kept
+  assert cutin(c, distance=20.0) == 0.0                  # same track back: no credit
+  # A lane change (or not engaged) follows the lead without crediting it, so its end gives none.
+  c = gs.CutinCredit()
+  assert cutin(c, track_id=3, grant=False) == 0.0
+  assert cutin(c, track_id=3) == 0.0
 
 
 @pytest.mark.parametrize("kw", [{"enabled": False}, {"distance": float("nan")}])
@@ -182,7 +189,7 @@ def test_lead_nodes_use_the_safety_distance(native):
   mpc = native.LongitudinalMpc()
   mpc.gap_safe_state.update(enabled=True, lead_decel=6.0, snap=True, dt=DT)
   on = solve(native, mpc=mpc)
-  assert on.gap_safe_state.weight == 1.0 and on.source == "lead0"
+  assert on.gap_safe_state.active and on.source == "lead0"
   lead_nodes = np.ones(native.N + 1, dtype=bool)   # 30 m behind a same-speed lead: leadOne binds every node
   np.testing.assert_allclose(on.params[lead_nodes, 4], 0.6)
   np.testing.assert_allclose(on.params[lead_nodes, 5], 1.0)
@@ -191,8 +198,8 @@ def test_lead_nodes_use_the_safety_distance(native):
   expected = 0.6 * V80 + V80 ** 2 / 8.0 - V80 ** 2 / 12.0 + STOP + gs.COMFORT_TIME * V80
   assert on.base_desired_distances[0] == pytest.approx(expected)
   assert on.t_follow == pytest.approx(gs.equivalent_t_follow(V80, g))
-  # The lead obstacle uses v_lead^2 / (2 * 6), moved out only by what is left of the first-sight credit.
-  assert on.params[0, 2] - on.cutin_credit.credit == pytest.approx(30.0 + V80 ** 2 / 12.0, abs=0.5)
+  # The lead obstacle uses v_lead^2 / (2 * 6); a cut-in credit never moves it.
+  assert on.params[0, 2] == pytest.approx(30.0 + V80 ** 2 / 12.0, abs=0.5)
   # Comfort time rides on the reference (yref) only.
   assert np.all(on.lead_gap_margins[:, 0] > 0.0)
 
@@ -210,7 +217,7 @@ def test_cruise_nodes_keep_tf_values(native):
 def test_gap_level_selects_the_lead_decel(native, personality, decel):
   on = solve(native, reset=True, personality=personality, cycles=2)
   assert on.gap_safe_state.inv_lead_decel == pytest.approx(1 / decel)
-  assert on.gap_safe_state.weight == 1.0   # longitudinal off: no blend needed
+  assert on.gap_safe_state.active
 
 
 def test_blended_mode_keeps_the_tf_lead_path(native):
@@ -239,14 +246,51 @@ def test_unknown_gap_level_keeps_the_tf_lead_path(native):
   mpc.set_accel_limits(-3.5, 1.6)
   n = native.N + 1
   mpc.update(carrot(), True, log.RadarState.new_message(), V80, np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n), personality=7)
-  assert mpc.gap_safe_state.weight == 0.0 and mpc.lead_gap is None
+  assert not mpc.gap_safe_state.active and mpc.lead_gap is None
 
 
 @pytest.mark.parametrize("closing,credited", [(1.4, True), (3.0, False)])
-def test_cutin_moves_the_lead_obstacle_by_the_credit(native, closing, credited):
+def test_cutin_credit_lowers_the_reference_not_the_obstacle(native, closing, credited):
   mpc = solve(native, distance=45.0, cycles=80)        # settled behind track 1, first-sight credit spent
   assert mpc.cutin_credit.credit == 0.0
   cut = solve(native, mpc=mpc, distance=20.0, lead_speed=V80 - closing, track_id=2, cycles=1)
   assert (cut.cutin_credit.credit > 10.0) == credited
-  lead_obstacle = 20.0 + (V80 - closing) ** 2 / 12.0
-  assert cut.params[0, 2] == pytest.approx(lead_obstacle + cut.cutin_credit.credit, abs=0.5)
+  # Obstacle and danger zone (d_min) stay; the reference never goes below d_min.
+  assert cut.params[0, 2] == pytest.approx(20.0 + (V80 - closing) ** 2 / 12.0, abs=0.5)
+  np.testing.assert_allclose(cut.params[:, 5], 1.0)
+  assert np.all(cut.lead_gap_margins[:, 0] >= -1e-9)
+  base_margin = gs.comfort_margin(V80, V80 - closing, cut.lead_gap)
+  assert (cut.lead_gap_margins[0, 0] < base_margin - 1.0) == credited
+
+
+def nolead_mpc(native, v, v_cruise, personality, cycles=40, lead_speed=None):
+  mpc = native.LongitudinalMpc()
+  n = native.N + 1
+  radar = log.RadarState.new_message() if lead_speed is None else radar_state(60.0, lead_speed)
+  c = carrot(v_cruise=v_cruise)
+  for _ in range(cycles):
+    mpc.set_accel_limits(-3.5, 1.6)
+    mpc.set_cur_state(v, 0.)
+    mpc.update(c, False, radar, v_cruise, np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n), personality=personality)
+    assert mpc.solution_status == 0
+  return mpc
+
+
+@pytest.mark.parametrize("personality", list(log.LongitudinalPersonality.schema.enumerants.values()))
+def test_no_lead_follows_cruise_with_tf_values(native, personality):
+  """The fake far lead keeps the TF computation, so cruise binds as before at every gap level."""
+  v = 110 / 3.6
+  mpc = nolead_mpc(native, v, v, personality)
+  assert mpc.source == "cruise"
+  np.testing.assert_allclose(mpc.params[:, 4], 0.62)
+  np.testing.assert_allclose(mpc.params[:, 5], native.LEAD_DANGER_FACTOR)
+  assert np.all(mpc.lead_gap_margins == 0.0)
+  assert mpc.a_solution[0] < 0.05
+
+
+def test_lead_faster_than_cruise_does_not_bind(native):
+  """A real lead faster than the set speed is compared on its own target, not its raw obstacle."""
+  v = 100 / 3.6
+  mpc = nolead_mpc(native, v, v, log.LongitudinalPersonality.aggressive, lead_speed=v + 4.0)
+  assert mpc.source == "cruise"
+  assert mpc.a_solution[0] < 0.05

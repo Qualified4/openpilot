@@ -3,10 +3,13 @@
 d_min = REACTION * v + v^2 / (2 * EGO_MAX_DECEL) - v_lead^2 / (2 * lead_decel) + stop_distance
 
 d_min is the gap from which ego, braking at its own limit after REACTION, still stops behind a
-lead that brakes at `lead_decel` (LEAD_DECELS, one per level). Where a lead is the binding MPC
-obstacle it replaces the TF distance: tF -> REACTION, comfort_brake -> EGO_MAX_DECEL, the lead's
-stopped equivalence uses lead_decel instead of 2.5 and the danger factor is 1.0, so the danger
-zone starts at d_min. Cruise, traffic-stop and Tesla-stop obstacles keep the TF values.
+lead that brakes at `lead_decel` (LEAD_DECELS, one per level). It is used for a lead with status in
+ACC mode at a known gap level; a missing lead (the MPC's fake far lead), blended (e2e) mode and an
+unknown level keep the TF computation. Where such a lead is the binding MPC obstacle it replaces
+the TF distance: tF -> REACTION, comfort_brake -> EGO_MAX_DECEL, the lead's stopped equivalence
+uses lead_decel instead of 2.5 and the danger factor is 1.0, so the danger zone starts at d_min.
+Cruise, traffic-stop and Tesla-stop obstacles keep the TF values. Because the two kinds subtract
+different distances, the MPC compares obstacles by their targets (target_offsets()), not by raw value.
 
 The comfort target (cost reference only) is
   d_min + COMFORT_TIME * v + CLOSING_TIME * (v - v_lead)+
@@ -16,9 +19,12 @@ its limit, and keeps CLOSING_TIME per m/s of closing speed, so it starts braking
 speed both closing terms are 0, so the steady following gap is d_min + COMFORT_TIME * v.
 
 A lead that cuts in closer than the comfort target at about ego speed or faster (closing at most
-CUTIN_CLOSING_MAX) and is not braking gets an obstacle credit equal to the shortfall beyond the comfort
+CUTIN_CLOSING_MAX) and is not braking gets a cut-in credit equal to the shortfall beyond the comfort
 cushion (COMFORT_TIME * v); the credit then shrinks at CUTIN_RECOVER_RATE, so the gap is reopened
-gradually instead of braking for it at once. The credit ends at once if that lead brakes. Lane changes
+gradually instead of braking for it at once. The credit lowers the cost reference only, never below
+d_min; the obstacle and the danger zone stay where they are. It ends at once if that lead brakes, and
+a track id change of what looks like the same car (distance within SAME_LEAD_DISTANCE of the last
+lead), a lead seen again after a dropout or the lead found after a lane change get none. Lane changes
 keep their own credit.
 """
 
@@ -34,7 +40,6 @@ from opendbc.car.interfaces import ACCEL_MIN
 EGO_MAX_DECEL = -ACCEL_MIN
 COMFORT_TIME = 0.35        # s x v above d_min for the comfort target (cushion above the danger zone)
 DANGER_FACTOR = 1.0        # d_min is already the minimum, so no 0.8 shrink
-ENABLE_TIME = 3.0          # s to blend in when longitudinal control engages
 LEAD_DECEL_INV_RATE = 0.025  # 1/(m/s^2) per s: a level change that lengthens the gap (5 -> 8) takes 3 s
 LEAD_DECELS = (5.0, 6.0, 7.0, 8.0)  # m/s^2 assumed lead braking for gap levels 1-4
 REACTION = 0.6             # s from the lead's braking until ego's braking starts
@@ -43,16 +48,16 @@ CLOSING_TIME = 1.0         # s x closing speed (v - v_lead)+ added to the comfor
 CUTIN_RECOVER_RATE = 1.5   # m/s the cut-in credit shrinks by
 CUTIN_CLOSING_MAX = 1.5    # m/s: only a cut-in at about ego speed (or faster) gets the credit
 CUTIN_LEAD_ACCEL_MIN = -0.5  # m/s^2: a braking cut-in gets none, and braking later cancels it
+SAME_LEAD_DISTANCE = 1.5   # m: a new track id this close to the last lead's distance is the same car
 
 
 class LeadGap(NamedTuple):
-  """MPC lead-node parameters, blended from the TF values by the state weight."""
+  """MPC lead-node parameters."""
   t_follow: float
   comfort_brake: float
   danger_factor: float
   inv_lead_decel: float
   comfort_time: float
-  weight: float
   closing_factor: float = 0.0
   closing_time: float = 0.0
 
@@ -61,8 +66,11 @@ class GapSafeState:
   """Lengthening the gap ramps in (like the TF ramp); shortening it applies at once."""
 
   def __init__(self):
-    self.weight = 0.0
     self.inv_lead_decel = None
+
+  @property
+  def active(self):
+    return self.inv_lead_decel is not None
 
   def update(self, *, enabled, lead_decel, snap, dt):
     if not enabled or not math.isfinite(lead_decel) or not math.isfinite(dt) or dt <= 0.0:
@@ -73,19 +81,16 @@ class GapSafeState:
       self.inv_lead_decel = target
     else:
       self.inv_lead_decel = max(target, self.inv_lead_decel - LEAD_DECEL_INV_RATE * dt)
-    self.weight = 1.0 if snap else min(1.0, self.weight + dt / ENABLE_TIME)
 
-  def lead_gap(self, *, extra_time, t_follow, comfort_brake, danger_factor, inv_base_lead_decel):
-    w = self.weight
+  def lead_gap(self, *, extra_time, comfort_brake):
     return LeadGap(
-      t_follow=(1.0 - w) * t_follow + w * REACTION,
-      comfort_brake=1.0 / ((1.0 - w) / comfort_brake + w / EGO_MAX_DECEL),
-      danger_factor=(1.0 - w) * danger_factor + w * DANGER_FACTOR,
-      inv_lead_decel=(1.0 - w) * inv_base_lead_decel + w * self.inv_lead_decel,
-      comfort_time=w * (COMFORT_TIME + max(0.0, extra_time)),
-      weight=w,
-      closing_factor=w * max(0.0, 1.0 / (2.0 * comfort_brake) - 1.0 / (2.0 * EGO_MAX_DECEL)),
-      closing_time=w * CLOSING_TIME,
+      t_follow=REACTION,
+      comfort_brake=EGO_MAX_DECEL,
+      danger_factor=DANGER_FACTOR,
+      inv_lead_decel=self.inv_lead_decel,
+      comfort_time=COMFORT_TIME + max(0.0, extra_time),
+      closing_factor=max(0.0, 1.0 / (2.0 * comfort_brake) - 1.0 / (2.0 * EGO_MAX_DECEL)),
+      closing_time=CLOSING_TIME,
     )
 
 
@@ -121,25 +126,44 @@ def equivalent_t_follow(v_ego, gap: LeadGap):
   return max(0.0, gap.t_follow + gap.comfort_time + v * (1.0 / (2.0 * gap.comfort_brake) - gap.inv_lead_decel / 2.0))
 
 
+def target_offset(v_ego, gap: LeadGap, t_follow, comfort_brake, stop_distance):
+  """How much more a lead obstacle under `gap` subtracts than a TF obstacle, at ego speeds v_ego.
+
+  obstacle - target_offset() puts a gap-safe lead obstacle on the TF obstacles' scale, so the
+  smallest value is the obstacle with the closest target."""
+  v = np.maximum(v_ego, 0.0)
+  return safe_distance(v, gap, stop_distance) - (v**2 / (2.0 * comfort_brake) + t_follow * v + stop_distance)
+
+
 class CutinCredit:
-  """Obstacle credit (m) for a lead that cut in inside the comfort target; it only shrinks."""
+  """Cost-reference credit (m) for a lead that cut in inside the comfort target; it only shrinks."""
 
   def __init__(self):
     self.track_id = None
+    self.distance = None
     self.credit = 0.0
 
   def reset(self):
     self.__init__()
     return 0.0
 
-  def update(self, *, enabled, track_id, distance, desired, closing_speed, lead_accel, cushion, dt):
+  def hold(self):
+    """No credit now (no lead, lane change, not engaged); the last lead is kept, so it gets none on return."""
+    self.credit = 0.0
+    return 0.0
+
+  def update(self, *, enabled, track_id, distance, desired, closing_speed, lead_accel, cushion, dt, grant=True):
     if not enabled or not math.isfinite(distance) or not math.isfinite(desired):
       return self.reset()
     braking = not lead_accel >= CUTIN_LEAD_ACCEL_MIN
-    if track_id != self.track_id:
+    same_lead = track_id == self.track_id or (
+      self.distance is not None and abs(float(distance) - self.distance) < SAME_LEAD_DISTANCE)
+    self.track_id, self.distance = track_id, float(distance)
+    if not grant:
+      return self.hold()
+    if not same_lead:
       # A new lead: credit the shortfall only for a non-braking lead at about ego speed or faster;
       # a closing or braking cut-in gets the full response at once.
-      self.track_id = track_id
       fits = closing_speed <= CUTIN_CLOSING_MAX and not braking
       # The comfort cushion stays as the initial gap error, so ego still eases off at once.
       shortfall = float(desired) - float(distance) - max(0.0, float(cushion))
