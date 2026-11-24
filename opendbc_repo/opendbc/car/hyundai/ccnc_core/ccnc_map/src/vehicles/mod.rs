@@ -90,6 +90,9 @@ pub struct Vehicle {
     pub off: f32,
     /// Absolute lane coordinate, NaN while the map has no coordinate for this car.
     pub u: f32,
+    /// The lane coordinate slots are picked from: the raw radar point, without `off`, filtered less than `u`, so a
+    /// car leaving or entering ego's lane changes slot near when it crosses the line. `u` keeps drawing the lateral.
+    pub u_slot: f32,
     pub ids: History<(f64, u32), 4>,
     pub hist: History<(f64, f32, f32), HISTORY_LEN>,
     pub link: Link,
@@ -111,6 +114,7 @@ impl Vehicle {
             vy: 0.,
             off: 0.,
             u: f32::NAN,
+            u_slot: f32::NAN,
             ids: History::default(),
             hist: History::default(),
             link,
@@ -161,19 +165,19 @@ impl Vehicle {
 
         let ego = world.pose.at(now);
         let (x, y) = ego.to_ego(sample.wx, sample.wy);
-        if let Some(u) =
-            world.vehicle_lane_coord(now, ego.s + x, ego.to_world(x, y - f64::from(self.off)))
-        {
-            self.u = if self.u.is_finite() {
-                // Filter the vehicle coordinate only. Ego lane movement is
-                // subtracted at display time and keeps its own bandwidth.
-                self.u + (0.17 * (u as f32 - self.u)).clamp(-0.1, 0.1)
-            } else {
-                u as f32
-            };
-        } else {
-            self.u = f32::NAN;
-        }
+        let coord = |y: f64| world.vehicle_lane_coord(now, ego.s + x, ego.to_world(x, y));
+        // Filter the vehicle coordinate only. Ego lane movement is
+        // subtracted at display time and keeps its own bandwidth.
+        self.u = smooth(self.u, coord(y - f64::from(self.off)), 0.17, 0.1);
+        self.u_slot = smooth(self.u_slot, coord(y), 0.5, 0.25);
+    }
+}
+
+fn smooth(previous: f32, raw: Option<f64>, alpha: f32, step: f32) -> f32 {
+    match raw {
+        Some(raw) if previous.is_finite() => previous + (alpha * (raw as f32 - previous)).clamp(-step, step),
+        Some(raw) => raw as f32,
+        None => f32::NAN,
     }
 }
 

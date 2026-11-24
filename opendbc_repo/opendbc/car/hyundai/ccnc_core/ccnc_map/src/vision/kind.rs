@@ -1048,6 +1048,7 @@ mod tests {
             vy: 0.,
             off: 0.,
             u: 0.5,
+            u_slot: 0.5,
             ids: History::default(),
             hist: History::default(),
             link: Link::Sure,

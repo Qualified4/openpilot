@@ -19,6 +19,10 @@ pub const STATUS_BLINKER: u8 = 8;
 const INPUT_GAP: f64 = 0.25;
 const LIVE_POSE_MAX_AGE: f64 = 0.5;
 const MAX_EGO_LANE_RATE: f64 = 1.;
+/// Ego is changing lanes more than this far off its lane center ...
+const EGO_CHANGE_CENTER: f64 = 0.25;
+/// ... and for this long after.
+const EGO_CHANGE_HOLD_S: f64 = 3.;
 
 pub struct World {
     pub pose: Pose,
@@ -36,6 +40,7 @@ pub struct World {
     invalid_motion: bool,
     no_live_pose: bool,
     blinker: bool,
+    ego_change_until: f64,
 }
 
 impl Default for World {
@@ -69,6 +74,7 @@ impl World {
             invalid_motion: false,
             no_live_pose: true,
             blinker: false,
+            ego_change_until: f64::NEG_INFINITY,
         }
     }
 
@@ -202,6 +208,13 @@ impl World {
     pub fn u_ego(&self) -> f64 {
         self.u_ego.map_or(f64::NAN, |(_, u)| u)
     }
+
+    /// Ego is changing lanes: it was off its lane center within `EGO_CHANGE_HOLD_S`. This process runs with the lane
+    /// change freeze off, so `STATUS_FROZEN` cannot tell. The blinker does not count: it is on in 17% of the 65
+    /// replayed segments, and the cut-outs it covers kept their old slot lag.
+    pub fn ego_changing(&self) -> bool {
+        self.u_ego.is_some_and(|(t, _)| t <= self.ego_change_until)
+    }
     pub fn generation(&self) -> u32 {
         self.generation
     }
@@ -231,6 +244,7 @@ impl World {
         self.u_ego = None;
         self.camera_lane_bias = 0.;
         self.camera_lanes = None;
+        self.ego_change_until = f64::NEG_INFINITY;
         self.generation = self.generation.wrapping_add(1);
         self.invalid_motion = false;
     }
@@ -275,6 +289,11 @@ impl World {
             };
             (t, u)
         });
+        if let Some((t, u)) = self.u_ego {
+            if (u - (u.floor() + 0.5)).abs() > EGO_CHANGE_CENTER {
+                self.ego_change_until = t + EGO_CHANGE_HOLD_S;
+            }
+        }
         let frozen = if self.freeze_enabled && !self.no_live_pose && self.u_ego.is_some() {
             self.lane_change.step(t, self.u_ego())
         } else {

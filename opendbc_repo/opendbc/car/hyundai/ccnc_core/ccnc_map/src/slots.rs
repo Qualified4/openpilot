@@ -46,7 +46,11 @@ pub const VISION_CONFIRMS: u8 = 2;
 #[derive(Clone, Copy)]
 pub(crate) struct Observation {
     pub x: f64,
+    /// Lane relative to ego from `Vehicle::u`, for the lateral and the rear slots.
     pub r: f64,
+    /// Lane relative to ego that picks the front slot: from `Vehicle::u_slot`, or `r` while ego changes lanes, when
+    /// the faster coordinate would move cars between slots early as ego crosses the line.
+    pub r_slot: f64,
     pub speed: f64,
 }
 
@@ -65,9 +69,11 @@ impl Observation {
         } else {
             mapped
         };
+        let fast = f64::from(car.u_slot) - u_ego;
+        let r_slot = if fast.is_finite() && !world.ego_changing() { fast } else { r };
         let (sin, cos) = pose.heading.sin_cos();
         let speed = cos * f64::from(car.vx) + sin * f64::from(car.vy);
-        (r.is_finite() && speed.is_finite()).then_some(Self { x, r, speed })
+        (r.is_finite() && speed.is_finite()).then_some(Self { x, r, r_slot, speed })
     }
 }
 
@@ -229,20 +235,20 @@ impl Assigner {
             if !current(car.seen_radar.max(car.seen_vision)) {
                 continue;
             }
-            let Some(Observation { x, r, speed }) = Observation::from_car(car, world, radar) else {
+            let Some(Observation { x, r, r_slot, speed }) = Observation::from_car(car, world, radar) else {
                 continue;
             };
             let i = match self.drawings.binary_search_by_key(&car.vid, |d| d.vid) {
                 Ok(i) => i,
                 Err(i) if self.drawings.len() < MAX_VEHICLES => {
-                    self.drawings.insert(i, Drawing::new(car.vid, r, now));
+                    self.drawings.insert(i, Drawing::new(car.vid, r_slot, now));
                     i
                 }
                 Err(_) => continue,
             };
             let drawing = &mut self.drawings[i];
             drawing.seen = now;
-            drawing.observe_lane(r);
+            drawing.observe_lane(r_slot);
             let v_rel = speed - world.pose.speed();
             let opening_gap = ((v_rel - 0.5) / 1.5).clamp(0., 1.);
             let mut lateral_target = -LANE_WIDTH * r;

@@ -25,6 +25,7 @@ fn vehicle(world: &World, vid: u32, now: f64, x: f64, r: f64) -> Vehicle {
         vy: 0.,
         off: 0.,
         u: (world.u_ego() + r) as f32,
+        u_slot: (world.u_ego() + r) as f32,
         ids: Default::default(),
         hist: Default::default(),
         link: ccnc_map::vehicles::Link::Sure,
@@ -69,6 +70,7 @@ fn slide(world_y: f64, start: usize, end: usize) {
             let mut qualified = vehicle(&world, car.vid, t, f64::from(car.wx), 0.);
             qualified.wy = car.wy;
             qualified.u = car.u;
+            qualified.u_slot = car.u_slot;
             qualified
         });
         let slots = assigner.update(t, cars.next().as_slice(), &world, None);
@@ -127,6 +129,7 @@ fn slot_distance_is_the_radar_distance_at_100_kph() {
                 let mut qualified = vehicle(&world, car.vid, t, f64::from(car.wx), 0.);
                 qualified.wy = car.wy;
                 qualified.u = car.u;
+                qualified.u_slot = car.u_slot;
                 qualified
             })
             .collect();
@@ -230,6 +233,95 @@ fn a_new_radar_frame_replaces_an_unseen_owner() {
     assert_eq!(slots[FF].unwrap().vid, 2);
 }
 
+/// A car 12 m ahead leaves ego's lane to the right at 1.5 m/s, its first step a 0.4 m jump the tracker takes for a
+/// reflection, while ego drives `ego_off` lanes right of its lane center. Returns, per radar frame from the start of
+/// the move, the drawn slot, `r` from `u` and `r` from `u_slot`.
+fn near_cut_out(ego_off: f64) -> Vec<(usize, f64, f64)> {
+    let mut world = World::new(RADAR_LAG, false);
+    world.blinker(true);
+    let mut tracker = Tracker::default();
+    let mut assigner = Assigner::default();
+    let mut frames = Vec::new();
+    let mut last_u: Option<f32> = None;
+    for step in 0..80 {
+        let t = f64::from(step) * 0.05;
+        world.live_pose(t, 0.);
+        world.car_state(t, 20., false);
+        world.model(t, &model(-3.5 * ego_off, 0., 0.));
+        world.radar(t);
+        let y = if t < 1. { 0. } else { -0.4 - 1.5 * (t - 1.) };
+        tracker.update(t, &[(1, 12., y, 0.)], &world);
+        let car = &tracker.vehicles()[0];
+        if let Some(last) = last_u {
+            assert!((car.u - last).abs() <= 0.1 + 1e-6, "u keeps its 0.1 lane step at t={t}");
+        }
+        last_u = Some(car.u);
+        let mut shown = vehicle(&world, car.vid, t, f64::from(car.wx), 0.);
+        (shown.wy, shown.off, shown.u, shown.u_slot) = (car.wy, car.off, car.u, car.u_slot);
+        let slots = assigner.update(t, &[shown], &world, None);
+        let (index, slot) = slots.iter().enumerate().find_map(|(i, s)| s.map(|s| (i, s))).expect("the car is drawn");
+        let u_ego = world.u_ego();
+        let r = f64::from(car.u) - u_ego;
+        assert!((f64::from(slot.lane_coord_rel) - r).abs() < 1e-6, "lane_coord_rel stays from u");
+        if t >= 1. {
+            frames.push((index, r, f64::from(car.u_slot) - u_ego));
+        }
+    }
+    assert!(frames[0].1 < 0.2, "the reflection jump stays in off");
+    frames
+}
+
+fn switch_frame(frames: &[(usize, f64, f64)]) -> usize {
+    assert_eq!(frames[0].0, FF);
+    let switch = frames.iter().position(|f| f.0 == RF).expect("the car reaches RF");
+    assert!(frames[switch..].iter().all(|f| f.0 == RF), "one switch");
+    switch
+}
+
+#[test]
+fn a_near_cut_out_changes_slot_from_u_slot_before_u_crosses() {
+    // The blinker alone (on in every frame here) is no lane change.
+    let frames = near_cut_out(0.);
+    let switch = switch_frame(&frames);
+    let (_, r, r_slot) = frames[switch];
+    assert!(r_slot >= 0.52 - 1e-9 && frames[switch - 1].2 < 0.52, "switches as u_slot clears the margin");
+    assert!(r < 0.5, "u still has the car in ego's lane: {r}");
+    let late = frames.iter().position(|f| f.1 >= 0.52).expect("u crosses later");
+    assert!(late >= switch + 5, "at least 0.25 s earlier: {switch} vs {late}");
+}
+
+#[test]
+fn an_ego_lane_change_keeps_the_slot_on_u() {
+    let early = switch_frame(&near_cut_out(0.));
+    let frames = near_cut_out(0.3);
+    let switch = switch_frame(&frames);
+    assert!(frames[switch].1 >= 0.52 - 1e-9 && frames[switch - 1].1 < 0.52, "switches as u clears the margin");
+    assert!(frames[switch - 1].2 >= 0.52, "not on u_slot");
+    assert!(switch > early);
+}
+
+#[test]
+fn ego_changing_follows_the_lane_center_with_a_3_s_hold() {
+    let mut world = World::new(RADAR_LAG, false);
+    let mut changing = Vec::new();
+    for step in 0..200 {
+        let t = f64::from(step) * 0.05;
+        world.live_pose(t, 0.);
+        world.car_state(t, 20., false);
+        // Ego 0.3 lane off its center from 2 s to 3 s, back on it after.
+        let y = if (2. ..3.).contains(&t) { -0.3 * 3.5 } else { 0. };
+        world.model(t, &model(y, 0., 0.));
+        world.radar(t);
+        changing.push((t, world.ego_changing()));
+    }
+    let at = |t: f64| changing.iter().find(|(s, _)| (s - t).abs() < 1e-6).unwrap().1;
+    assert!(!at(1.9));
+    assert!(at(2.5) && at(5.5));
+    assert!(!at(6.5));
+    world.blinker(true);
+    assert!(!world.ego_changing(), "the blinker alone is no lane change");
+}
+
 #[test]
 fn u_step_limited_to_0_1_lane() {
     let mut world = World::default();
@@ -253,7 +345,7 @@ fn unmapped_near_car_uses_ego_lane_lateral() {
     let world = road();
     let mut near = vehicle(&world, 1, 0., 4.9, 0.);
     near.wy = -3.5;
-    near.u = f32::NAN;
+    (near.u, near.u_slot) = (f32::NAN, f32::NAN);
     let slots = Assigner::default().update(0., &[near], &world, None);
     let shown = slots[RF].unwrap();
     assert!((shown.lane_coord_rel - 1.).abs() < 1e-6);
