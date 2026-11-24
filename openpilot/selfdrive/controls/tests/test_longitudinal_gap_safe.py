@@ -23,31 +23,26 @@ def ct(v, g):
 
 
 def test_owner_constants():
-  assert gs.LEAD_DECELS == (5.0, 6.0, 7.0, 8.0) and gs.REACTION == 0.6 and gs.GAP_LEVELS == 4
+  assert gs.LEAD_DECELS == (4.25, 5.0, 6.5, 8.0) and gs.REACTION == 0.6 and gs.GAP_LEVELS == 4
+  assert gs.COMFORT_TIMES == (0.05, 0.20, 0.30, 0.35)
 
 
-@pytest.mark.parametrize("kph,gaps", [(10, (6.5, 6.6, 6.7, 6.8)), (30, (13.4, 14.5, 15.3, 16.0)), (100, (49.4, 62.2, 71.4, 78.3))])
+@pytest.mark.parametrize("kph,gaps", [(30, (9.6, 12.1, 14.5, 16.0)), (50, (14.1, 19.6, 25.5, 29.0)), (80, (21.8, 33.8, 47.4, 55.7)),
+                                      (100, (27.4, 45.2, 65.8, 78.3))])
 def test_steady_gap_per_level_and_speed(kph, gaps):
-  """Equal-speed comfort targets (the 0a704cf3 gaps); no level below 0.35 s from 40 km/h."""
-  assert all(min(times) >= 0.35 for times in gs.COMFORT_TIMES)
+  """Equal-speed comfort targets of the owner's choice C (level 1 about the old TF level 1, level 4 as 0a704cf3)."""
   v = kph / 3.6
   for decel, expected in zip(gs.LEAD_DECELS, gaps, strict=True):
     g = full_gap(lead_decel=decel, v_ego=v)
-    assert gs.desired_distance(v, v, g, STOP) == pytest.approx(expected, abs=0.2)
+    assert gs.desired_distance(v, v, g, STOP) == pytest.approx(expected, abs=0.1)
 
 
-def test_level_ramp_blends_the_comfort_curve():
-  lo, hi = gs.comfort_curve(1 / 5.0), gs.comfort_curve(1 / 8.0)
-  assert lo == pytest.approx(gs.COMFORT_TIMES[0]) and hi == pytest.approx(gs.COMFORT_TIMES[3])
-  mid = gs.comfort_curve(1 / 6.5)   # halfway from level 2 to level 3
-  assert mid == pytest.approx(tuple(0.5 * (a + b) for a, b in zip(gs.COMFORT_TIMES[1], gs.COMFORT_TIMES[2], strict=True)))
-  # The ramp itself, on a table with level differences.
-  table = ((0.1, 0.2), (0.3, 0.4), (0.5, 0.6), (0.7, 0.8))
-  old, gs.COMFORT_TIMES = gs.COMFORT_TIMES, table
-  try:
-    assert gs.comfort_curve(1 / 6.5) == pytest.approx((0.4, 0.5))
-  finally:
-    gs.COMFORT_TIMES = old
+def test_level_ramp_blends_the_comfort_time():
+  assert gs.level_comfort_time(1 / 4.25) == pytest.approx(0.05) and gs.level_comfort_time(1 / 8.0) == pytest.approx(0.35)
+  # halfway in lead decel from level 3 to level 4, and outside the table clamped
+  assert gs.level_comfort_time(1 / 7.25) == pytest.approx(0.325)
+  assert gs.level_comfort_time(1 / 3.0) == pytest.approx(0.05) and gs.level_comfort_time(1 / 9.0) == pytest.approx(0.35)
+  assert full_gap(lead_decel=5.0, v_ego=10.0).comfort_time == full_gap(lead_decel=5.0, v_ego=30.0).comfort_time == pytest.approx(0.20)
 
 
 def test_formula_at_full_weight():
@@ -210,6 +205,56 @@ def test_cutin_credit_vision_leads_are_not_one_car():
   assert cutin(c, track_id=-1, distance=20.0) > 0.0      # another vision-only lead, 10 m closer
 
 
+def followed(c, seconds=gs.BRAKE_HOLD_LEAD_AGE + 0.5, **kw):
+  """A settled lead (no shortfall) followed long enough for the brake hold."""
+  for _ in range(round(seconds / DT)):
+    cutin(c, distance=30.0, desired=20.0, closing_speed=0.0, v_ego=12.0, v_lead=12.0, **kw)
+
+
+def brake_step(c, **kw):
+  args = {"distance": 15.0, "desired": 20.0, "closing_speed": 0.5, "lead_accel": -1.4, "v_ego": 12.0, "v_lead": 11.0}
+  return cutin(c, **{**args, **kw})
+
+
+def test_brake_hold_keeps_the_shortfall_while_a_followed_lead_brakes():
+  c = gs.CutinCredit()
+  followed(c)
+  for _ in range(round(gs.BRAKE_HOLD_CONFIRM / DT)):
+    assert brake_step(c) == 0.0                                 # full response until the braking is confirmed mild
+  assert brake_step(c) == pytest.approx(5.0) and c.relaxed
+  assert brake_step(c, distance=14.0) == pytest.approx(5.0)   # held, not grown
+  # The braking ends: the shortfall then becomes the credit, recovered at POST_BRAKE_RECOVER_RATE.
+  assert brake_step(c, lead_accel=0.0, distance=13.0) == pytest.approx(7.0)
+  assert brake_step(c, lead_accel=0.0, distance=13.0) == pytest.approx(7.0 - gs.POST_BRAKE_RECOVER_RATE * DT)
+
+
+def test_brake_hold_not_for_hard_braking_a_new_lead_or_low_speed():
+  c = gs.CutinCredit(); followed(c)
+  for _ in range(round(gs.BRAKE_HOLD_CONFIRM / DT) + 1):
+    brake_step(c)
+  assert c.credit > 0.0
+  assert brake_step(c, lead_accel=gs.BRAKE_HOLD_ACCEL_MIN - 0.1) == 0.0
+  assert brake_step(c, lead_accel=0.0) == 0.0   # no post-brake credit after hard braking either
+  c = gs.CutinCredit(); followed(c, seconds=gs.BRAKE_HOLD_LEAD_AGE - 1.0)
+  assert brake_step(c) == 0.0 and brake_step(c, lead_accel=0.0) == 0.0
+  for kw in ({"v_lead": gs.POST_BRAKE_SPEED_MIN - 0.1}, {"closing_speed": gs.CUTIN_CLOSING_MAX + 0.1}):
+    c = gs.CutinCredit(); followed(c)
+    assert max(brake_step(c, **kw) for _ in range(round(2 * gs.BRAKE_HOLD_CONFIRM / DT))) == 0.0
+  # A lead ramping through -2 within the confirmation time is never held.
+  c = gs.CutinCredit(); followed(c)
+  ramp = np.linspace(-0.6, -4.0, round(gs.BRAKE_HOLD_CONFIRM / DT))
+  assert max(brake_step(c, lead_accel=float(a)) for a in ramp) == 0.0 and brake_step(c, lead_accel=0.0) == 0.0
+
+
+def test_brake_hold_not_for_a_cutin_with_credit_left():
+  c = gs.CutinCredit()
+  assert cutin(c) > 0.0 and not c.relaxed
+  for _ in range(round(gs.BRAKE_HOLD_LEAD_AGE / DT) + 2):
+    cutin(c, distance=20.0, desired=23.5)   # cut-in credit still recovering
+  assert c.credit > 0.0
+  assert brake_step(c, distance=20.0, desired=23.5) == 0.0
+
+
 @pytest.mark.parametrize("kw", [{"enabled": False}, {"distance": float("nan")}])
 def test_cutin_credit_resets(kw):
   c = gs.CutinCredit()
@@ -256,7 +301,8 @@ def solve(native, *, cycles=20, reset=False, distance=30.0, lead_speed=V80, trac
 
 def test_lead_nodes_use_the_safety_distance(native):
   mpc = native.LongitudinalMpc()
-  mpc.gap_safe_state.update(enabled=True, lead_decel=6.0, snap=True, dt=DT)
+  decel = gs.LEAD_DECELS[1]   # the default personality's level
+  mpc.gap_safe_state.update(enabled=True, lead_decel=decel, snap=True, dt=DT)
   on = solve(native, mpc=mpc)
   assert on.gap_safe_state.active and on.source == "lead0"
   lead_nodes = np.ones(native.N + 1, dtype=bool)   # 30 m behind a same-speed lead: leadOne binds every node
@@ -264,11 +310,11 @@ def test_lead_nodes_use_the_safety_distance(native):
   np.testing.assert_allclose(on.params[lead_nodes, 5], 1.0)
   np.testing.assert_allclose(on.params[lead_nodes, 6], 4.0)
   g = on.lead_gap
-  expected = 0.6 * V80 + V80 ** 2 / 8.0 - V80 ** 2 / 12.0 + STOP + ct(V80, g) * V80
+  expected = 0.6 * V80 + V80 ** 2 / 8.0 - V80 ** 2 / (2 * decel) + STOP + ct(V80, g) * V80
   assert on.base_desired_distances[0] == pytest.approx(expected)
   assert on.t_follow == pytest.approx(gs.equivalent_t_follow(V80, g))
-  # The lead obstacle uses v_lead^2 / (2 * 6), moved out by at most what is left of the first-sight credit.
-  obstacle = 30.0 + V80 ** 2 / 12.0
+  # The lead obstacle uses v_lead^2 / (2 * decel), moved out by at most what is left of the first-sight credit.
+  obstacle = 30.0 + V80 ** 2 / (2 * decel)
   assert obstacle - 0.5 <= on.params[0, 2] <= obstacle + on.cutin_credit.credit + 0.5
   # Comfort time rides on the reference (yref) only.
   assert np.all(on.lead_gap_margins[:, 0] > 0.0)
@@ -282,8 +328,8 @@ def test_cruise_nodes_keep_tf_values(native):
   np.testing.assert_allclose(far.params[cruise_nodes][:, [4, 5, 6]], [[0.62, native.LEAD_DANGER_FACTOR, 2.4]] * int(cruise_nodes.sum()))
 
 
-@pytest.mark.parametrize("personality,decel", [(log.LongitudinalPersonality.aggressive, 5.0),
-                                               (log.LongitudinalPersonality.moreRelaxed, 8.0)])
+@pytest.mark.parametrize("personality,decel", [(log.LongitudinalPersonality.aggressive, gs.LEAD_DECELS[0]),
+                                               (log.LongitudinalPersonality.moreRelaxed, gs.LEAD_DECELS[3])])
 def test_gap_level_selects_the_lead_decel(native, personality, decel):
   on = solve(native, reset=True, personality=personality, cycles=2)
   assert on.gap_safe_state.inv_lead_decel == pytest.approx(1 / decel)
@@ -312,7 +358,7 @@ def test_blended_mode_constrains_at_the_comfort_target(native):
 
 def test_lead_inside_the_comfort_target_binds(native):
   """Between d_min and the comfort target the lead, not cruise, binds the first node (source lead0)."""
-  g = full_gap()
+  g = full_gap(lead_decel=gs.LEAD_DECELS[1])
   d = float(0.5 * (gs.min_distance(V80, V80, g, STOP) + gs.desired_distance(V80, V80, g, STOP)) + 1.0)
   on = solve(native, distance=d, cycles=3)
   assert on.source == "lead0"
@@ -411,3 +457,28 @@ def test_comfort_binding_only_takes_over_from_cruise(native):
   preferred = targets.copy()
   preferred[:, :2] -= margins
   np.testing.assert_array_equal(native.bind_obstacles(targets, preferred), [0, 3, 1, 2])
+
+
+def test_lead_decel_trend_tau_only_for_moderate_braking_that_eases(native):
+  def run(accels, track_id=1, index=0, age=gs.BRAKE_HOLD_LEAD_AGE):
+    mpc = native.LongitudinalMpc()
+    mpc.cutin_credit.age = age   # a lead followed long enough (CutinCredit keeps this)
+    out = [mpc.lead_decel_trend_tau(index, NS(status=True, radarTrackId=track_id, aLeadK=a)) for a in accels]
+    return mpc, out
+  n = round(native.LEAD_DECEL_TREND_TIME / DT)
+  easing = [-1.5] * 10 + list(np.linspace(-1.5, -0.5, n + 1))   # +2 m/s^3 for 0.5 s
+  _, out = run(easing)
+  t_end = 0.5 / 2.0
+  assert out[-1] == pytest.approx(min(native.LEAD_DECEL_TREND_TAU_MAX, 4.0 / t_end ** 2))
+  assert run(easing, index=1)[1][-1] == 0.0 and run(easing, age=1.0)[1][-1] == 0.0   # leadTwo, a new lead
+  assert run([-1.5] * 20)[1][-1] == 0.0                                       # steady braking
+  assert run([-0.5] * 10 + list(np.linspace(-0.5, -1.5, n + 1)))[1][-1] == 0.0   # braking harder
+  assert run([-3.0] * 10 + list(np.linspace(-1.5, -0.5, n + 1)))[1][-1] == 0.0   # after hard braking
+  mpc, _ = run(easing)
+  assert mpc.lead_decel_trend_tau(0, NS(status=True, radarTrackId=2, aLeadK=-0.4)) == 0.0   # new track
+  assert mpc.lead_decel_trend_tau(0, NS(status=False, radarTrackId=2, aLeadK=-0.4)) == 0.0 and not mpc.lead_accel_hist[0]
+  # The cost-side prediction lets that braking end sooner; the obstacle prediction keeps the radar's decay.
+  lead = NS(status=True, dRel=30.0, vLead=10.0, aLeadK=-1.0, aLeadTau=1.5)
+  full, _, cost, trend = mpc.process_lead(lead, 16.0)
+  assert trend[-1, 1] > full[-1, 1] and cost[-1, 1] == pytest.approx(trend[-1, 1])
+  assert np.allclose(mpc.process_lead(lead, 0.0)[3], full)

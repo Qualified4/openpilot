@@ -12,13 +12,12 @@ Cruise, traffic-stop and Tesla-stop obstacles keep the TF values. Because the tw
 different distances, the MPC compares obstacles by their targets (target_offsets()), not by raw value.
 
 The comfort target (cost reference only) is
-  d_min + comfort_time(level, v) * v + closing,
+  d_min + comfort_time(level) * v + closing,
   closing = CLOSING_TIME * (v - v_lead)+ + (v^2 - v_lead^2)+ * (1 / (2 * comfort_brake) - 1 / (2 * EGO_MAX_DECEL)):
 closing on a slower or stopping lead, ego plans to shed the speed difference at comfort_brake, not at
 its limit, and keeps CLOSING_TIME per m/s of closing speed, so it starts braking earlier. At equal
-speed closing is 0, so the steady following gap is d_min + comfort_time * v. comfort_time follows
-COMFORT_TIMES over COMFORT_SPEEDS per level: the levels differ more at city speed and less on the
-highway, where v^2 / (2 * lead_decel) already separates them. A level change ramps it with the lead decel.
+speed closing is 0, so the steady following gap is d_min + comfort_time * v. comfort_time is COMFORT_TIMES
+per level at every speed; a level change ramps it with the lead decel.
 gap_reserve() is the gap above the steady target; the planner uses it to pull in less of the lead-decel
 preview. Taking it off the closing terms as well was replayed and dropped: departures that open the gap
 re-closed it (gap falling > 2 m after its peak: 15 -> 20 % of 20 departures) and level 2 steady-following
@@ -50,17 +49,15 @@ from opendbc.car.interfaces import ACCEL_MIN
 # The planner never requests more braking than ACCEL_MIN = -4.0 (opendbc/car/interfaces.py;
 # Hyundai CarControllerParams.ACCEL_MIN is also -4.0), so that is ego's assumed maximum.
 EGO_MAX_DECEL = -ACCEL_MIN
-# s x v above d_min for the steady comfort target per level (1-4), at COMFORT_SPEEDS (m/s, 40 / 100 km/h);
-# a level change blends them with the lead decel. All 0.35 s for now (the 0a704cf3 gaps, equal speed with
-# stop distance 3.7 m: 30 km/h 13.4/14.5/15.3/16.0 m, 100 km/h 49.4/62.2/71.4/78.3 m). Replayed and not
-# taken: less than 0.35 s from 40 km/h cost a meter at a hard stop beyond the assumed lead decel for every
-# meter of steady gap (level 1 with 0.19 s at 80 km/h: F80 -6 -0.88 -> -3.55 m), and 0.15 / 0.27 s in town
-# on levels 1-2 raised the steady-following brake entries (2.02 -> 2.52, 2.09 -> 2.31 per minute).
-COMFORT_SPEEDS = (40.0 / 3.6, 100.0 / 3.6)
-COMFORT_TIMES = ((0.35, 0.35), (0.35, 0.35), (0.35, 0.35), (0.35, 0.35))
+# s x v above d_min for the steady comfort target per level (1-4), at every speed; a level change blends them
+# with the lead decel. Owner's choice C (work/drive-20261125/REPORT_GAP47D_KO.md): level 1 at about the old
+# TF level 1 gap (equal speed, stop distance 3.7 m: 30/50/80/100 km/h 9.6/14.1/21.8/27.4 m), level 4 as before
+# (16.0/29.0/55.7/78.3 m). Level 1 keeps less margin for a lead braking harder than assumed than 0a704cf3
+# (synthetic F50 -6: 1.51 -> -3.90 m), still 0.45-0.85 m more than the old TF level 1 in all 9 hard stops.
+COMFORT_TIMES = (0.05, 0.20, 0.30, 0.35)
 DANGER_FACTOR = 1.0        # d_min is already the minimum, so no 0.8 shrink
-LEAD_DECEL_INV_RATE = 0.025  # 1/(m/s^2) per s: a level change that lengthens the gap (5 -> 8) takes 3 s
-LEAD_DECELS = (5.0, 6.0, 7.0, 8.0)  # m/s^2 assumed lead braking for gap levels 1-4
+LEAD_DECEL_INV_RATE = 0.025  # 1/(m/s^2) per s: a level change that lengthens the gap (4.25 -> 8) takes 4.4 s
+LEAD_DECELS = (4.25, 5.0, 6.5, 8.0)  # m/s^2 assumed lead braking for gap levels 1-4
 REACTION = 0.6             # s from the lead's braking until ego's braking starts
 GAP_LEVELS = len(LEAD_DECELS)
 CLOSING_TIME = 1.0         # s x closing speed (v - v_lead)+ added to the comfort target
@@ -80,6 +77,26 @@ COMFORT_FADE_ACCELS = (-2.0, -1.5)
 # m/s^2 lead accel: no gap reserve at or below the first, full reserve from the second.
 RESERVE_LEAD_ACCELS = (-1.0, -0.6)
 CUTIN_HOLD_EXPIRE = 2.0    # s without a lead after which the last lead is forgotten
+# The same lead ending its braking (aLeadK back at or above CUTIN_LEAD_ACCEL_MIN) with ego inside the steady
+# target gets the shortfall as credit too, recovered at POST_BRAKE_RECOVER_RATE (ego about 1.8 km/h below the
+# lead) instead of braking on until the gap is back. Replay 479 10:35: the lead settled at 31 km/h 4.7 m inside
+# the target and ego braked on to 26 km/h. Only with ego and lead at or above POST_BRAKE_SPEED_MIN (m/s):
+# near a stop the credit would move the stop closer.
+POST_BRAKE_RECOVER_RATE = 0.5
+POST_BRAKE_SPEED_MIN = 5.0
+# The same lead starting to brake no harder than BRAKE_HOLD_ACCEL_MIN (m/s^2, aLeadK) with ego inside the steady
+# target: that shortfall is held as credit while it brakes, so ego answers the lead's braking and does not also
+# win the old shortfall back during it (479 10:35: ego -1.7 for a lead at -1.4, ending 4 km/h below it).
+# Harder lead braking drops the credit at once and gives no post-brake credit for that braking either (a lead
+# easing off from -3 may brake again: synthetic F50 -3 / release / -6 lost 0.3 m); below POST_BRAKE_SPEED_MIN
+# it recovers at CUTIN_RECOVER_RATE.
+BRAKE_HOLD_ACCEL_MIN = -2.0
+# s the same lead must have been followed for the hold and the post-brake credit; a cut-in braking within it, or
+# with cut-in credit left, ends the credit at once as before (synthetic cut-in then -4 at levels 2-4: -0.7 m).
+BRAKE_HOLD_LEAD_AGE = 5.0
+# s the braking must stay no harder than BRAKE_HOLD_ACCEL_MIN before the hold starts: a lead whose aLeadK is
+# still ramping down to -4 was held for 0.3 s (synthetic cut-in then -4 at level 2: -0.11 m).
+BRAKE_HOLD_CONFIRM = 0.5
 
 
 class LeadGap(NamedTuple):
@@ -92,7 +109,6 @@ class LeadGap(NamedTuple):
   closing_factor: float = 0.0
   closing_time: float = 0.0
   fade_weight: float = 1.0  # how much of the low-speed comfort fade applies (COMFORT_FADE_ACCELS)
-  comfort_curve: tuple = ()  # comfort time at COMFORT_SPEEDS; empty: comfort_time at every speed
 
 
 class GapSafeState:
@@ -116,28 +132,26 @@ class GapSafeState:
       self.inv_lead_decel = max(target, self.inv_lead_decel - LEAD_DECEL_INV_RATE * dt)
 
   def lead_gap(self, *, comfort_brake, v_ego=0.0, a_ego=0.0):
-    curve = comfort_curve(self.inv_lead_decel)
     return LeadGap(
       t_follow=REACTION,
       comfort_brake=EGO_MAX_DECEL,
       danger_factor=DANGER_FACTOR,
       inv_lead_decel=self.inv_lead_decel,
-      comfort_time=float(np.interp(v_ego, COMFORT_SPEEDS, curve)),
+      comfort_time=level_comfort_time(self.inv_lead_decel),
       closing_factor=max(0.0, 1.0 / (2.0 * comfort_brake) - 1.0 / (2.0 * EGO_MAX_DECEL)),
       closing_time=CLOSING_TIME,
       fade_weight=float(np.interp(a_ego, COMFORT_FADE_ACCELS, (0.0, 1.0))),
-      comfort_curve=curve,
     )
 
 
-def comfort_curve(inv_lead_decel):
-  """Comfort times at COMFORT_SPEEDS for a (possibly ramping) lead decel: levels blend like the decel."""
+def level_comfort_time(inv_lead_decel):
+  """Comfort time for a (possibly ramping) lead decel: levels blend like the decel."""
   level = float(np.clip(1.0 / inv_lead_decel, LEAD_DECELS[0], LEAD_DECELS[-1]))
-  return tuple(float(np.interp(level, LEAD_DECELS, [times[i] for times in COMFORT_TIMES])) for i in range(len(COMFORT_SPEEDS)))
+  return float(np.interp(level, LEAD_DECELS, COMFORT_TIMES))
 
 
 def comfort_times(v_ego, gap: LeadGap):
-  return np.interp(v_ego, COMFORT_SPEEDS, gap.comfort_curve) if gap.comfort_curve else gap.comfort_time
+  return gap.comfort_time
 
 
 def stopped_equivalence(v_lead, gap: LeadGap):
@@ -205,13 +219,21 @@ def target_offset(v_ego, gap: LeadGap, t_follow, comfort_brake, stop_distance):
 
 
 class CutinCredit:
-  """Credit (m) for a lead that cut in inside the comfort target; it only shrinks."""
+  """Credit (m) for a lead inside the steady target: a cut-in that is not chased, or the shortfall held through
+  and after a followed lead's moderate braking (relaxed). It is recovered gradually."""
 
   def __init__(self):
     self.track_id = None
     self.distance = None
     self.credit = 0.0
     self.hold_time = 0.0
+    self.rate = CUTIN_RECOVER_RATE
+    self.braking_seen = False
+    self.brake_min = 0.0  # lowest lead accel of the braking that braking_seen marks
+    self.relaxed = False  # credit from the brake hold / post-brake (not a cut-in): bounded by d_min, not the TF target
+    self.age = 0.0  # s this lead has been followed
+    self.brake_time = 0.0  # s since the braking that braking_seen marks started
+    self.hold_pending = False  # that braking may be held once it lasted BRAKE_HOLD_CONFIRM
 
   def reset(self):
     self.__init__()
@@ -226,7 +248,8 @@ class CutinCredit:
       self.track_id, self.distance = None, None
     return 0.0
 
-  def update(self, *, enabled, track_id, distance, desired, closing_speed, lead_accel, cushion, dt, grant=True):
+  def update(self, *, enabled, track_id, distance, desired, closing_speed, lead_accel, cushion, dt, grant=True,
+             v_ego=0.0, v_lead=0.0):
     """desired: the steady comfort target (no closing terms)."""
     if not enabled or not math.isfinite(distance) or not math.isfinite(desired):
       return self.reset()
@@ -237,14 +260,47 @@ class CutinCredit:
     self.hold_time = 0.0  # the lead is seen
     if not grant:
       self.credit = 0.0
+      self.braking_seen = False
       return 0.0
+    self.age = self.age + max(0.0, float(dt)) if same_lead else 0.0
     if not same_lead:
+      self.braking_seen = braking
+      self.brake_min = min(0.0, float(lead_accel))
+      self.rate = CUTIN_RECOVER_RATE
       # A new lead: credit the shortfall only for a non-braking lead at about ego speed or faster;
       # a closing or braking cut-in gets the full response at once.
       fits = closing_speed <= CUTIN_CLOSING_MAX and not braking
       # The comfort cushion stays as the initial gap error, so ego still eases off at once.
       shortfall = float(desired) - float(distance) - max(0.0, float(cushion))
       self.credit = max(0.0, shortfall) if fits else 0.0
+      self.relaxed = False
       return self.credit
-    self.credit = 0.0 if braking else max(0.0, self.credit - CUTIN_RECOVER_RATE * dt)
+    if braking:
+      fast = min(float(v_ego), float(v_lead)) >= POST_BRAKE_SPEED_MIN
+      self.brake_min = min(self.brake_min if self.braking_seen else 0.0, float(lead_accel))
+      if self.brake_min < BRAKE_HOLD_ACCEL_MIN:
+        self.credit = 0.0
+      elif not self.braking_seen:  # braking starts: full response first, the hold may follow
+        cutin_left = self.credit > 0.0 and not self.relaxed
+        self.hold_pending = fast and closing_speed <= CUTIN_CLOSING_MAX and self.age >= BRAKE_HOLD_LEAD_AGE and not cutin_left
+        self.credit, self.relaxed, self.brake_time = 0.0, False, 0.0
+      elif not fast:
+        self.credit = max(0.0, self.credit - CUTIN_RECOVER_RATE * dt)
+      if self.braking_seen:
+        self.brake_time += max(0.0, float(dt))
+        if self.hold_pending and self.brake_time >= BRAKE_HOLD_CONFIRM - 1e-6 and self.brake_min >= BRAKE_HOLD_ACCEL_MIN:
+          self.hold_pending = False
+          if fast and closing_speed <= CUTIN_CLOSING_MAX:
+            self.credit, self.relaxed = max(self.credit, float(desired) - float(distance), 0.0), True
+      self.braking_seen = True
+      return self.credit
+    if self.braking_seen and closing_speed <= CUTIN_CLOSING_MAX:
+      self.braking_seen = False
+      if (min(float(v_ego), float(v_lead)) >= POST_BRAKE_SPEED_MIN and self.brake_min >= BRAKE_HOLD_ACCEL_MIN
+          and self.age >= BRAKE_HOLD_LEAD_AGE):
+        shortfall = max(0.0, float(desired) - float(distance))
+        if shortfall > self.credit:
+          self.credit, self.rate, self.relaxed = shortfall, POST_BRAKE_RECOVER_RATE, True
+        return self.credit
+    self.credit = max(0.0, self.credit - self.rate * dt)
     return self.credit
