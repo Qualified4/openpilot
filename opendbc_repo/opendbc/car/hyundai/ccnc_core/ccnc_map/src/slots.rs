@@ -41,8 +41,9 @@ pub(crate) struct Observation {
 }
 
 impl Observation {
-    pub(crate) fn from_car(car: &Vehicle, world: &World, ego: PoseAt) -> Option<Self> {
-        let (x, y) = ego.to_ego(f64::from(car.wx), f64::from(car.wy));
+    /// `pose` is where distance and side are measured from: `World::radar_pose` for radar cars.
+    pub(crate) fn from_car(car: &Vehicle, world: &World, pose: PoseAt) -> Option<Self> {
+        let (x, y) = pose.to_ego(f64::from(car.wx), f64::from(car.wy));
         let u_ego = world.u_ego();
         if !u_ego.is_finite() || !(-40. ..=80.).contains(&x) {
             return None;
@@ -54,7 +55,7 @@ impl Observation {
         } else {
             mapped
         };
-        let (sin, cos) = ego.heading.sin_cos();
+        let (sin, cos) = pose.heading.sin_cos();
         let speed = cos * f64::from(car.vx) + sin * f64::from(car.vy);
         (r.is_finite() && speed.is_finite()).then_some(Self { x, r, speed })
     }
@@ -147,7 +148,8 @@ impl Assigner {
             return [None; 5];
         }
         self.drawings.retain(|d| now - d.seen <= 2.);
-        let ego = world.pose.at(now);
+        // Radar cars sit in the world at the pose RADAR_LAG before `now`. Measure their distance and side from that
+        // same pose, so the slot distance is the radar's dRel rather than dRel minus ego's travel over RADAR_LAG.
         let radar = world.radar_pose(now);
         let yaw = world.yaw_at(now);
         let radar_stamp = world.radar_stamp().unwrap_or(now);
@@ -163,7 +165,7 @@ impl Assigner {
                     let (ex, ey) = ((x - dx).abs(), (y - dy).abs());
                     (ex <= LEAD_GATE_X
                         && ey <= LEAD_GATE_Y
-                        && Observation::from_car(car, world, ego)
+                        && Observation::from_car(car, world, radar)
                             .is_some_and(|o| o.x >= 0. && o.r.abs() < 0.5))
                     .then_some((ex, ey, car.vid))
                 })
@@ -182,7 +184,7 @@ impl Assigner {
             if !current(car.seen_radar.max(car.seen_vision)) {
                 continue;
             }
-            let Some(Observation { x, r, speed }) = Observation::from_car(car, world, ego) else {
+            let Some(Observation { x, r, speed }) = Observation::from_car(car, world, radar) else {
                 continue;
             };
             let i = match self.drawings.binary_search_by_key(&car.vid, |d| d.vid) {

@@ -103,6 +103,45 @@ fn ff_slides_to_lf_on_ego_right_change() {
 }
 
 #[test]
+fn slot_distance_is_the_radar_distance_at_100_kph() {
+    let speed = 100. / 3.6;
+    let mut world = World::new(RADAR_LAG, true);
+    let mut tracker = Tracker::default();
+    let mut assigner = Assigner::default();
+    let mut checked = 0;
+    for step in 0..400 {
+        let t = f64::from(step) * 0.01;
+        world.live_pose(t, 0.);
+        world.car_state(t, speed, false);
+        if step % 5 != 0 {
+            continue;
+        }
+        world.model(t, &model(0., 0., 1.));
+        world.radar(t);
+        // A car holding the same speed 30 m ahead: the radar reports dRel 30 m, vRel 0.
+        tracker.update(t, &[(1, 30., 0., 0.)], &world);
+        let cars: Vec<_> = tracker
+            .vehicles()
+            .iter()
+            .map(|car| {
+                let mut qualified = vehicle(&world, car.vid, t, f64::from(car.wx), 0.);
+                qualified.wy = car.wy;
+                qualified.u = car.u;
+                qualified
+            })
+            .collect();
+        let slots = assigner.update(t, &cars, &world, None);
+        if t < 1. {
+            continue;
+        }
+        let ff = slots[FF].expect("FF");
+        assert!((ff.distance - 30.).abs() <= 0.3, "t={t}: FF {} m", ff.distance);
+        checked += 1;
+    }
+    assert!(checked > 50);
+}
+
+#[test]
 fn straddling_car_belongs_to_the_lane_containing_its_center() {
     let world = road();
     let slots = Assigner::default().update(0., &[vehicle(&world, 1, 0., 40., 0.4)], &world, None);

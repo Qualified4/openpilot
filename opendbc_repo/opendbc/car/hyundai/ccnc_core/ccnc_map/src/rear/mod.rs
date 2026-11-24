@@ -467,7 +467,7 @@ impl WorldRear {
                     .take(MAX_VEHICLES)
                 {
                     if let Some(Observation { x, r, speed, .. }) =
-                        Observation::from_car(car, world, ego)
+                        Observation::from_car(car, world, world.radar_pose(now))
                     {
                         // Convert r to the existing policy's metre gates with a fixed lane width.
                         samples[count] = (
