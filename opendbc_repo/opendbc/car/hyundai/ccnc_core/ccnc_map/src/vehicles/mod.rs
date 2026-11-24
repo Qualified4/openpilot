@@ -107,16 +107,7 @@ pub struct Vehicle {
     pub oncoming: bool,
     /// Since when the current run of oncoming measurements lasts.
     pub oncoming_since: f64,
-    /// When the lane map last placed this car.
-    pub u_mapped: f64,
 }
-
-/// A moving car the lane map cannot place keeps its last coordinate this long, as ego does (`World::lane_held`): a
-/// road edge or the lane widths jittering past it would take it out of its slot for a few frames ...
-const U_HOLD_S: f64 = 0.5;
-/// ... when it moves over ground at least this fast (m/s). A standing object the map cannot place is usually off the
-/// road (a bollard at the edge was drawn 0.4 s longer in RF with every car held).
-const U_HOLD_SPEED: f64 = 2.;
 
 /// Ground speed along ego's heading at or below which a radar measurement comes at us (m/s) ...
 const ONCOMING_SPEED: f64 = -2.;
@@ -145,7 +136,6 @@ impl Vehicle {
             radar_id: None,
             oncoming: false,
             oncoming_since: f64::NAN,
-            u_mapped: f64::NEG_INFINITY,
         }
     }
 
@@ -198,18 +188,13 @@ impl Vehicle {
         let coord = |y: f64| world.vehicle_lane_coord(now, ego.s + x, ego.to_world(x, y));
         // Filter the vehicle coordinate only. Ego lane movement is
         // subtracted at display time and keeps its own bandwidth.
-        let (u, u_slot) = (coord(y - f64::from(self.off)), coord(y));
-        if u.is_some() {
-            self.u_mapped = now;
-        }
-        let moving = sample.speed.abs() >= U_HOLD_SPEED;
-        let held = world.lane_held() || (moving && now - self.u_mapped <= U_HOLD_S);
-        self.u = smooth(self.u, u, 0.17, 0.1, held);
-        self.u_slot = smooth(self.u_slot, u_slot, 0.5, 0.25, held);
+        let held = world.lane_held();
+        self.u = smooth(self.u, coord(y - f64::from(self.off)), 0.17, 0.1, held);
+        self.u_slot = smooth(self.u_slot, coord(y), 0.5, 0.25, held);
     }
 }
 
-/// `held`: a car the lane map cannot place keeps its coordinate (`U_HOLD_S`, `World::lane_held`).
+/// `held`: the lane map is missing ego too (`World::lane_held`), and a car it cannot place keeps its coordinate.
 fn smooth(previous: f32, raw: Option<f64>, alpha: f32, step: f32, held: bool) -> f32 {
     match raw {
         Some(raw) if previous.is_finite() => previous + (alpha * (raw as f32 - previous)).clamp(-step, step),

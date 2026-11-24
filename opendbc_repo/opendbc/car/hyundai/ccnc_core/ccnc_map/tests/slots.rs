@@ -40,7 +40,6 @@ fn vehicle(world: &World, vid: u32, now: f64, x: f64, r: f64) -> Vehicle {
         radar_id: Some(vid),
         oncoming: false,
         oncoming_since: f64::NAN,
-        u_mapped: f64::NEG_INFINITY,
     }
 }
 
@@ -917,43 +916,4 @@ fn a_side_car_near_its_outer_line_stays_in_the_side_slot() {
         let slots = assigner.update(now, &[vehicle(&world, 4, now, 10., r)], &world, None);
         assert_eq!(slots[LF].is_some(), drawn, "r {r}");
     }
-}
-
-/// One radar car 3.5 m left at `x(t)`, moving over ground at `v` m/s, while ego waits: whether it has a lane
-/// coordinate per frame and whether the lane map could place it at that frame.
-fn far_car(x: impl Fn(f64) -> f64, v: f64) -> Vec<(f64, bool, bool)> {
-    let mut world = road();
-    let mut tracker = Tracker::default();
-    (0..=40)
-        .map(|i| {
-            let now = f64::from(i) * 0.05;
-            world.car_state(now, 0., false);
-            world.radar(now);
-            let car = tracker.update(now, &[(9, x(now), 3.5, v)], &world)[0].u;
-            let mapped = world.vehicle_lane_coord(now, x(now), (x(now), 3.5)).is_some();
-            (now, car.is_finite(), mapped)
-        })
-        .collect()
-}
-
-#[test]
-fn a_car_the_lane_map_misses_briefly_keeps_its_lane_coordinate() {
-    // Out past the mapped 80 m for 0.3 s and back.
-    let frames = far_car(|t| if (0.5..0.8).contains(&t) { 81. } else { 79. }, 3.);
-    assert!(frames.iter().any(|f| !f.2), "the map misses it");
-    assert!(frames.iter().all(|f| f.1), "{frames:?}");
-}
-
-#[test]
-fn a_standing_object_the_lane_map_misses_loses_its_lane_coordinate_at_once() {
-    let frames = far_car(|t| if (0.5..0.8).contains(&t) { 81. } else { 79. }, 0.);
-    assert!(frames.iter().all(|f| f.1 == f.2), "{frames:?}");
-}
-
-#[test]
-fn a_car_the_lane_map_misses_for_over_half_a_second_loses_its_lane_coordinate() {
-    let frames = far_car(|t| if t >= 0.5 { 81. } else { 79. }, 3.);
-    let missed = frames.iter().position(|f| !f.2).unwrap();
-    let lost = frames.iter().position(|f| !f.1).unwrap();
-    assert!((frames[lost].0 - frames[missed - 1].0 - 0.55).abs() < 1e-6, "{frames:?}");
 }
