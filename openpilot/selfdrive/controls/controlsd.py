@@ -231,7 +231,8 @@ class Controls:
       model_curvature = model_v2.action.desiredCurvature
       if lat_plan.cornerCenterActive or self.corner_center.curvature != 0.0:
         model_curvature += self.corner_center.update(self.sm, CS.vEgo, CS.steeringPressed)
-      new_desired_curvature = smooth_value(model_curvature, self.desired_curvature, 0.1)
+      # 모델 목표 곡률 1차 평활 τ 0.05 s(0.1이면 코너 진입 지연·탈출 과회전이 커진다, 항목 106)
+      new_desired_curvature = smooth_value(model_curvature, self.desired_curvature, 0.05)
 
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
 
