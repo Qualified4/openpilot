@@ -38,6 +38,8 @@ fn vehicle(world: &World, vid: u32, now: f64, x: f64, r: f64) -> Vehicle {
             ..Flags::default()
         },
         radar_id: Some(vid),
+        oncoming: false,
+        oncoming_since: f64::NAN,
     }
 }
 
@@ -849,4 +851,56 @@ fn a_split_near_car_falling_behind_goes_on_in_the_rear_slot_as_the_same_car() {
         drawn.push(slots[LR].map(|s| (s.vid, s.distance)));
     }
     assert_eq!(drawn, [Some((1, 0.)), Some((1, 0.)), Some((1, 0.)), Some((1, -0.5)), Some((1, -1.)), Some((1, -2.))]);
+}
+
+/// Ego waits while one radar car in the left lane moves along `x(t)` at ground speed `v(t)` and stops. Returns
+/// the left slot per frame and whether the tracker marked the car oncoming.
+fn left_lane_car(x: impl Fn(f64) -> f64, v: impl Fn(f64) -> f64) -> (Vec<(f64, Option<u32>)>, bool) {
+    let mut world = road();
+    let mut tracker = Tracker::default();
+    let mut assigner = Assigner::default();
+    let mut shown = Vec::new();
+    for i in 0..=100 {
+        let now = f64::from(i) * 0.05;
+        world.car_state(now, 0., false);
+        world.radar(now);
+        tracker.update(now, &[(7, x(now), 3.5, v(now))], &world);
+        let cars: Vec<_> = tracker
+            .vehicles()
+            .iter()
+            .map(|car| Vehicle {
+                wx: car.wx,
+                wy: car.wy,
+                vx: car.vx,
+                vy: car.vy,
+                oncoming: car.oncoming,
+                ..vehicle(&world, car.vid, now, f64::from(car.wx), -1.)
+            })
+            .collect();
+        let mut slots = assigner.update(now, &cars, &world, None);
+        assigner.hold_stopped(now, &cars, &world, [false; 2], |_| true, &mut slots);
+        shown.push((now, slots[LF].map(|s| s.vid)));
+    }
+    (shown, tracker.vehicles().iter().any(|car| car.oncoming))
+}
+
+#[test]
+fn an_oncoming_car_that_stops_beside_ego_stays_out_of_the_side_slot() {
+    // 25 m ahead at -5 m/s, braking at 1.25 m/s² to a stop 5 m ahead at 4 s, then standing (the old -1 km/h rule
+    // let it in from 3.8 s on).
+    let x = |t: f64| { let t = t.min(4.); 25. - 5. * t + 0.625 * t * t };
+    let v = |t: f64| (-5. + 1.25 * t).min(0.);
+    let (shown, oncoming) = left_lane_car(x, v);
+    assert!(oncoming);
+    assert!(shown.iter().all(|(_, vid)| vid.is_none()), "{shown:?}");
+}
+
+#[test]
+fn a_car_of_our_direction_that_stops_beside_ego_is_drawn() {
+    // 8 m ahead pulling away at 2 m/s, braking to a stop at 9 m.
+    let x = |t: f64| 8. + (2. * t - t * t).max(0.).min(1.);
+    let v = |t: f64| (2. - 2. * t).max(0.);
+    let (shown, oncoming) = left_lane_car(x, v);
+    assert!(!oncoming);
+    assert!(shown[10..].iter().all(|&(_, vid)| vid.is_some()), "{shown:?}");
 }

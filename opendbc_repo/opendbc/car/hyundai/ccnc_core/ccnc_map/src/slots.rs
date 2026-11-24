@@ -288,7 +288,7 @@ impl Assigner {
             let Some(slot) = slot_index(x, drawing.lane) else {
                 continue;
             };
-            if slot != 0 && speed < -1. / 3.6 {
+            if slot != 0 && (speed < -1. / 3.6 || car.oncoming) {
                 continue;
             }
             if v_rel > 2. {
@@ -416,7 +416,7 @@ impl Assigner {
             if slots[index].is_some() || blind[side] || slots.iter().flatten().any(|s| s.vid == last.vid) {
                 continue;
             }
-            let Some(car) = vehicles.iter().find(|car| car.vid == last.vid) else {
+            let Some(car) = vehicles.iter().find(|car| car.vid == last.vid && !car.oncoming) else {
                 continue;
             };
             // Carry the last drawn distance by ego's travel since. The car's world position sits RADAR_LAG behind:
