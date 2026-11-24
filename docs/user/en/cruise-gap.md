@@ -185,6 +185,26 @@ On vehicles with adjustable gains, tune delay first only if acceleration and bra
 <a id="following-gap"></a>
 ## 5. Following gap
 
+The gap to a lead is set by the safety-distance levels below. `TFollowGap1`–`TFollowGap4` set the base time gap for the cruise target, traffic stops and blended mode.
+
+### Following a lead: safety-distance gap levels
+
+When following a lead, gap levels 1–4 no longer pick a time gap but how hard the lead may brake at most. This is always on, with no setting (openpilot longitudinal control, ACC mode).
+
+| Level | Assumed lead maximum braking | Same-speed following gap at 30 / 50 / 80 / 100 km/h (stop distance 3.7 m) |
+|---|---:|---|
+| 1 | 5.0 m/s² | 13.4 / 21.7 / 37.2 / 49.4m |
+| 2 | 6.0 m/s² | 14.5 / 24.9 / 45.4 / 62.2m |
+| 3 | 7.0 m/s² | 15.3 / 27.2 / 51.3 / 71.4m |
+| 4 | 8.0 m/s² | 16.0 / 29.0 / 55.7 / 78.3m |
+
+- Minimum gap `d_min = 0.6 s × ego speed + ego speed²/(2 × 4.0) − lead speed²/(2 × assumed braking) + StopDistanceCarrot`: from this gap ego, braking at up to 4.0 m/s² after 0.6 s, still stops at the stop distance behind a lead braking that hard. Inside it is treated as the danger zone.
+- The comfort target is `d_min + 0.35 s × ego speed`. While closing on a slower lead, it adds 1.0 m per m/s of speed difference plus the distance needed to shed that difference at `ComfortBrake`, so braking starts earlier. At equal speed nothing is added.
+- When closing at 15 km/h or more on a stopped or slow lead with a time gap (distance ÷ ego speed) of at least 1.5 s, the plan follows a stop at the constant deceleration fixed when the lead was found (0.5–2.0 m/s²), braking early and softly. It fades out over 0.5 s when the lead pulls away 30 m or more ahead or speeds up, and releases at once for a lead change or driver brake/accelerator input. Obstacles and the danger constraint are unchanged.
+- A lead cutting in closer than the comfort target, closing no faster than `ComfortBrake` can absorb within the comfort margin, is not chased: the missing gap is recovered at 1.5 m per second. A faster-closing cut-in gets the full response at once. Ego lane changes keep their existing handling.
+- `TFollowGap1`–`TFollowGap4` and `SpeedTFFactor` now set the cruise target, traffic-stop and Tesla-stop calculations and lead following in blended (e2e) mode. Drive-mode scaling and the `TFollowDecelBoost` addition are added as comfort seconds. The level number still selects `LeadAccelResponseTF1`–`LeadAccelResponseTF4`.
+- Same-speed gaps are longer than the old time gaps (for example at 100 km/h: level 1 28→49 m, level 4 57→78 m). Checked only by log replay; not validated on a vehicle. At level 4, when a lead brakes at −3, releases and then stops at −6, the stop gap was 0.02–0.05 m shorter than before.
+
 ### Gap cycle levels
 
 `CruiseGapLevels` sets how many levels the gap button cycles through. The minimum is 2; the maximum and default are the vehicle-supported count. Four-level vehicles offer 2–4, and three-level vehicles offer 2–3.

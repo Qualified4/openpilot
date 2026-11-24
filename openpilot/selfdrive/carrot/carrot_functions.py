@@ -152,10 +152,6 @@ class CarrotPlanner:
     self.dynamicTFollowLC = 1.0
     self.speedTFFactor = 10
     self.tFollowDecelBoost = 0.0
-    self.approachSoftStop = 0
-    self.gapSafeDistance = 0
-    self.gapSafeLeadDecel = [5.0, 6.0, 7.0, 8.0]
-    self.gapSafeReaction = 0.6
     self.t_follow_gap_safe_extra = 0.0
     self._tf_decel_extra = 0.0
     self._tf_decel_base = None
@@ -223,10 +219,6 @@ class CarrotPlanner:
       self.dynamicTFollowLC = self.params.get_float("DynamicTFollowLC") / 100.
       self.speedTFFactor = int(np.clip(self.params.get_int("SpeedTFFactor"), 10, 30))
       self.tFollowDecelBoost = self.params.get_float("TFollowDecelBoost") / 100.
-      self.approachSoftStop = int(np.clip(self.params.get_int("ApproachSoftStop"), 0, 1))
-      self.gapSafeDistance = int(np.clip(self.params.get_int("GapSafeDistance"), 0, 1))
-      self.gapSafeLeadDecel = [float(np.clip(self.params.get_float(f"GapSafeLeadDecel{i}"), 40, 100)) / 10. for i in range(1, 5)]
-      self.gapSafeReaction = float(np.clip(self.params.get_float("GapSafeReaction"), 30, 120)) / 100.
     elif self.params_count == 30:
       self.cruiseMaxVals0 = self.params.get_float("CruiseMaxVals0") / 100.
       self.cruiseMaxVals1 = self.params.get_float("CruiseMaxVals1") / 100.
@@ -299,7 +291,7 @@ class CarrotPlanner:
     tf_mode_target = float(tf_target * self._tf_mode_factor)
     self._tf_mode_target = tf_mode_target
     tf_adjusted = self._apply_decel_hold_and_boost_t_follow(tf_mode_target, a_ego)
-    # GapSafeDistance replaces TF at lead nodes; it keeps the drive-mode and braking
+    # The safety-distance gap replaces TF at lead nodes; it keeps the drive-mode and braking
     # additions as comfort seconds, without the SpeedTFFactor scaling.
     self.t_follow_gap_safe_extra = float(tf_base * max(0.0, self._tf_mode_factor - 1.0) + self._tf_decel_extra)
     tf_final = self._clip_t_follow(tf_adjusted)

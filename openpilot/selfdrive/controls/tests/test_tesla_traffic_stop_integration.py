@@ -18,7 +18,7 @@ def native():
 def carrot_for(mode="acc", stop_distance=6.):
   return NS(mode=mode, comfort_brake=2.5, stop_distance=stop_distance, v_cruise=20., stop_dist=1000.,
             trafficStopDistanceAdjust=100., trafficStopModelLeadOffset=2.,
-            get_T_FOLLOW=lambda *args: 1.45, jerk_factor=1., leadAccelResponse=0, approachSoftStop=0, gapSafeDistance=0,
+            get_T_FOLLOW=lambda *args: 1.45, jerk_factor=1., leadAccelResponse=0, t_follow_gap_safe_extra=0.0,
             autoNaviSpeedDecelRate=1., lane_change_active=False, myDrivingMode=3)
 
 

@@ -262,8 +262,9 @@ class LongitudinalMpc:
     self.lead_accel_response_active = False
     self.lead_accel_response_level = 0
     self.obstacle_cost_factor = 1.0
-    # Not part of reset(): a solver reset must not restart the GapSafeDistance blend.
+    # Not part of reset(): a solver reset must not restart the safety-distance gap blend.
     self.gap_safe_state = gap_safe.GapSafeState()
+    self.cutin_credit = gap_safe.CutinCredit()
     self.lead_gap = None
 
     self.reset()
@@ -436,7 +437,6 @@ class LongitudinalMpc:
              measured_a_ego=0.0,
              cutout_relief_enabled=False,
              tesla_stop_distance=None,
-             gap_safe_enabled=False,
              approach_soft_stop_enabled=False):
     tesla_stop_active = (tesla_stop_distance is not None and not reset_state
                          and math.isfinite(tesla_stop_distance) and 0 <= tesla_stop_distance < 255)
@@ -467,17 +467,17 @@ class LongitudinalMpc:
 
     # Gap level index as in CarrotPlanner._get_base_t_follow: aggressive (0) = level 1 ... moreRelaxed (3) = level 4.
     gap_level = int(getattr(personality, 'raw', personality))
-    gap_safe_on = bool(gap_safe_enabled) and 0 <= gap_level < gap_safe.GAP_LEVELS
+    gap_safe_on = 0 <= gap_level < gap_safe.GAP_LEVELS
     self.gap_safe_state.update(
       enabled=gap_safe_on, snap=reset_state, dt=self.dt,
-      lead_decel=carrot.gapSafeLeadDecel[gap_level] if gap_safe_on else 0.0,
+      lead_decel=gap_safe.LEAD_DECELS[gap_level] if gap_safe_on else 0.0,
     )
-    # GapSafeDistance: lead nodes use the safety-distance parameters. Off (or before the
-    # first blend step), every lead quantity below is the TF computation unchanged.
+    # ACC lead nodes use the safety-distance gap. Only blended (e2e) mode and an unknown gap
+    # level keep the TF computation for leads.
     lead_gap = None
     if mode == 'acc' and self.gap_safe_state.weight > 0.0:
       lead_gap = self.gap_safe_state.lead_gap(
-        reaction=carrot.gapSafeReaction, extra_time=carrot.t_follow_gap_safe_extra, t_follow=t_follow,
+        extra_time=getattr(carrot, 't_follow_gap_safe_extra', 0.0), t_follow=t_follow,
         comfort_brake=comfort_brake, danger_factor=LEAD_DANGER_FACTOR, inv_base_lead_decel=1.0 / COMFORT_BRAKE,
       )
       self.base_desired_distances = np.array([
@@ -525,6 +525,14 @@ class LongitudinalMpc:
 
       lane_change = getattr(carrot, 'lane_change_gap', LaneChangeGapPlan())
       lead_0_follow_obstacle = lead_0_obstacle
+      if lead_gap is not None and not reset_state and radarstate.leadOne.status and not lane_change.active:
+        cutin_credit = self.cutin_credit.update(
+          enabled=True, track_id=radarstate.leadOne.radarTrackId, distance=float(radarstate.leadOne.dRel),
+          desired=float(self.base_desired_distances[0]), closing_speed=-float(radarstate.leadOne.vRel),
+          lead_accel=float(radarstate.leadOne.aLeadK), cushion=lead_gap.comfort_time * v_ego, dt=self.dt,
+        )
+      else:
+        cutin_credit = self.cutin_credit.reset()
       if cutout_relief_enabled and not reset_state:
         if lane_change.active:
           lead_0_follow_obstacle = lead_0_obstacle + lane_change.credit(
@@ -534,6 +542,7 @@ class LongitudinalMpc:
           lead_0_follow_obstacle = lead_0_obstacle + cutout_obstacle_relief(
             radarstate.leadOne, v_ego, T_IDXS, lead_t_follow, stop_distance,
           )
+      lead_0_follow_obstacle = lead_0_follow_obstacle + cutin_credit
       x_obstacles = np.column_stack([lead_0_follow_obstacle, lead_1_obstacle, cruise_obstacle, x2])
       # Only currently selected leadOne/leadTwo may constrain braking.
       # Entry snapshots and lane-change credit guards never add obstacles.
@@ -692,16 +701,17 @@ class LongitudinalMpc:
       comfort_reliefs[:,lead_index] = relief
     if approach_weight > 0.0:
       # Only where leadOne is the binding obstacle; every obstacle and the danger limit stay as they are.
-      # Merge: with GapSafeDistance the current target includes its comfort time.
+      # The current target includes the safety-distance comfort margin, so the two never stack.
       lead_binds = np.argmin(x_obstacles, axis=1) == 0
-      following = gap_safe_distance + (0.0 if lead_gap is None else lead_gap.comfort_time * gap_v)
+      following = gap_safe_distance + (0.0 if lead_gap is None else gap_safe.comfort_margin(gap_v, lead_xv_0[:,1], lead_gap))
       self.lead_gap_margins[:,0] += np.where(lead_binds, self.approach_state.reference_margins(
         ego_speeds=gap_v, following_distances=following, stop_distance=stop_distance), 0.0)
-    # GapSafeDistance comfort time rides on the cost reference like any margin; the
+    # The safety-distance comfort margin rides on the cost reference like any margin; the
     # displayed target already contains it through base_desired_distances.
     comfort_margins = np.zeros_like(self.lead_gap_margins)
     if lead_gap is not None:
-      comfort_margins[:] = (lead_gap.comfort_time * gap_v)[:, None]
+      comfort_margins[:, 0] = gap_safe.comfort_margin(gap_v, lead_xv_0[:,1], lead_gap)
+      comfort_margins[:, 1] = gap_safe.comfort_margin(gap_v, lead_xv_1[:,1], lead_gap)
       self.lead_gap_margins += comfort_margins
     # Display the current following reference, including comfort headroom and
     # any already-authorized cutout/lane-change relief. This does not select
