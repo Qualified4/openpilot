@@ -14,6 +14,10 @@ fn car_r(w: &World, t: f64, x: f64, y: f64) -> f64 {
     w.lanes.coord(w.pose.current().s + x, (wx, wy)).unwrap() - w.u_ego()
 }
 
+/// What the map carries to 50 m of a 0.7 m shift beyond 25 m (`vehicle_lane_uses_fresh_camera_beyond_mapped_boundaries`):
+/// the 21 m bin moves 0.0049 m (0.07 m at 21 m, blended at 0.07) and the far fit extends it. Measured, in lanes.
+const MAP_TILT: f64 = 0.006537;
+
 #[test]
 fn vehicle_lane_uses_fresh_camera_beyond_mapped_boundaries() {
     let mut world = World::default();
@@ -32,9 +36,10 @@ fn vehicle_lane_uses_fresh_camera_beyond_mapped_boundaries() {
     let near = (15., 0.);
     let mapped_far = world.lanes.coord(50., far);
     let updated_far = world.vehicle_lane_coord(0.05, 50., far);
-    // The last mapped bin is sampled at its centre, 21 m, inside the model segment 20-30 m that the shift tilts: the
-    // map itself carries 0.015 lane of the shift to 50 m.
-    assert!((updated_far.unwrap() - mapped_far.unwrap() - 0.2).abs() < 0.02, "{updated_far:?} {mapped_far:?}");
+    // The far point takes the camera's coordinate, 1.5 + 0.7 m / 3.5 m. The last mapped bin is sampled at its centre,
+    // 21 m, inside the model segment 20-30 m that the shift tilts, and the map extends that little tilt to 50 m.
+    assert!((updated_far.unwrap() - 1.7).abs() < 1e-4, "{updated_far:?}");
+    assert!((mapped_far.unwrap() - 1.5 - MAP_TILT).abs() < 1e-4, "{mapped_far:?}");
     assert_eq!(
         world.vehicle_lane_coord(0.05, 15., near),
         world.lanes.coord(15., near)
@@ -336,4 +341,26 @@ fn a_car_inside_the_road_edge_keeps_its_lane_coordinate_while_ego_waits() {
     let coords = car_inside_the_edge_while_ego_waits();
     assert!(coords.len() > 100);
     assert!(coords.iter().all(|u| u.is_some_and(|u| (0.6..0.9).contains(&u))), "{coords:?}");
+}
+
+#[test]
+fn every_near_bin_takes_the_lines_while_ego_waits() {
+    let mut world = World::default();
+    let mut seen = Vec::new();
+    for step in 0..3600u32 {
+        let t = f64::from(step) * 0.01;
+        world.live_pose(t, 0.);
+        world.car_state(t, if t < 3. { 5. } else { 0. }, false);
+        if step % 5 == 0 {
+            world.model(t, &model(0., 0., 0.));
+            world.radar(t);
+        }
+        if step == 400 || step == 3599 {
+            let s = world.pose.current().s;
+            // Every bin 0-20 m ahead, at the grid points (0/5/10/15/20 m) or between them.
+            seen.push((0..10).map(|k| world.lanes.observations(1, s + 1. + 2. * f64::from(k))).collect::<Vec<_>>());
+        }
+    }
+    // 32 s at a stop, 20 camera frames a second.
+    assert!(seen[1].iter().zip(&seen[0]).all(|(after, before)| after - before >= 600), "{seen:?}");
 }

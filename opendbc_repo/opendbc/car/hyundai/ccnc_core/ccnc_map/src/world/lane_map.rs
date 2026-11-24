@@ -11,6 +11,10 @@ const BIN_COUNT: usize = 70;
 const BOUNDARY_COUNT: usize = 8;
 const PENDING_CAPACITY: usize = 512;
 const NEAR: f64 = 25.;
+/// The near field ends at the bin of the last near grid point (20 m), whose centre is at most 21 m ahead.
+const NEAR_FIELD: f64 = 21.;
+/// The share of near bins the five grid points reached per frame on the move (5 × 2 m of 21 m).
+const NEAR_SHARE: f64 = 5. * BIN_M / NEAR_FIELD;
 const EXTRAPOLATION_BINS: i64 = 12;
 const MAX_CURVE_EXTENSION: f64 = 45.;
 const MAX_CURVE_COEFFICIENT: f64 = 0.0007;
@@ -43,7 +47,9 @@ impl Default for Boundary {
 impl Boundary {
     fn observe(&mut self, index: i64, point: Point, x: f64, degraded: bool) {
         let slot = index.rem_euclid(BIN_COUNT as i64) as usize;
-        let alpha = 0.15 * ((60. - x) / 40.).clamp(0.1, 1.);
+        // The near field takes every bin each frame, where the five grid points used to reach about half of them.
+        let share = if x <= NEAR_FIELD { NEAR_SHARE } else { 1. };
+        let alpha = share * 0.15 * ((60. - x) / 40.).clamp(0.1, 1.);
         if let Some(bin) = self.bins[slot].as_mut().filter(|b| b.index == index) {
             bin.point.0 += alpha * (point.0 - bin.point.0);
             bin.point.1 += alpha * (point.1 - bin.point.1);
@@ -250,6 +256,13 @@ impl Default for LaneMap {
 pub(super) fn line_at(line: &Line, x: f64) -> Option<f64> {
     if line.x.len() != line.y.len() || line.x.len() < 2 {
         return None;
+    }
+    // The bin ego stands in has its centre up to 1 m behind: carry the first model segment back that far.
+    let first = f64::from(line.x[0]);
+    if x < first && x >= first - 0.5 * BIN_M {
+        let (a, b) = (first, f64::from(line.x[1]));
+        let (ya, yb) = (f64::from(line.y[0]), f64::from(line.y[1]));
+        return (b > a && ya.is_finite() && yb.is_finite()).then(|| -(ya + (yb - ya) * (x - a) / (b - a)));
     }
     for (xs, ys) in line.x.windows(2).zip(line.y.windows(2)) {
         let (a, b) = (f64::from(xs[0]), f64::from(xs[1]));
@@ -462,14 +475,21 @@ impl LaneMap {
         degraded: bool,
         sample: impl Fn(f64) -> Option<f64>,
     ) {
-        for grid in MODEL_GRID[..9].iter().copied().map(f64::from) {
-            if self.frozen && grid > NEAR {
-                break;
-            }
-            // Sample the line at the centre of the bin the grid point falls in. A bin's point anywhere in its 2 m made
-            // two neighbouring points meet when ego stopped with a grid point at a bin seam, and their tangent turned
-            // by 60 to 100 degrees (11-24 0000047c segment 5 at 41.8 s).
-            let index = bin_number(at.s + grid);
+        // Every bin of the near field (through the one at the 20 m grid point) takes the line each frame. On the
+        // 0/5/10/15/20 m grid only, the bins between the grid points kept their last points while ego stood still and
+        // drifted away from the model (1.1 m after 33 s in 11-24 0000047c segment 6). Farther out the grid points
+        // feed the 1 s queue as before: the far model can still face the old lane during a lane change.
+        let (first, frozen) = (bin_number(at.s), self.frozen);
+        let near = (first..).take_while(|&i| (i as f64 + 0.5) * BIN_M - at.s <= NEAR_FIELD);
+        let far = MODEL_GRID[..9]
+            .iter()
+            .map(|&x| f64::from(x))
+            .filter(|&x| x > NEAR && !frozen)
+            .map(|x| bin_number(at.s + x));
+        for index in near.chain(far) {
+            // Sample the line at the centre of the bin. A bin's point anywhere in its 2 m made two neighbouring points
+            // meet when ego stopped with a grid point at a bin seam, and their tangent turned by 60 to 100 degrees
+            // (11-24 0000047c segment 5 at 41.8 s).
             let x = (index as f64 + 0.5) * BIN_M - at.s;
             let Some(y) = sample(x) else {
                 continue;
