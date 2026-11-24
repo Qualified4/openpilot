@@ -23,6 +23,9 @@ const MAX_EGO_LANE_RATE: f64 = 1.;
 const EGO_CHANGE_CENTER: f64 = 0.25;
 /// ... and for this long after.
 const EGO_CHANGE_HOLD_S: f64 = 3.;
+/// The lane map can miss ego for a few frames while a road edge or the lane widths jitter past it. Ego keeps its last
+/// coordinate this long (`World::lane_held`); longer, the map does not know where ego is.
+const EGO_HOLD_S: f64 = 0.5;
 
 pub struct World {
     pub pose: Pose,
@@ -32,6 +35,8 @@ pub struct World {
     last_model: Option<f64>,
     last_radar: Option<f64>,
     u_ego: Option<(f64, f64)>,
+    /// When the lane map last placed ego (`u_ego` is held after it).
+    u_ego_mapped: f64,
     camera_lane_bias: f64,
     camera_lanes: Option<CameraLanes>,
     generation: u32,
@@ -66,6 +71,7 @@ impl World {
             last_model: None,
             last_radar: None,
             u_ego: None,
+            u_ego_mapped: f64::NEG_INFINITY,
             camera_lane_bias: 0.,
             camera_lanes: None,
             generation: 0,
@@ -215,6 +221,12 @@ impl World {
     pub fn ego_changing(&self) -> bool {
         self.u_ego.is_some_and(|(t, _)| t <= self.ego_change_until)
     }
+    /// Ego's coordinate is the last one the lane map gave, held over a short miss. The cars it cannot place keep their
+    /// coordinates meanwhile.
+    pub fn lane_held(&self) -> bool {
+        self.u_ego.is_some_and(|(t, _)| t > self.u_ego_mapped)
+    }
+
     pub fn generation(&self) -> u32 {
         self.generation
     }
@@ -242,6 +254,7 @@ impl World {
         self.last_model = None;
         self.last_radar = None;
         self.u_ego = None;
+        self.u_ego_mapped = f64::NEG_INFINITY;
         self.camera_lane_bias = 0.;
         self.camera_lanes = None;
         self.ego_change_until = f64::NEG_INFINITY;
@@ -269,6 +282,13 @@ impl World {
         }
         let at = self.pose.at(t);
         let coordinate = self.lanes.coord(at.s, (at.x, at.y));
+        if coordinate.is_some() {
+            self.u_ego_mapped = t;
+        }
+        let held = self
+            .u_ego
+            .filter(|_| t - self.u_ego_mapped <= EGO_HOLD_S)
+            .map(|(_, u)| (t, u));
         self.u_ego = coordinate.map(|u| {
             let u = if !self.lane_change.frozen()
                 && self
@@ -288,7 +308,7 @@ impl World {
                 u
             };
             (t, u)
-        });
+        }).or(held);
         if let Some((t, u)) = self.u_ego {
             if (u - (u.floor() + 0.5)).abs() > EGO_CHANGE_CENTER {
                 self.ego_change_until = t + EGO_CHANGE_HOLD_S;

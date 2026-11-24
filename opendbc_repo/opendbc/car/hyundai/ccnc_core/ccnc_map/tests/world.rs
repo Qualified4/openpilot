@@ -249,3 +249,42 @@ fn radar_before_pose_history_uses_oldest_pose() {
     assert_eq!(world.pose.current().t, 5.1);
     assert_eq!(world.generation(), 0);
 }
+
+/// From frame 20 the camera frames stop for `blind` frames while ego runs at 250 m/s, so it leaves the mapped 80 m
+/// after about 0.3 s and the lane map cannot place it until the camera is back. (t, u_ego, lane_held) per 50 ms frame.
+fn lane_map_miss(blind: u32) -> Vec<(f64, f64, bool)> {
+    let mut world = World::default();
+    (0..60u32)
+        .map(|frame| {
+            let t = f64::from(frame) * 0.05;
+            let dark = (20..20 + blind).contains(&frame);
+            world.live_pose(t, 0.);
+            world.car_state(t, if dark { 250. } else { 10. }, false);
+            if !dark {
+                world.model(t, &model(0., 0., 0.));
+            }
+            world.radar(t);
+            (t, world.u_ego(), world.lane_held())
+        })
+        .collect()
+}
+
+#[test]
+fn ego_keeps_its_lane_coordinate_over_a_short_lane_map_miss() {
+    let short = lane_map_miss(9);
+    let misses: Vec<_> = short.iter().filter(|r| r.2).collect();
+    assert!(!misses.is_empty() && misses.len() < 10, "{short:?}");
+    assert!(short.iter().all(|&(_, u, _)| u.is_finite()), "never unknown: {short:?}");
+    assert!(misses.iter().all(|&&(_, u, _)| u == short[19].1), "the last mapped coordinate");
+    assert!(!short[29].2 && !short.last().unwrap().2, "mapped again once the camera is back");
+}
+
+#[test]
+fn a_lane_map_miss_longer_than_half_a_second_leaves_ego_unknown() {
+    let long = lane_map_miss(30);
+    let unknown = long.iter().position(|r| !r.1.is_finite()).unwrap();
+    let mapped = long[..unknown].iter().rposition(|r| !r.2).unwrap();
+    assert!((long[unknown].0 - long[mapped].0 - 0.55).abs() < 1e-6, "{long:?}");
+    assert!(long[unknown..50].iter().all(|r| !r.1.is_finite()), "{long:?}");
+    assert!(long[51..].iter().all(|r| r.1.is_finite()), "{long:?}");
+}

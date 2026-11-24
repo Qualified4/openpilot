@@ -168,15 +168,18 @@ impl Vehicle {
         let coord = |y: f64| world.vehicle_lane_coord(now, ego.s + x, ego.to_world(x, y));
         // Filter the vehicle coordinate only. Ego lane movement is
         // subtracted at display time and keeps its own bandwidth.
-        self.u = smooth(self.u, coord(y - f64::from(self.off)), 0.17, 0.1);
-        self.u_slot = smooth(self.u_slot, coord(y), 0.5, 0.25);
+        let held = world.lane_held();
+        self.u = smooth(self.u, coord(y - f64::from(self.off)), 0.17, 0.1, held);
+        self.u_slot = smooth(self.u_slot, coord(y), 0.5, 0.25, held);
     }
 }
 
-fn smooth(previous: f32, raw: Option<f64>, alpha: f32, step: f32) -> f32 {
+/// `held`: the lane map is missing ego too (`World::lane_held`), and a car it cannot place keeps its coordinate.
+fn smooth(previous: f32, raw: Option<f64>, alpha: f32, step: f32, held: bool) -> f32 {
     match raw {
         Some(raw) if previous.is_finite() => previous + (alpha * (raw as f32 - previous)).clamp(-step, step),
         Some(raw) => raw as f32,
+        None if held => previous,
         None => f32::NAN,
     }
 }

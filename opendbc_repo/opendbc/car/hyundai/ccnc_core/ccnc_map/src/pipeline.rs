@@ -38,6 +38,12 @@ fn fresh(now: u64, stamp: u64) -> bool {
     now.checked_sub(stamp).is_some_and(|age| age <= STALE_NS)
 }
 
+/// A context input for the radar update at `stamp`. The daemon reads every queue when liveTracks arrives, so a
+/// carState or radarState published while radarcan was sending can be newer than the tracks.
+fn current(stamp: u64, input: u64) -> bool {
+    stamp.abs_diff(input) <= STALE_NS
+}
+
 /// Recent inputs by logMonoTime, for the camera frames that arrive up to a second and a half late.
 struct History<T>(VecDeque<(u64, T)>);
 
@@ -294,7 +300,7 @@ impl Pipeline {
     fn update_radar(&mut self, stamp: u64, input: Vec<live_tracks::RawPoint>) -> Result<MapOut> {
         let Some((_, car)) = self
             .car
-            .filter(|(stamp_car, car)| car.can_valid && fresh(stamp, *stamp_car))
+            .filter(|(stamp_car, car)| car.can_valid && current(stamp, *stamp_car))
         else {
             return Ok(self.empty());
         };
@@ -306,7 +312,7 @@ impl Pipeline {
         self.sync_generation();
         let lead = self
             .lead
-            .filter(|(t, _)| fresh(stamp, *t))
+            .filter(|(t, _)| current(stamp, *t))
             .and_then(|(_, lead)| lead);
         // card's `holding` (vehicle_display.rs): stopped, or below 10 km/h and braking unless stopped a frame ago.
         let speed = car.speed.max(0.);
@@ -546,6 +552,20 @@ mod tests {
             !pipe.radar.objects.values().any(|o| o.source == 99),
             "non-finite v_lead must be filtered out of radar measurements"
         );
+    }
+
+    #[test]
+    fn a_car_state_newer_than_the_tracks_still_runs_the_radar_update() {
+        // The daemon reads carState when liveTracks arrives; one published while radarcan was sending is newer.
+        for (car_after_ms, runs) in [(5, true), (0, true), (-5, true), (260, false), (-260, false)] {
+            let mut pipe = Pipeline::new(0);
+            let stamp = 2_000_000_000u64;
+            let car = stamp.checked_add_signed(car_after_ms * 1_000_000).unwrap();
+            pipe.world.car_state(seconds(car), 10., false);
+            pipe.car = Some((car, CarState { speed: 10., can_valid: true, ..CarState::default() }));
+            pipe.update_radar(stamp, Vec::new()).unwrap();
+            assert_eq!(pipe.world.radar_stamp() == Some(seconds(stamp)), runs, "car state {car_after_ms} ms after the tracks");
+        }
     }
 
     #[test]
