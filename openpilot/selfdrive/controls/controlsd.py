@@ -27,7 +27,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.controls.lib.steer_ratio import resolve_vehicle_model_steer_ratio
 from openpilot.selfdrive.controls.lib.lateral_readiness import LateralStartupGate, lateral_vehicle_parameters
-from openpilot.selfdrive.controls.lib.laneless_centering import LanelessCentering
+from openpilot.selfdrive.controls.lib.laneless_centering import LanelessCentering, strength_from_param
 
 
 from openpilot.common.realtime import DT_CTRL, DT_MDL
@@ -76,7 +76,7 @@ class Controls:
     self.steer_limited_by_safety = False
     self.curvature = 0.0
     self.desired_curvature = 0.0
-    self.laneless_centering = LanelessCentering()
+    self.laneless_centering = LanelessCentering(strength_from_param(self.params.get_int("LanelessCentering")))
     self.lateral_startup = LateralStartupGate()
     self.lateral_started = False
 
@@ -328,6 +328,9 @@ class Controls:
       CC.cruiseControl.resume = CC.enabled and CS.cruiseState.standstill and speeds[-1] > 0.1
       vCluRatio = CS.vCluRatio if CS.vCluRatio > 0.5 else 1.0
       setSpeed = speeds[-1] / vCluRatio
+
+    if self.sm.frame % 100 == 0:  # 1 Hz: LanelessCentering (%) without disk reads at 100 Hz
+      self.laneless_centering.strength = strength_from_param(self.params.get_int("LanelessCentering"))
 
     hudControl = CC.hudControl
     hudControl.physicalBlinkerHold = self.physical_blinker_hold.read(CS.canValid)

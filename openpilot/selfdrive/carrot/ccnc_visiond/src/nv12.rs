@@ -46,28 +46,10 @@ impl Layout {
     }
 
     pub fn to_bgr(self, src: &[u8]) -> Result<Img> {
-        self.to_bgr_rows(src, self.height)
-    }
-
-    /// The first `rows` rows only (rounded up to even, at most the height): what a check of the top of the frame
-    /// needs before the rest is worth converting (`finish_bgr`).
-    pub fn to_bgr_rows(self, src: &[u8], rows: usize) -> Result<Img> {
         self.validate(src.len())?;
-        let rows = (rows.div_ceil(2) * 2).min(self.height);
-        let mut data = vec![0; self.width * rows * 3];
+        let mut data = vec![0; self.width * self.height * 3];
         self.fill(src, 0, &mut data);
-        Ok(Img { w: self.width, h: rows, data })
-    }
-
-    /// The rest of a frame `to_bgr_rows` began: the same pixels `to_bgr` gives.
-    pub fn finish_bgr(self, src: &[u8], img: &mut Img) -> Result<()> {
-        self.validate(src.len())?;
-        ensure!(img.w == self.width && img.h <= self.height && img.h % 2 == 0, "not a part of this frame");
-        let start = img.data.len();
-        img.data.resize(self.width * self.height * 3, 0);
-        self.fill(src, img.h / 2, &mut img.data[start..]);
-        img.h = self.height;
-        Ok(())
+        Ok(Img { w: self.width, h: self.height, data })
     }
 
     /// Row pairs from `first_pair` into `data` (whole pairs), after `validate`.
@@ -126,18 +108,5 @@ mod tests {
             ]
         );
         assert!(layout.validate(src.len() - 1).is_err());
-    }
-
-    #[test]
-    fn the_top_rows_then_the_rest_are_the_whole_frame() {
-        let layout = Layout { width: 6, height: 6, stride: 8, uv_offset: 48 };
-        let src: Vec<u8> = (0..72u32).map(|i| (i * 37 % 256) as u8).collect();
-        let whole = layout.to_bgr(&src).unwrap();
-        let mut top = layout.to_bgr_rows(&src, 3).unwrap();
-        assert_eq!(top.h, 4, "whole row pairs");
-        assert_eq!(top.data[..], whole.data[..4 * 6 * 3]);
-        layout.finish_bgr(&src, &mut top).unwrap();
-        assert_eq!((top.w, top.h), (whole.w, whole.h));
-        assert_eq!(top.data, whole.data);
     }
 }

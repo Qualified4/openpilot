@@ -56,17 +56,14 @@ pub struct Found {
 /// Road camera boxes, pixels of the 1344x760 frame.
 pub struct FrontFound {
     pub boxes: Vec<(yolox::Det, bool)>,
-    /// The frame (night frames are not detected: no boxes).
+    /// The frame as captured (the classifier's crops).
     pub image: pre::Img,
     pub night: bool,
 }
 
+/// Whether the upper half of a frame is night.
 fn is_night(image: &pre::Img) -> bool {
-    dark(&image.data[..image.h / 2 * image.w * 3])
-}
-
-/// Whether the upper half of a frame (BGR bytes) is night.
-fn dark(upper: &[u8]) -> bool {
+    let upper = &image.data[..image.h / 2 * image.w * 3];
     let sum: u64 = upper.iter().map(|&v| u64::from(v)).sum();
     !upper.is_empty() && (sum as f64 / upper.len() as f64) < NIGHT_MEAN
 }
@@ -124,12 +121,13 @@ impl Detector {
             Target::Right => (SIDE_INPUT, remap::remap_linear(&frame, &views.maps[1])),
             Target::Raw => (RAW_INPUT, frame),
         };
-        let (boxes, _) = self.detect(&image, height, width)?;
+        let (boxes, _) = self.detect(&image, height, width, None)?;
         Ok(Found { night, boxes, calibration, image })
     }
 
-    fn detect(&mut self, image: &pre::Img, height: usize, width: usize) -> Result<(Vec<yolox::Det>, f64)> {
-        let (input, ratio) = pre::letterbox(image, height, width, None);
+    /// `clahe`: applied to the scaled image inside the letterbox.
+    fn detect(&mut self, image: &pre::Img, height: usize, width: usize, clahe: Option<&Clahe>) -> Result<(Vec<yolox::Det>, f64)> {
+        let (input, ratio) = pre::letterbox(image, height, width, clahe);
         let (_, mut out) = self.engine.run([1, 3, height, width], pre::to_chw_raw(&input))?;
         yolox::grid_decode(&mut out, NUM_CLASSES, height, width);
         let candidates = yolox::candidates(&out, NUM_CLASSES, KEEP_SCORE);
@@ -137,20 +135,18 @@ impl Detector {
         Ok((yolox::to_image(&candidates, &keep, ratio, image.w, image.h), ratio))
     }
 
-    /// Road camera frame: the part above the bonnet, by day only (the kinds have no night evidence, R1). Each box
-    /// comes with whether it is cut by the crop line (its bottom is the bonnet, not the car's).
-    /// Night is told from the upper half alone, before the rest of the frame is converted.
+    /// Road camera frame: the part above the bonnet. At night the detector input (416x192) goes through CLAHE, as the
+    /// wide camera's frames do; the classifier still crops the frame as captured (item 80: crops of a corrected frame
+    /// gave six times as many car->truck answers on 47f's night, and CLAHE at full size costs ten times as much).
+    /// Each box comes with whether it is cut by the crop line (its bottom is the bonnet, not the car's).
     pub fn run_front(&mut self, layout: Layout, nv12: &[u8]) -> Result<FrontFound> {
-        let half = layout.height / 2;
-        let mut frame = layout.to_bgr_rows(nv12, half)?;
-        if dark(&frame.data[..half * frame.w * 3]) || layout.height < FRONT_CROP_Y {
-            return Ok(FrontFound { boxes: Vec::new(), image: frame, night: true });
-        }
-        layout.finish_bgr(nv12, &mut frame)?;
+        anyhow::ensure!(layout.height >= FRONT_CROP_Y, "road frame {} rows, the crop line is at {FRONT_CROP_Y}", layout.height);
+        let frame = layout.to_bgr(nv12)?;
+        let night = is_night(&frame);
         let top = pre::Img { w: frame.w, h: FRONT_CROP_Y, data: frame.data[..FRONT_CROP_Y * frame.w * 3].to_vec() };
-        let (boxes, ratio) = self.detect(&top, FRONT_INPUT[0], FRONT_INPUT[1])?;
+        let (boxes, ratio) = self.detect(&top, FRONT_INPUT[0], FRONT_INPUT[1], night.then_some(&CLAHE))?;
         let cut_at = FRONT_CROP_Y as f64 - FRONT_CUT_TOL / ratio;
-        Ok(FrontFound { boxes: boxes.into_iter().map(|b| { let cut = b.b[3] >= cut_at; (b, cut) }).collect(), image: frame, night: false })
+        Ok(FrontFound { boxes: boxes.into_iter().map(|b| { let cut = b.b[3] >= cut_at; (b, cut) }).collect(), image: frame, night })
     }
 }
 
@@ -167,5 +163,53 @@ mod tests {
         };
         assert!(is_night(&image(34, 255)));
         assert!(!is_night(&image(35, 0)));
+    }
+
+    /// Keeps the detector input it was given; finds nothing.
+    struct Recorder(std::rc::Rc<std::cell::RefCell<Vec<f32>>>);
+
+    impl engine::Engine for Recorder {
+        fn run(&mut self, shape: [usize; 4], data: Vec<f32>) -> Result<(Vec<usize>, Vec<f32>)> {
+            *self.0.borrow_mut() = data;
+            let rows: usize = [8, 16, 32].iter().map(|s| (shape[2] / s) * (shape[3] / s)).sum();
+            Ok((vec![1, rows, 5 + NUM_CLASSES], vec![0.; rows * (5 + NUM_CLASSES)]))
+        }
+    }
+
+    /// A 1344x760 NV12 frame of grey `level` with a fine pattern (so CLAHE has something to change).
+    fn frame(level: u8) -> (Layout, Vec<u8>) {
+        let (w, h) = (1344, 760);
+        let mut nv12: Vec<u8> = (0..w * h).map(|i| level.saturating_add(((i % w / 7 + i / w / 5) % 3 * 4) as u8)).collect();
+        nv12.extend(vec![128u8; w * h / 2]);
+        (Layout { width: w, height: h, stride: w, uv_offset: w * h }, nv12)
+    }
+
+    fn front(level: u8) -> (FrontFound, Vec<f32>, pre::Img) {
+        let input = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut detector = Detector { engine: Box::new(Recorder(input.clone())), threads: 1, views: None, fixed: false };
+        let (layout, nv12) = frame(level);
+        let found = detector.run_front(layout, &nv12).unwrap();
+        let bgr = layout.to_bgr(&nv12).unwrap();
+        let top = pre::Img { w: bgr.w, h: FRONT_CROP_Y, data: bgr.data[..FRONT_CROP_Y * bgr.w * 3].to_vec() };
+        let input = input.borrow().clone();
+        (found, input, top)
+    }
+
+    #[test]
+    fn night_road_frames_are_detected_through_clahe_and_classified_as_captured() {
+        let (found, input, top) = front(20);
+        assert!(found.night);
+        let plain = pre::to_chw_raw(&pre::letterbox(&top, FRONT_INPUT[0], FRONT_INPUT[1], None).0);
+        let corrected = pre::to_chw_raw(&pre::letterbox(&top, FRONT_INPUT[0], FRONT_INPUT[1], Some(&CLAHE)).0);
+        assert_ne!(plain, corrected, "the pattern is one CLAHE changes");
+        assert_eq!(input, corrected, "the detector sees the corrected input");
+        assert_eq!(found.image.data[..top.data.len()], top.data[..], "the classifier crops the frame as captured");
+    }
+
+    #[test]
+    fn day_road_frames_are_not_corrected() {
+        let (found, input, top) = front(120);
+        assert!(!found.night);
+        assert_eq!(input, pre::to_chw_raw(&pre::letterbox(&top, FRONT_INPUT[0], FRONT_INPUT[1], None).0));
     }
 }

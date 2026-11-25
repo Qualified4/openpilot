@@ -8,6 +8,7 @@ from openpilot.cereal import car, log
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.carrot.carrot_man_input import get_carrot_man
+from openpilot.selfdrive.controls.lib.laneless_centering import strength_from_param
 from openpilot.selfdrive.monitoring.dm_alerts import driver_monitoring_hud_alert
 from opendbc.car.hyundai.stop_object import signal_stop_object_requested
 from opendbc.car.hyundai.values import HyundaiFlags
@@ -53,6 +54,7 @@ def publish_fixture(brand, flags, enabled):
     'car': car, 'log': log, 'CV': CV, 'DT_CTRL': DT_CTRL,
     'State': log.SelfdriveState.OpenpilotState,
     'get_carrot_man': get_carrot_man,
+    'strength_from_param': strength_from_param,
     'driver_monitoring_hud_alert': driver_monitoring_hud_alert,
     'signal_stop_object_requested': signal_stop_object_requested,
     'messaging': NS(new_message=new_message),
@@ -63,8 +65,8 @@ def publish_fixture(brand, flags, enabled):
   sent = {}
   control = NS(CP=cp, sm=Messages(), curvature=0.0, desired_curvature=0.0, calibrated_pose=None,
                physical_blinker_hold=NS(read=lambda valid: 0), is_vw_meb=False,
-               params=NS(get_int=lambda key: 0), lanefull_mode_enabled=False,
-               laneless_centering=NS(accel_out=0.0, block=0),
+               params=NS(get_int=lambda key: 50 if key == 'LanelessCentering' else 0), lanefull_mode_enabled=False,
+               laneless_centering=NS(accel_out=0.0, block=0, strength=1.0),
                lat_hud_state=lambda lat_active, lac_log: 0,  # Controls.lat_hud_state is outside the compiled publish()
                LoC=NS(long_control_state='off', pid=NS(p=0.0, i=0.0, f=0.0)),
                pm=NS(send=lambda service, message: sent.update({service: message})))
@@ -99,3 +101,13 @@ def test_complete_publish_checks_message_age_and_publishes_both_services(brand, 
   assert all(message.valid for message in sent.values())
   expected = brand == 'hyundai' and flags != 0 and enabled and valid and 0 <= age <= 20
   assert sent['carControl'].carControl.hudControl.signalStopObject == expected
+
+
+def test_publish_rereads_laneless_centering_once_a_second():
+  control, _, publish = publish_fixture('hyundai', 0, True)
+  control.sm.frame = 101
+  publish()
+  assert control.laneless_centering.strength == 1.0
+  control.sm.frame = 200
+  publish()
+  assert control.laneless_centering.strength == 0.5

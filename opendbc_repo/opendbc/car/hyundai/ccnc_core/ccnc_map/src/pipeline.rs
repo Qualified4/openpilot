@@ -3,7 +3,7 @@
 use crate::cmap::MapOut;
 use crate::input::{
     live_tracks::{self, EVENT_LIVE_TRACKS},
-    map_events::{CarState, Event, CAR_STATE, LIVE_POSE, RADAR_STATE},
+    map_events::{CarState, DisplayLead, Event, CAR_STATE, LIVE_POSE, RADAR_STATE},
     model_v2::{self, EVENT_MODEL_V2},
 };
 use crate::radar::{
@@ -98,7 +98,8 @@ pub struct Pipeline {
     tracks_valid: bool,
     car: Option<(u64, CarState)>,
     model_stamp: Option<u64>,
-    lead: Option<(u64, Option<(f64, f64)>)>,
+    /// radarState at its time: leadOne for the radar map, the display lead (`Event::display_lead`) for FF.
+    lead: Option<(u64, Option<(f64, f64)>, Option<DisplayLead>)>,
     vision: Vision,
     start_guard: det_rules::StartGuard,
     tracks_at: History<Vec<vision::Track>>,
@@ -264,8 +265,9 @@ impl Pipeline {
                 }
             }
             RADAR_STATE => {
-                if self.lead.is_none_or(|(last, _)| stamp >= last) {
-                    self.lead = Some((stamp, event.valid.then(|| event.lead()).flatten()));
+                if self.lead.is_none_or(|(last, _, _)| stamp >= last) {
+                    let display = event.display_lead().filter(|_| event.valid);
+                    self.lead = Some((stamp, event.lead().filter(|_| event.valid), display));
                 }
             }
             EVENT_LIVE_TRACKS if self.last_tracks.is_none_or(|last| stamp > last) => {
@@ -297,6 +299,22 @@ impl Pipeline {
         Ok(None)
     }
 
+    /// The model's two ego lines at the radar tick, unless the data is stale or ego is changing lanes.
+    fn model_lane(&self, stamp: u64) -> Option<crate::slots::ModelLane> {
+        if !self.model_stamp.is_some_and(|model_stamp| current(stamp, model_stamp)) || self.world.ego_changing() {
+            return None;
+        }
+        let cache = &self.radar.lane_cache;
+        let line = |role: i64| {
+            let i = usize::try_from(role + self.radar.lane_offset).ok()?;
+            let probability = cache.lines.get(&i)?.probability;
+            probability.is_finite().then_some((cache.geometry.get(&i)?, probability))
+        };
+        let (left, left_prob) = line(1)?;
+        let (right, right_prob) = line(2)?;
+        Some(crate::slots::ModelLane::with_probability(left.clone(), right.clone(), left_prob.min(right_prob)))
+    }
+
     fn update_radar(&mut self, stamp: u64, input: Vec<live_tracks::RawPoint>) -> Result<MapOut> {
         let Some((_, car)) = self
             .car
@@ -310,10 +328,10 @@ impl Pipeline {
         let now = seconds(stamp);
         self.world.radar(now);
         self.sync_generation();
-        let lead = self
+        let (lead, display_lead) = self
             .lead
-            .filter(|(t, _)| current(stamp, *t))
-            .and_then(|(_, lead)| lead);
+            .filter(|(t, _, _)| current(stamp, *t))
+            .map_or((None, None), |(_, lead, display)| (lead, display));
         // card's `holding` (vehicle_display.rs): stopped, or below 10 km/h and braking unless stopped a frame ago.
         let speed = car.speed.max(0.);
         let stopped = speed <= 0.3 / 3.6;
@@ -322,6 +340,7 @@ impl Pipeline {
         self.stopped = stopped;
         let mut tracks = Vec::with_capacity(input.len().min(MAX_VEHICLES));
         let mut measured = Vec::with_capacity(tracks.capacity());
+        let mut wall_car_track = None;
         for point in input.iter().filter(|p| p.source == 0).take(MAX_VEHICLES) {
             let (x, y, v_rel) = (
                 f64::from(point.d_rel),
@@ -340,6 +359,13 @@ impl Pipeline {
             if point.measured {
                 let speed = f64::from(point.v_lead);
                 if speed.is_finite() {
+                    if holding && display_lead.is_some_and(|lead| {
+                        let (lx, ly, lv) = lead.motion;
+                        lead.confirmed_track == Some(i128::from(id)) && (x - lx).abs() <= 1.
+                            && (y - ly).abs() <= 0.5 && (v_rel - lv).abs() <= 1.
+                    }) {
+                        wall_car_track = Some(i128::from(id));
+                    }
                     measured.push(RadarPoint {
                         track: i128::from(id),
                         x,
@@ -351,7 +377,8 @@ impl Pipeline {
                 }
             }
         }
-        let yaw = self.world.yaw_at(now).unwrap_or(0.);
+        let measured_yaw = self.world.yaw_at(now);
+        let yaw = measured_yaw.unwrap_or(0.);
         let changing = self.world.status() & STATUS_FROZEN != 0;
         self.radar.advance(
             now,
@@ -382,6 +409,7 @@ impl Pipeline {
                     stamp: now,
                     pose: Some((x, y, cos, sin)),
                     evidence: &Default::default(),
+                    wall_car_track,
                 }),
                 radar_stamp: Some(now),
                 a_ego: if car.accel.is_finite() { car.accel } else { 0. },
@@ -409,7 +437,8 @@ impl Pipeline {
         );
         self.kinds.apply(now, self.world.radar_pose(now).heading, self.tracker.vehicles_mut());
         let cars = self.tracker.vehicles();
-        let mut slots = self.slots.update(now, cars, &self.world, lead);
+        self.slots.set_model_lane(self.model_lane(stamp));
+        let mut slots = self.slots.update_lead(now, cars, &self.world, display_lead.map(|lead| lead.motion));
         let remembered = if holding {
             // The map's 0.15 s freshness, not the selector's 0.3 s prediction hold, decides when memory takes over.
             let (map, frame) = (&self.radar, self.radar.frame());
@@ -437,11 +466,13 @@ impl Pipeline {
             },
             &mut slots,
         )?;
-        let split = self.slots.split_alongside(now, cars, &mut slots);
+        let split = self.slots.split_alongside(now, cars, remembered, &mut slots);
         self.radar_slots = slots;
-        self.vision.apply(now, car.speed, self.world.pose.at(now), &mut slots);
         let protected = [false, remembered[0] || split[0], remembered[1] || split[1], split[0], split[1]];
-        crate::slots::keep_radar(protected, &self.radar_slots, &mut slots);
+        self.vision.apply(now, car.speed, self.world.pose.at(now), protected, &mut slots);
+        let straight = speed >= 0.5 && !car.blinker && !self.world.ego_changing()
+            && measured_yaw.is_some_and(|rate| rate.abs() <= 0.04);
+        self.slots.smooth_opening_sides(now, straight, &mut slots);
         let asking = self.vision_seen.is_some_and(|seen| stamp.saturating_sub(seen) <= VISION_ALIVE_NS);
         for slot in slots[..3].iter_mut().flatten() {
             slot.kind_wanted = asking
@@ -610,6 +641,21 @@ mod tests {
             pipe.update_radar(stamp, Vec::new()).unwrap();
             assert_eq!(pipe.world.radar_stamp() == Some(seconds(stamp)), runs, "car state {car_after_ms} ms after the tracks");
         }
+    }
+
+    #[test]
+    fn a_model_frame_newer_than_the_tracks_can_still_supply_the_ego_lane() {
+        let mut pipe = Pipeline::new(0);
+        pipe.radar.lane_offset = 0;
+        for (role, y) in [(1, 1.7), (2, -1.7)] {
+            let points = vec![(0., y), (80., y)];
+            pipe.radar.lane_cache.geometry.insert(role, points.clone());
+            pipe.radar.lane_cache.lines.insert(role, crate::radar::lanes::Boundary { points, probability: 1., consistent: 1 });
+        }
+        pipe.model_stamp = Some(2_000_000_000);
+        assert!(pipe.model_lane(1_995_000_000).is_some_and(|lane| lane.contains(20., 0.)));
+        assert!(pipe.model_lane(1_745_000_000).is_none());
+        assert!(pipe.model_lane(2_255_000_000).is_none());
     }
 
     #[test]

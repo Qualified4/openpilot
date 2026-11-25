@@ -175,6 +175,12 @@ pub struct SwapCfg {
     pub max_x: f64,
     pub margin: f64,
 }
+impl SwapCfg {
+    pub fn allows(&self, distance: f64, cut: bool, run: u32) -> bool {
+        run >= self.min_run && (!cut || self.allow_cut) && distance <= self.max_x
+    }
+}
+
 impl Default for SwapCfg {
     fn default() -> SwapCfg {
         SwapCfg { min_run: 2, allow_cut: true, max_x: 6.0, margin: SWAP_MARGIN }
@@ -199,7 +205,7 @@ impl Act {
 pub fn swap_decision(cam_on: bool, c: Option<(f64, bool)>, slot_detect: bool, slot_dist: f64, run: u32, cfg: &SwapCfg) -> Option<Act> {
     let (x, cut) = c.filter(|_| cam_on)?;
     let keep = slot_detect.then_some(Act::Keep);
-    if run < cfg.min_run || (cut && !cfg.allow_cut) || x > cfg.max_x {
+    if !cfg.allows(x, cut, run) {
         return keep;
     }
     if !slot_detect {

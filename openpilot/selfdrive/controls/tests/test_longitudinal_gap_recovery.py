@@ -15,6 +15,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_braking_gap import LeadComfor
 from openpilot.selfdrive.controls.lib.longitudinal_stop_gap import StopGapWeightState
 from openpilot.selfdrive.controls.lib.longitudinal_approach import ApproachState
 from openpilot.selfdrive.controls.lib import longitudinal_gap_safe as gap_safe
+from openpilot.selfdrive.controls.lib import longitudinal_soft_brake as soft_brake
 
 # These tests pin the arithmetic of the TF lead path (still used in blended mode and for an
 # unknown gap level): no gap level maps to the safety-distance gap here. The safety-distance
@@ -50,7 +51,7 @@ def load_mpc_update(path):
             'LeadComfortState': LeadComfortState, 'braking_gap_reference': braking_gap_reference,
             'comfort_path_has_reserve': comfort_path_has_reserve,
             'StopGapWeightState': StopGapWeightState, 'ApproachState': ApproachState,
-            'gap_safe': TF_LEAD_PATH, 'COMFORT_RELIEF_MIN_TF': COMFORT_RELIEF_MIN_TF,
+            'gap_safe': TF_LEAD_PATH, 'soft_brake': soft_brake, 'COMFORT_RELIEF_MIN_TF': COMFORT_RELIEF_MIN_TF,
             'get_traffic_stop_distance_adjust': get_traffic_stop_distance_adjust,
             'get_traffic_stop_obstacle_distance': get_traffic_stop_obstacle_distance,
             'LaneChangeGapPlan': LaneChangeGapPlan, 'cutout_obstacle_relief': cutout_obstacle_relief}
@@ -94,6 +95,25 @@ def run_update(cls, level=1, *, distance=45.15, speed=79.04/3.6, lead_speed=None
 @pytest.fixture
 def mpc_class():
   return load_mpc_update(Path(__file__).resolve().parents[1]/'lib/longitudinal_mpc_lib/long_mpc.py')
+
+
+def test_soft_brake_changes_the_acceleration_reference_only(mpc_class, monkeypatch):
+  monkeypatch.setitem(mpc_class.update.__globals__, 'gap_safe', gap_safe)
+  process_lead = mpc_class.process_lead
+
+  def predict_stopping_lead(mpc, lead):
+    if lead.status:
+      lead.aLeadTau = 0.0
+    return process_lead(mpc, lead)
+
+  monkeypatch.setattr(mpc_class, 'process_lead', predict_stopping_lead)
+  monkeypatch.setattr(mpc_class, 'run', lambda mpc: mpc.prev_a.fill(-2.0))
+  inputs = {"speed": 10.0, "lead_speed": 7.0, "lead_accel": -1.3, "distance": 24.0, "frames": 100, "stop_distance": 3.7}
+  baseline = run_update(mpc_class, gap_enabled=False, **inputs)
+  modified = run_update(mpc_class, gap_enabled=True, **inputs)
+  np.testing.assert_array_equal(baseline.params, modified.params)
+  np.testing.assert_array_equal(baseline.yref[:,4], 0.0)
+  assert np.any(modified.yref[:,4] > 0.0)
 
 
 @pytest.mark.parametrize('level', range(6))

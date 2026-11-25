@@ -77,6 +77,7 @@ pub fn update<'py>(
                     stamp: stamp.extract()?,
                     pose,
                     evidence: &evidence,
+                    wall_car_track: None,
                 })
             } else {
                 None

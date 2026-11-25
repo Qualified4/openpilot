@@ -230,3 +230,45 @@ def test_backs_off_traffic_within_half_a_second_even_when_another_condition_togg
   run(c, model(centre=-0.19, std=0.45), 20, **traffic)  # held off by the lane-line fade meanwhile
   run(c, model(centre=-0.19), 30, **traffic)
   assert c.accel == 0.0
+
+
+def test_the_setting_maps_percent_to_a_bounded_strength():
+  assert [lc.strength_from_param(p) for p in (-10, 0, 100, 150, 200, 250)] == [0.0, 0.0, 1.0, 1.5, 2.0, 2.0]
+  assert LanelessCentering().strength == 1.0
+
+
+def test_zero_percent_adds_nothing_and_clears_the_integral():
+  c = LanelessCentering(strength=0.0)
+  assert run(c, model(centre=-0.19), 300) == 0.0
+  assert c.integral == 0.0 and block_names(c.block) == ['off']
+  on = LanelessCentering()
+  run(on, model(centre=-0.19), 300)
+  assert on.integral < 0.0 and on.accel_out < 0.0
+  on.strength = 0.0
+  run(on, model(centre=-0.19), 1)
+  assert on.integral == 0.0
+  assert run(on, model(centre=-0.19), 50) == 0.0 and on.accel_out == 0.0
+  on.reset()
+  assert on.strength == 0.0  # reset() keeps the setting
+
+
+def _accels(strength, steps=1500):
+  c = LanelessCentering(strength=strength)
+  md, cs, rs = model(centre=-0.5), state(), radar()
+  out = []
+  for i in range(steps):
+    md.frameId = md.frameId + (1 if i % 5 == 0 else 0)
+    c.update(md, cs, rs, '', 70 / 3.6)
+    out.append(c.accel)
+  return np.array(out)
+
+
+def test_two_hundred_percent_doubles_the_cap_and_the_rate_limit():
+  # 0.5 m of path offset at 70 km/h asks 2·0.5·v²/L² ≈ 0.25 m/s² before the integral: capped at either strength
+  full, double = _accels(1.0), _accels(2.0)
+  assert -full.min() == pytest.approx(lc.ACCEL_MAX, abs=1e-6) and -full.min() <= lc.ACCEL_MAX
+  assert -double.min() == pytest.approx(2 * lc.ACCEL_MAX, abs=1e-6) and -double.min() <= 2 * lc.ACCEL_MAX
+  rate = lambda a: np.abs(np.diff(a)).max() / lc.DT
+  assert rate(full) <= lc.ACCEL_RATE_MAX + 1e-9
+  assert lc.ACCEL_RATE_MAX < rate(double) <= 2 * lc.ACCEL_RATE_MAX + 1e-9
+  assert np.array_equal(_accels(2.5), double)  # above 200 % nothing grows

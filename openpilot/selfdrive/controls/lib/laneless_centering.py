@@ -1,4 +1,4 @@
-"""Lane centering for the laneless target curvature (always on, no setting).
+"""Lane centering for the laneless target curvature (`LanelessCentering`, 0 = off, 100 = the gains below).
 
 In the laneless branch controlsd follows modelV2.action.desiredCurvature. The
 driving model's path often sits off the lane centre: on drive 0000047d it held
@@ -15,12 +15,17 @@ top of the model's, at 100 Hz in controlsd:
   its own curvature puts there), integrated at 0.02 m/s² per m·s, capped at
   ±0.08 m/s², leaking over 2 s while off.
 
-The sum is capped at 0.15 m/s² on a straight road, plus 0.15 per m/s² of the
+At 100 % the sum is capped at 0.15 m/s² on a straight road, plus 0.15 per m/s² of the
 road's lateral acceleration (|κ_model|·v², up to 3 m/s²). The target is
 smoothed over 0.5 s and may change at most 0.4 m/s² per second; the output
 ramps in over 1 s and out over 0.5 s.
 
-The formula and constants are those of LanelessCentering at 100 % on the
+The setting scales the pursuit, the integral gain and limit, the cap and the
+rate limit together up to 200 % (0.30 m/s² on a straight road); 0 switches it
+off, ramping out over 0.5 s with the integral cleared. The default here is 100
+(the Rust branch defaults to 0). controlsd rereads it once a second.
+
+The formula and constants are those of LanelessCentering on the
 ccnc-hda1-rust branch (rust/crates/controlsd/src/centering.rs, c4726d9b). On
 top of its conditions (30 km/h, both ego lines at probability 0.5, 2.6..4.3 m
 wide at 5 m, radius 80 m or 50 m with lines at 0.6, offset limits, a 0.7 m
@@ -69,6 +74,7 @@ LANE_JUMP = 0.7
 LANE_JUMP_HOLD_S = 1.0
 ACCEL_TAU_S = 0.5
 ACCEL_RATE_MAX = 0.4   # m/s² per second
+STRENGTH_MAX = 2.0     # LanelessCentering 200 %: every gain and limit above at most doubles
 
 STD_RAMP = (0.20, 0.40)
 MERGE_MAX_DW = 0.5
@@ -85,7 +91,7 @@ LANE_CHANGE_LEFT, LANE_CHANGE_RIGHT = 3, 4  # log.Desire
 # controlsState.lanelessCenteringBlock bits: why the correction is off or ramping out this step.
 BLOCK_REASONS = (
   'input', 'speed', 'curvature', 'prob', 'width', 'offset', 'jump', 'std', 'merge',
-  'lanechange', 'driver', 'side', 'bsd',
+  'lanechange', 'driver', 'side', 'bsd', 'off',
 )
 BLOCK_BITS = {name: 1 << i for i, name in enumerate(BLOCK_REASONS)}
 
@@ -127,8 +133,14 @@ def atc_active(atc_type):
   return not (atc_type in ('', 'none', 'straight') or atc_type.endswith(' prepare'))
 
 
+def strength_from_param(percent):
+  """LanelessCentering (%) as the gain scale, 0..STRENGTH_MAX."""
+  return min(max(float(percent), 0.0) / 100.0, STRENGTH_MAX)
+
+
 class LanelessCentering:
-  def __init__(self):
+  def __init__(self, strength=1.0):
+    self.strength = strength  # LanelessCentering / 100, set by controlsd; reset() keeps it
     self.reset()
 
   def reset(self):
@@ -214,7 +226,8 @@ class LanelessCentering:
     """One controlsd step in the laneless branch. Returns the curvature to add, 1/m (+ = right)."""
     v = float(v_ego)
     kappa = float(md.action.desiredCurvature)
-    fails = []
+    scale = min(self.strength, STRENGTH_MAX)
+    fails = [] if scale > 0.0 else ['off']
 
     # Rests and holds that run whether or not the correction acts
     ds = list(md.meta.desireState)
@@ -262,16 +275,17 @@ class LanelessCentering:
     target = 0.0
     if fails or offsets is None:
       self.blend = max(self.blend - DT / RAMP_OUT_S, 0.0)
-      self.integral *= math.exp(-DT / INTEGRAL_LEAK_S)
+      self.integral = self.integral * math.exp(-DT / INTEGRAL_LEAK_S) if scale > 0.0 else 0.0
     else:
       car, path = offsets
       # never push toward traffic: only the direction toward it is cut, the correction away from it stays
       lo = 0.0 if blocked[-1.0] else -math.inf
       hi = 0.0 if blocked[1.0] else math.inf
-      self.integral = float(np.clip(np.clip(self.integral + INTEGRAL_GAIN * car * DT, -INTEGRAL_MAX, INTEGRAL_MAX), lo, hi))
-      cap = ACCEL_MAX + CURVE_CAP_GAIN * min(abs(kappa) * v * v, CURVE_ACCEL_MAX)
+      i_max = INTEGRAL_MAX * scale
+      self.integral = float(np.clip(np.clip(self.integral + INTEGRAL_GAIN * scale * car * DT, -i_max, i_max), lo, hi))
+      cap = (ACCEL_MAX + CURVE_CAP_GAIN * min(abs(kappa) * v * v, CURVE_ACCEL_MAX)) * scale
       pursuit = 2.0 * path * v * v / lookahead(v) ** 2
-      wanted = float(np.clip(pursuit + self.integral, -cap, cap)) * std_w
+      wanted = float(np.clip(scale * pursuit + self.integral, -cap, cap)) * std_w
       target = float(np.clip(wanted, lo, hi))
       for sgn in (-1.0, 1.0):
         if blocked[sgn] and (wanted * sgn > 0.0 or self.accel * sgn > 0.0):
@@ -283,7 +297,7 @@ class LanelessCentering:
       # appearance, whether or not other conditions hold the correction off meanwhile
       if self.out_step is None:
         self.out_step = abs(self.accel) * DT / RAMP_OUT_S * (1.0 + 1e-9)
-      step = max(ACCEL_RATE_MAX * DT, self.out_step)
+      step = max(ACCEL_RATE_MAX * scale * DT, self.out_step)
       moved = self.accel + float(np.clip(target - self.accel, -step, step))
       self.accel = 0.0 if moved * self.accel <= 0.0 and target == 0.0 else moved
     else:
@@ -292,7 +306,7 @@ class LanelessCentering:
         # the lane centre and the path move a little from one model frame to the next; the 0.5 s filter
         # and the rate limit keep that from shaking the wheel (2-3 Hz on the Rust branch before them)
         filtered = self.accel + (target - self.accel) * DT / ACCEL_TAU_S
-        step = ACCEL_RATE_MAX * DT
+        step = ACCEL_RATE_MAX * scale * DT
         self.accel += float(np.clip(filtered - self.accel, -step, step))
 
     self.block = 0

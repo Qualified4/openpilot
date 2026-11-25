@@ -159,6 +159,20 @@ mod tests {
     }
 
     #[test]
+    fn night_road_frames_and_their_answers_count_as_by_day() {
+        // ccnc_visiond detects night road frames through CLAHE (item 80): the frame still counts for the map's asks
+        // and rechecks, and its answers are tied like day answers.
+        let mut night = message(Status::Frame, View::CropFront, 5, 5);
+        night.night_corrected = true;
+        let read = super::message(&ccnc_vision_msg::encode(&night, 9)).unwrap();
+        assert_eq!(read.front_frame, Some(5));
+        let mut answers = message(Status::Kinds, View::CropFront, 0, 0);
+        answers.kinds = vec![ccnc_vision_msg::KindResult { frame_mono_time: 5, view: View::CropFront, xyxy: [1., 2., 3., 4.], kind: 3, prob: 0.75 }];
+        let read = super::message(&ccnc_vision_msg::encode(&answers, 9)).unwrap();
+        assert_eq!(read.kinds, [KindResult { time_ns: 5, view: KindView::Front, xyxy: [1., 2., 3., 4.], kind: 3, prob: 0.75 }]);
+    }
+
+    #[test]
     fn status_messages_are_not_frames() {
         let resting = ccnc_vision_msg::encode(&message(Status::Resting, View::SideL, 0, 0), 1);
         assert!(frame(&resting).is_none());

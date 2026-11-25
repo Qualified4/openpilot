@@ -1,8 +1,10 @@
 //! The wide camera's side cars on the map slots (`ccnc_map::vision`).
 
 use ccnc_map::slots::{Slot, VISION_CONFIRMS, VISION_NONE, VISION_ONLY};
-use ccnc_map::vision::{Box, Context, Frame, FrameView, Geometry, Side, Skipped, SlotState, Stepped, Track, Vision, HOLD_S, LATE_S, RAW_HOLD_S, VISION_VID};
+use ccnc_map::vision::{Box, Context, Frame, FrameView, Geometry, Side, Skipped, SlotState, Stepped, Track, Vision, HOLD_S, LATE_S, RAW_HOLD_S, SIDE_LANE_PLAY, SWAP_HOLD_S, VISION_VID};
+use ccnc_map::pos::common::LANE_WIDTH;
 use ccnc_map::world::PoseAt;
+use det_rules::rules::SWAP_MARGIN;
 
 const FIXTURE: &str = include_str!("fixtures/wide_rules_c1.txt");
 
@@ -175,7 +177,7 @@ fn on_scene() -> usize {
 }
 
 fn radar_slot(distance: f32, lateral: f32) -> Slot {
-    Slot { vid: 7, distance, lateral, detect: 1, lane_coord_rel: 0., v_rel: 0., kind: 0, kind_confirmed: false, kind_wanted: false, vision: VISION_NONE }
+    Slot { vid: 7, distance, lateral, detect: 1, lane_coord_rel: 0., v_rel: 1., kind: 0, kind_confirmed: false, kind_wanted: false, vision: VISION_NONE }
 }
 
 #[test]
@@ -191,12 +193,12 @@ fn late_result_over_1_5s_dropped() {
 
 #[test]
 fn vision_cars_leave_two_seconds_after_the_last_result() {
-    let (vision, scene, k, _, _) = first_on(on_scene());
+    let (mut vision, scene, k, _, _) = first_on(on_scene());
     let arrival = seconds(scene.frames[k].t_ns) + 0.5;
     let index = 1 + scene.side as usize;
     for (now, shown) in [(arrival, true), (arrival + HOLD_S, true), (arrival + HOLD_S + 0.01, false)] {
         let mut slots = [None; 5];
-        vision.apply(now, 0., PoseAt::default(), &mut slots);
+        vision.apply(now, 0., PoseAt::default(), [false; 5], &mut slots);
         assert_eq!(slots[index].is_some(), shown, "{now}");
         if shown {
             assert_eq!(slots[index].unwrap().vision, VISION_ONLY);
@@ -206,54 +208,129 @@ fn vision_cars_leave_two_seconds_after_the_last_result() {
     // Moving off or reversing ends it at once; a standing car's slightly negative speed does not.
     for (v_ego, shown) in [(-0.0011, true), (3.01, false), (-0.3, false)] {
         let mut slots = [None; 5];
-        vision.apply(arrival, v_ego, PoseAt::default(), &mut slots);
+        vision.apply(arrival, v_ego, PoseAt::default(), [false; 5], &mut slots);
         assert_eq!(slots[index].is_some(), shown, "{v_ego}");
     }
 }
 
+/// A camera car on fresh state, the time its result is held at, its slot and its place (x, y left positive).
+fn camera_car() -> (Vision, f64, usize, f32, f32) {
+    let (vision, scene, k, x, yc) = first_on(on_scene());
+    (vision, seconds(scene.frames[k].t_ns) + 0.5, 1 + scene.side as usize, x as f32, -yc as f32)
+}
+
+fn run(vision: &mut Vision, now: f64, radar: [Option<Slot>; 5]) -> [Option<Slot>; 5] {
+    let mut slots = radar;
+    vision.apply(now, 0., PoseAt::default(), [false; 5], &mut slots);
+    slots
+}
+
 #[test]
 fn vision_only_car_merges_with_radar() {
-    let (vision, scene, k, x, yc) = first_on(on_scene());
-    let now = seconds(scene.frames[k].t_ns) + 0.5;
-    let index = 1 + scene.side as usize;
-    let (x, y) = (x as f32, -yc as f32);
-    let run = |radar: [Option<Slot>; 5]| {
-        let mut slots = radar;
-        vision.apply(now, 0., PoseAt::default(), &mut slots);
-        slots
-    };
+    let (mut vision, now, index, x, y) = camera_car();
     // The radar draws the same car in FF, inside the gate (6 m along, 1 m across): it stays the radar's.
     let mut ff = [None; 5];
     ff[0] = Some(radar_slot(x + 5.9, y - 0.9 * y.signum()));
-    let merged = run(ff);
+    let merged = run(&mut vision, now, ff);
     assert_eq!(merged[0], ff[0]);
     assert!(merged[index].is_none());
     // Outside the gate it is another car: the camera fills the side slot.
     for (dx, dy) in [(6.1, 0.), (0., 1.1)] {
         let mut other = [None; 5];
         other[0] = Some(radar_slot(x + dx, y - dy * y.signum()));
-        let filled = run(other);
+        let filled = run(&mut vision, now, other);
         assert_eq!(filled[index].map(|s| s.vision), Some(VISION_ONLY), "{dx} {dy}");
         assert_eq!(filled[0], other[0]);
     }
-    // In the same slot the rule decides: a radar car less than 3 m farther is kept and marked, a farther one is
-    // replaced by the closer camera car.
-    let mut near = [None; 5];
-    near[index] = Some(radar_slot(x + 2.9, y));
-    assert_eq!(run(near)[index].map(|s| (s.vid, s.vision)), Some((7, VISION_CONFIRMS)));
+}
+
+#[test]
+fn a_radar_car_in_the_same_slot_within_a_car_length_is_the_camera_car() {
+    // 3.1 m farther (past the swap margin) but within 4 m along and 1.5 m across: the same car, the radar's stays.
+    for (dx, dy) in [(3.1, 0.), (3.9, 1.4)] {
+        let (mut vision, now, index, x, y) = camera_car();
+        let mut same = [None; 5];
+        same[index] = Some(radar_slot(x + dx, y - dy * y.signum()));
+        for dt in [0., 0.3, 0.6, 1.0] {
+            assert_eq!(run(&mut vision, now + dt, same)[index].map(|s| (s.vid, s.vision)), Some((7, VISION_CONFIRMS)), "{dx} {dy} {dt}");
+        }
+    }
+}
+
+#[test]
+fn the_slot_swaps_to_a_closer_camera_car_only_once_the_rules_held_the_swap() {
+    let (mut vision, now, index, x, y) = camera_car();
+    let camera = (VISION_VID[index - 1], VISION_ONLY);
+    let radar = (7, VISION_CONFIRMS);
     let mut far = [None; 5];
-    far[index] = Some(radar_slot(x + 3.1, y));
-    assert_eq!(run(far)[index].map(|s| (s.vid, s.vision)), Some((VISION_VID[index - 1], VISION_ONLY)));
+    far[index] = Some(radar_slot(x + 4.1, y));
+    let mut near = [None; 5];
+    near[index] = Some(radar_slot(x + 1.0, y));
+    let shown = |vision: &mut Vision, now: f64, slots| run(vision, now, slots)[index].map(|s| (s.vid, s.vision));
+    // A farther radar car: kept until the swap held SWAP_HOLD_S.
+    assert_eq!(shown(&mut vision, now, far), Some(radar));
+    assert_eq!(shown(&mut vision, now + SWAP_HOLD_S - 0.05, far), Some(radar));
+    assert_eq!(shown(&mut vision, now + SWAP_HOLD_S, far), Some(camera));
+    // Once shown, the camera car stays while the radar car is no farther, or the same car (0000047f standing)...
+    let mut closer = [None; 5];
+    closer[index] = Some(radar_slot(x - SWAP_MARGIN as f32 - 0.1, y));
+    for dt in [0.05, 0.6, 1.2] {
+        assert_eq!(shown(&mut vision, now + SWAP_HOLD_S + dt, near), Some(camera), "{dt}");
+    }
+    // ...and goes back only to a radar car clearly closer, once that held, a frame in between not counting.
+    let back = now + SWAP_HOLD_S + 1.3;
+    assert_eq!(shown(&mut vision, back, closer), Some(camera));
+    assert_eq!(shown(&mut vision, back + 0.05, near), Some(camera));
+    assert_eq!(shown(&mut vision, back + 0.1, closer), Some(camera));
+    assert_eq!(shown(&mut vision, back + 0.1 + SWAP_HOLD_S - 0.05, closer), Some(camera));
+    assert_eq!(shown(&mut vision, back + 0.1 + SWAP_HOLD_S, closer), Some(radar));
+    // An empty slot takes the camera car at once.
+    assert_eq!(shown(&mut vision, back + 0.1 + SWAP_HOLD_S + 0.05, [None; 5]), Some(camera));
+}
+
+#[test]
+fn a_protected_radar_car_stays_but_does_not_take_back_a_shown_camera_car() {
+    let (mut vision, now, index, x, y) = camera_car();
+    let camera = (VISION_VID[index - 1], VISION_ONLY);
+    let mut far = [None; 5];
+    far[index] = Some(radar_slot(x + 4.1, y));
+    let shown = |vision: &mut Vision, now: f64, protect: bool| {
+        let mut slots = far;
+        let mut protected = [false; 5];
+        protected[index] = protect;
+        vision.apply(now, 0., PoseAt::default(), protected, &mut slots);
+        slots[index].map(|s| (s.vid, s.vision))
+    };
+    // The stop memory's or a side pair's car is not taken over, however long the camera asks; the camera confirms it.
+    for dt in [0., 0.6, 1.2] {
+        assert_eq!(shown(&mut vision, now + dt, true), Some((7, VISION_CONFIRMS)), "{dt}");
+    }
+    // Once it is no longer protected the camera's hold starts over.
+    assert_eq!(shown(&mut vision, now + 1.25, false), Some((7, VISION_CONFIRMS)));
+    assert_eq!(shown(&mut vision, now + 1.25 + SWAP_HOLD_S - 0.05, false), Some((7, VISION_CONFIRMS)));
+    assert_eq!(shown(&mut vision, now + 1.25 + SWAP_HOLD_S, false), Some(camera));
+    // The protection coming back does not hand the slot back to the farther radar car.
+    for dt in [0.05, 0.6, 1.2] {
+        assert_eq!(shown(&mut vision, now + 1.25 + SWAP_HOLD_S + dt, true), Some(camera), "{dt}");
+    }
+}
+
+#[test]
+fn a_camera_only_car_is_drawn_near_the_next_lane_centre() {
+    let (mut vision, now, index, _, _) = camera_car();
+    let lateral = f64::from(run(&mut vision, now, [None; 5])[index].unwrap().lateral);
+    let outward = if index % 2 == 1 { lateral } else { -lateral };
+    assert!((LANE_WIDTH - SIDE_LANE_PLAY - 1e-6..=LANE_WIDTH + SIDE_LANE_PLAY + 1e-6).contains(&outward), "{lateral}");
 }
 
 #[test]
 fn camera_car_follows_the_ego_motion_since_its_frame() {
-    let (vision, scene, k, x, _) = first_on(on_scene());
+    let (mut vision, scene, k, x, _) = first_on(on_scene());
     let now = seconds(scene.frames[k].t_ns) + 0.5;
     let index = 1 + scene.side as usize;
     let mut slots = [None; 5];
     // 1 m forward since the frame: the car is 1 m closer.
-    vision.apply(now, 0., PoseAt { x: 1., ..PoseAt::default() }, &mut slots);
+    vision.apply(now, 0., PoseAt { x: 1., ..PoseAt::default() }, [false; 5], &mut slots);
     assert!((f64::from(slots[index].unwrap().distance) - (x - 1.)).abs() < 1e-5);
 }
 
@@ -289,10 +366,10 @@ fn raw_frame_combines_with_side_frame_and_expires_after_raw_hold() {
     let raw = raw_frame_of(&scene, fr, raw_t);
     assert!(step_raw(&mut vision, &raw, raw_arrival, fr).unwrap().is_none());
     let mut slots = [None; 5];
-    vision.apply(arrival + HOLD_S + 0.1, 0., PoseAt::default(), &mut slots);
+    vision.apply(arrival + HOLD_S + 0.1, 0., PoseAt::default(), [false; 5], &mut slots);
     assert!(slots[index].is_some(), "intervening raw bridges a slow 3-view cycle");
     let mut expired = [None; 5];
-    vision.apply(raw_arrival + 1.55, 0., PoseAt::default(), &mut expired);
+    vision.apply(raw_arrival + 1.55, 0., PoseAt::default(), [false; 5], &mut expired);
     assert!(expired[index].is_none(), "car still leaves promptly when visiond stops after raw");
     // Raw older than RAW_HOLD_S is not combined into a later side frame.
     let mut later = frame_of(&scene, fr);
@@ -317,13 +394,13 @@ fn slow_delayed_result_within_late_s_compensates_ego_motion_and_cuts_off_above_3
 
     // Ego crept forward 2.0 m between capture and display time: the camera car moves 2.0 m closer.
     let mut slots = [None; 5];
-    vision.apply(t + 2.5, 1.0, PoseAt { t: t + 2.5, x: 12.0, y: 0.0, heading: 0.0, s: 12.0 }, &mut slots);
+    vision.apply(t + 2.5, 1.0, PoseAt { t: t + 2.5, x: 12.0, y: 0.0, heading: 0.0, s: 12.0 }, [false; 5], &mut slots);
     assert_eq!(slots[side_idx].map(|s| s.vision), Some(VISION_ONLY));
     assert!((f64::from(slots[side_idx].unwrap().distance) - (cand.x - 2.0)).abs() < 1e-4);
 
     // As soon as ego exceeds 3.0 m/s, the held slot disappears immediately even well inside HOLD_S.
     let mut fast = [None; 5];
-    vision.apply(t + 2.6, 3.05, PoseAt { t: t + 2.6, x: 12.3, y: 0.0, heading: 0.0, s: 12.3 }, &mut fast);
+    vision.apply(t + 2.6, 3.05, PoseAt { t: t + 2.6, x: 12.3, y: 0.0, heading: 0.0, s: 12.3 }, [false; 5], &mut fast);
     assert!(fast[side_idx].is_none());
 }
 
@@ -342,7 +419,7 @@ fn starved_vision_over_1_5s_clears_camera_slot_and_keeps_radar_slots() {
 
     // Initially the camera fills its side slot without disturbing radar slots FF or the opposite side.
     let mut slots = radar_only;
-    vision.apply(last_fresh_arrival, 0., PoseAt::default(), &mut slots);
+    vision.apply(last_fresh_arrival, 0., PoseAt::default(), [false; 5], &mut slots);
     assert_eq!(slots[side_idx].map(|s| s.vision), Some(VISION_ONLY));
     assert_eq!(slots[0], radar_only[0]);
     assert_eq!(slots[other_idx], radar_only[other_idx]);
@@ -357,7 +434,7 @@ fn starved_vision_over_1_5s_clears_camera_slot_and_keeps_radar_slots() {
 
     // Once HOLD_S has passed since the last fresh arrival, the camera slot vanishes silently while radar stays exact.
     let mut after_starve = radar_only;
-    vision.apply(last_fresh_arrival + HOLD_S + 0.05, 0., PoseAt::default(), &mut after_starve);
+    vision.apply(last_fresh_arrival + HOLD_S + 0.05, 0., PoseAt::default(), [false; 5], &mut after_starve);
     assert!(after_starve[side_idx].is_none(), "starved camera slot must disappear silently");
     assert_eq!(after_starve[0], radar_only[0]);
     assert_eq!(after_starve[other_idx], radar_only[other_idx]);

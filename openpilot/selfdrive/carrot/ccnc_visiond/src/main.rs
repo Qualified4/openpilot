@@ -5,8 +5,9 @@
 //! message about once a second while nothing is processed. The side views are built from liveCalibration; no side
 //! frame is processed before calibrationd says calibrated.
 //!
-//! The road camera is looked at only while CcncMap has a radar car in FF, LF or RF without a confirmed kind, by
-//! day, at `gate::FrontPace`. The classifier runs on its own thread (`classify`) and never holds detection up.
+//! The road camera is looked at only while CcncMap has a radar car in FF, LF or RF without a confirmed kind (or one
+//! due a recheck), at `gate::FrontPace`, by day and by night (`detect::Detector::run_front`). The classifier runs on
+//! its own thread (`classify`) and never holds detection up.
 //!
 //! Environment:
 //! * `CCNC_VISIOND_ASSETS`: directory with `yolox_tiny_int8.onnx` and `kind_mnv3s_128.onnx` (default `assets`).
@@ -47,9 +48,6 @@ use ccnc_vision_msg::{Calibration, KindResult, Status, View, VisionBox, VisionOu
 use stripnet::ipc::{Pub, Sub};
 
 const SPEED_SERVICE: &str = "carState";
-/// How long the road camera rests after a night frame (only the top half is converted to tell), whatever the map
-/// asks: the standing pace, so one dark frame (a tunnel, a glitch) costs little and night costs a top half every 2 s.
-const FRONT_NIGHT_REST_NS: u64 = 2_000_000_000;
 const CALIBRATION_SERVICE: &str = "liveCalibration";
 const MAP_SERVICE: &str = "customReserved3";
 const CAMERA_SERVER: &str = "camerad";
@@ -269,8 +267,6 @@ fn run() -> io::Result<()> {
     // back to back.
     let mut last_front = None;
     let mut front_pace = sched_cfg.front;
-    // After a night road frame the road camera rests (night frames get no answer, so the map's recheck stays open).
-    let mut front_rest_until = 0u64;
     let mut road_wrong_size = None;
     let mut gate = gate::Gate::default();
     let mut calib = calib::Calib::default();
@@ -279,6 +275,7 @@ fn run() -> io::Result<()> {
     let mut quiet = Quiet { last: None };
     let mut failures = 0;
     let mut wrong_size = None;
+    let mut wide_unavailable = false;
     let mut threads_rechecked = false;
     while !STOP.load(Ordering::Relaxed) {
         for bytes in speed.drain() {
@@ -321,14 +318,24 @@ fn run() -> io::Result<()> {
             eprintln!("ccnc_visiond: kind thread ended; road camera off until restart");
             front_pace = None;
         }
+        let ready = detector.fixed() || calibrated;
+        let phase = gate.phase(clock_ns(libc::CLOCK_MONOTONIC), ready);
+        if phase == gate::Phase::Opened {
+            // Discard frames from above the speed limit and try the wide stream before its first road turn.
+            camera.discard();
+            wide_unavailable = false;
+        }
         // Road camera answers are placed with liveCalibration: none without it.
         if let Some(pace) = front_pace.filter(|_| calibrated) {
             let now = clock_ns(libc::CLOCK_MONOTONIC);
-            if now >= front_rest_until && gate.front_due(now, last_front, pace) {
+            if gate.front_due(now, last_front, pace)
+                && (phase == gate::Phase::Closed || wide_unavailable || gate.front_fits(now))
+            {
                 if let Some(frame) = road.poll() {
                     let size = (frame.layout.width, frame.layout.height);
                     if size != wcam::WIDE_SIZE {
                         last_front = Some(now);
+                        gate.front_finished(0);
                         if road_wrong_size != Some(size) {
                             eprintln!("ccnc_visiond: road camera frame {}x{}, not {}x{}; not used", size.0, size.1, wcam::WIDE_SIZE.0, wcam::WIDE_SIZE.1);
                         }
@@ -342,7 +349,7 @@ fn run() -> io::Result<()> {
                         recheck_threads(&sched_cfg, &applied, &mut threads_rechecked);
                     }
                     match found {
-                        Ok(found) if !found.night => {
+                        Ok(found) => {
                             let (boot_now, mono_now) = (clock_ns(libc::CLOCK_BOOTTIME), clock_ns(libc::CLOCK_MONOTONIC));
                             let frame_mono = frame_mono_time(frame.timestamp_sof, boot_now, mono_now);
                             let dets: Vec<_> = found.boxes.iter().map(|(d, _)| *d).collect();
@@ -355,7 +362,7 @@ fn run() -> io::Result<()> {
                                 frame_mono_time: frame_mono,
                                 view: View::CropFront,
                                 processing_ms: started.elapsed().as_secs_f32() * 1000.0,
-                                night_corrected: false,
+                                night_corrected: found.night,
                                 calibration: latest,
                                 boxes: found
                                     .boxes
@@ -367,26 +374,19 @@ fn run() -> io::Result<()> {
                             send(&publisher, &out)?;
                             quiet.frame();
                         }
-                        Ok(_) => front_rest_until = last_front.unwrap_or(now) + FRONT_NIGHT_REST_NS,
                         Err(err) => eprintln!("ccnc_visiond: road frame {} dropped: {err:#}", frame.frame_id),
                     }
+                    gate.front_finished(started.elapsed().as_nanos() as u64);
                     continue;
                 }
             }
         }
-        let ready = detector.fixed() || calibrated;
-        match gate.phase(clock_ns(libc::CLOCK_MONOTONIC), ready) {
-            gate::Phase::Closed => {
-                camera.discard();
-                let status = if ready { Status::Resting } else { Status::NotCalibrated };
-                quiet.report(&publisher, status, gate.next_target().view(), latest)?;
-                sleep(IDLE);
-                continue;
-            }
-            // Frames of the time above the speed limit are never processed later, including the ones that came
-            // during the last sleep.
-            gate::Phase::Opened => camera.discard(),
-            gate::Phase::Open => {}
+        if phase == gate::Phase::Closed {
+            camera.discard();
+            let status = if ready { Status::Resting } else { Status::NotCalibrated };
+            quiet.report(&publisher, status, gate.next_target().view(), latest)?;
+            sleep(IDLE);
+            continue;
         }
         if let Some(took) = calib.usable().and_then(|c| detector.calibrate(c)) {
             // Frames that came while building are skipped: the camera gives only the latest one.
@@ -403,6 +403,7 @@ fn run() -> io::Result<()> {
             if camera.connected() {
                 sleep(FRAME_WAIT);
             } else {
+                wide_unavailable = true;
                 quiet.report(&publisher, Status::NoCamera, gate.next_target().view(), latest)?;
                 sleep(IDLE);
             }
@@ -414,11 +415,13 @@ fn run() -> io::Result<()> {
                 eprintln!("ccnc_visiond: wide camera frame {}x{}, the lens model is for {}x{}; frames are not processed", size.0, size.1, wcam::WIDE_SIZE.0, wcam::WIDE_SIZE.1);
             }
             wrong_size = Some(size);
+            wide_unavailable = true;
             quiet.report(&publisher, Status::UnsupportedCamera, gate.next_target().view(), latest)?;
             sleep(IDLE);
             continue;
         }
         wrong_size = None;
+        wide_unavailable = false;
         let target = gate.take_target(clock_ns(libc::CLOCK_MONOTONIC));
         let found = match detector.run(frame.layout, &frame.nv12, target) {
             Ok(found) => {
@@ -468,6 +471,11 @@ fn run() -> io::Result<()> {
         };
         send(&publisher, &out)?;
         quiet.frame();
+        gate.wide_finished(
+            target,
+            clock_ns(libc::CLOCK_MONOTONIC),
+            started.elapsed().max(sched_cfg.min_period).as_nanos() as u64,
+        );
         if !sched_cfg.min_period.is_zero() {
             sleep_interruptible(sched_cfg.min_period.saturating_sub(started.elapsed()));
         }
