@@ -5,8 +5,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.lateral_mpc_lib.lat_mpc import LateralMpc
 from openpilot.selfdrive.controls.lib.lateral_mpc_lib.lat_mpc import N as LAT_MPC_N
-from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, MIN_SPEED, is_volkswagen_meb
-from openpilot.selfdrive.controls.lib.corner_center import CornerCenter
+from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, MIN_SPEED
 # from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
@@ -78,9 +77,6 @@ class LateralPlanner:
     self.curve_speed = 0
     self.lane_model_speed_guard = LaneModelSpeedGuard(recovery_frames=int(1 / DT_MDL))
     self.laneless_only = True
-    # LatCornerCenterBlend > 0 creates it; 0 drops it so nothing new runs. VW MEB uses its own laneless path.
-    self.corner_center_supported = not is_volkswagen_meb(CP)
-    self.corner_center = None
 
   def reset_mpc(self, x0=None):
     if x0 is None:
@@ -103,7 +99,6 @@ class LateralPlanner:
       LATERAL_ACCEL_COST = self.params.get_float("LatMpcAccelCost") * 0.01
       LATERAL_JERK_COST = self.params.get_float("LatMpcJerkCost") * 0.01
       STEERING_RATE_COST = self.params.get_float("LatMpcSteeringRateCost")
-      self.update_corner_center_params()
 
     # clip speed , lateral planning is not possible at 0 speed
     measured_curvature = sm['controlsState'].curvature
@@ -214,22 +209,6 @@ class LateralPlanner:
   
     self.x_sol = self.lat_mpc.x_sol
 
-    if self.corner_center is not None:
-      self.corner_center.update(
-        sm.logMonoTime['modelV2'] * 1e-9, md, sm['carState'], sm['radarState'], sm['carControl'].latActive,
-        carrot.atc_active, measured_curvature, sm['liveDelay'].lateralDelay if sm.seen['liveDelay'] else None,
-        self.path_xyz, self.v_plan, self.t_idxs, self.v_ego,
-        mpc_ok=not (mpc_nans or self.lat_mpc.solution_status != 0), lane_mode=self.lanelines_active)
-
-  def update_corner_center_params(self):
-    blend = self.params.get_int("LatCornerCenterBlend") if self.corner_center_supported else 0
-    if blend <= 0:
-      self.corner_center = None
-      return
-    if self.corner_center is None:
-      self.corner_center = CornerCenter()
-    self.corner_center.set_blend(blend)
-    self.corner_center.set_delay_params(self.params.get_float("SteerActuatorDelay"), self.params.get_float("LatSmoothSec"))
 
   def publish(self, sm, pm, carrot):
     plan_solution_valid = self.solution_invalid_cnt < 2
@@ -295,11 +274,6 @@ class LateralPlanner:
     )
 
     lateralPlan.latDebugText = debugText
-    if self.corner_center is not None:
-      lateralPlan.cornerCenterCurvature = self.corner_center.curvature
-      lateralPlan.cornerCenterActive = self.corner_center.active
-      lateralPlan.cornerCenterGate = self.corner_center.gate_value
-      lateralPlan.cornerCenterBlock = self.corner_center.block
     #lateralPlan.latDebugText = self.latDebugText
     #lateralPlan.laneWidthLeft = float(self.DH.lane_width_left)
     #lateralPlan.laneWidthRight = float(self.DH.lane_width_right)

@@ -145,8 +145,7 @@
               "zh": "居中校正",
               "params": [
                 "PathOffset",
-                "CameraYawTrimDeg",
-                "LatCornerCenterBlend"
+                "CameraYawTrimDeg"
               ]
             },
             {
@@ -749,29 +748,6 @@
       "max": 200,
       "default": 0,
       "unit": 1
-    },
-    {
-      "group": "조향일반",
-      "name": "LatCornerCenterBlend",
-      "title": "코너 중앙 보정(0)",
-      "descr": "(레인리스) 코너에서 모델 경로가 차선 중앙보다 안쪽으로 치우칠 때 목표 곡률을 차선 중앙 쪽으로 보정하는 비율입니다.\n0=꺼짐(기본). 높이면 보정이 커집니다. 차선 신뢰가 높고 바깥쪽 옆 차로에 차가 없을 때만 동작합니다. 약 2초에 걸쳐 서서히 섞고, 운전자 조향·차선 변경 등으로 끊길 때도 약 0.6초 안에 서서히 줄입니다.\n실차 미검증 시험 기능이며 고정 입력 재생으로만 확인했습니다.",
-      "egroup": "LAT",
-      "etitle": "Corner Centering(0)",
-      "edescr": "(Laneless) Share of the correction toward the lane center when the model path cuts inside the lane center in a corner.\n0=off (default). Higher values correct more. Acts only with trusted lane lines and no vehicle in the outer adjacent lane. Blends in gradually over about 2 s and, when cut off by driver steering, a lane change or similar, still fades out gradually within about 0.6 s.\nExperimental and not validated on a vehicle; checked only by fixed-input log replay.",
-      "cgroup": "转向",
-      "ctitle": "弯道居中校正(0)",
-      "cdescr": "(无车道线模式) 弯道中模型路径偏向车道中心内侧时，将目标曲率向车道中心校正的比例。\n0=关闭(默认)。值越高校正越大。仅在车道线可信且外侧相邻车道无车辆时工作。约 2 秒内逐渐混入；因驾驶员转向、变道等中断时也在约 0.6 秒内逐渐减小。\n实验功能，未经实车验证，仅通过固定输入回放确认。",
-      "min": 0,
-      "max": 50,
-      "default": 0,
-      "unit": 5,
-      "display_unit": "percent",
-      "risk": "high",
-      "zero_label": {
-        "ko": "0 · 꺼짐",
-        "en": "0 · Off",
-        "zh": "0 · 关闭"
-      }
     },
     {
       "group": "조향토크",
