@@ -132,6 +132,8 @@ pub struct Observation<'a> {
     /// The interpolated radar pose (x, y, cos, sin).
     pub pose: Option<(f64, f64, f64, f64)>,
     pub evidence: &'a HashMap<i128, Evidence>,
+    /// A current radar observation independently corroborated as the model's lead car.
+    pub wall_car_track: Option<i128>,
 }
 
 pub struct UpdateIn<'a> {
@@ -342,7 +344,7 @@ impl MapState {
         let now = self.now.ok_or(Error::Value("map not advanced"))?;
         let frame = self.frame();
         let lane_change = lane_reference(self, k, lanes, now, inp.ego_change, inp.lane_change);
-        let measured = if let Some(radar) = inp.radar {
+        let measured = if let Some(radar) = &inp.radar {
             let ego = Ego {
                 a_ego: inp.a_ego,
                 yaw_rate: inp.yaw_rate,
@@ -395,7 +397,15 @@ impl MapState {
         };
 
         vision(self, now, inp.vision)?;
-        let retired_bands = walls::update(self, k, now, lanes, &measured)?;
+        // Same source and update only. An older object that reused this radar ID may still belong to a wall.
+        let wall_car = inp.radar.and_then(|radar| {
+            let track = radar.wall_car_track?;
+            self.objects.values()
+                .filter(|o| o.source == track && o.report.is_some_and(|(at, _, _)| at == radar.stamp))
+                .last()
+                .map(|o| o.key)
+        });
+        let retired_bands = walls::update(self, k, now, lanes, &measured, wall_car)?;
         if inp.select {
             Selector {
                 st: self,

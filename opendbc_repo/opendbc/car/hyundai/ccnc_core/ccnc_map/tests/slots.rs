@@ -1267,6 +1267,23 @@ fn live_bsd_is_kept_when_a_passed_car_has_just_disappeared() {
 }
 
 #[test]
+fn a_passed_car_stays_bridged_when_the_next_car_closes_in() {
+    let mut world = road();
+    world.car_state(0., 10., false);
+    let mut assigner = Assigner::default();
+    let make = |vid, time, x| Vehicle { vx: 5., ..vehicle(&world, vid, time, x, 1.) };
+    let cars = [make(1, 0., 3.), make(2, 0., 9.)];
+    let mut slots = assigner.update(0., &cars, &world, None);
+    assigner.split_alongside(0., &cars, [false; 2], &mut slots);
+    for now in [0.05, 0.10] {
+        let cars = [make(1, 0., 3.), make(2, now, 4.)];
+        let mut slots = assigner.update(now, &cars, &world, None);
+        assigner.split_alongside(now, &cars, [false; 2], &mut slots);
+        assert_eq!((slots[RR].unwrap().vid, slots[RF].unwrap().vid), (1, 2));
+    }
+}
+
+#[test]
 fn a_bridged_passed_car_does_not_get_the_split_speed_and_distance_bands() {
     let mut world = road();
     world.car_state(0., 10., false);

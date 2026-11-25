@@ -144,7 +144,7 @@ fn sort_keys(keys: impl Iterator<Item = i64>, mut f: impl FnMut(i64) -> Result<f
 }
 
 /// `_walls` up to its `_bands` call.
-fn walls_core(st: &mut MapState, k: &Consts, now: f64, measured: &IntSet) -> Result<WallRows> {
+fn walls_core(st: &mut MapState, k: &Consts, now: f64, measured: &IntSet, lead_car: Option<i64>) -> Result<WallRows> {
     let frame = st.frame();
     let any_measured = !measured.is_empty();
     // Every object's structure is cleared; what the rest reads of it is kept.
@@ -157,7 +157,9 @@ fn walls_core(st: &mut MapState, k: &Consts, now: f64, measured: &IntSet) -> Res
                 x: o.x,
                 y: o.y,
                 local: None,
-                vision: o.vision,
+                // At a stop, the radar can see a row of queuing cars at the same lateral position. Use the
+                // independently matched model lead as vehicle evidence for this update of the wall detector.
+                vision: o.vision || lead_car == Some(key),
                 radar_vehicle: o.radar_moving || o.doppler_confirmed,
                 motion_confirmed: o.motion_confirmed,
                 stationary: o.stationary,
@@ -551,8 +553,8 @@ impl BandData {
 }
 
 /// Update walls and bands. Return the bands retired in this frame, including their final field values.
-pub fn update(st: &mut MapState, k: &Consts, now: f64, lanes: &Lanes, measured: &IntSet) -> Result<Vec<BandData>> {
-    let rows = walls_core(st, k, now, measured)?;
+pub fn update(st: &mut MapState, k: &Consts, now: f64, lanes: &Lanes, measured: &IntSet, lead_car: Option<i64>) -> Result<Vec<BandData>> {
+    let rows = walls_core(st, k, now, measured, lead_car)?;
     bands_core(st, k, lanes, &rows, measured)
 }
 

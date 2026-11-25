@@ -237,6 +237,8 @@ pub struct Assigner {
     alongside_alone: [Option<f64>; 2],
     /// The car the front slot drew 0-5 m ahead without splitting the side, too fast for it (`ALONGSIDE_SPEED`).
     passing: [Option<Slot>; 2],
+    /// A passed car already in the radar gap can remain there while the next front car closes in.
+    passing_hold: [Option<Slot>; 2],
     /// Where (world) and when the edge rule last hid a side object.
     edge_hidden: Vec<(f64, f64, f64)>,
     /// `set_model_lane`.
@@ -256,6 +258,7 @@ impl Default for Assigner {
             alongside: [None; 2],
             alongside_alone: [None; 2],
             passing: [None; 2],
+            passing_hold: [None; 2],
             edge_hidden: Vec::new(),
             model_lane: None,
             side_lateral: [None; 2],
@@ -527,6 +530,7 @@ impl Assigner {
                 self.alongside[side] = None;
                 self.alongside_alone[side] = None;
                 self.passing[side] = None;
+                self.passing_hold[side] = None;
                 continue;
             }
             let kept = self.alongside[side];
@@ -554,16 +558,17 @@ impl Assigner {
                             && slots.iter().all(|slot| slot.is_none_or(|slot| slot.vid != kept.vid))
                     };
                     let split_near = kept.filter(droppable);
-                    let lost = split_near.or_else(|| self.passing[side].filter(droppable));
+                    let lost = split_near
+                        .or_else(|| self.passing_hold[side].filter(droppable))
+                        .or_else(|| self.passing[side].filter(droppable));
                     bridge = split_near.is_none() && lost.is_some();
                     lost.filter(|_| hold(&mut self.alongside_alone[side], ALONGSIDE_NEAR_HOLD_S))
                         .map(|lost| (lost, slots[front]))
                 }
             };
             self.alongside[side] = shown.filter(|_| !bridge).map(|(near, _)| near);
-            self.passing[side] = close.filter(|s| s.v_rel < -speed).or_else(|| {
-                (bridge && shown.is_some()).then(|| self.passing[side]).flatten()
-            });
+            self.passing_hold[side] = shown.filter(|_| bridge).map(|(near, _)| near);
+            self.passing[side] = close.filter(|s| s.v_rel < -speed);
             if shown.is_none() {
                 self.alongside_alone[side] = None;
             }
@@ -604,6 +609,7 @@ impl Assigner {
         self.alongside = [None; 2];
         self.alongside_alone = [None; 2];
         self.passing = [None; 2];
+        self.passing_hold = [None; 2];
     }
 
     /// The vids `hold_stopped` may draw, for the tracker to keep while ego holds.
