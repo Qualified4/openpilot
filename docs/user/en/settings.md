@@ -367,7 +367,8 @@ While extended display is on, the cluster's vehicle positions come from the rada
 
 - Works only while the internal comparison value `CcncPosDisplayMode` is 1. That value is not in the settings screen.
 - If the process dies within 60 s of starting, or dies three times, it stays off until the device reboots.
-- While the car drives at 15 km/h or more, an object moving at walking speed that has never exceeded 3 m/s (a pedestrian, a radar reflection from something at the roadside) is not drawn in a side slot. A car waiting alongside and the front slot are unaffected.
+- An object that has never exceeded 3 m/s is not drawn in a side slot within 0.9 m of the road edge (a median, something at the roadside, a pedestrian). It is drawn for its first second. Cars that have moved, and slow cars inside the road, are unaffected.
+- While the car drives at 7 km/h or more, an object measured coming toward it within 15 m (for example a car park pillar with a wrong radar speed) is not drawn in the front slot. Nothing changes while stopped.
 
 Device compute: about 13 ms/s at standstill. Values while driving are unverified.
 
