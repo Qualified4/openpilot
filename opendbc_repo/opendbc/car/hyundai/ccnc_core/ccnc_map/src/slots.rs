@@ -35,6 +35,12 @@ const EDGE_ROOM_M: f64 = 0.9;
 /// The rule above judges a vid once it has been tracked this long: a car pulling out of an alley at the road
 /// edge (0000047d 21 22.89 s) is drawn as it appears.
 const SETTLED_S: f64 = 1.0;
+/// A vid tracked shorter than `SETTLED_S` that never moved is not drawn where the edge rule hid a side object within
+/// this long, this close along and across: 0000047f 5 17-24 s, a road edge object the radar reported as a new vid
+/// five times in 6 s, each drawn in RF for its first 0.25-0.65 s.
+const EDGE_PLACE_S: f64 = 2.0;
+const EDGE_PLACE_X: f64 = 3.0;
+const EDGE_PLACE_Y: f64 = 0.7;
 /// FF does not draw a car measured coming at us (`Vehicle::oncoming`) this close while ego drives at
 /// `ONCOMING_FF_EGO_SPEED` or more: 0000047d 1 9.75 s, a car park pillar the radar measured at -4 m/s, drawn in FF
 /// for 1 s at 10 km/h. A car standing ahead is never oncoming; while ego waits FF still draws crossing traffic.
@@ -160,6 +166,8 @@ pub struct Assigner {
     alongside: [Option<Slot>; 2],
     /// When a split side lost its next car or its near car, while it stays split without it.
     alongside_alone: [Option<f64>; 2],
+    /// Where (world) and when the edge rule last hid a side object.
+    edge_hidden: Vec<(f64, f64, f64)>,
 }
 
 impl Default for Assigner {
@@ -172,6 +180,7 @@ impl Default for Assigner {
             runner_up: [None; 2],
             alongside: [None; 2],
             alongside_alone: [None; 2],
+            edge_hidden: Vec::new(),
         }
     }
 }
@@ -222,11 +231,14 @@ impl Assigner {
             self.side_last = [None; 2];
             self.alongside = [None; 2];
             self.alongside_alone = [None; 2];
+            self.edge_hidden.clear();
         }
         if !now.is_finite() || !world.accepts_radar() || !world.u_ego().is_finite() {
             return [None; 5];
         }
         self.drawings.retain(|d| now - d.seen <= 2.);
+        self.edge_hidden.retain(|h| (0. ..=EDGE_PLACE_S).contains(&(now - h.0)));
+        let ego = world.pose.at(now);
         // Radar cars sit in the world at the pose RADAR_LAG before `now`. Measure their distance and side from that
         // same pose, so the slot distance is the radar's dRel rather than dRel minus ego's travel over RADAR_LAG.
         let radar = world.radar_pose(now);
@@ -322,7 +334,21 @@ impl Assigner {
             let Some(slot) = slot_index(x, drawing.lane) else {
                 continue;
             };
-            if slot != 0 && (speed < -1. / 3.6 || car.oncoming || (slot <= 2 && still && at_edge(world, now, car, slot))) {
+            let edge = (1..=2).contains(&slot) && !drawing.fast && {
+                if still {
+                    at_edge(world, now, car, slot)
+                } else {
+                    let (cx, cy) = ego.to_ego(f64::from(car.wx), f64::from(car.wy));
+                    self.edge_hidden.iter().any(|&(_, hx, hy)| {
+                        let (hx, hy) = ego.to_ego(hx, hy);
+                        (hx - cx).abs() <= EDGE_PLACE_X && (hy - cy).abs() <= EDGE_PLACE_Y
+                    })
+                }
+            };
+            if edge {
+                self.edge_hidden.push((now, f64::from(car.wx), f64::from(car.wy)));
+            }
+            if slot != 0 && (speed < -1. / 3.6 || car.oncoming || edge) {
                 continue;
             }
             if slot == 0 && car.oncoming && x <= ONCOMING_FF_M && world.pose.speed() >= ONCOMING_FF_EGO_SPEED {

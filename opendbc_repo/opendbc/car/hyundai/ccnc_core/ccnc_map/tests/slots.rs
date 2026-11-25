@@ -1038,6 +1038,53 @@ fn a_walking_object_at_the_edge_is_not_drawn_but_a_waiting_car_inside_and_a_movi
     assert!(beside_the_left_edge(0., 3.6, 3.0, |t| if t < 0.5 { 8. } else { 0. }).iter().all(|&drawn| drawn));
 }
 
+#[test]
+fn a_new_vid_where_the_edge_rule_just_hid_a_still_object_is_hidden_at_once() {
+    // 0000047f 5 17-24 s: the radar reported one edge object as a new vid again and again; each was drawn for its first
+    // second. Ego waits, the model's left edge 0.6 m beyond the object 3 m left, 10 m ahead.
+    let mut world = World::default();
+    let mut assigner = Assigner::default();
+    let mut m = model(0., 0., 0.);
+    let grid = m.lane_lines[0].x.clone();
+    m.road_edges = vec![
+        ccnc_map::input::model_v2::Line { x: grid.clone(), y: vec![-3.6; grid.len()] },
+        ccnc_map::input::model_v2::Line { x: grid.clone(), y: vec![9.; grid.len()] },
+    ];
+    // (vid, born, x, y left, ground speed) in the radar frame of each 20 Hz step.
+    let scene = |now: f64| -> Option<(u32, f64, f64, f64, f32)> {
+        match now {
+            t if t < 1.5 => Some((9, 0., 10., 3.0, 0.)),
+            t if t < 2.5 => None,
+            t if t < 3.0 => Some((10, 2.5, 12., 2.6, 0.)),
+            t if t < 3.5 => Some((11, 3.0, 11., 3.0, 8.)),
+            t if (5.0..5.5).contains(&t) => Some((12, 5.0, 10., 3.0, 0.)),
+            _ => None,
+        }
+    };
+    let drawn: Vec<(f64, Option<u32>, Option<u32>)> = (0..110)
+        .map(|i| {
+            let now = f64::from(i) * 0.05;
+            world.car_state(now, 0., false);
+            world.model(now, &m);
+            let car = scene(now);
+            let cars: Vec<Vehicle> = car
+                .iter()
+                .map(|&(vid, born, x, y, vx)| Vehicle { born, vx, ..vehicle(&world, vid, now, x, -y / 3.5) })
+                .collect();
+            (now, car.map(|c| c.0), assigner.update(now, &cars, &world, None)[LF].map(|s| s.vid))
+        })
+        .collect();
+    let during = |a: f64, b: f64| drawn.iter().filter(move |d| d.0 >= a - 1e-9 && d.0 < b - 1e-9 && d.1.is_some());
+    // The first vid is drawn for its first second, then hidden.
+    assert!(during(0., 0.95).all(|d| d.2 == d.1), "{drawn:?}");
+    assert!(during(1.05, 1.5).all(|d| d.2.is_none()), "{drawn:?}");
+    // A new vid within 3 m along and 0.7 m across, 1 s after the last hidden frame: hidden from its first frame.
+    assert!(during(2.5, 3.0).all(|d| d.2.is_none()), "{drawn:?}");
+    // A car that moves is drawn there, and so is a new still vid once no object was hidden there for 2 s.
+    assert!(during(3.0, 3.5).all(|d| d.2 == d.1), "{drawn:?}");
+    assert!(during(5.0, 5.5).all(|d| d.2 == d.1), "{drawn:?}");
+}
+
 /// One radar car measured coming at us (oncoming) `x` m ahead in ego's lane while ego drives at `ego` m/s: whether FF
 /// drew it.
 fn oncoming_ahead(ego: f64, x: f64) -> bool {
