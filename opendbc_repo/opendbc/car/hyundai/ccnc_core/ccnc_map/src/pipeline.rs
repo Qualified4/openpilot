@@ -98,7 +98,8 @@ pub struct Pipeline {
     tracks_valid: bool,
     car: Option<(u64, CarState)>,
     model_stamp: Option<u64>,
-    lead: Option<(u64, Option<(f64, f64)>)>,
+    /// radarState at its time: leadOne for the radar map, the display lead (`Event::display_lead`) for FF.
+    lead: Option<(u64, Option<(f64, f64)>, Option<(f64, f64)>)>,
     vision: Vision,
     start_guard: det_rules::StartGuard,
     tracks_at: History<Vec<vision::Track>>,
@@ -264,8 +265,9 @@ impl Pipeline {
                 }
             }
             RADAR_STATE => {
-                if self.lead.is_none_or(|(last, _)| stamp >= last) {
-                    self.lead = Some((stamp, event.valid.then(|| event.lead()).flatten()));
+                if self.lead.is_none_or(|(last, _, _)| stamp >= last) {
+                    let valid = |lead: Option<(f64, f64)>| lead.filter(|_| event.valid);
+                    self.lead = Some((stamp, valid(event.lead()), valid(event.display_lead())));
                 }
             }
             EVENT_LIVE_TRACKS if self.last_tracks.is_none_or(|last| stamp > last) => {
@@ -310,10 +312,10 @@ impl Pipeline {
         let now = seconds(stamp);
         self.world.radar(now);
         self.sync_generation();
-        let lead = self
+        let (lead, display_lead) = self
             .lead
-            .filter(|(t, _)| current(stamp, *t))
-            .and_then(|(_, lead)| lead);
+            .filter(|(t, _, _)| current(stamp, *t))
+            .map_or((None, None), |(_, lead, display)| (lead, display));
         // card's `holding` (vehicle_display.rs): stopped, or below 10 km/h and braking unless stopped a frame ago.
         let speed = car.speed.max(0.);
         let stopped = speed <= 0.3 / 3.6;
@@ -409,7 +411,7 @@ impl Pipeline {
         );
         self.kinds.apply(now, self.world.radar_pose(now).heading, self.tracker.vehicles_mut());
         let cars = self.tracker.vehicles();
-        let mut slots = self.slots.update(now, cars, &self.world, lead);
+        let mut slots = self.slots.update_lead(now, cars, &self.world, display_lead);
         let remembered = if holding {
             // The map's 0.15 s freshness, not the selector's 0.3 s prediction hold, decides when memory takes over.
             let (map, frame) = (&self.radar, self.radar.frame());

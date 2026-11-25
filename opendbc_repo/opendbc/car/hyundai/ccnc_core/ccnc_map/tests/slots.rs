@@ -222,6 +222,20 @@ fn lead_one_respects_lane_and_range() {
 }
 
 #[test]
+fn the_display_lead_draws_a_standing_car_the_radar_has_not_proven_in_ff_only() {
+    let world = road();
+    let unproven = |vid, x, r| Vehicle { flags: Flags::default(), vx: 0., ..vehicle(&world, vid, 0., x, r) };
+    // A bus standing 15 m ahead in ego's lane, never seen moving (0000047f 12 39.4 s).
+    let cars = [unproven(1, 15., 0.), unproven(2, 6., 1.)];
+    let vids = |slots: [Option<Slot>; 5]| slots.map(|s| s.map(|s| s.vid));
+    assert_eq!(vids(Assigner::default().update(0., &cars, &world, Some((15., 0.)))), [None; 5]);
+    assert_eq!(vids(Assigner::default().update_lead(0., &cars, &world, None)), [None; 5]);
+    assert_eq!(vids(Assigner::default().update_lead(0., &cars, &world, Some((15.5, 0.3)))), [Some(1), None, None, None, None]);
+    // A lead outside ego's lane qualifies nothing, and the unproven side car stays hidden.
+    assert_eq!(vids(Assigner::default().update_lead(0., &cars, &world, Some((6., -3.5)))), [None; 5]);
+}
+
+#[test]
 fn a_new_radar_frame_replaces_an_unseen_owner() {
     let mut world = road();
     let mut assigner = Assigner::default();

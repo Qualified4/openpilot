@@ -204,13 +204,28 @@ impl Assigner {
         (drawing.seen == now).then_some(drawing.shown).flatten()
     }
 
-    /// The lead is (dRel, yRel) at the radar sensor, lateral positive to the left.
-    pub fn update(
+    /// The lead is (dRel, yRel) at the radar sensor, lateral positive to the left; it only prefers among the radar's
+    /// proven cars.
+    pub fn update(&mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<(f64, f64)>) -> [Option<Slot>; 5] {
+        self.update_with(now, vehicles, world, lead, false)
+    }
+
+    /// `update` with radarState's display lead (`Event::display_lead`): the radar car at that lead may be drawn in FF
+    /// though the radar has not proven it a vehicle by motion or Doppler, as card drew the control lead in FF before
+    /// the map (`_apply_ccnc_lead`, 93c5c6af). A car or bus standing ahead in ego's lane: 0000047f 12 39.4 s, a bus
+    /// stopped 18-13 m ahead and the lead, FF blank for 0.87 s until it rolled; 0000047d 10-11, a car standing 40-4 m
+    /// ahead and the lead, FF blank for 59 s. FF only: LF and RF keep the radar's own proof.
+    pub fn update_lead(&mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<(f64, f64)>) -> [Option<Slot>; 5] {
+        self.update_with(now, vehicles, world, lead, true)
+    }
+
+    fn update_with(
         &mut self,
         now: f64,
         vehicles: &[Vehicle],
         world: &World,
         lead: Option<(f64, f64)>,
+        lead_qualifies: bool,
     ) -> [Option<Slot>; 5] {
         if self.generation != world.generation() {
             self.generation = world.generation();
@@ -235,7 +250,7 @@ impl Assigner {
         let followed = lead.and_then(|(dx, dy)| {
             vehicles
                 .iter()
-                .filter(|car| current(car.seen_radar) && eligible(car))
+                .filter(|car| current(car.seen_radar) && (lead_qualifies || eligible(car)))
                 .filter_map(|car| {
                     let (x, y) = radar.to_ego(f64::from(car.wx), f64::from(car.wy));
                     let (ex, ey) = ((x - dx).abs(), (y - dy).abs());
@@ -316,12 +331,16 @@ impl Assigner {
                 play_distance,
                 -lateral_target / LANE_WIDTH,
             );
-            if !eligible(car) {
+            let the_lead = lead_qualifies && followed == Some(car.vid);
+            if !eligible(car) && !the_lead {
                 continue;
             }
             let Some(slot) = slot_index(x, drawing.lane) else {
                 continue;
             };
+            if slot != 0 && !eligible(car) {
+                continue;
+            }
             let edge = (1..=2).contains(&slot) && !drawing.fast && {
                 if still {
                     at_edge(world, now, car, slot)
