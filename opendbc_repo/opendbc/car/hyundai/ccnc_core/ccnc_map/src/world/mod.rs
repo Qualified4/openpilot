@@ -34,8 +34,9 @@ const CAMERA_EGO_GAIN: f64 = 0.8;
 const UNFILTERED_MAX_BIAS_U: f64 = 0.25;
 const BIAS_TAPER_START_U: f64 = 0.18;
 const BIAS_TAPER_WIDTH_U: f64 = 0.12;
-const FILTERED_BLEND_OUTER_U: f64 = 0.32;
-const FILTERED_BLEND_WIDTH_U: f64 = 0.14;
+// The middle half of a lane keeps the measured track, just as the lane-change detector does.
+const FILTERED_BLEND_OUTER_U: f64 = 0.5 - EGO_CHANGE_CENTER;
+const FILTERED_BLEND_INNER_U: f64 = 0.18;
 
 pub struct World {
     pub pose: Pose,
@@ -365,7 +366,8 @@ impl World {
         self.u_ego = if !expired && filtered.is_finite() && self.ego_filter.committed_lane().is_some() {
             let raw_u = self.u_ego_raw_track.map_or(filtered, |(_, u)| u);
             let boundary_distance = (filtered - filtered.round()).abs().min((raw_u - raw_u.round()).abs());
-            let w_kf = ((FILTERED_BLEND_OUTER_U - boundary_distance) / FILTERED_BLEND_WIDTH_U).clamp(0., 1.);
+            let w_kf = ((FILTERED_BLEND_OUTER_U - boundary_distance)
+                / (FILTERED_BLEND_OUTER_U - FILTERED_BLEND_INNER_U)).clamp(0., 1.);
             Some((t, raw_u + w_kf * (filtered - raw_u)))
         } else {
             self.u_ego_raw_track
