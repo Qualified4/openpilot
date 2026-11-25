@@ -278,8 +278,9 @@ impl Vision {
         Ok(Some(Stepped { cands, out }))
     }
 
-    /// Put the held camera cars on the radar slots of `now`.
-    pub fn apply(&mut self, now: f64, v_ego: f64, ego: PoseAt, slots: &mut [Option<Slot>; 5]) {
+    /// Put the held camera cars on the radar slots of `now`. `protected` slots (FF, LF, RF, LR, RR) hold a car of the
+    /// radar's own rules (the stop memory, a side pair): the camera does not take them over, it only confirms them.
+    pub fn apply(&mut self, now: f64, v_ego: f64, ego: PoseAt, protected: [bool; 5], slots: &mut [Option<Slot>; 5]) {
         if !(-STANDSTILL_NOISE..=SLOW).contains(&v_ego) {
             self.swapped = [Swapped::default(); 4];
             return;
@@ -309,7 +310,7 @@ impl Vision {
                     self.swapped[index - 1] = Swapped::default();
                     continue;
                 };
-                place(now, index, part == 1, seen, swap, ego, &radar, slots, &mut self.swapped[index - 1]);
+                place(now, index, part == 1, seen, swap, ego, &radar, protected[index], slots, &mut self.swapped[index - 1]);
             }
         }
     }
@@ -334,6 +335,7 @@ fn place(
     swap: &SwapCfg,
     ego: PoseAt,
     radar: &[Option<Slot>; 5],
+    protected: bool,
     slots: &mut [Option<Slot>; 5],
     swapped: &mut Swapped,
 ) {
@@ -356,12 +358,20 @@ fn place(
         act => act,
     });
     // An empty slot takes the camera's car at once; between two cars the slot follows the rules only once they hold.
+    // Whichever car the slot shows stays until it is gone or the other is clearly closer: a camera car goes back to
+    // the radar's only once the radar car is `margin` closer, not when it is merely no farther (or the same car), and
+    // a protected radar car is never taken over. 0000047f standing: the slot went back and forth 35 times between the
+    // two, half of them as the stop memory or a side pair came and went under a camera car the rules kept choosing.
     let act = match act {
         Some(Act::Fill) => {
             *swapped = Swapped { camera: true, since: None };
             act
         }
-        Some(Act::Swap | Act::Keep) => Some(if swapped.step(now, act == Some(Act::Swap)) { Act::Swap } else { Act::Keep }),
+        Some(Act::Swap | Act::Keep) => {
+            let radar_closer = here.is_some_and(|s| distance - f64::from(s.distance).abs() > swap.margin);
+            let camera = if swapped.camera { !radar_closer } else { act == Some(Act::Swap) && !protected };
+            Some(if swapped.step(now, camera) { Act::Swap } else { Act::Keep })
+        }
         None => {
             *swapped = Swapped::default();
             None
@@ -379,7 +389,9 @@ fn place(
             let elsewhere = radar.iter().enumerate().any(|(i, s)| {
                 i != index && s.is_some_and(|s| (along(i, &s) - x).abs() <= MERGE_X && (f64::from(s.lateral) - y).abs() <= MERGE_Y)
             });
-            if !elsewhere {
+            if elsewhere {
+                *swapped = Swapped::default();
+            } else {
                 let left = index % 2 == 1; // LF, LR
                 let y = if left { 1. } else { -1. } * (if left { y } else { -y }).clamp(LANE_WIDTH - SIDE_LANE_PLAY, LANE_WIDTH + SIDE_LANE_PLAY);
                 slots[index] = Some(Slot {

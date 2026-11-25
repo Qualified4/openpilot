@@ -1,5 +1,5 @@
 use ccnc_map::rear::{WorldInput, WorldRear};
-use ccnc_map::slots::{keep_radar, Assigner, Slot, VISION_CONFIRMS, VISION_NONE, VISION_ONLY};
+use ccnc_map::slots::{Assigner, Slot};
 use ccnc_map::vehicles::{Flags, Tracker, Vehicle};
 use ccnc_map::world::{World, RADAR_LAG};
 
@@ -626,39 +626,6 @@ fn a_remembered_distance_follows_ego_travel_after_the_last_measurement() {
         let kept = slots[LF].expect("remembered").distance;
         assert!((f64::from(kept) - (f64::from(last_drawn.unwrap()) - travel)).abs() < 0.05, "at {now:.2}: {kept}");
     }
-}
-
-#[test]
-fn a_remembered_car_stays_when_the_camera_would_replace_it() {
-    let radar_car = Slot {
-        vid: 7,
-        distance: 6.,
-        lateral: 3.5,
-        detect: 1,
-        lane_coord_rel: -1.,
-        v_rel: 0.,
-        kind: 0,
-        kind_confirmed: false,
-        kind_wanted: false,
-        vision: VISION_NONE,
-    };
-    let camera_car = Slot { vid: 0xFFFF_FFF1, distance: 3., vision: VISION_ONLY, ..radar_car };
-    let mut radar = [None; 5];
-    radar[LF] = Some(radar_car);
-    radar[RF] = Some(Slot { lateral: -3.5, ..radar_car });
-    // The camera swaps both sides; only the remembered LF stays the radar's, now confirmed.
-    let mut slots = radar;
-    slots[LF] = Some(camera_car);
-    slots[RF] = Some(Slot { lateral: -3.5, ..camera_car });
-    keep_radar([false, true, false, false, false], &radar, &mut slots);
-    assert_eq!(slots[LF], Some(Slot { vision: VISION_CONFIRMS, ..radar_car }));
-    assert_eq!(slots[RF].map(|s| s.vision), Some(VISION_ONLY));
-    // A camera confirmation, or no camera answer, leaves the slot as it is.
-    let mut slots = radar;
-    slots[LF] = Some(Slot { vision: VISION_CONFIRMS, ..radar_car });
-    keep_radar([false, true, true, false, false], &radar, &mut slots);
-    assert_eq!(slots[LF].map(|s| (s.vid, s.vision)), Some((7, VISION_CONFIRMS)));
-    assert_eq!(slots[RF], radar[RF]);
 }
 
 const LR: usize = 3;

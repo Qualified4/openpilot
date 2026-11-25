@@ -194,18 +194,6 @@ fn shown_kind(car: &Vehicle) -> Option<crate::vehicles::Kind> {
     car.kind.filter(|k| car.link == Link::Sure || k.inherited)
 }
 
-/// The radar's own rules (the stop memory, a side pair) own their slots: where the wide camera replaced such a car,
-/// it stays and the camera only confirms it. `radar` is the slots before the camera.
-pub fn keep_radar(protected: [bool; 5], radar: &[Option<Slot>; 5], slots: &mut [Option<Slot>; 5]) {
-    for (index, kept) in radar.iter().enumerate() {
-        if let Some(kept) = kept.filter(|_| protected[index]) {
-            if slots[index].is_some_and(|s| s.vision != VISION_NONE) {
-                slots[index] = Some(Slot { vision: VISION_CONFIRMS, ..kept });
-            }
-        }
-    }
-}
-
 impl Assigner {
     pub const HEADING_TERM: HeadingTerm = HeadingTerm::RoadFrame;
 
