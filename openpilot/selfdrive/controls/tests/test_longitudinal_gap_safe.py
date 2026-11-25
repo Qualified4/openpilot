@@ -96,20 +96,6 @@ def test_comfort_margin_fades_out_near_standstill():
   assert s.lead_gap(comfort_brake=2.4, a_ego=hard_hi).fade_weight == 1.0
 
 
-def test_gap_reserve_above_the_steady_target():
-  g = full_gap()
-  v, vl = V80, V80 - 3.0
-  steady = gs.steady_distance(v, vl, g, STOP)
-  assert gs.gap_reserve(distance=steady - 1.0, v_ego=v, v_lead=vl, lead_accel=0.0, gap=g, stop_distance=STOP) == 0.0
-  assert gs.gap_reserve(distance=steady + 3.0, v_ego=v, v_lead=vl, lead_accel=0.0, gap=g, stop_distance=STOP) == pytest.approx(3.0)
-  # None while the lead brakes harder than RESERVE_LEAD_ACCELS; the closing terms are never reduced by it.
-  hard = gs.RESERVE_LEAD_ACCELS[0]
-  assert gs.gap_reserve(distance=steady + 3.0, v_ego=v, v_lead=vl, lead_accel=hard, gap=g, stop_distance=STOP) == 0.0
-  assert gs.gap_reserve(distance=float("nan"), v_ego=v, v_lead=vl, lead_accel=0.0, gap=g, stop_distance=STOP) == 0.0
-
-
-
-
 def test_on_and_off_at_once():
   s = gs.GapSafeState()
   assert not s.active

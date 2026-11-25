@@ -298,7 +298,6 @@ class LongitudinalMpc:
     self.cutin_credit = gap_safe.CutinCredit()
     self.lead_gap = None
     self.cutin_shift = 0.0
-    self.gap_reserves = (0.0, 0.0)
 
     self.reset()
     self.source = SOURCES[2]
@@ -554,11 +553,6 @@ class LongitudinalMpc:
     # The closing terms keep the full lead prediction: a slower cost-side lead there raised the target and
     # added brake entries (replay level 2: 2.09 -> 2.31 /min). Only the lead position moves (cost_shifts).
     cost_lead_speeds = (lead_xv_0[:,1], lead_xv_1[:,1])
-    self.gap_reserves = tuple(
-      0.0 if gap is None else gap_safe.gap_reserve(distance=float(lead.dRel), v_ego=float(v_ego), v_lead=float(lead.vLead),
-                                                   lead_accel=float(lead.aLeadK), gap=gap, stop_distance=stop_distance)
-      for gap, lead in zip(lead_gaps, (radarstate.leadOne, radarstate.leadTwo), strict=True))
-
     lead_one = radarstate.leadOne
     if lead_gaps[0] is None:
       # Off (blended, unknown level): forget the lead. No leadOne: keep it, so it gets no credit on return.

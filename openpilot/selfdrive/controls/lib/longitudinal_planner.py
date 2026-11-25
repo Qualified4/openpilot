@@ -13,6 +13,7 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import A_CHANGE_COST_RAMP_TIME, LongitudinalMpc, N
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, is_volkswagen_meb
+from openpilot.selfdrive.controls.lib.longitudinal_beyond_lead import BeyondLeadState, model_path, with_lead_two
 from openpilot.selfdrive.controls.lib.cutin_predecel import (
   apply_cutin_predecel_accel_limit,
   get_cutin_predecel_accel_limit,
@@ -77,6 +78,8 @@ class LongitudinalPlanner:
     self.lead_preview_action_time = 0.0
     self.lead_preview_accel = 0.0
     self.lead_track_ids = [-1, -1]
+    self.beyond_lead = BeyondLeadState()
+    self.beyond_lead_active = False
     self.lead_track_frames = [0, 0]
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
@@ -289,10 +292,21 @@ class LongitudinalPlanner:
       and accel_limits_turns[1] > 0.0
       and not self.output_should_stop
     )
+    # A slow car beyond leadOne, in the path, while leadOne moves aside, stands in as leadTwo for the MPC only
+    # (longitudinal_beyond_lead.py); radarState and every other consumer keep the radar's leads.
+    mpc_radar_state = sm['radarState']
+    beyond = self.beyond_lead.update(
+      live_tracks=sm['liveTracks'] if getattr(sm, 'seen', {}).get('liveTracks', False) else None, lead_one=mpc_radar_state.leadOne,
+      v_ego=v_ego, path=model_path(sm['modelV2']), dt=self.dt,
+      enabled=self.mpc.mode == 'acc' and not reset_state and not sm['carState'].gasPressed)
+    lead_two = mpc_radar_state.leadTwo
+    self.beyond_lead_active = beyond is not None and (not lead_two.status or beyond.dRel < lead_two.dRel)
+    if self.beyond_lead_active:
+      mpc_radar_state = with_lead_two(mpc_radar_state, beyond)
     self.mpc.set_accel_limits(accel_limits_turns[0], accel_limits_turns[1])
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     self.mpc.update(
-      carrot, reset_state, sm['radarState'], v_cruise, x, v, a, j,
+      carrot, reset_state, mpc_radar_state, v_cruise, x, v, a, j,
       personality=sm['selfdriveState'].personality,
       prev_accel_constraint=prev_accel_constraint,
       jerk_factor=carrot.jerk_factor,
@@ -376,8 +390,6 @@ class LongitudinalPlanner:
       ),
       a_lead=lead.aLeadK,
       a_ego=sm['carState'].aEgo,
-      gap_reserve=self.mpc.gap_reserves[lead_index],
-      v_ego=v_ego,
     )
     if preview_enabled:
       # Losing radar support stops requesting preview; it must not erase an

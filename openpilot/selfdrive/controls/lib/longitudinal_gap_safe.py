@@ -18,10 +18,10 @@ closing on a slower or stopping lead, ego plans to shed the speed difference at 
 its limit, and keeps CLOSING_TIME per m/s of closing speed, so it starts braking earlier. At equal
 speed closing is 0, so the steady following gap is d_min + comfort_time * v. comfort_time is COMFORT_TIMES
 per level at every speed; a level change ramps it with the lead decel.
-gap_reserve() is the gap above the steady target; the planner uses it to pull in less of the lead-decel
-preview. Taking it off the closing terms as well was replayed and dropped: departures that open the gap
-re-closed it (gap falling > 2 m after its peak: 15 -> 20 % of 20 departures) and level 2 steady-following
-brake entries rose 1.95 -> 2.16 per minute.
+Taking the closing terms off with the gap above the steady target was replayed and dropped: departures that
+open the gap re-closed it (gap falling > 2 m after its peak: 15 -> 20 % of 20 departures) and level 2
+steady-following brake entries rose 1.95 -> 2.16 per minute. Pulling in less of the lead-decel preview with that
+gap was dropped too: with option C level 1 it re-closed 31 % of 58 departures (19 % without it).
 The whole comfort margin fades out between the COMFORT_FADE_SPEEDS (ego speed), so the car stops at
 d_min, i.e. at the stop distance, behind a stopped lead. While ego brakes hard (COMFORT_FADE_ACCELS)
 the margin stays full.
@@ -74,8 +74,6 @@ COMFORT_FADE_SPEEDS = (0.5, 3.0)
 # ending inside the stop distance keeps the full margin (synthetic F30 -4: 3.11 m, 3.01 m with the
 # fade alone); the stops above all ended at -0.6 to -1.0 below 3 m/s.
 COMFORT_FADE_ACCELS = (-2.0, -1.5)
-# m/s^2 lead accel: no gap reserve at or below the first, full reserve from the second.
-RESERVE_LEAD_ACCELS = (-1.0, -0.6)
 CUTIN_HOLD_EXPIRE = 2.0    # s without a lead after which the last lead is forgotten
 
 
@@ -167,15 +165,6 @@ def steady_distance(v_ego, v_lead, gap: LeadGap, stop_distance):
   """Comfort target without the closing terms: d_min + comfort time (faded)."""
   v = max(0.0, float(v_ego))
   return float(min_distance(v, v_lead, gap, stop_distance) + comfort_times(v, gap) * v * fade(v, gap))
-
-
-def gap_reserve(*, distance, v_ego, v_lead, lead_accel, gap: LeadGap, stop_distance):
-  """Gap above the steady comfort target (m); 0 while the lead brakes harder than RESERVE_LEAD_ACCELS."""
-  values = (distance, v_ego, v_lead, lead_accel)
-  if not all(map(math.isfinite, values)):
-    return 0.0
-  reserve = max(0.0, float(distance) - steady_distance(v_ego, v_lead, gap, stop_distance))
-  return reserve * float(np.interp(lead_accel, RESERVE_LEAD_ACCELS, (0.0, 1.0)))
 
 
 def desired_distance(v_ego, v_lead, gap: LeadGap, stop_distance):
