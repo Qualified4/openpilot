@@ -65,3 +65,13 @@ def test_nearest_qualifying_track_and_reset_without_lead():
   s = bl.BeyondLeadState()
   assert s.update(live_tracks=NS(points=[track()]), lead_one=NS(status=False), v_ego=V_EGO, path=PATH, dt=DT) is None
   assert s.update(live_tracks=None, lead_one=lead(0.0), v_ego=V_EGO, path=PATH, dt=DT) is None
+
+
+@pytest.mark.parametrize("history", [
+  [[track(d=70.0, v_abs=5.0)]] * 10,                       # the slot's previous car was 25 m farther
+  [[track(y=3.0, v_abs=5.0)]] * 10,                        # ... or in another lane
+  [[track(v_abs=5.0)]] * 10 + [[]] * 12,                   # ... or the id was unseen for 0.6 s
+])
+def test_reused_track_id_does_not_pass_its_moving_history_to_a_stopped_object(history):
+  # judge-rc2 B1: the owner's radar reuses track ids (slots), a stopped object must not inherit v_max
+  assert run(tracks=lambda t: [track(v_abs=0.0)], history=history) is None

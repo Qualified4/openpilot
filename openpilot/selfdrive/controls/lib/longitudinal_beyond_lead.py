@@ -9,7 +9,10 @@ Guards against roadside clutter, all needed at once:
 - in ego's path: |dPath| (radar point projected on the model path, as radard does) <= BEYOND_PATH_HALF_WIDTH,
 - beyond leadOne by BEYOND_MIN_GAP and within BEYOND_MAX_DISTANCE,
 - slow: absolute speed at most BEYOND_SPEED_MAX and BEYOND_SPEED_MARGIN below leadOne,
-- moving now or before: a track never faster than BEYOND_MOVED_SPEED (a parked car, a pole) never counts,
+- moving now or before: a track never faster than BEYOND_MOVED_SPEED (a parked car, a pole) never counts.
+  The owner's radar reuses track ids (slots 32-63), so the history restarts when a point is not where the
+  same id's last sighting predicts or the id was unseen for BEYOND_TRACK_GAP_S (judge-rc2 B1: a stopped
+  object inherited the moving history of the slot's previous car in 6 of 9 armed cases),
 - persistent: the same track id passing all of the above for BEYOND_PERSIST_S,
 - leadOne moving aside: its |dPath| at least BEYOND_LEAD_ASIDE and growing by BEYOND_LEAD_ASIDE_RATE.
 The obstacle and its gap are the existing leadTwo ones; nothing changes while any guard fails.
@@ -30,6 +33,9 @@ BEYOND_LEAD_ASIDE = 0.5        # m path offset of leadOne
 BEYOND_LEAD_ASIDE_RATE = 0.2   # m/s growth of that offset (over BEYOND_LEAD_ASIDE_WINDOW)
 BEYOND_LEAD_ASIDE_WINDOW = 0.5  # s
 BEYOND_TRACK_FORGET_S = 2.0    # s a track unseen is forgotten
+BEYOND_TRACK_GAP_S = 0.5       # s unseen: the id is a new object
+BEYOND_TRACK_JUMP_D = 3.0      # m range off its prediction: a new object in that id
+BEYOND_TRACK_JUMP_Y = 1.5      # m lateral jump: a new object in that id
 
 
 def model_path(model):
@@ -66,6 +72,13 @@ class BeyondLeadState:
     growth = (offset - self.lead_hist[0][1]) / BEYOND_LEAD_ASIDE_WINDOW
     return offset >= BEYOND_LEAD_ASIDE and growth >= BEYOND_LEAD_ASIDE_RATE
 
+  def same_object(self, st, distance, lateral):
+    """Track ids are radar slots that get reused: a point counts as the same object only if it was seen
+    within BEYOND_TRACK_GAP_S and is where the last sighting predicts (range by its vRel, lateral as was)."""
+    gap = self.time - st["last_seen"]
+    return (gap <= BEYOND_TRACK_GAP_S + 1e-6 and abs(distance - (st["d"] + st["v_rel"] * gap)) <= BEYOND_TRACK_JUMP_D
+            and abs(lateral - st["y"]) <= BEYOND_TRACK_JUMP_Y)
+
   def update(self, *, live_tracks, lead_one, v_ego, path, dt, enabled=True):
     """Returns a leadTwo-like lead for the car beyond leadOne, or None."""
     self.time += max(0.0, float(dt))
@@ -80,11 +93,12 @@ class BeyondLeadState:
       track_id = int(p.trackId)
       v_lead = float(getattr(p, 'vLead', float('nan')))
       v_abs = v_lead if math.isfinite(v_lead) else float(v_ego) + float(p.vRel)
-      st = self.tracks.setdefault(track_id, {"v_max": v_abs, "ok_time": 0.0, "last_seen": self.time})
-      st["v_max"] = max(st["v_max"], v_abs)
-      st["last_seen"] = self.time
-      distance = float(p.dRel)
-      in_path = abs(project_to_model_path(path, distance, float(p.yRel)).d_path) <= BEYOND_PATH_HALF_WIDTH
+      distance, lateral = float(p.dRel), float(p.yRel)
+      st = self.tracks.get(track_id)
+      if st is None or not self.same_object(st, distance, lateral):
+        st = self.tracks[track_id] = {"v_max": v_abs, "ok_time": 0.0}
+      st.update(v_max=max(st["v_max"], v_abs), last_seen=self.time, d=distance, y=lateral, v_rel=float(p.vRel))
+      in_path = abs(project_to_model_path(path, distance, lateral).d_path) <= BEYOND_PATH_HALF_WIDTH
       beyond = float(lead_one.dRel) + BEYOND_MIN_GAP <= distance <= BEYOND_MAX_DISTANCE
       slow = v_abs <= min(BEYOND_SPEED_MAX, lead_speed - BEYOND_SPEED_MARGIN)
       moved = st["v_max"] >= BEYOND_MOVED_SPEED
