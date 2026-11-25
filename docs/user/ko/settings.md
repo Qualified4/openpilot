@@ -174,7 +174,7 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 | 중앙 보정 | `PathOffset`, `CameraYawTrimDeg` | 레인모드 경로의 좌우 위치와 카메라 YAW 미세 보정 |
 | 조향감 | `SteerActuatorDelay`, `CenterToFrontRatio`, `LatSmoothSec`, `LatSuspendAngleDeg`, `CustomSR`, `SteerRatioRate` | 조향 시점, 평활화, 일시중지 각도와 조향비 |
 | [차로 변경](lane-change.md)·자동 턴 | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneChangeYellowSolid`, `LaneLineCheck`, `AutoTurnControl`, `AutoTurnControlRightLaneChange`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | 차로 변경 진입 조건과 ATC 동작 |
-| 레인모드 | `LatMpcPathCost`, `LatMpcMotionCost`, `LatMpcAccelCost`, `LatMpcJerkCost`, `LatMpcSteeringRateCost`, `LatMpcInputOffset`, `UseLaneLineSpeed`, `UseLaneLineCurveSpeed`, `AdjustLaneOffset` | 레인모드 MPC 가중치와 차선 사용 조건 |
+| 레인모드 | `LatMpcPathCost`, `LatMpcMotionCost`, `LatMpcAccelCost`, `LatMpcJerkCost`, `LatMpcSteeringRateCost`, `LatMpcInputOffset`, `UseLaneLineSpeed`, `UseLaneLineCurveSpeed`, `AdjustLaneOffset`, `LanelessCentering` | 레인모드 MPC 가중치와 차선 사용 조건, 레인리스 차선중앙 보정 |
 | 고급 토크·토크 계수 | `LateralTorqueCustom`, `LateralTorqueAccelFactor`, `LateralTorqueFriction`, `LateralTorqueKpV`, `LateralTorqueKiV`, `LateralTorqueKf`, `LateralTorqueKd` | 커스텀 토크 제어 계수 |
 | 고급 토크·검색 전용 | `NNFF` | 토크 조향의 신경망 피드포워드 옵션 |
 | 고급 토크·조향 제한 | `CustomSteerMax`, `CustomSteerDeltaUp`, `CustomSteerDeltaDown`, `CustomSteerDeltaUpLC`, `CustomSteerDeltaDownLC` | 최대 조향 토크와 토크 변화율 제한 |
@@ -183,7 +183,7 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 
 `UseLaneLineSpeed`로 레인모드를 사용하더라도 모델 속도 궤적의 시작값이 실제 차속의 70% 미만이거나 끝값이 시작값의 70% 미만이면 일시적으로 레인리스로 전환합니다. 속도 조건이 약 1초간 연속으로 정상이고 기존 차선·속도 조건도 충족해야 레인모드로 복귀합니다.
 
-레인리스 차로 중앙 보정은 설정 없이 기본으로 동작합니다. 레인리스 주행 중 직진과 반경 80m(차선이 뚜렷하면 50m)까지의 코너에서, 모델 목표 곡률에 차선 중앙 쪽으로 작은 가로 가속도를 더합니다. 방향은 양쪽입니다. 약 2초 앞 모델 경로 지점을 차선 중앙으로 향하게 하고, 차의 중앙 편차를 천천히 적분합니다. 보정은 직선에서 최대 0.15m/s²이고 코너의 가로 가속도에 따라 커집니다. 천천히 바뀌며(0.5초 평활, 초당 최대 0.4m/s²) 1초에 걸쳐 섞이고 0.5초에 걸쳐 줄어듭니다. 30km/h 이상에서 양쪽 자기 차선이 보이고(확률 0.5 이상, 폭 2.6~4.3m, 표준편차가 작고 합류·분기가 아님) 있을 때만 동작합니다. 차선 변경·자동 턴·방향지시등·회전 의도 중과 끝난 뒤 1초, 운전자 조향 중과 끝난 뒤 0.5초에는 보정하지 않습니다. BSD 경고가 있거나 움직이는 레이더 차량이 나란히 또는 10m 앞까지 있는 옆 차로 쪽으로는 밀지 않습니다. 그 방향만 막고 반대쪽 보정은 계속합니다. 레인모드가 켜진 경로와 폭스바겐 MEB에는 적용되지 않습니다. 이전의 `LatCornerCenterBlend`(코너 중앙 보정) 설정을 대체합니다. 아직 실차에서 검증하지 않았고 기록된 주행 로그를 고정 입력으로 재생해 확인했습니다.
+`LanelessCentering`(레인리스: 차선중앙 보정)은 레인리스 차로 중앙 보정의 세기(0~200%, 10% 단위)입니다. 기본값 `100`이 지금까지의 보정과 같고, `0`은 꺼짐(0.5초에 걸쳐 줄고 적분값을 비움), `200`은 보정량·상한·변화율을 모두 2배로 씁니다. 주행 중 바꾸면 1초 안에 반영됩니다. 레인리스 주행 중 직진과 반경 80m(차선이 뚜렷하면 50m)까지의 코너에서, 모델 목표 곡률에 차선 중앙 쪽으로 작은 가로 가속도를 더합니다. 방향은 양쪽입니다. 약 2초 앞 모델 경로 지점을 차선 중앙으로 향하게 하고, 차의 중앙 편차를 천천히 적분합니다. `100`에서 보정은 직선에서 최대 0.15m/s²(`200`이면 0.30m/s²)이고 코너의 가로 가속도에 따라 커집니다. 천천히 바뀌며(0.5초 평활, `100`에서 초당 최대 0.4m/s²) 1초에 걸쳐 섞이고 0.5초에 걸쳐 줄어듭니다. 30km/h 이상에서 양쪽 자기 차선이 보이고(확률 0.5 이상, 폭 2.6~4.3m, 표준편차가 작고 합류·분기가 아님) 있을 때만 동작합니다. 차선 변경·자동 턴·방향지시등·회전 의도 중과 끝난 뒤 1초, 운전자 조향 중과 끝난 뒤 0.5초에는 보정하지 않습니다. BSD 경고가 있거나 움직이는 레이더 차량이 나란히 또는 10m 앞까지 있는 옆 차로 쪽으로는 밀지 않습니다. 그 방향만 막고 반대쪽 보정은 계속합니다. 레인모드가 켜진 경로와 폭스바겐 MEB에는 적용되지 않습니다. 이전의 `LatCornerCenterBlend`(코너 중앙 보정) 설정을 대체합니다. 아직 실차에서 검증하지 않았고 기록된 주행 로그를 고정 입력으로 재생해 확인했습니다.
 
 `SteerActuatorDelay`는 높을수록 더 일찍 조향하도록 보상하고, `LatSmoothSec`는 높을수록 부드러워지는 대신 반응이 늦어질 수 있습니다. 두 값을 동시에 바꾸면 원인을 구분하기 어렵습니다.
 
