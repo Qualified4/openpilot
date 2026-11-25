@@ -5,17 +5,21 @@
 //! frame. Here a front box is tied to the radar track it covers at the frame's time (the det-bench `xmatch` gate),
 //! the track to its vehicle (vid), and the vid's answers are voted on:
 //!
-//! * only answers with a probability of `MIN_PROB` (car) or `MIN_PROB_TRUCK` (truck, bus) or more count;
+//! * only answers with a probability of `MIN_PROB` (car) or `MIN_PROB_TRUCK` (truck, bus) or more count; a truck or
+//!   bus answer about a box at least `TALL_M` tall (at its track's distance) counts from `MIN_PROB`;
 //! * two answers of the same shape at least `GAP_S` and at most `MAX_GAP_S` apart confirm it (det-light 6: no "different view" condition,
 //!   a standing car never gives one). The shape is what the cluster draws: car, or truck for a truck and a bus
 //!   alike, so a truck the classifier calls truck once and bus once is confirmed; the kind shown is the last one;
+//! * one truck or bus answer of `SURE_TRUCK` about a box at least `SURE_TALL_M` tall confirms the truck shape alone;
 //! * a truck or bus answer below `MIN_PROB_TRUCK` (but at least `MIN_PROB`) is not counted, yet it ends a run of
 //!   car answers: it still says "not a car";
 //! * a confirmed shape changes after `N_FLIP` agreeing answers of the other shape within `FLIP_WINDOW_S`;
 //! * one box answers every radar track of its car (`SAME_CAR_*`): a truck the radar sees as two tracks, two vids,
 //!   gets the answer on both, so the slot keeps its shape when FF moves between them;
 //! * a vid the tracker starts next to a confirmed car (a radar id jump, a split, an unsure handoff) takes that
-//!   car's confirmed vote (`INHERIT_GAP_S`); its own answers may flip it later;
+//!   car's confirmed vote (`INHERIT_GAP_S`); its own answers may flip it later. Next to no confirmed car, it takes
+//!   the answers counted so far of a car not confirmed yet, so a confirmation is not split between two vids. A taken
+//!   confirmed vote is passed on again only after one of the vid's own answers agrees;
 //! * the vote goes when its vid goes.
 //!
 //! Night frames are not classified (`ccnc_visiond`), as R1 had it: there is no labelled night data.
@@ -40,6 +44,19 @@ pub const GAP_S: f64 = 0.8;
 pub const MAX_GAP_S: f64 = 10.0;
 pub const N_CONFIRM: u32 = 2;
 pub const N_FLIP: u32 = 4;
+/// A truck or bus answer counts from `MIN_PROB` when its box is this tall at its track's distance (item 68, the
+/// 47d/47c/479 replays: car answers' boxes are 1.4-1.6 m tall at the median and 2.0-2.1 m at the 95th percentile,
+/// truck and bus answers' 2.7-3.7 m at the median; of the 0.6-0.8 truck answers 46/50 big vehicles' boxes are this
+/// tall and none of 47c's SUVs).
+pub const TALL_M: f64 = 2.3;
+/// One truck or bus answer this sure about a box this tall confirms the truck shape (the 47d 10 bus beside a
+/// waiting ego: 0.976 at 3.0 m, then one road frame in 3 s).
+pub const SURE_TRUCK: f64 = 0.95;
+pub const SURE_TALL_M: f64 = 2.5;
+/// A road camera box is not tied to a track at whose distance it would be taller than this (Korean road law's
+/// tallest vehicle is 4.0 m): such a track is a farther car seen through the box. The other tracks of the box's
+/// car (`SAME_CAR_*`, a truck's cab) take its answer and height as before.
+pub const MAX_TALL_M: f64 = 4.5;
 /// The `N_FLIP` answers of a flip come within this time of the first one. A confirmed car is rechecked every
 /// `RECHECK_S` (5 s): four rechecks span 15 s, and 20 s leaves room for one recheck without an answer.
 pub const FLIP_WINDOW_S: f64 = 20.0;
@@ -176,6 +193,11 @@ pub fn front_gate(cam: &FrontCam, track: &Track, bbox: &[f64; 4]) -> Option<f64>
     Some((u - 0.5 * (x1 + x2)).abs() / w.max(1.))
 }
 
+/// How tall a road camera box is at the distance of `track`, m.
+fn front_height(track: &Track, bbox: &[f64; 4]) -> f64 {
+    (bbox[3] - bbox[1]) * (track.d_rel + CAM2B) / FOCAL
+}
+
 /// A side view box's car is the radar track this close to its ground position (the camera car merge gate).
 const SIDE_MATCH_X: f64 = 2.0;
 const SIDE_MATCH_Y: f64 = 1.0;
@@ -204,9 +226,9 @@ fn same_car(a: &Track, b: &Track, lon: f64) -> bool {
     (a.d_rel - b.d_rel).abs() <= lon && (a.y_rel - b.y_rel).abs() <= SAME_CAR_LAT_M && (a.v_rel - b.v_rel).abs() <= SAME_CAR_SPEED
 }
 
-/// The least probability an answer of this shape needs to count.
-fn min_prob(shape: u8) -> f64 {
-    if shape == KIND_CAR {
+/// The least probability an answer of this shape about a box `height` m tall (NaN: not known) needs to count.
+fn min_prob(shape: u8, height: f64) -> f64 {
+    if shape == KIND_CAR || height >= TALL_M {
         MIN_PROB
     } else {
         MIN_PROB_TRUCK
@@ -227,6 +249,9 @@ struct Vote {
     prob: f64,
     /// Taken from another vid of the same car.
     inherited: bool,
+    /// Whether a new vid may take it: a confirmed vote taken from another vid is passed on again only after one of
+    /// this vid's own answers agrees (in a standing queue beside a bus, taken votes went on from car to car).
+    relay: bool,
 }
 
 impl Vote {
@@ -240,6 +265,7 @@ impl Vote {
             counted: 0,
             prob: 0.,
             inherited: false,
+            relay: true,
         }
     }
 
@@ -247,13 +273,18 @@ impl Vote {
         self.confirmed_at.is_finite()
     }
 
-    /// Count an answer; whether it counted.
-    fn observe(&mut self, t: f64, kind: u8, prob: f64) -> bool {
+    /// The shape of the answers counted towards a confirmation, while not confirmed.
+    fn pending(&self) -> Option<u8> {
+        (!self.confirmed() && self.streak.1 > 0).then_some(self.streak.0)
+    }
+
+    /// Count an answer about a box `height` m tall (NaN: not known); whether it counted.
+    fn observe(&mut self, t: f64, kind: u8, prob: f64, height: f64) -> bool {
         if !matches!(kind, KIND_CAR | KIND_TRUCK | KIND_BUS) || !(prob >= MIN_PROB) {
             return false;
         }
         let answer = shape(kind);
-        if !(prob >= min_prob(answer)) {
+        if !(prob >= min_prob(answer, height)) {
             // Too unsure a truck to count, but not a car either.
             if self.streak.0 == KIND_CAR {
                 self.streak = (0, 0);
@@ -280,7 +311,8 @@ impl Vote {
             self.streak_from = t;
         }
         let need = if confirmed { N_FLIP } else { N_CONFIRM };
-        if self.streak.1 >= need && (!confirmed || answer != shape(self.shown)) {
+        let sure = !confirmed && answer == KIND_TRUCK && prob >= SURE_TRUCK && height >= SURE_TALL_M;
+        if (self.streak.1 >= need || sure) && (!confirmed || answer != shape(self.shown)) {
             self.confirmed_at = t;
             self.streak = (0, 0);
         }
@@ -288,6 +320,7 @@ impl Vote {
             // The shown kind follows the latest answer of the shown shape (truck or bus).
             self.shown = kind;
             self.prob = prob;
+            self.relay |= self.confirmed();
         }
         true
     }
@@ -414,7 +447,7 @@ impl Kinds {
         vid_at: impl Fn(u64, i64) -> Option<u32>,
     ) {
         // Per frame and track the best placed box only: the box whose best track it is first, then the closest one.
-        let mut best: HashMap<(u64, i64), ((bool, f64), u64, &KindResult)> = HashMap::new();
+        let mut best: HashMap<(u64, i64), ((bool, f64), u64, &KindResult, f64)> = HashMap::new();
         for result in results {
             let Some((stamp, tracks)) = tracks_near(result.time_ns) else { continue };
             let placed: Vec<(f64, &Track)> = match result.view {
@@ -429,40 +462,48 @@ impl Kinds {
                 }),
                 KindView::Side(_) => Vec::new(),
             };
-            let Some(&(_, lead)) = placed.iter().min_by(|a, b| a.0.total_cmp(&b.0)) else { continue };
+            // A road camera box is not the car of a track it would be too tall at (a farther car seen through it).
+            let height = |t: &Track| if result.view == KindView::Front { front_height(t, &result.xyxy) } else { f64::NAN };
+            let Some(&(_, lead)) =
+                placed.iter().filter(|(_, t)| !(height(t) > MAX_TALL_M)).min_by(|a, b| a.0.total_cmp(&b.0))
+            else {
+                continue;
+            };
+            // The box's height is the car's at its nearest end, the track it is tied to.
+            let height = height(lead);
             // The box's car: its best track and the other tracks in the gate that can be the same vehicle.
             let truck = is_truck(result.kind)
                 || vid_at(stamp, lead.id).and_then(|vid| self.votes.get(&vid)).is_some_and(|v| v.confirmed() && is_truck(v.shown));
             let lon = if truck { SAME_TRUCK_LON_M } else { SAME_CAR_LON_M };
             for &(q, track) in placed.iter().filter(|(_, t)| same_car(t, lead, lon)) {
                 let rank = (track.id != lead.id, q);
-                let entry = best.entry((result.time_ns, track.id)).or_insert((rank, stamp, result));
+                let entry = best.entry((result.time_ns, track.id)).or_insert((rank, stamp, result, height));
                 if rank < entry.0 {
-                    *entry = (rank, stamp, result);
+                    *entry = (rank, stamp, result, height);
                 }
             }
         }
         // Two tracks of one frame can have one vid (an id the tracker just moved): one answer per frame and vid.
-        let mut per_vid: HashMap<(u64, u32), ((bool, f64), &KindResult)> = HashMap::new();
-        for ((t, id), (rank, stamp, result)) in best {
+        let mut per_vid: HashMap<(u64, u32), ((bool, f64), &KindResult, f64)> = HashMap::new();
+        for ((t, id), (rank, stamp, result, height)) in best {
             let Some(vid) = vid_at(stamp, id) else { continue };
-            let entry = per_vid.entry((t, vid)).or_insert((rank, result));
+            let entry = per_vid.entry((t, vid)).or_insert((rank, result, height));
             if rank < entry.0 {
-                *entry = (rank, result);
+                *entry = (rank, result, height);
             }
         }
-        let mut placed: Vec<_> = per_vid.into_iter().map(|((t, vid), (_, r))| (t, vid, r)).collect();
-        placed.sort_by_key(|(t, vid, _)| (*t, *vid));
-        for (t, vid, result) in placed {
-            self.count(vid, t as f64 * 1e-9, result.kind, result.prob);
+        let mut placed: Vec<_> = per_vid.into_iter().map(|((t, vid), (_, r, h))| (t, vid, r, h)).collect();
+        placed.sort_by_key(|(t, vid, _, _)| (*t, *vid));
+        for (t, vid, result, height) in placed {
+            self.count(vid, t as f64 * 1e-9, result.kind, result.prob, height);
         }
     }
 
     /// One answer about `vid` for a frame at `t`.
-    fn count(&mut self, vid: u32, t: f64, kind: u8, prob: f64) {
+    fn count(&mut self, vid: u32, t: f64, kind: u8, prob: f64, height: f64) {
         let vote = self.votes.entry(vid).or_insert_with(Vote::new);
         let before = (vote.confirmed(), vote.confirmed_at, shape(vote.shown));
-        let counted = vote.observe(t, kind, prob);
+        let counted = vote.observe(t, kind, prob, height);
         let ask = self.asks.entry(vid).or_insert_with(Ask::new);
         if t >= ask.rest_until {
             ask.answers += 1;
@@ -518,7 +559,8 @@ impl Kinds {
     }
 
     /// Give each vid born at `now` the confirmed vote of a car it can be the same vehicle as (along and across the
-    /// ego heading, the old car moved on at its speed). Candidates of different shapes give nothing.
+    /// ego heading, the old car moved on at its speed), or with no confirmed one, the counted answers of a car not
+    /// confirmed yet. Candidates of different shapes give nothing.
     fn inherit(&mut self, now: f64, heading: f64, cars: &[Vehicle]) {
         if self.votes.is_empty() {
             return;
@@ -528,11 +570,17 @@ impl Kinds {
             if self.votes.contains_key(&car.vid) {
                 continue;
             }
-            let mut found: Option<(f64, Vote)> = None;
-            let mut shapes = [false; 2];
+            // Confirmed votes first, then the pending answers of votes not confirmed yet.
+            let mut found = [None::<(f64, Vote)>; 2];
+            let mut shapes = [[false; 2]; 2];
             // Not from another vid born now: no chain of inheritances within one update.
             for old in cars.iter().filter(|old| old.born != now && now - old.seen_radar <= INHERIT_GAP_S) {
-                let Some(vote) = self.votes.get(&old.vid).filter(|v| v.confirmed()) else { continue };
+                let Some(vote) = self.votes.get(&old.vid) else { continue };
+                let (rank, truck) = match vote.pending() {
+                    None if vote.confirmed() && vote.relay => (0, is_truck(vote.shown)),
+                    None => continue,
+                    Some(pending) => (1, is_truck(pending)),
+                };
                 let dt = now - old.seen_radar;
                 let (dx, dy) = (
                     f64::from(car.wx) - (f64::from(old.wx) + f64::from(old.vx) * dt),
@@ -540,17 +588,20 @@ impl Kinds {
                 );
                 let (lon, lat) = (cos * dx + sin * dy, -sin * dx + cos * dy);
                 let dv = cos * f64::from(car.vx - old.vx) + sin * f64::from(car.vy - old.vy);
-                let length = if is_truck(vote.shown) { SAME_TRUCK_LON_M } else { SAME_CAR_LON_M };
+                let length = if truck { SAME_TRUCK_LON_M } else { SAME_CAR_LON_M };
                 if !(lon.abs() <= length && lat.abs() <= SAME_CAR_LAT_M && dv.abs() <= SAME_CAR_SPEED) {
                     continue;
                 }
-                shapes[usize::from(is_truck(vote.shown))] = true;
-                if found.is_none_or(|(d, _)| lon.abs() < d) {
-                    found = Some((lon.abs(), *vote));
+                shapes[rank][usize::from(truck)] = true;
+                if found[rank].is_none_or(|(d, _)| lon.abs() < d) {
+                    found[rank] = Some((lon.abs(), *vote));
                 }
             }
-            if let (Some((_, vote)), false) = (found, shapes[0] && shapes[1]) {
-                self.votes.insert(car.vid, Vote { streak: (0, 0), streak_from: f64::NEG_INFINITY, inherited: true, ..vote });
+            if let (Some((_, vote)), false) = (found[0], shapes[0][0] && shapes[0][1]) {
+                self.votes.insert(car.vid, Vote { streak: (0, 0), streak_from: f64::NEG_INFINITY, inherited: true, relay: false, ..vote });
+            } else if let (None, Some((_, vote)), false) = (found[0], found[1], shapes[1][0] && shapes[1][1]) {
+                // Not a confirmed kind: shown only on a sure link, like the vid's own answers.
+                self.votes.insert(car.vid, vote);
             }
         }
     }
@@ -563,69 +614,69 @@ mod tests {
     #[test]
     fn two_answers_apart_confirm_and_four_flip() {
         let mut vote = Vote::new();
-        vote.observe(0.0, KIND_TRUCK, 0.9);
+        vote.observe(0.0, KIND_TRUCK, 0.9, f64::NAN);
         assert!(!vote.confirmed_at.is_finite());
-        vote.observe(0.5, KIND_TRUCK, 0.9);
+        vote.observe(0.5, KIND_TRUCK, 0.9, f64::NAN);
         assert!(!vote.confirmed_at.is_finite(), "closer than GAP_S: not counted");
-        vote.observe(1.0, KIND_TRUCK, 0.59);
+        vote.observe(1.0, KIND_TRUCK, 0.59, f64::NAN);
         assert!(!vote.confirmed_at.is_finite(), "below MIN_PROB: not counted");
-        vote.observe(1.0, KIND_TRUCK, 0.79);
+        vote.observe(1.0, KIND_TRUCK, 0.79, f64::NAN);
         assert!(!vote.confirmed_at.is_finite(), "a truck needs MIN_PROB_TRUCK");
-        vote.observe(1.0, KIND_TRUCK, 0.8);
+        vote.observe(1.0, KIND_TRUCK, 0.8, f64::NAN);
         assert_eq!((vote.shown, vote.confirmed_at), (KIND_TRUCK, 1.0));
         for (i, t) in [2.0, 3.0, 4.0].into_iter().enumerate() {
-            vote.observe(t, KIND_CAR, 0.9);
+            vote.observe(t, KIND_CAR, 0.9, f64::NAN);
             assert_eq!(vote.shown, KIND_TRUCK, "{i}");
         }
-        vote.observe(5.0, KIND_CAR, 0.9);
+        vote.observe(5.0, KIND_CAR, 0.9, f64::NAN);
         assert_eq!((vote.shown, vote.confirmed_at), (KIND_CAR, 5.0));
         let mut big = Vote::new();
-        big.observe(0.0, KIND_TRUCK, 0.9);
-        big.observe(1.0, KIND_BUS, 0.8);
+        big.observe(0.0, KIND_TRUCK, 0.9, f64::NAN);
+        big.observe(1.0, KIND_BUS, 0.8, f64::NAN);
         assert_eq!((big.shown, big.confirmed_at), (KIND_BUS, 1.0), "truck then bus: the truck shape, the last kind shown");
-        big.observe(2.0, KIND_TRUCK, 0.85);
+        big.observe(2.0, KIND_TRUCK, 0.85, f64::NAN);
         assert_eq!((big.shown, big.confirmed_at), (KIND_TRUCK, 1.0));
         let mut mixed = Vote::new();
         for (t, k) in [(0.0, KIND_TRUCK), (1.0, KIND_CAR), (2.0, KIND_TRUCK), (3.0, KIND_CAR)] {
-            mixed.observe(t, k, 0.9);
+            mixed.observe(t, k, 0.9, f64::NAN);
         }
         assert!(!mixed.confirmed_at.is_finite(), "never two in a row");
         let mut late = Vote::new();
-        late.observe(0.0, KIND_CAR, 0.9);
-        late.observe(10.5, KIND_CAR, 0.9);
+        late.observe(0.0, KIND_CAR, 0.9, f64::NAN);
+        late.observe(10.5, KIND_CAR, 0.9, f64::NAN);
         assert!(!late.confirmed_at.is_finite(), "farther than MAX_GAP_S: the first answer expired");
-        late.observe(20.4, KIND_CAR, 0.9);
+        late.observe(20.4, KIND_CAR, 0.9, f64::NAN);
         assert_eq!(late.confirmed_at, 20.4, "two within MAX_GAP_S");
-        late.observe(60.0, KIND_TRUCK, 0.9);
-        late.observe(65.0, KIND_TRUCK, 0.9);
-        late.observe(70.0, KIND_TRUCK, 0.9);
+        late.observe(60.0, KIND_TRUCK, 0.9, f64::NAN);
+        late.observe(65.0, KIND_TRUCK, 0.9, f64::NAN);
+        late.observe(70.0, KIND_TRUCK, 0.9, f64::NAN);
         assert_eq!(late.shown, KIND_CAR);
-        late.observe(75.0, KIND_TRUCK, 0.9);
+        late.observe(75.0, KIND_TRUCK, 0.9, f64::NAN);
         assert_eq!((late.shown, late.confirmed_at), (KIND_TRUCK, 75.0), "four rechecks 5 s apart flip it");
     }
 
     #[test]
     fn a_flip_needs_its_four_answers_within_the_window() {
         let mut vote = Vote::new();
-        vote.observe(0.0, KIND_CAR, 0.9);
-        vote.observe(1.0, KIND_CAR, 0.9);
+        vote.observe(0.0, KIND_CAR, 0.9, f64::NAN);
+        vote.observe(1.0, KIND_CAR, 0.9, f64::NAN);
         assert!(vote.confirmed());
         // 7 s apart: the fourth comes 21 s after the first.
         for t in [30.0, 37.0, 44.0, 51.0] {
-            vote.observe(t, KIND_TRUCK, 0.9);
+            vote.observe(t, KIND_TRUCK, 0.9, f64::NAN);
         }
         assert_eq!((vote.shown, vote.confirmed_at), (KIND_CAR, 1.0), "farther than FLIP_WINDOW_S");
         // The run started again at 51 s: three more within 20 s of it flip it.
         for t in [56.0, 61.0, 66.0] {
-            vote.observe(t, KIND_TRUCK, 0.9);
+            vote.observe(t, KIND_TRUCK, 0.9, f64::NAN);
         }
         assert_eq!((vote.shown, vote.confirmed_at), (KIND_TRUCK, 66.0));
         // First to fourth answer exactly FLIP_WINDOW_S apart still flips.
         let mut edge = Vote::new();
-        edge.observe(0.0, KIND_TRUCK, 0.9);
-        edge.observe(1.0, KIND_TRUCK, 0.9);
+        edge.observe(0.0, KIND_TRUCK, 0.9, f64::NAN);
+        edge.observe(1.0, KIND_TRUCK, 0.9, f64::NAN);
         for t in [10.0, 15.0, 20.0, 30.0] {
-            edge.observe(t, KIND_CAR, 0.9);
+            edge.observe(t, KIND_CAR, 0.9, f64::NAN);
         }
         assert_eq!(edge.shown, KIND_CAR);
     }
@@ -633,29 +684,112 @@ mod tests {
     #[test]
     fn an_unsure_truck_answer_ends_a_run_of_car_answers() {
         let mut vote = Vote::new();
-        vote.observe(0.0, KIND_CAR, 0.9);
-        assert!(!vote.observe(0.5, KIND_TRUCK, 0.7), "not counted");
-        vote.observe(1.0, KIND_CAR, 0.9);
+        vote.observe(0.0, KIND_CAR, 0.9, f64::NAN);
+        assert!(!vote.observe(0.5, KIND_TRUCK, 0.7, f64::NAN), "not counted");
+        vote.observe(1.0, KIND_CAR, 0.9, f64::NAN);
         assert!(!vote.confirmed(), "the run of car answers started again at 1 s");
         assert_eq!(vote.counted, 2);
-        vote.observe(2.0, KIND_CAR, 0.9);
+        vote.observe(2.0, KIND_CAR, 0.9, f64::NAN);
         assert!(vote.confirmed());
         // A confirmed truck: an unsure truck answer among the car answers keeps it a truck.
         let mut truck = Vote::new();
-        truck.observe(0.0, KIND_TRUCK, 0.9);
-        truck.observe(1.0, KIND_TRUCK, 0.9);
+        truck.observe(0.0, KIND_TRUCK, 0.9, f64::NAN);
+        truck.observe(1.0, KIND_TRUCK, 0.9, f64::NAN);
         for t in [2.0, 3.0, 4.0] {
-            truck.observe(t, KIND_CAR, 0.9);
+            truck.observe(t, KIND_CAR, 0.9, f64::NAN);
         }
-        truck.observe(4.5, KIND_BUS, 0.65);
-        truck.observe(5.0, KIND_CAR, 0.9);
+        truck.observe(4.5, KIND_BUS, 0.65, f64::NAN);
+        truck.observe(5.0, KIND_CAR, 0.9, f64::NAN);
         assert_eq!(truck.shown, KIND_TRUCK, "three car answers, then the run ended");
         // Below MIN_PROB an answer says nothing.
         let mut car = Vote::new();
-        car.observe(0.0, KIND_CAR, 0.9);
-        car.observe(0.5, KIND_TRUCK, 0.55);
-        car.observe(1.0, KIND_CAR, 0.9);
+        car.observe(0.0, KIND_CAR, 0.9, f64::NAN);
+        car.observe(0.5, KIND_TRUCK, 0.55, f64::NAN);
+        car.observe(1.0, KIND_CAR, 0.9, f64::NAN);
         assert!(car.confirmed());
+    }
+
+    #[test]
+    fn a_tall_box_counts_a_truck_answer_from_min_prob_and_a_sure_one_confirms_alone() {
+        // The 47d 10 bus: 0.976 at 3.0 m, then 0.759 3 s later.
+        let mut bus = Vote::new();
+        bus.observe(10.39, KIND_BUS, 0.976, 3.0);
+        assert_eq!((bus.shown, bus.confirmed_at), (KIND_BUS, 10.39), "one sure answer about a tall box");
+        let mut tall = Vote::new();
+        assert!(!tall.observe(0.0, KIND_BUS, 0.7, 2.2), "a box under TALL_M needs MIN_PROB_TRUCK");
+        assert!(tall.observe(0.0, KIND_BUS, 0.7, 2.4));
+        assert!(!tall.confirmed(), "0.7 is not sure");
+        assert!(tall.observe(3.0, KIND_TRUCK, 0.62, 3.0));
+        assert_eq!((tall.shown, tall.confirmed_at), (KIND_TRUCK, 3.0));
+        // Not sure enough, not tall enough, height not known, or a car answer: one answer does not confirm.
+        for (kind, prob, height) in [(KIND_BUS, 0.94, 3.0), (KIND_BUS, 0.99, 2.4), (KIND_TRUCK, 0.99, f64::NAN), (KIND_CAR, 0.99, 3.0)] {
+            let mut vote = Vote::new();
+            assert!(vote.observe(0.0, kind, prob, height));
+            assert!(!vote.confirmed(), "{kind} {prob} {height}");
+        }
+        assert!(!Vote::new().observe(0.0, KIND_TRUCK, 0.7, f64::NAN), "height not known: MIN_PROB_TRUCK");
+        // A confirmed car flips only after N_FLIP answers, sure or not.
+        let mut car = Vote::new();
+        car.observe(0.0, KIND_CAR, 0.9, 1.5);
+        car.observe(1.0, KIND_CAR, 0.9, 1.5);
+        car.observe(2.0, KIND_BUS, 0.99, 3.0);
+        assert_eq!((car.shown, car.confirmed_at), (KIND_CAR, 1.0));
+    }
+
+    #[test]
+    fn a_box_is_not_tied_to_a_track_it_would_be_too_tall_at() {
+        let cam = FrontCam::new([0.0, 0.0, 0.0], 1.22).unwrap();
+        let track = |id, d_rel, y_rel| Track { id, d_rel, y_rel, v_rel: 0. };
+        // A 3.0 m tall bus box at 35 m, its ground row 2 px below the bus's; a car at 66 m sits right in its middle.
+        let (near, far) = (track(46, 35.0, -0.3), track(32, 66.0, 0.0));
+        let (u, v) = cam.radar_ground(35.0, 0.0).unwrap();
+        let (w, h) = (2.5 * FOCAL / 36.52, 3.0 * FOCAL / 36.52);
+        let bbox = [u - w / 2., v - h, u + w / 2., v + 2.];
+        assert!(front_gate(&cam, &far, &bbox).is_some_and(|q| q < front_gate(&cam, &near, &bbox).unwrap()), "the far car places better");
+        assert!(front_height(&far, &bbox) > MAX_TALL_M && front_height(&near, &bbox) < MAX_TALL_M);
+        let tracks = vec![near, far];
+        let vid_of = |_, id: i64| Some(id as u32 * 100);
+        let mut kinds = Kinds::default();
+        let results = [KindResult { time_ns: 2_000_000_000, view: KindView::Front, xyxy: bbox, kind: KIND_BUS, prob: 0.759 }];
+        kinds.observe(&results, Some(&cam), |t| Some((t, tracks.clone())), |_, _| None, vid_of);
+        assert!(!kinds.votes.contains_key(&3200), "5.6 m tall at 66 m: not that car");
+        assert_eq!(kinds.votes[&4600].counted, 1, "3.0 m tall at 35 m: counted from MIN_PROB");
+    }
+
+    #[test]
+    fn a_new_vid_where_an_unconfirmed_truck_was_keeps_its_answers() {
+        let one_answer = || {
+            let mut run = Run::new();
+            let bbox = box_at(&run.cam, 20., 0., 2.5, 3.5);
+            for i in 0..=40 {
+                let now = 1.0 + f64::from(i) * 0.05;
+                run.update(now, &[track(10, 20., 0.)]);
+                if i == 0 {
+                    run.answer(now, bbox, KIND_BUS, 0.865);
+                }
+            }
+            assert_eq!(run.shown(run.vid(3.0, 10)), (KIND_CAR, false));
+            (run, bbox)
+        };
+        // The radar id ends; 0.6 s later a new id at the same place: its first answer is the second of the bus.
+        let (mut run, bbox) = one_answer();
+        run.update(3.6, &[track(20, 20., 0.)]);
+        let new = run.vid(3.6, 20);
+        assert_eq!(run.shown(new), (KIND_CAR, false), "nothing confirmed to show yet");
+        run.update(3.65, &[track(20, 20., 0.)]);
+        run.answer(3.65, bbox, KIND_BUS, 0.948);
+        run.update(3.7, &[track(20, 20., 0.)]);
+        assert_eq!(run.shown(new), (KIND_BUS, true));
+        // Too long a gap or another place: the new vid starts from no answer.
+        for (t, y_rel) in [(3.9, 0.), (3.6, 2.0)] {
+            let (mut run, _) = one_answer();
+            run.update(t, &[track(20, 20., y_rel)]);
+            run.update(t + 0.05, &[track(20, 20., y_rel)]);
+            let bbox = box_at(&run.cam, 20., y_rel, 2.5, 3.5);
+            run.answer(t + 0.05, bbox, KIND_BUS, 0.948);
+            run.update(t + 0.1, &[track(20, 20., y_rel)]);
+            assert!(!run.shown(run.vid(t + 0.05, 20)).1, "gap {t} across {y_rel}");
+        }
     }
 
     /// A box `w` x `h` m standing on the road at the radar point (d_rel, y_rel).
@@ -829,6 +963,26 @@ mod tests {
     }
 
     #[test]
+    fn a_taken_vote_is_passed_on_again_only_after_an_own_answer_agrees() {
+        // The truck's id ends, a new id takes its vote; that id ends too and a third starts there.
+        let (mut run, _) = confirmed_truck(0.);
+        run.update(3.6, &[track(20, 20., 0.)]);
+        assert_eq!(run.shown(run.vid(3.6, 20)), (KIND_TRUCK, true));
+        run.update(4.2, &[track(30, 20., 0.)]);
+        assert_eq!(run.shown(run.vid(4.2, 30)), (0, false), "not taken from a vid that took it");
+        // One own truck answer on the second vid lets it pass the vote on.
+        let (mut run, _) = confirmed_truck(0.);
+        let bbox = box_at(&run.cam, 20., 0., 2.5, 3.5);
+        for t in [3.6, 3.85] {
+            run.update(t, &[track(20, 20., 0.)]);
+        }
+        run.answer(3.85, bbox, KIND_TRUCK, 0.9);
+        run.update(3.9, &[track(20, 20., 0.)]);
+        run.update(4.5, &[track(30, 20., 0.)]);
+        assert_eq!(run.shown(run.vid(4.5, 30)), (KIND_TRUCK, true));
+    }
+
+    #[test]
     fn an_unsure_link_shows_the_kind_it_took_but_not_one_of_two_shapes() {
         // Two confirmed trucks; a new id between them is an Ambiguous link.
         let mut run = Run::new();
@@ -869,7 +1023,7 @@ mod tests {
     }
 
     fn answer(kinds: &mut Kinds, vid: u32, t: f64, kind: u8, prob: f64) {
-        kinds.count(vid, t, kind, prob);
+        kinds.count(vid, t, kind, prob, f64::NAN);
     }
 
     #[test]
@@ -1032,11 +1186,11 @@ mod tests {
     #[test]
     fn nan_probability_and_nan_coordinates_are_rejected() {
         let mut vote = Vote::new();
-        assert!(vote.observe(0.0, KIND_CAR, 0.9));
+        assert!(vote.observe(0.0, KIND_CAR, 0.9, f64::NAN));
         assert_eq!(vote.streak, (KIND_CAR, 1));
-        assert!(!vote.observe(1.0, KIND_TRUCK, f64::NAN), "NaN prob must not count");
+        assert!(!vote.observe(1.0, KIND_TRUCK, f64::NAN, f64::NAN), "NaN prob must not count");
         assert_eq!(vote.streak, (KIND_CAR, 1), "NaN prob must not break an active car streak");
-        assert!(!vote.observe(1.0, KIND_CAR, f64::NAN), "NaN prob must not confirm");
+        assert!(!vote.observe(1.0, KIND_CAR, f64::NAN, f64::NAN), "NaN prob must not confirm");
         assert!(!vote.confirmed());
 
         use crate::vehicles::{Flags, History, Link};
@@ -1063,8 +1217,8 @@ mod tests {
         onward_since: f64::NAN,
         };
         let mut kinds = Kinds::default();
-        kinds.count(1, 0.0, KIND_TRUCK, 0.9);
-        kinds.count(1, 1.0, KIND_TRUCK, 0.9);
+        kinds.count(1, 0.0, KIND_TRUCK, 0.9, f64::NAN);
+        kinds.count(1, 1.0, KIND_TRUCK, 0.9, f64::NAN);
         assert!(kinds.votes[&1].confirmed());
 
         let mut cars = vec![
