@@ -6,6 +6,7 @@ use crate::input::{
     map_events::{CarState, DisplayLead, Event, CAR_STATE, LIVE_POSE, RADAR_STATE},
     model_v2::{self, EVENT_MODEL_V2},
 };
+use crate::pos::common::{LEAD_GATE_X, LEAD_GATE_Y};
 use crate::radar::{
     associate::RadarPoint,
     consts::Consts,
@@ -15,7 +16,7 @@ use crate::radar::{
     Frame, MapState, Range, Result,
 };
 use crate::rear::{WorldInput, WorldRear};
-use crate::slots::{Assigner, Slot};
+use crate::slots::{Assigner, Slot, FF_CONFIRM_S, LEAD_SPEED_MATCH, OBSERVATION_MAX_AGE};
 use crate::vehicles::{Tracker, Vehicle, MAX_VEHICLES};
 use crate::vision::{self, Vision};
 use crate::world::{World, RADAR_LAG, STATUS_FROZEN};
@@ -98,8 +99,10 @@ pub struct Pipeline {
     tracks_valid: bool,
     car: Option<(u64, CarState)>,
     model_stamp: Option<u64>,
-    /// radarState at its time: leadOne for the radar map, the display lead (`Event::display_lead`) for FF.
-    lead: Option<(u64, Option<(f64, f64)>, Option<DisplayLead>)>,
+    /// radarState at its time: leadOne position for the radar map, preferred and primary display leads for FF.
+    lead: Option<(u64, Option<(f64, f64)>, Option<DisplayLead>, Option<DisplayLead>)>,
+    /// Consecutive liveTracks observations matching the measured leadOne: ID, start and latest radar time.
+    lead_one_match: Option<(u32, u64, u64)>,
     vision: Vision,
     start_guard: det_rules::StartGuard,
     tracks_at: History<Vec<vision::Track>>,
@@ -129,6 +132,7 @@ impl Pipeline {
             car: None,
             model_stamp: None,
             lead: None,
+            lead_one_match: None,
             vision: Vision::default(),
             start_guard: det_rules::StartGuard::default(),
             tracks_at: History::default(),
@@ -171,6 +175,7 @@ impl Pipeline {
             self.radar_generation = self.world.generation();
             self.radar = MapState::for_observation();
             self.model_stamp = None;
+            self.lead_one_match = None;
             self.vision.reset_positions();
         }
     }
@@ -265,9 +270,9 @@ impl Pipeline {
                 }
             }
             RADAR_STATE => {
-                if self.lead.is_none_or(|(last, _, _)| stamp >= last) {
-                    let display = event.display_lead().filter(|_| event.valid);
-                    self.lead = Some((stamp, event.lead().filter(|_| event.valid), display));
+                if self.lead.is_none_or(|(last, ..)| stamp >= last) {
+                    let (display, one) = if event.valid { event.display_leads() } else { (None, None) };
+                    self.lead = Some((stamp, event.lead().filter(|_| event.valid), display, one));
                 }
             }
             EVENT_LIVE_TRACKS if self.last_tracks.is_none_or(|last| stamp > last) => {
@@ -292,6 +297,7 @@ impl Pipeline {
                     self.tracks_valid = true;
                     return self.update_radar(stamp, points).map(Some);
                 }
+                self.lead_one_match = None;
                 return Ok(Some(self.empty()));
             }
             _ => {}
@@ -320,18 +326,20 @@ impl Pipeline {
             .car
             .filter(|(stamp_car, car)| car.can_valid && current(stamp, *stamp_car))
         else {
+            self.lead_one_match = None;
             return Ok(self.empty());
         };
         if !self.world.accepts_radar() {
+            self.lead_one_match = None;
             return Ok(self.empty());
         }
         let now = seconds(stamp);
         self.world.radar(now);
         self.sync_generation();
-        let (lead, display_lead) = self
+        let (lead, display_lead, lead_one) = self
             .lead
-            .filter(|(t, _, _)| current(stamp, *t))
-            .map_or((None, None), |(_, lead, display)| (lead, display));
+            .filter(|(t, ..)| current(stamp, *t))
+            .map_or((None, None, None), |(_, lead, display, one)| (lead, display, one));
         // card's `holding` (vehicle_display.rs): stopped, or below 10 km/h and braking unless stopped a frame ago.
         let speed = car.speed.max(0.);
         let stopped = speed <= 0.3 / 3.6;
@@ -341,6 +349,7 @@ impl Pipeline {
         let mut tracks = Vec::with_capacity(input.len().min(MAX_VEHICLES));
         let mut measured = Vec::with_capacity(tracks.capacity());
         let mut wall_car_track = None;
+        let mut measured_one = None;
         for point in input.iter().filter(|p| p.source == 0).take(MAX_VEHICLES) {
             let (x, y, v_rel) = (
                 f64::from(point.d_rel),
@@ -359,6 +368,13 @@ impl Pipeline {
             if point.measured {
                 let speed = f64::from(point.v_lead);
                 if speed.is_finite() {
+                    if lead_one.is_some_and(|one| {
+                        let (lx, ly, lv) = one.motion;
+                        one.measured_track == Some(id) && (x - lx).abs() <= LEAD_GATE_X
+                            && (y - ly).abs() <= LEAD_GATE_Y && (v_rel - lv).abs() <= LEAD_SPEED_MATCH
+                    }) {
+                        measured_one = Some(id);
+                    }
                     if holding && display_lead.is_some_and(|lead| {
                         let (lx, ly, lv) = lead.motion;
                         lead.confirmed_track == Some(i128::from(id)) && (x - lx).abs() <= 1.
@@ -377,6 +393,8 @@ impl Pipeline {
                 }
             }
         }
+        let settled_primary = self.observe_lead_one(stamp, measured_one);
+        let primary = lead_one.map(|one| (one, settled_primary));
         let measured_yaw = self.world.yaw_at(now);
         let yaw = measured_yaw.unwrap_or(0.);
         let changing = self.world.status() & STATUS_FROZEN != 0;
@@ -438,7 +456,7 @@ impl Pipeline {
         self.kinds.apply(now, self.world.radar_pose(now).heading, self.tracker.vehicles_mut());
         let cars = self.tracker.vehicles();
         self.slots.set_model_lane(self.model_lane(stamp));
-        let mut slots = self.slots.update_display_lead(now, cars, &self.world, display_lead);
+        let mut slots = self.slots.update_display_lead(now, cars, &self.world, display_lead, primary);
         let remembered = if holding {
             // The map's 0.15 s freshness, not the selector's 0.3 s prediction hold, decides when memory takes over.
             let (map, frame) = (&self.radar, self.radar.frame());
@@ -491,11 +509,34 @@ impl Pipeline {
             self.empty()
         })
     }
+
+    fn observe_lead_one(&mut self, stamp: u64, measured: Option<u32>) -> bool {
+        self.lead_one_match = measured.map(|id| {
+            let since = self.lead_one_match
+                .filter(|&(old, _, seen)| old == id && stamp - seen <= (OBSERVATION_MAX_AGE * 1e9) as u64)
+                .map_or(stamp, |(_, since, _)| since);
+            (id, since, stamp)
+        });
+        self.lead_one_match.is_some_and(|(_, since, _)| stamp - since >= (FF_CONFIRM_S * 1e9) as u64)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primary_lead_confirmation_requires_current_consecutive_measurements() {
+        let mut pipe = Pipeline::new(0);
+        for i in 0..8 {
+            assert_eq!(pipe.observe_lead_one(i * 50_000_000, Some(40)), i == 7);
+        }
+        assert!(!pipe.observe_lead_one(400_000_000, None));
+        assert!(!pipe.observe_lead_one(450_000_000, Some(40)));
+        assert!(!pipe.observe_lead_one(900_000_000, Some(40)));
+        assert!(!pipe.observe_lead_one(950_000_000, Some(44)));
+        assert_eq!(pipe.lead_one_match, Some((44, 950_000_000, 950_000_000)));
+    }
 
     #[test]
     fn the_map_tracker_finds_a_radar_id_at_an_earlier_update() {

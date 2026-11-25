@@ -11,9 +11,9 @@ const INNER_RADIUS: f64 = 0.48;
 /// A side car moves on to the lane beyond (no slot) only this close to that lane's center: a car near the outer line
 /// of a side lane went in and out of LF or RF while the map's line wobbled across it.
 const OUTER_RADIUS: f64 = 0.35;
-const OBSERVATION_MAX_AGE: f64 = 0.15;
+pub(crate) const OBSERVATION_MAX_AGE: f64 = 0.15;
 const FF_PREFERENCE_M: f32 = 1.0;
-const FF_CONFIRM_S: f64 = 0.35;
+pub(crate) const FF_CONFIRM_S: f64 = 0.35;
 const FF_HOLD_S: f64 = 1.0;
 const FF_BOUNDARY_MAX_EGO_SPEED: f64 = 0.5;
 /// The legacy selector's stop memory range ahead (`Consts::memory_max_x`); the map keeps LF and RF at x >= 0.
@@ -66,7 +66,7 @@ const ONCOMING_FF_EGO_SPEED: f64 = 2.;
 /// 4.3 m/s), on a curve, and qualified a guard rail object standing there (ground speed 0.1 m/s, never proven) in FF for
 /// 0.4 s. The leads that qualified real cars standing ahead measured them: 47f 12 the bus (vRel -6, the car -6), 47d 0
 /// and 10-11 standing cars.
-const LEAD_SPEED_MATCH: f64 = 2.;
+pub(crate) const LEAD_SPEED_MATCH: f64 = 2.;
 const UNPROVEN_LEAD_MIN_PROB: f64 = 0.6;
 /// A lead first matched in the radar's near gap can be a crossing car or a parked object.
 const UNPROVEN_LEAD_ENTRY_MIN_X: f64 = 5.;
@@ -138,6 +138,14 @@ pub struct Slot {
     pub kind_wanted: bool,
     /// What the wide camera adds: `VISION_*`.
     pub vision: u8,
+}
+
+struct Followed {
+    rank: (f64, f64, u32),
+    slot: Slot,
+    corroborated: bool,
+    new_unproven: bool,
+    needs_confirmation: bool,
 }
 
 /// The slot holds a radar car the camera has no say about.
@@ -331,25 +339,26 @@ impl Assigner {
     /// The lead is (dRel, yRel) at the radar sensor, lateral positive to the left; it only prefers among the radar's
     /// proven cars.
     pub fn update(&mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<(f64, f64)>) -> [Option<Slot>; 5] {
-        self.update_with(now, vehicles, world, lead, None, None)
+        self.update_with(now, vehicles, world, lead, None, None, None)
     }
 
-    /// `update` with radarState's display lead (`Event::display_lead`): the radar car at that lead may be drawn in FF
+    /// `update` with the display lead's motion: a radar car at that lead may be drawn in FF
     /// though the radar has not proven it a vehicle by motion or Doppler, as card drew the control lead in FF before
     /// the map (`_apply_ccnc_lead`, 93c5c6af). A car or bus standing ahead in ego's lane: 0000047f 12 39.4 s, a bus
     /// stopped 18-13 m ahead and the lead, FF blank for 0.87 s until it rolled; 0000047d 10-11, a car standing 40-4 m
     /// ahead and the lead, FF blank for 59 s. FF only: LF and RF keep the radar's own proof. The lead is (dRel, yRel,
     /// vRel), and qualifies a car only at its speed (`LEAD_SPEED_MATCH`).
     pub fn update_lead(&mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<(f64, f64, f64)>) -> [Option<Slot>; 5] {
-        self.update_with(now, vehicles, world, lead.map(|(x, y, _)| (x, y)), lead.map(|(_, _, v)| v), None)
+        self.update_with(now, vehicles, world, lead.map(|(x, y, _)| (x, y)), lead.map(|(_, _, v)| v), None, None)
     }
 
     pub(crate) fn update_display_lead(
         &mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<DisplayLead>,
+        lead_one: Option<(DisplayLead, bool)>,
     ) -> [Option<Slot>; 5] {
         self.update_with(
             now, vehicles, world, lead.map(|lead| (lead.motion.0, lead.motion.1)),
-            lead.map(|lead| lead.motion.2), lead,
+            lead.map(|lead| lead.motion.2), lead, lead_one,
         )
     }
 
@@ -361,6 +370,7 @@ impl Assigner {
         lead: Option<(f64, f64)>,
         lead_v_rel: Option<f64>,
         display_lead: Option<DisplayLead>,
+        lead_one: Option<(DisplayLead, bool)>,
     ) -> [Option<Slot>; 5] {
         if self.generation != world.generation() {
             self.generation = world.generation();
@@ -399,7 +409,7 @@ impl Assigner {
         let yaw = world.yaw_at(now);
         let current = |stamp: f64| current(world, now, stamp);
         let (sin, cos) = ego.heading.sin_cos();
-        let mut followed: Option<((f64, f64, u32), Slot, bool)> = None;
+        let mut followed: Option<Followed> = None;
         let mut confirmed_lead = None;
         let mut previous = None;
         let mut best: [Option<Slot>; 5] = [None; 5];
@@ -545,19 +555,42 @@ impl Assigner {
             };
             if slot == 0 {
                 let held_lead = self.ff_lead.is_some_and(|(vid, _)| vid == car.vid);
-                if measured && (proven_vehicle || current_lead_support) && held_lead {
+                let primary_match = lead_one.filter(|(one, _)| {
+                    let (dx, dy, dv) = one.motion;
+                    measured && one.measured_track.is_some() && car.radar_id == one.measured_track
+                        && (UNPROVEN_LEAD_MIN_PROB..=1.).contains(&one.model_prob)
+                        && (rx - dx).abs() <= LEAD_GATE_X && (ry - dy).abs() <= LEAD_GATE_Y
+                        && (v_rel - dv).abs() <= LEAD_SPEED_MATCH
+                });
+                let new_unproven = !proven_vehicle && self.previous_ff != Some(car.vid);
+                if measured && (proven_vehicle || current_lead_support || primary_match.is_some()) && held_lead
+                    && !new_unproven
+                {
                     confirmed_lead = Some(candidate);
                 }
-                if let Some((dx, dy)) = lead.filter(|_| current(car.seen_radar)) {
+                let in_lane = !proven_vehicle
+                    && self.model_lane.as_ref().is_some_and(|lane| lane.contains(rx, ry));
+                let unproven_entry = primary_match.is_some() && rx >= UNPROVEN_LEAD_ENTRY_MIN_X
+                    && (world.pose.speed().abs() > UNPROVEN_LEAD_ENTRY_CREEP_SPEED || in_lane);
+                let primary = primary_match.filter(|_| !proven_vehicle && (new_unproven || !current_lead_support));
+                let (position, velocity, matching_track) = if let Some((primary, _)) = primary {
+                    let (dx, dy, dv) = primary.motion;
+                    (Some((dx, dy)), Some(dv), true)
+                } else {
+                    (lead, lead_v_rel, matching_track)
+                };
+                if let Some((dx, dy)) = position.filter(|_| current(car.seen_radar)) {
                     let (ex, ey) = ((rx - dx).abs(), (ry - dy).abs());
                     let rank = (ex, ey, car.vid);
-                    let speed_matches = lead_v_rel.is_some_and(|v| (v_rel - v).abs() <= LEAD_SPEED_MATCH);
-                    let supported = current_lead_support && (held_lead || (rx >= UNPROVEN_LEAD_ENTRY_MIN_X
-                        && (world.pose.speed().abs() > UNPROVEN_LEAD_ENTRY_CREEP_SPEED
-                            || self.model_lane.as_ref().is_some_and(|lane| lane.contains(rx, ry)))));
+                    let speed_matches = velocity.is_some_and(|v| (v_rel - v).abs() <= LEAD_SPEED_MATCH);
+                    let supported = if new_unproven {
+                        unproven_entry
+                    } else {
+                        (held_lead && (current_lead_support || primary_match.is_some())) || unproven_entry
+                    };
                     let qualifies = proven_vehicle || supported || (display_lead.is_none() && speed_matches);
                     if qualifies && ex <= LEAD_GATE_X && ey <= LEAD_GATE_Y
-                        && followed.is_none_or(|(old, ..)| rank < old)
+                        && followed.as_ref().is_none_or(|old| rank < old.rank)
                     {
                         // A single matched update can be a static reflection, even with a good model lead.
                         let previously_matched = self.ff_lead_pending
@@ -565,7 +598,10 @@ impl Assigner {
                         let corroborated = (proven_vehicle || previously_matched) && matching_track && speed_matches
                             && (stable_radar_lead.is_some() || now - car.born >= FF_CONFIRM_S
                                 || (ex <= 1. && ey <= 0.5));
-                        followed = Some((rank, candidate, corroborated));
+                        let new_unproven = new_unproven && display_lead.is_some();
+                        // Incomplete lane evidence requires a sustained measured LeadOne match at road speeds.
+                        let needs_confirmation = new_unproven && !in_lane && !primary_match.is_some_and(|(_, settled)| settled);
+                        followed = Some(Followed { rank, slot: candidate, corroborated, new_unproven, needs_confirmation });
                     }
                 }
                 if !proven_vehicle {
@@ -590,10 +626,10 @@ impl Assigner {
         let preferred_lead = if lead_v_rel.is_none() && lead.is_some() {
             // Callers supplying only a position retain the radar-only selector.
             self.ff_lead_pending = None;
-            followed.map(|(_, slot, _)| slot)
+            followed.map(|lead| lead.slot)
         } else {
             // Only current radar observations can survive a brief change in the matched lead.
-            if let Some((_, slot, corroborated)) = followed {
+            if let Some(Followed { slot, corroborated, new_unproven, needs_confirmation, .. }) = followed {
                 let since = match self.ff_lead_pending {
                     Some((vid, since)) if vid == slot.vid => since,
                     _ => now,
@@ -603,7 +639,11 @@ impl Assigner {
                     && self.ff_lead.is_some_and(|(_, last)| now - last < FF_HOLD_S);
                 // A closer, corroborated display lead may enter as soon as it is drawable.
                 let closer = confirmed_lead.is_some_and(|old| slot.distance < old.distance);
-                if current || (corroborated && (closer || !holding)) || (!holding && now - since >= FF_CONFIRM_S) {
+                let replaces_previous = !new_unproven
+                    || previous.is_none_or(|old| slot.distance + FF_PREFERENCE_M < old.distance);
+                if !needs_confirmation && replaces_previous && (current || (corroborated && (closer || !holding))
+                    || (!holding && now - since >= FF_CONFIRM_S))
+                {
                     self.ff_lead = Some((slot.vid, now));
                     self.ff_lead_pending = None;
                     confirmed_lead = Some(slot);
@@ -901,27 +941,101 @@ mod review_tests {
         world
     }
 
-    fn stationary_match(
-        assigner: &mut Assigner, world: &mut World, now: f64, ego_speed: f64,
-        track: u32, point: (f64, f64), flags: Flags,
-    ) -> Option<u32> {
+    fn slot_test_tick(world: &mut World, now: f64, ego_speed: f64) {
         world.live_pose(now, 0.);
         world.car_state(now, ego_speed, false);
         world.radar(now);
+    }
+
+    fn stationary_car(world: &World, now: f64, track: u32, point: (f64, f64), flags: Flags) -> Vehicle {
         let (wx, wy) = world.radar_point_world(now, point.0, point.1);
         let u = (world.u_ego() - point.1 / LANE_WIDTH) as f32;
-        let car = Vehicle {
+        Vehicle {
             vid: track, wx: wx as f32, wy: wy as f32, vx: 0., vy: 0., off: 0.,
             u, u_slot: u, ids: Default::default(), hist: Default::default(),
             link: Link::Sure, kind: None, seen_radar: now, seen_vision: f64::NEG_INFINITY,
             born: 0., flags, radar_id: Some(track), oncoming: false,
             oncoming_since: f64::NAN, onward_since: f64::NAN,
-        };
-        let lead = DisplayLead {
+        }
+    }
+
+    fn stationary_lead(track: u32, point: (f64, f64), ego_speed: f64) -> DisplayLead {
+        DisplayLead {
             motion: (point.0, point.1, -ego_speed), measured_track: Some(track),
             model_prob: 0.98, confirmed_track: Some(i128::from(track)),
-        };
-        assigner.update_display_lead(now, &[car], world, Some(lead))[0].map(|slot| slot.vid)
+        }
+    }
+
+    fn stationary_match(
+        assigner: &mut Assigner, world: &mut World, now: f64, ego_speed: f64,
+        track: u32, point: (f64, f64), flags: Flags,
+    ) -> Option<u32> {
+        slot_test_tick(world, now, ego_speed);
+        let car = stationary_car(world, now, track, point, flags);
+        let lead = stationary_lead(track, point, ego_speed);
+        assigner.update_display_lead(now, &[car], world, Some(lead), Some((lead, false)))[0].map(|slot| slot.vid)
+    }
+
+    #[test]
+    fn brief_primary_match_does_not_displace_the_existing_car() {
+        let mut world = slot_test_world();
+        let mut assigner = Assigner::default();
+        let speed = 2.586;
+        for frame in 0..6 {
+            let now = f64::from(frame) * 0.05;
+            slot_test_tick(&mut world, now, speed);
+            let near = (10.20, 0.25);
+            let mut lead = stationary_lead(44, near, speed);
+            lead.motion.2 = -2.21;
+            let mut reflection = stationary_car(&world, now, 44, near, Flags::default());
+            reflection.vx = 0.376;
+            let car = stationary_car(&world, now, 42, (40.05, -0.55), Flags { proven: true, ..Flags::default() });
+            let lead = (2..=3).contains(&frame).then_some(lead);
+            let ff = assigner.update_display_lead(now, &[car, reflection], &world, lead, lead.map(|l| (l, false)))[0];
+            assert_eq!(ff.map(|slot| slot.vid), Some(42), "frame {frame}");
+        }
+    }
+
+    #[test]
+    fn a_parking_row_return_with_brief_primary_matches_leaves_ff_empty() {
+        let mut world = slot_test_world();
+        let mut assigner = Assigner::default();
+        for frame in 0..10 {
+            let now = f64::from(frame) * 0.05;
+            let speed = 7.06 + now;
+            slot_test_tick(&mut world, now, speed);
+            let point = (20.4 - 7. * now, 0.15);
+            let car = stationary_car(&world, now, 40, point, Flags::default());
+            let lead = (1..=7).contains(&frame).then(|| stationary_lead(40, point, speed));
+            let ff = assigner.update_display_lead(now, &[car], &world, lead, lead.map(|l| (l, false)))[0];
+            assert_eq!(ff, None, "frame {frame}");
+        }
+    }
+
+    #[test]
+    fn weak_entry_uses_primary_id_motion_and_replacement_margin() {
+        for (primary_track, primary_x, primary_speed, near, expected) in [
+            (41, 12., -4., 12., 42), // LeadTwo agrees, but leadOne has a different ID.
+            (40, 16., -4., 12., 42), // LeadOne distance does not agree.
+            (40, 12., -1., 12., 42), // LeadOne relative speed does not agree.
+            (40, 12., -4., 12., 42), // Exactly 1 m closer.
+            (40, 11.75, -4., 11.75, 40),
+        ] {
+            let mut world = slot_test_world();
+            let mut assigner = Assigner::default();
+            for frame in 0..4 {
+                let now = f64::from(frame) * 0.05;
+                slot_test_tick(&mut world, now, 4.);
+                let incumbent = stationary_car(&world, now, 42, (13., 0.), Flags { proven: true, ..Flags::default() });
+                let weak = stationary_car(&world, now, 40, (near, 0.), Flags::default());
+                let preferred = stationary_lead(40, (near, 0.), 4.);
+                let mut one = stationary_lead(primary_track, (primary_x, 0.), 4.);
+                one.motion.2 = primary_speed;
+                let ff = assigner.update_display_lead(now, &[weak, incumbent], &world, Some(preferred), Some((one, true)))[0];
+                assert_eq!(ff.map(|slot| slot.vid), Some(if frame < 1 { 42 } else { expected }),
+                    "primary track {primary_track}, position {primary_x}, speed {primary_speed}, distance {near}, frame {frame}");
+            }
+        }
     }
 
     #[test]
@@ -963,7 +1077,7 @@ mod review_tests {
     #[test]
     fn a_road_without_current_lane_lines_uses_the_normal_vehicle_path_at_creep_speed() {
         // The world map still has a lane coordinate from earlier observations.
-        for (ego_speed, requires_lane) in [(2., true), (2.01, false)] {
+        for ego_speed in [2., 2.01] {
             let mut world = slot_test_world();
             let mut assigner = Assigner::default();
             world.model(0.01, &Model { lane_lines: Vec::new(), lane_line_probs: Vec::new(), road_edges: Vec::new() });
@@ -971,7 +1085,7 @@ mod review_tests {
                 let proven = frame >= 6;
                 let shown = stationary_match(&mut assigner, &mut world, 0.05 + f64::from(frame) * 0.05,
                     ego_speed, 2, (12., 0.), Flags { proven, ..Flags::default() });
-                assert_eq!(shown, (proven || (!requires_lane && frame >= 1)).then_some(2),
+                assert_eq!(shown, proven.then_some(2),
                     "ego speed {ego_speed}, frame {frame}");
             }
         }

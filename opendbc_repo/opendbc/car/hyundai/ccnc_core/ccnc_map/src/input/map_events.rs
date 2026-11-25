@@ -109,15 +109,16 @@ impl<'a> Event<'a> {
         (flag(lead.data, 321) && x.is_finite() && y.is_finite()).then_some((x, y))
     }
 
-    /// The lead card drew in FF before the map (`_display_lead`, 93c5c6af): the nearer of leadOne and leadTwo with
-    /// status on, dRel above 0 and dRel, yRel, vRel finite, leadOne on a tie. (dRel, yRel, vRel).
-    pub fn display_lead(&self) -> Option<DisplayLead> {
-        let payload = self.payload()?;
+    /// The nearer valid display lead (leadOne on a tie), and leadOne itself for unproven FF entry.
+    pub fn display_leads(&self) -> (Option<DisplayLead>, Option<DisplayLead>) {
+        let Some(payload) = self.payload() else { return (None, None) };
         let lead = |pointer| DisplayLead::read(self.message.struct_pointer(&payload, pointer)?.data);
-        match (lead(1), lead(2)) {
+        let one = lead(1);
+        let preferred = match (one, lead(2)) {
             (Some(one), Some(two)) => Some(if one.motion.0 <= two.motion.0 { one } else { two }),
             (one, two) => one.or(two),
-        }
+        };
+        (preferred, one)
     }
 }
 
