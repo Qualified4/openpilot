@@ -158,7 +158,7 @@ def native():
 CARROT = NS(mode="acc", comfort_brake=2.5, stop_distance=STOP, v_cruise=V60 + 15.0, stop_dist=1000.,
             trafficStopDistanceAdjust=100., trafficStopModelLeadOffset=2.,
             get_T_FOLLOW=lambda *a: 1.2, jerk_factor=1., leadAccelResponse=0,
-            autoNaviSpeedDecelRate=1., lane_change_active=False, myDrivingMode=3, t_follow_gap_safe_extra=0.0)
+            autoNaviSpeedDecelRate=1., lane_change_active=False, myDrivingMode=3)
 
 
 def solve(native, *, enabled, cycles=30, reset=False, distance=90.0, lead_speed=0.0, flag=True):
@@ -189,8 +189,14 @@ def test_on_brakes_earlier_and_softer_without_touching_constraints(native):
   off = solve(native, enabled=False)
   on = solve(native, enabled=True)
   assert on.approach_state.weight == pytest.approx(1.0)
-  # Obstacles, accel limits, TF, comfort brake, stop distance and the danger factor are unchanged.
-  np.testing.assert_array_equal(on.params[:, [0, 1, 2, 4, 5, 6, 7]], off.params[:, [0, 1, 2, 4, 5, 6, 7]])
+  # Accel limits and stop distance are unchanged. The binding obstacle is chosen without the approach
+  # margins; only the earlier-braking plan (lower planned speeds, smaller comfort margins) may move a
+  # node between cruise and the lead, and then to the lead (its own d_min floor), never away from it.
+  np.testing.assert_array_equal(on.params[:, [0, 1, 7]], off.params[:, [0, 1, 7]])
+  same = np.isclose(on.params[:, 2], off.params[:, 2])
+  np.testing.assert_array_equal(on.params[same][:, [4, 5, 6]], off.params[same][:, [4, 5, 6]])
+  if not same.all():
+    np.testing.assert_allclose(on.params[~same][:, [4, 5, 6]], [[0.6, 1.0, 4.0]] * int((~same).sum()))
   # Reference only, at nodes where the lead binds (the cruise obstacle still binds the first ones at 90 m).
   # Per-node values also move with the earlier-braking plan, so only the raise is pinned.
   assert np.any(on.yref[:, 0] > off.yref[:, 0])
@@ -229,7 +235,22 @@ def test_lead_pulling_away_releases_over_half_a_second():
   assert s.update(**args(lead_speed=2.0, lead_end_speed=0.0, lead_accel=-0.5)) > 0.0
   # A braking/stopping prediction keeps the hold even with a positive aLeadK sample.
   ramp(s)
-  assert s.update(**args(lead_speed=1.0, lead_end_speed=0.0, lead_accel=1.0)) == pytest.approx(1.0)
+  assert s.update(**args(lead_speed=0.2, lead_end_speed=0.0, lead_accel=1.0)) == pytest.approx(1.0)
+
+
+def test_lead_speeding_up_from_a_stop_is_not_a_stop():
+  """C3, 47c 10:44: the decaying accel extrapolation still ended below 1 m/s while the lead pulled away."""
+  s = ApproachState()
+  ramp(s, lead_speed=0.2, lead_end_speed=0.0)
+  assert s.active
+  rising = [s.update(**args(lead_speed=0.2 + 0.03 * k, lead_end_speed=0.8, lead_accel=APPROACH_LEAD_ACCEL_MAX + 0.2))
+            for k in range(1, 21)]
+  assert not s.active and rising[-1] < 1.0
+  # No entry while the lead speeds up, even though it is predicted to stay below 1 m/s.
+  fresh = ApproachState()
+  for k in range(20):
+    fresh.update(**args(track_id=2, lead_speed=0.03 * k, lead_end_speed=0.8, lead_accel=0.6))
+  assert not fresh.active
 
 
 def test_no_entry_when_the_soft_curve_would_need_more_than_the_maximum():

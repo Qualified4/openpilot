@@ -152,7 +152,6 @@ class CarrotPlanner:
     self.dynamicTFollowLC = 1.0
     self.speedTFFactor = 10
     self.tFollowDecelBoost = 0.0
-    self.t_follow_gap_safe_extra = 0.0
     self._tf_decel_extra = 0.0
     self._tf_decel_base = None
     self._tf_mode_factor = None
@@ -291,9 +290,6 @@ class CarrotPlanner:
     tf_mode_target = float(tf_target * self._tf_mode_factor)
     self._tf_mode_target = tf_mode_target
     tf_adjusted = self._apply_decel_hold_and_boost_t_follow(tf_mode_target, a_ego)
-    # The safety-distance gap replaces TF at lead nodes; it keeps the drive-mode and braking
-    # additions as comfort seconds, without the SpeedTFFactor scaling.
-    self.t_follow_gap_safe_extra = float(tf_base * max(0.0, self._tf_mode_factor - 1.0) + self._tf_decel_extra)
     tf_final = self._clip_t_follow(tf_adjusted)
     self._tf_applied = float(tf_final)
     # Apply the baseline increase ramp once per planner cycle.

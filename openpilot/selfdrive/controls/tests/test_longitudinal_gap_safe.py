@@ -12,44 +12,88 @@ STOP = 3.7
 V80 = 80 / 3.6
 
 
-def full_gap(lead_decel=6.0, extra=0.0, comfort_brake=2.4):
+def full_gap(lead_decel=6.0, comfort_brake=2.4, v_ego=V80, a_ego=0.0):
   s = gs.GapSafeState()
   s.update(enabled=True, lead_decel=lead_decel, snap=True, dt=DT)
-  return s.lead_gap(extra_time=extra, comfort_brake=comfort_brake)
+  return s.lead_gap(comfort_brake=comfort_brake, v_ego=v_ego, a_ego=a_ego)
+
+
+def ct(v, g):
+  return float(gs.comfort_times(v, g))
 
 
 def test_owner_constants():
-  assert gs.LEAD_DECELS == (5.0, 6.0, 7.0, 8.0) and gs.REACTION == 0.6 and gs.GAP_LEVELS == 4
-  assert gs.COMFORT_TIME == 0.35
+  assert gs.LEAD_DECELS == (4.25, 5.0, 6.5, 8.0) and gs.REACTION == 0.6 and gs.GAP_LEVELS == 4
+  assert gs.COMFORT_TIMES == (0.05, 0.20, 0.30, 0.35)
+
+
+@pytest.mark.parametrize("kph,gaps", [(30, (9.6, 12.1, 14.5, 16.0)), (50, (14.1, 19.6, 25.5, 29.0)), (80, (21.8, 33.8, 47.4, 55.7)),
+                                      (100, (27.4, 45.2, 65.8, 78.3))])
+def test_steady_gap_per_level_and_speed(kph, gaps):
+  """Equal-speed comfort targets of the owner's choice C (level 1 about the old TF level 1, level 4 as 0a704cf3)."""
+  v = kph / 3.6
+  for decel, expected in zip(gs.LEAD_DECELS, gaps, strict=True):
+    g = full_gap(lead_decel=decel, v_ego=v)
+    assert gs.desired_distance(v, v, g, STOP) == pytest.approx(expected, abs=0.1)
+
+
+def test_level_ramp_blends_the_comfort_time():
+  assert gs.level_comfort_time(1 / 4.25) == pytest.approx(0.05) and gs.level_comfort_time(1 / 8.0) == pytest.approx(0.35)
+  # halfway in lead decel from level 3 to level 4, and outside the table clamped
+  assert gs.level_comfort_time(1 / 7.25) == pytest.approx(0.325)
+  assert gs.level_comfort_time(1 / 3.0) == pytest.approx(0.05) and gs.level_comfort_time(1 / 9.0) == pytest.approx(0.35)
+  assert full_gap(lead_decel=5.0, v_ego=10.0).comfort_time == full_gap(lead_decel=5.0, v_ego=30.0).comfort_time == pytest.approx(0.20)
 
 
 def test_formula_at_full_weight():
   g = full_gap()
   assert g.t_follow == pytest.approx(0.6) and g.comfort_brake == pytest.approx(gs.EGO_MAX_DECEL)
-  assert gs.EGO_MAX_DECEL == 4.0 and g.danger_factor == 1.0 and g.comfort_time == pytest.approx(gs.COMFORT_TIME)
+  assert gs.EGO_MAX_DECEL == 4.0 and g.danger_factor == 1.0 and g.comfort_time == pytest.approx(ct(V80, g))
   v, vl = V80, 15.0
   d_min = 0.6 * v + v ** 2 / 8.0 - vl ** 2 / 12.0 + STOP
   assert gs.min_distance(v, vl, g, STOP) == pytest.approx(d_min)
   closing = gs.CLOSING_TIME * (v - vl) + (v ** 2 - vl ** 2) * (1 / 4.8 - 1 / 8.0)
-  assert gs.desired_distance(v, vl, g, STOP) == pytest.approx(d_min + gs.COMFORT_TIME * v + closing)
+  assert gs.desired_distance(v, vl, g, STOP) == pytest.approx(d_min + ct(v, g) * v + closing)
   # Steady following (same speed): no closing terms, equivalent TF = (target - stop) / v.
-  assert gs.desired_distance(v, v, g, STOP) == pytest.approx(gs.min_distance(v, v, g, STOP) + gs.COMFORT_TIME * v)
+  assert gs.desired_distance(v, v, g, STOP) == pytest.approx(gs.min_distance(v, v, g, STOP) + ct(v, g) * v)
+  assert gs.steady_distance(v, v, g, STOP) == pytest.approx(gs.desired_distance(v, v, g, STOP))
   assert gs.equivalent_t_follow(v, g) * v == pytest.approx(gs.desired_distance(v, v, g, STOP) - STOP)
 
 
 def test_closing_terms_only_count_a_slower_lead():
   g = full_gap()
-  assert gs.comfort_margin(V80, V80 + 3.0, g) == pytest.approx(gs.COMFORT_TIME * V80)
+  assert gs.comfort_margin(V80, V80 + 3.0, g) == pytest.approx(ct(V80, g) * V80)
   stopped = gs.comfort_margin(V80, 0.0, g)
-  assert stopped == pytest.approx(gs.COMFORT_TIME * V80 + gs.CLOSING_TIME * V80 + V80 ** 2 * (1 / 4.8 - 1 / 8.0))
+  assert stopped == pytest.approx(ct(V80, g) * V80 + gs.CLOSING_TIME * V80 + V80 ** 2 * (1 / 4.8 - 1 / 8.0))
   # A comfort brake at or above the ego limit adds no v^2 closing term.
   assert full_gap(comfort_brake=5.0).closing_factor == 0.0
 
 
-def test_drive_mode_and_braking_extra_only_add_comfort_time():
-  g = full_gap(extra=0.2)
-  assert g.comfort_time == pytest.approx(gs.COMFORT_TIME + 0.2)
-  assert gs.min_distance(V80, V80, g, STOP) == pytest.approx(gs.min_distance(V80, V80, full_gap(), STOP))
+def test_comfort_margin_fades_out_near_standstill():
+  g = full_gap()
+  lo, hi = gs.COMFORT_FADE_SPEEDS
+
+  def full(v, vl):
+    return ct(v, g) * v + gs.CLOSING_TIME * max(0.0, v - vl) + max(0.0, v ** 2 - vl ** 2) * (1 / 4.8 - 1 / 8.0)
+  # Above the fade the margin is the full formula; at or below its low end only d_min is left.
+  assert gs.comfort_margin(hi, 0.0, g) == pytest.approx(full(hi, 0.0))
+  assert gs.comfort_margin(lo, 0.0, g) == 0.0
+  assert gs.desired_distance(lo, 0.0, g, STOP) == pytest.approx(gs.min_distance(lo, 0.0, g, STOP))
+  mid = (lo + hi) / 2
+  assert gs.comfort_margin(mid, 0.0, g) == pytest.approx(0.5 * full(mid, 0.0))
+  # Per node on an array of plan speeds, never more than the full margin.
+  v = np.linspace(0.0, 6.0, 13)
+  m = gs.comfort_margin(v, np.zeros_like(v), g)
+  assert np.all(m <= np.array([full(x, 0.0) for x in v]) + 1e-12) and np.all(np.diff(m) >= 0.0)
+  # While ego brakes hard the full margin stays; the fade comes back over COMFORT_FADE_ACCELS.
+  hard_lo, hard_hi = gs.COMFORT_FADE_ACCELS
+  s = gs.GapSafeState()
+  s.update(enabled=True, lead_decel=6.0, snap=True, dt=DT)
+  hard = s.lead_gap(comfort_brake=2.4, a_ego=hard_lo - 0.5)
+  assert hard.fade_weight == 0.0 and gs.comfort_margin(lo, 0.0, hard) == pytest.approx(full(lo, 0.0))
+  half = s.lead_gap(comfort_brake=2.4, a_ego=(hard_lo + hard_hi) / 2)
+  assert gs.comfort_margin(lo, 0.0, half) == pytest.approx(0.5 * full(lo, 0.0))
+  assert s.lead_gap(comfort_brake=2.4, a_ego=hard_hi).fade_weight == 1.0
 
 
 def test_on_and_off_at_once():
@@ -85,11 +129,6 @@ def test_invalid_input_resets(kw):
   s.update(enabled=True, lead_decel=6.0, snap=True, dt=DT)
   s.update(**{"enabled": True, "lead_decel": 6.0, "snap": False, "dt": DT, **kw})
   assert not s.active and s.inv_lead_decel is None
-
-
-def test_negative_extra_time_is_ignored():
-  g = full_gap(extra=-1.0)
-  assert g.comfort_time == pytest.approx(gs.COMFORT_TIME)
 
 
 def cutin(c, **kw):
@@ -132,12 +171,24 @@ def test_cutin_credit_not_for_the_same_car_under_a_new_track_id():
 def test_cutin_credit_not_for_a_lead_seen_again():
   c = gs.CutinCredit()
   cutin(c, distance=30.0, desired=20.0)
-  assert c.hold() == 0.0                                 # dropout: the last lead is kept
+  assert c.hold(DT) == 0.0                               # dropout: the last lead is kept
   assert cutin(c, distance=20.0) == 0.0                  # same track back: no credit
+  # After CUTIN_HOLD_EXPIRE without a lead, the old lead is forgotten.
+  c = gs.CutinCredit()
+  cutin(c, distance=30.0, desired=20.0)
+  for _ in range(round(gs.CUTIN_HOLD_EXPIRE / DT) + 2):
+    c.hold(DT)
+  assert cutin(c, distance=20.0) > 0.0
   # A lane change (or not engaged) follows the lead without crediting it, so its end gives none.
   c = gs.CutinCredit()
   assert cutin(c, track_id=3, grant=False) == 0.0
   assert cutin(c, track_id=3) == 0.0
+
+
+def test_cutin_credit_vision_leads_are_not_one_car():
+  c = gs.CutinCredit()
+  cutin(c, track_id=-1, distance=30.0, desired=20.0)
+  assert cutin(c, track_id=-1, distance=20.0) > 0.0      # another vision-only lead, 10 m closer
 
 
 @pytest.mark.parametrize("kw", [{"enabled": False}, {"distance": float("nan")}])
@@ -158,8 +209,7 @@ def carrot(**kw):
   c = NS(mode="acc", comfort_brake=2.4, stop_distance=STOP, v_cruise=V80 + 3.0, stop_dist=1000.,
          trafficStopDistanceAdjust=100., trafficStopModelLeadOffset=2.,
          get_T_FOLLOW=lambda *a: 0.62, jerk_factor=1., leadAccelResponse=0,
-         autoNaviSpeedDecelRate=1., lane_change_active=False, myDrivingMode=3,
-         t_follow_gap_safe_extra=0.0)
+         autoNaviSpeedDecelRate=1., lane_change_active=False, myDrivingMode=3)
   c.__dict__.update(kw)
   return c
 
@@ -187,7 +237,8 @@ def solve(native, *, cycles=20, reset=False, distance=30.0, lead_speed=V80, trac
 
 def test_lead_nodes_use_the_safety_distance(native):
   mpc = native.LongitudinalMpc()
-  mpc.gap_safe_state.update(enabled=True, lead_decel=6.0, snap=True, dt=DT)
+  decel = gs.LEAD_DECELS[1]   # the default personality's level
+  mpc.gap_safe_state.update(enabled=True, lead_decel=decel, snap=True, dt=DT)
   on = solve(native, mpc=mpc)
   assert on.gap_safe_state.active and on.source == "lead0"
   lead_nodes = np.ones(native.N + 1, dtype=bool)   # 30 m behind a same-speed lead: leadOne binds every node
@@ -195,11 +246,11 @@ def test_lead_nodes_use_the_safety_distance(native):
   np.testing.assert_allclose(on.params[lead_nodes, 5], 1.0)
   np.testing.assert_allclose(on.params[lead_nodes, 6], 4.0)
   g = on.lead_gap
-  expected = 0.6 * V80 + V80 ** 2 / 8.0 - V80 ** 2 / 12.0 + STOP + gs.COMFORT_TIME * V80
+  expected = 0.6 * V80 + V80 ** 2 / 8.0 - V80 ** 2 / (2 * decel) + STOP + ct(V80, g) * V80
   assert on.base_desired_distances[0] == pytest.approx(expected)
   assert on.t_follow == pytest.approx(gs.equivalent_t_follow(V80, g))
-  # The lead obstacle uses v_lead^2 / (2 * 6), moved out by at most what is left of the first-sight credit.
-  obstacle = 30.0 + V80 ** 2 / 12.0
+  # The lead obstacle uses v_lead^2 / (2 * decel), moved out by at most what is left of the first-sight credit.
+  obstacle = 30.0 + V80 ** 2 / (2 * decel)
   assert obstacle - 0.5 <= on.params[0, 2] <= obstacle + on.cutin_credit.credit + 0.5
   # Comfort time rides on the reference (yref) only.
   assert np.all(on.lead_gap_margins[:, 0] > 0.0)
@@ -213,18 +264,47 @@ def test_cruise_nodes_keep_tf_values(native):
   np.testing.assert_allclose(far.params[cruise_nodes][:, [4, 5, 6]], [[0.62, native.LEAD_DANGER_FACTOR, 2.4]] * int(cruise_nodes.sum()))
 
 
-@pytest.mark.parametrize("personality,decel", [(log.LongitudinalPersonality.aggressive, 5.0),
-                                               (log.LongitudinalPersonality.moreRelaxed, 8.0)])
+@pytest.mark.parametrize("personality,decel", [(log.LongitudinalPersonality.aggressive, gs.LEAD_DECELS[0]),
+                                               (log.LongitudinalPersonality.moreRelaxed, gs.LEAD_DECELS[3])])
 def test_gap_level_selects_the_lead_decel(native, personality, decel):
   on = solve(native, reset=True, personality=personality, cycles=2)
   assert on.gap_safe_state.inv_lead_decel == pytest.approx(1 / decel)
   assert on.gap_safe_state.active
 
 
-def test_blended_mode_keeps_the_tf_lead_path(native):
-  on = solve(native, mode="blended", cycles=5)
-  assert on.lead_gap is None
-  np.testing.assert_allclose(on.params[:, 4], 0.62)
+def test_blended_mode_constrains_at_the_comfort_target(native):
+  """Blended keeps the lead as a constraint only; with the safety-distance gap it sits at the ACC comfort target."""
+  on = solve(native, mode="blended", cycles=5, mpc=native.LongitudinalMpc(mode="blended"))
+  g = on.lead_gap
+  assert g is not None and on.source == "lead0"
+  np.testing.assert_allclose(on.params[:, 4], 0.6)
+  np.testing.assert_allclose(on.params[:, 5], 1.0)
+  np.testing.assert_allclose(on.params[:, 6], 4.0)
+  # obstacle - safe distance = lead position - constraint distance. A lead first seen inside the steady comfort
+  # target (d_min + comfort time, no closing terms) gets the cut-in credit, never looser than the TF target.
+  steady = gs.desired_distance(V80, V80, g, STOP)
+  tf_target = native.desired_follow_distance(V80, V80, 2.4, STOP, 0.62)
+  floor = on.params[0, 2] - gs.safe_distance(V80, g, STOP)
+  assert 30.0 - steady - 0.5 <= floor <= 30.0 - tf_target + 0.5
+  # Once the credit has run out, the constraint sits at the steady comfort target.
+  on = solve(native, mode="blended", cycles=400, mpc=on)
+  floor = on.params[0, 2] - gs.safe_distance(V80, g, STOP)
+  assert on.cutin_credit.credit == 0.0 and floor == pytest.approx(30.0 - steady, abs=0.5)
+
+
+def test_lead_inside_the_comfort_target_binds(native):
+  """Between d_min and the comfort target the lead, not cruise, binds the first node (source lead0)."""
+  g = full_gap(lead_decel=gs.LEAD_DECELS[1])
+  d = float(0.5 * (gs.min_distance(V80, V80, g, STOP) + gs.desired_distance(V80, V80, g, STOP)) + 1.0)
+  on = solve(native, distance=d, cycles=3)
+  assert on.source == "lead0"
+  np.testing.assert_allclose(on.params[0, 4:7], [0.6, 1.0, 4.0])
+
+
+def test_faster_lead_beyond_the_target_never_binds(native):
+  """D1: a lead looser than cruise even with its comfort margins leaves cruise in charge."""
+  on = solve(native, distance=80.0, lead_speed=V80 + 6.0, cycles=3)
+  assert on.source == "cruise"
 
 
 def test_gap_level_order_matches_tfollowgap(native):
@@ -300,3 +380,16 @@ def test_lead_faster_than_cruise_does_not_bind(native):
   mpc = nolead_mpc(native, v, v, log.LongitudinalPersonality.aggressive, lead_speed=v + 4.0)
   assert mpc.source == "cruise"
   assert mpc.a_solution[0] < 0.05
+
+
+def test_comfort_binding_only_takes_over_from_cruise(native):
+  """N1: a lead's comfort target replaces only a cruise binding; leadTwo / traffic / Tesla stops keep theirs."""
+  # columns: leadOne, leadTwo, cruise, traffic stop
+  targets = np.array([[50., 90., 40., 90.],    # cruise closest, leadOne preferred -> leadOne
+                      [50., 90., 60., 45.],    # traffic stop closest -> stays the traffic stop
+                      [50., 48., 90., 90.],    # leadTwo closest -> stays leadTwo
+                      [50., 90., 40., 90.]])   # leadOne looser than cruise even with its margin -> cruise
+  margins = np.array([[15., 0.], [15., 0.], [15., 0.], [5., 0.]])
+  preferred = targets.copy()
+  preferred[:, :2] -= margins
+  np.testing.assert_array_equal(native.bind_obstacles(targets, preferred), [0, 3, 1, 2])
