@@ -28,6 +28,9 @@ const ALONGSIDE_NEAR_HOLD_S: f64 = 2.0;
 /// each of 12 vid changes. Measured over 47f and 47d (REPORT_RAIL_RR_KO): rear slots at 0 m while passing 62.1 -> 3.5 s
 /// and 50.4 -> 0.4 s.
 const ALONGSIDE_SPEED: f32 = 2.0;
+/// ... and a split side stays split while its near car is within this speed of ego: 00000454 18, a car alongside at
+/// -2.6 to -1.8 m/s split and joined 20 times in 4 s around an ego lane change.
+const ALONGSIDE_SPEED_EXIT: f32 = 3.0;
 /// A vid that once moved at this ground speed (m/s) or faster is a moving car: `EDGE_ROOM_M` does not apply to it.
 const MOVED: f64 = 3.0;
 /// A car's center sits about half its width or more inside the road edge. A side object that never moved at `MOVED`
@@ -213,6 +216,8 @@ pub struct Assigner {
     alongside: [Option<Slot>; 2],
     /// When a split side lost its next car or its near car, while it stays split without it.
     alongside_alone: [Option<f64>; 2],
+    /// The car the front slot drew 0-5 m ahead without splitting the side, too fast for it (`ALONGSIDE_SPEED`).
+    passing: [Option<Slot>; 2],
     /// Where (world) and when the edge rule last hid a side object.
     edge_hidden: Vec<(f64, f64, f64)>,
     /// `set_model_lane`.
@@ -229,6 +234,7 @@ impl Default for Assigner {
             runner_up: [None; 2],
             alongside: [None; 2],
             alongside_alone: [None; 2],
+            passing: [None; 2],
             edge_hidden: Vec::new(),
             model_lane: None,
         }
@@ -291,6 +297,7 @@ impl Assigner {
             self.side_last = [None; 2];
             self.alongside = [None; 2];
             self.alongside_alone = [None; 2];
+            self.passing = [None; 2];
             self.edge_hidden.clear();
         }
         if !now.is_finite() || !world.accepts_radar() || !world.u_ego().is_finite() {
@@ -484,16 +491,22 @@ impl Assigner {
     /// drops out: without the next car for up to 1 s, with the front slot empty, and the next car is drawn as soon as
     /// one is back; without a current report of the near car (radar coverage ends alongside) for up to 2 s, drawn at
     /// 0 m while the tracker keeps it and no other slot draws it, until the rear slot draws it itself. Both count from
-    /// when the side first lost a car. Returns the sides split.
+    /// when the side first lost a car. A car passing 0-5 m ahead in the front slot, too fast to split the side, is drawn
+    /// in the rear slot at 0 m the same way once the radar stops reporting it alongside, keeping the front slot: the
+    /// rear handover takes it 0.25-0.7 s later (00000454 18, 28, 34). Returns the sides split.
     pub fn split_alongside(&mut self, now: f64, vehicles: &[Vehicle], slots: &mut [Option<Slot>; 5]) -> [bool; 2] {
         let mut split = [false; 2];
         for side in 0..2 {
             let (front, rear) = (side + 1, side + 3);
             let kept = self.alongside[side];
             let held = slots[front].filter(|near| kept.is_some_and(|kept| kept.vid == near.vid));
-            let limit = if held.is_some() { ALONGSIDE_EXIT_M } else { ALONGSIDE_ENTER_M };
-            let near = slots[front]
-                .filter(|near| (0. ..=limit).contains(&f64::from(near.distance)) && near.v_rel.abs() <= ALONGSIDE_SPEED);
+            let (limit, speed) = if held.is_some() {
+                (ALONGSIDE_EXIT_M, ALONGSIDE_SPEED_EXIT)
+            } else {
+                (ALONGSIDE_ENTER_M, ALONGSIDE_SPEED)
+            };
+            let close = slots[front].filter(|near| (0. ..=limit).contains(&f64::from(near.distance)));
+            let near = close.filter(|near| near.v_rel.abs() <= speed);
             let next = self.runner_up[side].filter(|next| near.is_some_and(|near| near.vid != next.vid));
             let hold = |alone: &mut Option<f64>, limit: f64| now - *alone.get_or_insert(now) <= limit;
             let shown = match (near, next) {
@@ -503,6 +516,7 @@ impl Assigner {
                 }
                 (Some(near), None) if held.is_some() => hold(&mut self.alongside_alone[side], ALONGSIDE_HOLD_S).then_some((near, None)),
                 _ => kept
+                    .or(self.passing[side])
                     .filter(|kept| {
                         held.is_none()
                             && vehicles.iter().any(|car| car.vid == kept.vid)
@@ -512,6 +526,10 @@ impl Assigner {
                     .map(|kept| (kept, slots[front])),
             };
             self.alongside[side] = shown.map(|(near, _)| near);
+            self.passing[side] = match close.filter(|_| near.is_none()) {
+                Some(passing) => Some(passing),
+                None => self.passing[side].filter(|_| shown.is_some()),
+            };
             if shown.is_none() {
                 self.alongside_alone[side] = None;
             }

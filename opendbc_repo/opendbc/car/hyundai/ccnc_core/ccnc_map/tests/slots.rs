@@ -847,8 +847,8 @@ fn a_split_side_ends_once_the_near_car_leaves_ego_s_speed() {
     let mut drawn = Vec::new();
     for i in 0..20 {
         let now = f64::from(i) * 0.05;
-        // The car alongside speeds away from 0.5 s on, 3 m/s faster than ego.
-        let v = if i < 10 { 0. } else { 3. };
+        // The car alongside speeds away from 0.5 s on, 4 m/s faster than ego.
+        let v = if i < 10 { 0. } else { 4. };
         let cars = [Vehicle { vx: v, ..beside(&world, 1, now, 3., -1.) }, beside(&world, 2, now, 35., -1.)];
         let mut slots = assigner.update(now, &cars, &world, None);
         assigner.split_alongside(now, &cars, &mut slots);
@@ -859,6 +859,45 @@ fn a_split_side_ends_once_the_near_car_leaves_ego_s_speed() {
     }
     assert_eq!(drawn.iter().map(|d| d.1).collect::<Vec<_>>(), [(Some(2), Some(1)), (Some(1), None)], "{drawn:?}");
     assert!((drawn[1].0 - 0.5).abs() < 1e-9, "{drawn:?}");
+}
+
+#[test]
+fn a_split_side_stays_split_while_the_near_car_s_speed_wavers_around_the_limit() {
+    // 00000454 18: a car alongside at 1.8-2.6 m/s from ego's speed.
+    let world = road();
+    let mut assigner = Assigner::default();
+    for i in 0..40 {
+        let now = f64::from(i) * 0.05;
+        let v = if i % 4 < 2 { 1.8 } else { 2.6 };
+        let cars = [Vehicle { vx: v, ..beside(&world, 1, now, 3., -1.) }, beside(&world, 2, now, 35., -1.)];
+        let mut slots = assigner.update(now, &cars, &world, None);
+        assigner.split_alongside(now, &cars, &mut slots);
+        assert_eq!((slots[LF].map(|s| s.vid), slots[LR].map(|s| s.vid)), (Some(2), Some(1)), "at {now:.2}");
+    }
+}
+
+#[test]
+fn a_passing_car_the_radar_stops_reporting_alongside_stays_drawn_in_the_rear_slot() {
+    // 00000454 34: a car ego passes 9 m/s faster left RF at 2.7 m and came back in RR from the rear handover 0.7 s later.
+    let world = road();
+    let mut assigner = Assigner::default();
+    let mut drawn = Vec::new();
+    for i in 0..60 {
+        let now = f64::from(i) * 0.05;
+        // Reported 2 m ahead until 0.5 s, then unreported (the tracker keeps it) for good.
+        let passing = Vehicle { vx: 5., ..vehicle(&world, 1, if i < 10 { now } else { 0.45 }, 2., 1.) };
+        let cars = [passing, Vehicle { vx: 5., ..vehicle(&world, 2, now, 30., 1.) }];
+        let mut slots = assigner.update(now, &cars, &world, None);
+        assert_eq!(assigner.split_alongside(now, &cars, &mut slots), [false, (10..51).contains(&i)], "at {now:.2}");
+        let state = (slots[RF].map(|s| (s.vid, s.distance)), slots[RR].map(|s| (s.vid, s.distance)));
+        if drawn.last().is_none_or(|(_, last)| *last != state) {
+            drawn.push((now, state));
+        }
+    }
+    let states: Vec<_> = drawn.iter().map(|d| d.1).collect();
+    assert_eq!(states, [(Some((1, 2.)), None), (Some((2, 30.)), Some((1, 0.))), (Some((2, 30.)), None)], "{drawn:?}");
+    // For 2 s from the frame it went unreported.
+    assert!((drawn[2].0 - 2.55).abs() < 1e-9, "{drawn:?}");
 }
 
 #[test]
