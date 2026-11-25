@@ -1,6 +1,6 @@
 //! Assign FF, LF, RF, LR, RR from the reflection-corrected world lane coordinate.
 
-use crate::display::{draw_road_frame, HeadingTerm};
+use crate::display::{draw_road_frame, HeadingTerm, ModelPath};
 use crate::input::map_events::DisplayLead;
 use crate::pos::common::{Track, LANE_WIDTH, LEAD_GATE_X, LEAD_GATE_Y};
 use crate::radar::lanes::interpolate;
@@ -194,6 +194,7 @@ struct Drawing {
     lane: i8,
     road_lane: Option<i32>,
     shown: Option<f64>,
+    bend_shown: Option<f64>,
     detect: u8,
     seen: f64,
     radar: Option<Track>,
@@ -211,6 +212,7 @@ impl Drawing {
             lane: lane_at(r),
             road_lane: None,
             shown: None,
+            bend_shown: None,
             detect: 1,
             seen: now,
             radar: None,
@@ -414,7 +416,7 @@ impl Assigner {
     /// The lead is (dRel, yRel) at the radar sensor, lateral positive to the left; it only prefers among the radar's
     /// proven cars.
     pub fn update(&mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<(f64, f64)>) -> [Option<Slot>; 5] {
-        self.update_with(now, vehicles, world, lead, None, None, None)
+        self.update_with(now, vehicles, world, lead, None, None, None, None)
     }
 
     /// `update` with the display lead's motion: a radar car at that lead may be drawn in FF
@@ -424,16 +426,17 @@ impl Assigner {
     /// ahead and the lead, FF blank for 59 s. FF only: LF and RF keep the radar's own proof. The lead is (dRel, yRel,
     /// vRel), and qualifies a car only at its speed (`LEAD_SPEED_MATCH`).
     pub fn update_lead(&mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<(f64, f64, f64)>) -> [Option<Slot>; 5] {
-        self.update_with(now, vehicles, world, lead.map(|(x, y, _)| (x, y)), lead.map(|(_, _, v)| v), None, None)
+        self.update_with(now, vehicles, world, lead.map(|(x, y, _)| (x, y)), lead.map(|(_, _, v)| v), None, None, None)
     }
 
     pub(crate) fn update_display_lead(
         &mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<DisplayLead>,
         lead_one: Option<(DisplayLead, bool)>,
+        bend: Option<(&ModelPath, f64)>,
     ) -> [Option<Slot>; 5] {
         self.update_with(
             now, vehicles, world, lead.map(|lead| (lead.motion.0, lead.motion.1)),
-            lead.map(|lead| lead.motion.2), lead, lead_one,
+            lead.map(|lead| lead.motion.2), lead, lead_one, bend,
         )
     }
 
@@ -446,6 +449,7 @@ impl Assigner {
         lead_v_rel: Option<f64>,
         display_lead: Option<DisplayLead>,
         lead_one: Option<(DisplayLead, bool)>,
+        bend: Option<(&ModelPath, f64)>,
     ) -> [Option<Slot>; 5] {
         if self.generation != world.generation() {
             self.generation = world.generation();
@@ -532,6 +536,7 @@ impl Assigner {
                 drawing.ff_change_since = None;
                 drawing.lane_entry_since = None;
                 drawing.road_lane = None;
+                drawing.bend_shown = None;
             }
             drawing.seen = now;
             let original_lane = drawing.lane;
@@ -597,6 +602,7 @@ impl Assigner {
             if drawing.into_ff {
                 lateral_target = ry;
             }
+            let mut bend_offset = None;
             if measured {
                 let report = (now, rx, ry);
                 let track = drawing.radar.get_or_insert_with(|| Track::new(now, report));
@@ -611,6 +617,9 @@ impl Assigner {
                     * ((speed - 6.) / 2.).clamp(0., 1.);
                 let radar_y = track.y + release * track.b;
                 lateral_target += weight * (radar_y - lateral_target);
+                if let Some((path, blend)) = bend.filter(|_| weight > 0. && !drawing.into_ff) {
+                    bend_offset = path.offset_at(rx).map(|offset| -weight * blend * offset);
+                }
             }
             let distance = x.abs();
             let near = ((40. - distance) / 12.).clamp(0., 1.);
@@ -626,6 +635,16 @@ impl Assigner {
                 play_distance,
                 -lateral_target / LANE_WIDTH,
             );
+            if let Some(offset) = bend_offset {
+                drawing.bend_shown.get_or_insert(lateral);
+                draw_road_frame(
+                    &mut drawing.bend_shown,
+                    play_distance,
+                    -(lateral_target + offset) / LANE_WIDTH,
+                );
+            } else {
+                drawing.bend_shown = None;
+            }
             let Some(slot) = (if drawing.into_ff { Some(0) } else { slot_index(x, lane) }) else {
                 continue;
             };
@@ -908,6 +927,20 @@ impl Assigner {
         split
     }
 
+    /// Apply the road-frame correction after selection and camera fusion.
+    pub(crate) fn apply_bend(&self, now: f64, slots: &mut [Option<Slot>; 5]) {
+        for slot in slots[..3].iter_mut().flatten().filter(|slot| slot.vision != VISION_ONLY) {
+            let Some(drawing) = self.drawings.binary_search_by_key(&slot.vid, |d| d.vid)
+                .ok().map(|i| &self.drawings[i]).filter(|d| d.seen == now)
+            else {
+                continue;
+            };
+            if let Some((bent, raw)) = drawing.bend_shown.zip(drawing.shown) {
+                slot.lateral += (bent - raw) as f32;
+            }
+        }
+    }
+
     /// Limit lateral display jumps from a moving side radar return on a straight road. 47f-14 at 34 s:
     /// one radar ID and vid receded smoothly, but its measured lateral moved 1.6 m and partly bounced back.
     /// Apply the limit after slot selection and fusion, so it cannot alter range, lane assignment or visibility.
@@ -1126,7 +1159,7 @@ mod review_tests {
         slot_test_tick(world, now, ego_speed);
         let car = stationary_car(world, now, track, point, flags);
         let lead = stationary_lead(track, point, ego_speed);
-        assigner.update_display_lead(now, &[car], world, Some(lead), Some((lead, false)))[0].map(|slot| slot.vid)
+        assigner.update_display_lead(now, &[car], world, Some(lead), Some((lead, false)), None)[0].map(|slot| slot.vid)
     }
 
     #[test]
@@ -1144,7 +1177,7 @@ mod review_tests {
             reflection.vx = 0.376;
             let car = stationary_car(&world, now, 42, (40.05, -0.55), Flags { proven: true, ..Flags::default() });
             let lead = (2..=3).contains(&frame).then_some(lead);
-            let ff = assigner.update_display_lead(now, &[car, reflection], &world, lead, lead.map(|l| (l, false)))[0];
+            let ff = assigner.update_display_lead(now, &[car, reflection], &world, lead, lead.map(|l| (l, false)), None)[0];
             assert_eq!(ff.map(|slot| slot.vid), Some(42), "frame {frame}");
         }
     }
@@ -1160,7 +1193,7 @@ mod review_tests {
             let point = (20.4 - 7. * now, 0.15);
             let car = stationary_car(&world, now, 40, point, Flags::default());
             let lead = (1..=7).contains(&frame).then(|| stationary_lead(40, point, speed));
-            let ff = assigner.update_display_lead(now, &[car], &world, lead, lead.map(|l| (l, false)))[0];
+            let ff = assigner.update_display_lead(now, &[car], &world, lead, lead.map(|l| (l, false)), None)[0];
             assert_eq!(ff, None, "frame {frame}");
         }
     }
@@ -1184,7 +1217,7 @@ mod review_tests {
                 let preferred = stationary_lead(40, (near, 0.), 4.);
                 let mut one = stationary_lead(primary_track, (primary_x, 0.), 4.);
                 one.motion.2 = primary_speed;
-                let ff = assigner.update_display_lead(now, &[weak, incumbent], &world, Some(preferred), Some((one, true)))[0];
+                let ff = assigner.update_display_lead(now, &[weak, incumbent], &world, Some(preferred), Some((one, true)), None)[0];
                 assert_eq!(ff.map(|slot| slot.vid), Some(if frame < 1 { 42 } else { expected }),
                     "primary track {primary_track}, position {primary_x}, speed {primary_speed}, distance {near}, frame {frame}");
             }
