@@ -68,6 +68,8 @@ const ONCOMING_FF_EGO_SPEED: f64 = 2.;
 /// and 10-11 standing cars.
 const LEAD_SPEED_MATCH: f64 = 2.;
 const UNPROVEN_LEAD_MIN_PROB: f64 = 0.6;
+/// A lead first matched in the radar's near gap can be a crossing car or a parked object.
+const UNPROVEN_LEAD_ENTRY_MIN_X: f64 = 5.;
 const EPS: f64 = 1e-9;
 /// `ModelLane`: the legacy selector's ego lane between the model's two ego lines (`_lane`, a153574e
 /// hyundaicanfd_ccnc_radar_map.py 446-460), from lines this probable, this far ahead, this wide, with this margin
@@ -433,9 +435,13 @@ impl Assigner {
                 (rx - dx).abs() <= LEAD_GATE_X && (ry - dy).abs() <= LEAD_GATE_Y && (v_rel - dv).abs() <= LEAD_SPEED_MATCH
             });
             let entering_ff = original_lane.abs() == 1 && drawing.lane == 0;
+            let proven_vehicle = eligible(car);
+            let current_lead_support = supported_lead.is_some() && confirmed_position;
+            let model_boundary_entry = entering_ff && measured && proven_vehicle && !changing
+                && self.model_lane.as_ref().is_some_and(|lane| lane.contains(rx, ry));
             // At low speed a moving map boundary can briefly put a stopped side car in FF.
             let boundary_entry = entering_ff && measured && !changing && world.pose.speed().abs() < FF_BOUNDARY_MAX_EGO_SPEED
-                && ry.abs() >= LANE_WIDTH / 2. && !confirmed_position;
+                && ry.abs() >= LANE_WIDTH / 2. && !confirmed_position && !model_boundary_entry;
             if boundary_entry {
                 if now - *drawing.lane_entry_since.get_or_insert(now) < FF_CONFIRM_S {
                     drawing.lane = original_lane;
@@ -486,7 +492,7 @@ impl Assigner {
             let Some(slot) = (if drawing.into_ff { Some(0) } else { slot_index(x, drawing.lane) }) else {
                 continue;
             };
-            if car.flags.structure || (slot != 0 && !eligible(car)) {
+            if car.flags.structure || (slot != 0 && !proven_vehicle) {
                 continue;
             }
             if (1..=2).contains(&slot) && !drawing.fast {
@@ -536,7 +542,8 @@ impl Assigner {
                 vision: VISION_NONE,
             };
             if slot == 0 {
-                if measured && self.ff_lead.is_some_and(|(vid, _)| vid == car.vid) {
+                let held_lead = self.ff_lead.is_some_and(|(vid, _)| vid == car.vid);
+                if measured && (proven_vehicle || current_lead_support) && held_lead {
                     confirmed_lead = Some(candidate);
                 }
                 if let Some((dx, dy)) = lead.filter(|_| current(car.seen_radar)) {
@@ -544,18 +551,21 @@ impl Assigner {
                     let rank = (ex, ey, car.vid);
                     let speed_matches = lead_v_rel.is_some_and(|v| (v_rel - v).abs() <= LEAD_SPEED_MATCH);
                     // Model agreement and matching radar ID keep weak static reflections out of FF.
-                    let supports_unproven = display_lead.is_none() || (supported_lead.is_some() && matching_track);
-                    let qualifies = eligible(car) || (supports_unproven && speed_matches);
+                    let supported = current_lead_support && (held_lead || rx >= UNPROVEN_LEAD_ENTRY_MIN_X);
+                    let qualifies = proven_vehicle || supported || (display_lead.is_none() && speed_matches);
                     if qualifies && ex <= LEAD_GATE_X && ey <= LEAD_GATE_Y
                         && followed.is_none_or(|(old, ..)| rank < old)
                     {
-                        let corroborated = matching_track && speed_matches
+                        // A single matched update can be a static reflection, even with a good model lead.
+                        let previously_matched = self.ff_lead_pending
+                            .is_some_and(|(vid, since)| vid == car.vid && since < now);
+                        let corroborated = (proven_vehicle || previously_matched) && matching_track && speed_matches
                             && (stable_radar_lead.is_some() || now - car.born >= FF_CONFIRM_S
                                 || (ex <= 1. && ey <= 0.5));
                         followed = Some((rank, candidate, corroborated));
                     }
                 }
-                if !eligible(car) {
+                if !proven_vehicle {
                     continue;
                 }
                 if self.previous_ff == Some(car.vid) {

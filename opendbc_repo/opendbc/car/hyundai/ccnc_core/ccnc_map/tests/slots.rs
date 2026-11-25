@@ -237,11 +237,8 @@ fn the_display_lead_draws_a_standing_car_the_radar_has_not_proven_in_ff_only() {
         let expected = (i >= 7).then_some(1);
         assert_eq!(vids(assigner.update_lead(now, &cars(now), &world, lead)), [expected, None, None, None, None]);
     }
-    // Temporary lead loss keeps the same current observation. The hold expires with continued loss.
-    for (i, expected) in [(9, Some(1)), (28, None)] {
-        let now = i as f64 * 0.05;
-        assert_eq!(vids(assigner.update_lead(now, &cars(now), &world, None)), [expected, None, None, None, None]);
-    }
+    // Losing the lead removes the unproven car on the first frame.
+    assert_eq!(vids(assigner.update_lead(0.45, &cars(0.45), &world, None)), [None; 5]);
     // A lead outside ego's lane qualifies nothing, and the unproven side car stays hidden.
     assert_eq!(vids(Assigner::default().update_lead(0., &cars(0.), &world, Some((6., -3.5, 0.)))), [None; 5]);
 }
@@ -730,6 +727,19 @@ fn the_world_lane_picks_the_slot_where_the_model_s_lane_does_not_hold_the_car() 
     let mut assigner = Assigner::default();
     assigner.set_model_lane(Some(ModelLane::new(vec![(0., 0.8), (80., 0.8)], vec![(0., -0.8), (80., -0.8)])));
     assert_eq!(vids(assigner.update(0., &[drifted(&world, 20., 0.)], &world, None)), lf);
+}
+
+#[test]
+fn a_stopped_car_bypasses_map_entry_confirmation_only_inside_the_model_lane() {
+    let world = road();
+    let lane = ModelLane::new(vec![(0., 0.7), (80., 0.7)], vec![(0., -2.8), (80., -2.8)]);
+    for (y, expected) in [(-2.1, FF), (-3.15, RF)] {
+        let mut assigner = Assigner::default();
+        assigner.set_model_lane(Some(lane.clone()));
+        let car = |now, r| Vehicle { wy: y, vx: 0., ..vehicle(&world, 1, now, 12., r) };
+        assert_eq!(vids(assigner.update(0., &[car(0., 0.65)], &world, None))[RF], Some(1));
+        assert_eq!(vids(assigner.update(0.05, &[car(0.05, 0.4)], &world, None))[expected], Some(1));
+    }
 }
 
 /// A car in a side lane moving with ego (`road` has ego standing).
