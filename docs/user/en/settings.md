@@ -171,10 +171,10 @@ Volkswagen's separate `SET` button sets current speed and `RES` restores the pre
 | Section | Parameters | Purpose |
 |---|---|---|
 | ONNX Lane and BSD | `ShareData`, `OnnxBsdEnabled`, `OnnxLaneThreshold`, `OnnxLaneIntervalMs`, `OnnxBsdThreshold`, `OnnxBsdSmoothingMs`, `OnnxBsdIntervalMs` | Lane-type detection plus separately controlled camera BSD and tuning |
-| Centering | `PathOffset`, `CameraYawTrimDeg` | Path position and camera-yaw trim |
+| Centering | `PathOffset`, `CameraYawTrimDeg`, `LanelessCentering` | Path position and camera-yaw trim, laneless lane centring |
 | Steering feel | `SteerActuatorDelay`, `CenterToFrontRatio`, `LatSmoothSec`, `LatSuspendAngleDeg`, `CustomSR`, `SteerRatioRate` | Timing, smoothing, suspension angle, and steering ratio |
 | [Lane change](lane-change.md) and automatic turn | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneChangeYellowSolid`, `LaneLineCheck`, `AutoTurnControl`, `AutoTurnControlRightLaneChange`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | Lane-change entry conditions and ATC behavior |
-| Lane mode | `LatMpcPathCost`, `LatMpcMotionCost`, `LatMpcAccelCost`, `LatMpcJerkCost`, `LatMpcSteeringRateCost`, `LatMpcInputOffset`, `UseLaneLineSpeed`, `UseLaneLineCurveSpeed`, `AdjustLaneOffset`, `LanelessCentering` | Lane-mode MPC weights and lane-line conditions, laneless lane centring |
+| Lane mode | `LatMpcPathCost`, `LatMpcMotionCost`, `LatMpcAccelCost`, `LatMpcJerkCost`, `LatMpcSteeringRateCost`, `LatMpcInputOffset`, `UseLaneLineSpeed`, `UseLaneLineCurveSpeed`, `AdjustLaneOffset` | Lane-mode MPC weights and lane-line conditions |
 | Advanced torque | `LateralTorqueCustom`, `LateralTorqueAccelFactor`, `LateralTorqueFriction`, `LateralTorqueKpV`, `LateralTorqueKiV`, `LateralTorqueKf`, `LateralTorqueKd` | Custom torque-control gains |
 | Advanced torque, search only | `NNFF` | Neural-network feedforward for torque steering |
 | Steering limits | `CustomSteerMax`, `CustomSteerDeltaUp`, `CustomSteerDeltaDown`, `CustomSteerDeltaUpLC`, `CustomSteerDeltaDownLC` | Maximum torque and torque-rate limits |

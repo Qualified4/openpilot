@@ -171,10 +171,10 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 | 세부 구역 | 파라미터 | 용도 |
 |---|---|---|
 | ONNX 차선·BSD | `ShareData`, `OnnxBsdEnabled`, `OnnxLaneThreshold`, `OnnxLaneIntervalMs`, `OnnxBsdThreshold`, `OnnxBsdSmoothingMs`, `OnnxBsdIntervalMs` | 차선 종류 인식과 별도 카메라 BSD 실행 및 세부 조정 |
-| 중앙 보정 | `PathOffset`, `CameraYawTrimDeg` | 레인모드 경로의 좌우 위치와 카메라 YAW 미세 보정 |
+| 중앙 보정 | `PathOffset`, `CameraYawTrimDeg`, `LanelessCentering` | 레인모드 경로의 좌우 위치와 카메라 YAW 미세 보정, 레인리스 차선중앙 보정 |
 | 조향감 | `SteerActuatorDelay`, `CenterToFrontRatio`, `LatSmoothSec`, `LatSuspendAngleDeg`, `CustomSR`, `SteerRatioRate` | 조향 시점, 평활화, 일시중지 각도와 조향비 |
 | [차로 변경](lane-change.md)·자동 턴 | `LaneChangeNeedTorque`, `LaneChangeDelay`, `LaneChangeBsd`, `LaneChangeYellowSolid`, `LaneLineCheck`, `AutoTurnControl`, `AutoTurnControlRightLaneChange`, `AutoTurnControlSpeedTurn`, `AutoTurnControlTurnEnd`, `AutoTurnMapChange` | 차로 변경 진입 조건과 ATC 동작 |
-| 레인모드 | `LatMpcPathCost`, `LatMpcMotionCost`, `LatMpcAccelCost`, `LatMpcJerkCost`, `LatMpcSteeringRateCost`, `LatMpcInputOffset`, `UseLaneLineSpeed`, `UseLaneLineCurveSpeed`, `AdjustLaneOffset`, `LanelessCentering` | 레인모드 MPC 가중치와 차선 사용 조건, 레인리스 차선중앙 보정 |
+| 레인모드 | `LatMpcPathCost`, `LatMpcMotionCost`, `LatMpcAccelCost`, `LatMpcJerkCost`, `LatMpcSteeringRateCost`, `LatMpcInputOffset`, `UseLaneLineSpeed`, `UseLaneLineCurveSpeed`, `AdjustLaneOffset` | 레인모드 MPC 가중치와 차선 사용 조건 |
 | 고급 토크·토크 계수 | `LateralTorqueCustom`, `LateralTorqueAccelFactor`, `LateralTorqueFriction`, `LateralTorqueKpV`, `LateralTorqueKiV`, `LateralTorqueKf`, `LateralTorqueKd` | 커스텀 토크 제어 계수 |
 | 고급 토크·검색 전용 | `NNFF` | 토크 조향의 신경망 피드포워드 옵션 |
 | 고급 토크·조향 제한 | `CustomSteerMax`, `CustomSteerDeltaUp`, `CustomSteerDeltaDown`, `CustomSteerDeltaUpLC`, `CustomSteerDeltaDownLC` | 최대 조향 토크와 토크 변화율 제한 |
