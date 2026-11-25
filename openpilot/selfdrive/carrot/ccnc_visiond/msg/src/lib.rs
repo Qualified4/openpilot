@@ -20,6 +20,8 @@ pub const CAL_STATUS_CALIBRATED: u16 = 1;
 const MAP_VALID_BIT: usize = 104;
 const MAP_SLOT_PRESENT_BIT: usize = 113;
 const MAP_SLOT_VISION_BYTE: usize = 15;
+/// `Slot.kindConfirmed`.
+const MAP_SLOT_KIND_CONFIRMED_BIT: usize = 112;
 /// `Slot.kindWanted`: the map's per-vid asking (`ccnc_map::vision::kind`), FF, LF and RF only.
 const MAP_SLOT_KIND_WANTED_BIT: usize = 114;
 
@@ -353,9 +355,19 @@ pub fn map_front_vision_on(bytes: &[u8]) -> Option<bool> {
     Some(on)
 }
 
-/// Whether a valid CcncMap Event asks for road camera kind answers (`kindWanted` on FF, LF or RF): the road camera
-/// is looked at only then (`ccnc_visiond` front pacing). The map decides per vid how long it asks.
-pub fn map_front_kind_wanted(bytes: &[u8]) -> Option<bool> {
+/// What the map asks of the road camera (`kindWanted` on FF, LF or RF), the most pressing slot first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum KindAsk {
+    None,
+    /// Only cars whose kind is confirmed: a recheck, or an answer of the other shape.
+    Confirmed,
+    /// A car without a confirmed kind.
+    Unconfirmed,
+}
+
+/// What a valid CcncMap Event asks for road camera kind answers: the road camera is looked at only then
+/// (`ccnc_visiond` front pacing). The map decides per vid how long it asks.
+pub fn map_front_kind(bytes: &[u8]) -> Option<KindAsk> {
     let message = Message::new(bytes)?;
     let event = message.root()?;
     if event.u16_at(EVENT_DISCRIMINANT_BYTE) != EVENT_CCNC_MAP || event.bit(EVENT_INVALID_BIT) {
@@ -363,10 +375,11 @@ pub fn map_front_kind_wanted(bytes: &[u8]) -> Option<bool> {
     }
     let map = message.struct_pointer(&event, 0)?;
     if !map.bit(MAP_VALID_BIT) {
-        return Some(false);
+        return Some(KindAsk::None);
     }
     let slots = message.struct_list(&map, 0)?;
-    Some(slots.iter().take(3).any(|s| s.bit(MAP_SLOT_PRESENT_BIT) && s.bit(MAP_SLOT_KIND_WANTED_BIT)))
+    let ask = slots.iter().take(3).filter(|s| s.bit(MAP_SLOT_PRESENT_BIT) && s.bit(MAP_SLOT_KIND_WANTED_BIT));
+    Some(ask.map(|s| if s.bit(MAP_SLOT_KIND_CONFIRMED_BIT) { KindAsk::Confirmed } else { KindAsk::Unconfirmed }).max().unwrap_or(KindAsk::None))
 }
 
 #[cfg(test)]
@@ -593,23 +606,28 @@ mod tests {
 
     #[test]
     fn front_kind_is_wanted_while_the_map_asks_ahead() {
-        let with = |slots: [(bool, u8); 5], wanted: [bool; 5]| {
+        let with = |slots: [(bool, u8); 5], wanted: [bool; 5], confirmed: [bool; 5]| {
             let mut bytes = ccnc_map_event(true, true, slots);
-            for (i, w) in wanted.into_iter().enumerate() {
-                if w {
-                    bytes[(10 + i * 3) * 8 + MAP_SLOT_KIND_WANTED_BIT / 8] |= 1 << (MAP_SLOT_KIND_WANTED_BIT % 8);
+            for (i, (w, c)) in wanted.into_iter().zip(confirmed).enumerate() {
+                for (on, bit) in [(w, MAP_SLOT_KIND_WANTED_BIT), (c, MAP_SLOT_KIND_CONFIRMED_BIT)] {
+                    if on {
+                        bytes[(10 + i * 3) * 8 + bit / 8] |= 1 << (bit % 8);
+                    }
                 }
             }
-            map_front_kind_wanted(&bytes)
+            map_front_kind(&bytes)
         };
-        let car = [(true, 0); 5];
-        assert_eq!(with(car, [false; 5]), Some(false), "cars ahead the map does not ask about");
-        assert_eq!(with(car, [true, false, false, false, false]), Some(true), "FF");
-        assert_eq!(with(car, [false, false, true, false, false]), Some(true), "RF");
-        assert_eq!(with([(false, 0); 5], [true, false, false, false, false]), Some(false), "not present");
-        assert_eq!(with(car, [false, false, false, true, true]), Some(false), "LR / RR are not ahead");
-        assert_eq!(map_front_kind_wanted(&ccnc_map_event(true, false, [(true, 0); 5])), Some(false), "invalid map");
-        assert_eq!(map_front_kind_wanted(&ccnc_map_event(false, true, [(true, 0); 5])), None);
+        let (car, no) = ([(true, 0); 5], [false; 5]);
+        assert_eq!(with(car, no, no), Some(KindAsk::None), "cars ahead the map does not ask about");
+        assert_eq!(with(car, [true, false, false, false, false], no), Some(KindAsk::Unconfirmed), "FF");
+        assert_eq!(with(car, [false, false, true, false, false], no), Some(KindAsk::Unconfirmed), "RF");
+        assert_eq!(with(car, [true, false, false, false, false], [true; 5]), Some(KindAsk::Confirmed), "FF recheck");
+        assert_eq!(with(car, [true, false, true, false, false], [true, false, false, false, false]), Some(KindAsk::Unconfirmed), "FF recheck, RF unknown");
+        assert_eq!(with(car, no, [true; 5]), Some(KindAsk::None), "confirmed, not asked");
+        assert_eq!(with([(false, 0); 5], [true, false, false, false, false], no), Some(KindAsk::None), "not present");
+        assert_eq!(with(car, [false, false, false, true, true], no), Some(KindAsk::None), "LR / RR are not ahead");
+        assert_eq!(map_front_kind(&ccnc_map_event(true, false, [(true, 0); 5])), Some(KindAsk::None), "invalid map");
+        assert_eq!(map_front_kind(&ccnc_map_event(false, true, [(true, 0); 5])), None);
     }
 
     #[test]

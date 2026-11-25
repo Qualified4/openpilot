@@ -290,8 +290,8 @@ fn run() -> io::Result<()> {
             if let Some(front_on) = ccnc_vision_msg::map_front_vision_on(&bytes) {
                 gate.front_vision(front_on, clock_ns(libc::CLOCK_MONOTONIC));
             }
-            if let Some(wanted) = ccnc_vision_msg::map_front_kind_wanted(&bytes) {
-                gate.front_kind(wanted, clock_ns(libc::CLOCK_MONOTONIC));
+            if let Some(ask) = ccnc_vision_msg::map_front_kind(&bytes) {
+                gate.front_kind(ask, clock_ns(libc::CLOCK_MONOTONIC));
             }
         }
         for bytes in calibration.drain() {
