@@ -21,6 +21,12 @@ const ALONGSIDE_EXIT_M: f64 = 6.0;
 const ALONGSIDE_HOLD_S: f64 = 1.0;
 /// ... and this long after its near car does: the radar barely sees within 5 m, and the tracker keeps a car 2 s.
 const ALONGSIDE_NEAR_HOLD_S: f64 = 2.0;
+/// The near car is alongside only moving with ego, within this speed of it (m/s). A car ego passes, or one passing
+/// ego, goes on from the front slot to the rear one: 0000047f 6 0-18.7 s, ego at 24-42 km/h past a queue creeping in
+/// the right lane at 2-4.5 m/s, RR held each passed car at 0 m in 288 of 331 frames and jumped 0 -> 0.4-4 m -> 0 at
+/// each of 12 vid changes. Measured over 47f and 47d (REPORT_RAIL_RR_KO): rear slots at 0 m while passing 62.1 -> 3.5 s
+/// and 50.4 -> 0.4 s.
+const ALONGSIDE_SPEED: f32 = 2.0;
 /// A vid that once moved at this ground speed (m/s) or faster is a moving car: `EDGE_ROOM_M` does not apply to it.
 const MOVED: f64 = 3.0;
 /// A car's center sits about half its width or more inside the road edge. A side object that never moved at `MOVED`
@@ -411,7 +417,8 @@ impl Assigner {
         best
     }
 
-    /// Two radar cars in one side lane, the nearer 0-5 m ahead (until 6 m): draw the nearer one alongside, at 0 m in
+    /// Two radar cars in one side lane, the nearer 0-5 m ahead (until 6 m) at ego's speed (`ALONGSIDE_SPEED`): draw the
+    /// nearer one alongside, at 0 m in
     /// that side's rear slot, and the next one in the front slot. It replaces any rear handover drawing there: the car
     /// alongside is nearer and measured. With one car the front slot keeps it until it falls behind and the handover
     /// takes it. Kind, camera mark, v_rel and lateral go with the vid. A split side stays split while one of its cars
@@ -426,7 +433,8 @@ impl Assigner {
             let kept = self.alongside[side];
             let held = slots[front].filter(|near| kept.is_some_and(|kept| kept.vid == near.vid));
             let limit = if held.is_some() { ALONGSIDE_EXIT_M } else { ALONGSIDE_ENTER_M };
-            let near = slots[front].filter(|near| (0. ..=limit).contains(&f64::from(near.distance)));
+            let near = slots[front]
+                .filter(|near| (0. ..=limit).contains(&f64::from(near.distance)) && near.v_rel.abs() <= ALONGSIDE_SPEED);
             let next = self.runner_up[side].filter(|next| near.is_some_and(|near| near.vid != next.vid));
             let hold = |alone: &mut Option<f64>, limit: f64| now - *alone.get_or_insert(now) <= limit;
             let shown = match (near, next) {

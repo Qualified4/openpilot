@@ -645,9 +645,14 @@ fn a_remembered_distance_follows_ego_travel_after_the_last_measurement() {
 const LR: usize = 3;
 const RR: usize = 4;
 
-/// Cars in one side lane (r -1 left, 1 right) at these distances, vids 1, 2, ..., drawn and then split.
+/// A car in a side lane moving with ego (`road` has ego standing).
+fn beside(world: &World, vid: u32, now: f64, x: f64, r: f64) -> Vehicle {
+    Vehicle { vx: 0., ..vehicle(world, vid, now, x, r) }
+}
+
+/// Cars in one side lane (r -1 left, 1 right) at these distances and ego's speed, vids 1, 2, ..., drawn and then split.
 fn side_pair(assigner: &mut Assigner, world: &World, now: f64, xs: &[f64], r: f64) -> [Option<Slot>; 5] {
-    let cars: Vec<_> = xs.iter().enumerate().map(|(i, &x)| vehicle(world, i as u32 + 1, now, x, r)).collect();
+    let cars: Vec<_> = xs.iter().enumerate().map(|(i, &x)| beside(world, i as u32 + 1, now, x, r)).collect();
     let mut slots = assigner.update(now, &cars, world, None);
     assigner.split_alongside(now, &cars, &mut slots);
     slots
@@ -664,7 +669,7 @@ fn a_car_alongside_with_another_ahead_is_drawn_in_the_rear_slot() {
     assert_eq!(slots[LR].map(|s| (s.vid, s.distance)), Some((1, 0.)));
     assert_eq!(slots[LF].map(|s| (s.vid, s.distance)), Some((2, 35.)));
     // The rear drawing keeps the car's observed lateral.
-    let alone = Assigner::default().update(0., &[vehicle(&world, 1, 0., 3., -1.)], &world, None);
+    let alone = Assigner::default().update(0., &[beside(&world, 1, 0., 3., -1.)], &world, None);
     assert_eq!(slots[LR].unwrap().lateral, alone[LF].unwrap().lateral);
 }
 
@@ -702,7 +707,7 @@ fn the_side_pair_switches_once_each_way() {
 fn the_car_alongside_replaces_a_rear_handover_drawing() {
     let world = road();
     let mut assigner = Assigner::default();
-    let cars = [vehicle(&world, 1, 0., 3., -1.), vehicle(&world, 2, 0., 35., -1.)];
+    let cars = [beside(&world, 1, 0., 3., -1.), beside(&world, 2, 0., 35., -1.)];
     let mut slots = assigner.update(0., &cars, &world, None);
     slots[LR] = Some(Slot { vid: 9, distance: -8., ..slots[LF].unwrap() });
     assert_eq!(assigner.split_alongside(0., &cars, &mut slots), [true, false]);
@@ -753,6 +758,44 @@ fn a_split_side_without_its_next_car_for_over_1_s_returns_the_near_car_to_the_fr
 }
 
 #[test]
+fn a_car_passing_ego_goes_on_from_the_front_slot_to_the_rear_one() {
+    // 0000047f 6: ego passed a right lane queue 4-5 m/s faster. The near car is not drawn alongside at 0 m: it stays in
+    // RF at its distance until it falls behind, the next car of the queue not drawn meanwhile. Here ego stands and the
+    // queue passes it at 5 m/s, the same speed difference.
+    let world = road();
+    let mut assigner = Assigner::default();
+    for (i, x) in [4., 2., 0.5].into_iter().enumerate() {
+        let now = i as f64 * 0.05;
+        let cars = [Vehicle { vx: 5., ..vehicle(&world, 1, now, x, 1.) }, Vehicle { vx: 5., ..vehicle(&world, 2, now, 11., 1.) }];
+        let mut slots = assigner.update(now, &cars, &world, None);
+        assert_eq!(assigner.split_alongside(now, &cars, &mut slots), [false, false]);
+        assert_eq!(slots[RF].map(|s| (s.vid, s.distance)), Some((1, x as f32)), "at {now:.2}");
+        assert_eq!(slots[RR], None);
+    }
+}
+
+#[test]
+fn a_split_side_ends_once_the_near_car_leaves_ego_s_speed() {
+    let world = road();
+    let mut assigner = Assigner::default();
+    let mut drawn = Vec::new();
+    for i in 0..20 {
+        let now = f64::from(i) * 0.05;
+        // The car alongside speeds away from 0.5 s on, 3 m/s faster than ego.
+        let v = if i < 10 { 0. } else { 3. };
+        let cars = [Vehicle { vx: v, ..beside(&world, 1, now, 3., -1.) }, beside(&world, 2, now, 35., -1.)];
+        let mut slots = assigner.update(now, &cars, &world, None);
+        assigner.split_alongside(now, &cars, &mut slots);
+        let state = (slots[LF].map(|s| s.vid), slots[LR].map(|s| s.vid));
+        if drawn.last().is_none_or(|(_, last)| *last != state) {
+            drawn.push((now, state));
+        }
+    }
+    assert_eq!(drawn.iter().map(|d| d.1).collect::<Vec<_>>(), [(Some(2), Some(1)), (Some(1), None)], "{drawn:?}");
+    assert!((drawn[1].0 - 0.5).abs() < 1e-9, "{drawn:?}");
+}
+
+#[test]
 fn a_car_alongside_on_the_right_with_another_ahead_is_drawn_in_rr() {
     let world = road();
     let slots = side_pair(&mut Assigner::default(), &world, 0., &[3., 35.], 1.);
@@ -763,8 +806,8 @@ fn a_car_alongside_on_the_right_with_another_ahead_is_drawn_in_rr() {
 
 /// Left lane: the near car at 3 m, unreported (radar coverage ends alongside) while `lost` holds, and the next at 35 m.
 fn near_lost(assigner: &mut Assigner, world: &World, now: f64, lost: bool) -> [Option<Slot>; 5] {
-    let near = vehicle(world, 1, if lost { now - 1. } else { now }, 3., -1.);
-    let cars = [near, vehicle(world, 2, now, 35., -1.)];
+    let near = beside(world, 1, if lost { now - 1. } else { now }, 3., -1.);
+    let cars = [near, beside(world, 2, now, 35., -1.)];
     let mut slots = assigner.update(now, &cars, world, None);
     assigner.split_alongside(now, &cars, &mut slots);
     slots
@@ -816,7 +859,7 @@ fn a_split_near_car_unreported_for_over_2_s_leaves_the_rear_slot_once() {
     // Gone from the tracker, it is not drawn at all.
     let mut assigner = Assigner::default();
     near_lost(&mut assigner, &world, 0., false);
-    let cars = [vehicle(&world, 2, 0.05, 35., -1.)];
+    let cars = [beside(&world, 2, 0.05, 35., -1.)];
     let mut slots = assigner.update(0.05, &cars, &world, None);
     assigner.split_alongside(0.05, &cars, &mut slots);
     assert_eq!(slots[LR], None);
