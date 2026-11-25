@@ -1,7 +1,8 @@
 //! The wide camera's side cars on the map slots (`ccnc_map::vision`).
 
 use ccnc_map::slots::{Slot, VISION_CONFIRMS, VISION_NONE, VISION_ONLY};
-use ccnc_map::vision::{Box, Context, Frame, FrameView, Geometry, Side, Skipped, SlotState, Stepped, Track, Vision, HOLD_S, LATE_S, RAW_HOLD_S, VISION_VID};
+use ccnc_map::vision::{Box, Context, Frame, FrameView, Geometry, Side, Skipped, SlotState, Stepped, Track, Vision, HOLD_S, LATE_S, RAW_HOLD_S, SIDE_LANE_PLAY, SWAP_HOLD_S, VISION_VID};
+use ccnc_map::pos::common::LANE_WIDTH;
 use ccnc_map::world::PoseAt;
 
 const FIXTURE: &str = include_str!("fixtures/wide_rules_c1.txt");
@@ -191,7 +192,7 @@ fn late_result_over_1_5s_dropped() {
 
 #[test]
 fn vision_cars_leave_two_seconds_after_the_last_result() {
-    let (vision, scene, k, _, _) = first_on(on_scene());
+    let (mut vision, scene, k, _, _) = first_on(on_scene());
     let arrival = seconds(scene.frames[k].t_ns) + 0.5;
     let index = 1 + scene.side as usize;
     for (now, shown) in [(arrival, true), (arrival + HOLD_S, true), (arrival + HOLD_S + 0.01, false)] {
@@ -211,44 +212,86 @@ fn vision_cars_leave_two_seconds_after_the_last_result() {
     }
 }
 
+/// A camera car on fresh state, the time its result is held at, its slot and its place (x, y left positive).
+fn camera_car() -> (Vision, f64, usize, f32, f32) {
+    let (vision, scene, k, x, yc) = first_on(on_scene());
+    (vision, seconds(scene.frames[k].t_ns) + 0.5, 1 + scene.side as usize, x as f32, -yc as f32)
+}
+
+fn run(vision: &mut Vision, now: f64, radar: [Option<Slot>; 5]) -> [Option<Slot>; 5] {
+    let mut slots = radar;
+    vision.apply(now, 0., PoseAt::default(), &mut slots);
+    slots
+}
+
 #[test]
 fn vision_only_car_merges_with_radar() {
-    let (vision, scene, k, x, yc) = first_on(on_scene());
-    let now = seconds(scene.frames[k].t_ns) + 0.5;
-    let index = 1 + scene.side as usize;
-    let (x, y) = (x as f32, -yc as f32);
-    let run = |radar: [Option<Slot>; 5]| {
-        let mut slots = radar;
-        vision.apply(now, 0., PoseAt::default(), &mut slots);
-        slots
-    };
+    let (mut vision, now, index, x, y) = camera_car();
     // The radar draws the same car in FF, inside the gate (6 m along, 1 m across): it stays the radar's.
     let mut ff = [None; 5];
     ff[0] = Some(radar_slot(x + 5.9, y - 0.9 * y.signum()));
-    let merged = run(ff);
+    let merged = run(&mut vision, now, ff);
     assert_eq!(merged[0], ff[0]);
     assert!(merged[index].is_none());
     // Outside the gate it is another car: the camera fills the side slot.
     for (dx, dy) in [(6.1, 0.), (0., 1.1)] {
         let mut other = [None; 5];
         other[0] = Some(radar_slot(x + dx, y - dy * y.signum()));
-        let filled = run(other);
+        let filled = run(&mut vision, now, other);
         assert_eq!(filled[index].map(|s| s.vision), Some(VISION_ONLY), "{dx} {dy}");
         assert_eq!(filled[0], other[0]);
     }
-    // In the same slot the rule decides: a radar car less than 3 m farther is kept and marked, a farther one is
-    // replaced by the closer camera car.
-    let mut near = [None; 5];
-    near[index] = Some(radar_slot(x + 2.9, y));
-    assert_eq!(run(near)[index].map(|s| (s.vid, s.vision)), Some((7, VISION_CONFIRMS)));
+}
+
+#[test]
+fn a_radar_car_in_the_same_slot_within_a_car_length_is_the_camera_car() {
+    // 3.1 m farther (past the swap margin) but within 4 m along and 1.5 m across: the same car, the radar's stays.
+    for (dx, dy) in [(3.1, 0.), (3.9, 1.4)] {
+        let (mut vision, now, index, x, y) = camera_car();
+        let mut same = [None; 5];
+        same[index] = Some(radar_slot(x + dx, y - dy * y.signum()));
+        for dt in [0., 0.3, 0.6, 1.0] {
+            assert_eq!(run(&mut vision, now + dt, same)[index].map(|s| (s.vid, s.vision)), Some((7, VISION_CONFIRMS)), "{dx} {dy} {dt}");
+        }
+    }
+}
+
+#[test]
+fn the_slot_swaps_to_a_closer_camera_car_only_once_the_rules_held_the_swap() {
+    let (mut vision, now, index, x, y) = camera_car();
+    let camera = (VISION_VID[index - 1], VISION_ONLY);
+    let radar = (7, VISION_CONFIRMS);
     let mut far = [None; 5];
-    far[index] = Some(radar_slot(x + 3.1, y));
-    assert_eq!(run(far)[index].map(|s| (s.vid, s.vision)), Some((VISION_VID[index - 1], VISION_ONLY)));
+    far[index] = Some(radar_slot(x + 4.1, y));
+    let mut near = [None; 5];
+    near[index] = Some(radar_slot(x + 1.0, y));
+    let shown = |vision: &mut Vision, now: f64, slots| run(vision, now, slots)[index].map(|s| (s.vid, s.vision));
+    // A farther radar car: kept until the swap held SWAP_HOLD_S.
+    assert_eq!(shown(&mut vision, now, far), Some(radar));
+    assert_eq!(shown(&mut vision, now + SWAP_HOLD_S - 0.05, far), Some(radar));
+    assert_eq!(shown(&mut vision, now + SWAP_HOLD_S, far), Some(camera));
+    // A radar frame with the near car in between does not swap back...
+    assert_eq!(shown(&mut vision, now + SWAP_HOLD_S + 0.05, near), Some(camera));
+    assert_eq!(shown(&mut vision, now + SWAP_HOLD_S + 0.1, far), Some(camera));
+    // ...but one that stays does, after the same hold.
+    let back = now + SWAP_HOLD_S + 0.2;
+    assert_eq!(shown(&mut vision, back, near), Some(camera));
+    assert_eq!(shown(&mut vision, back + SWAP_HOLD_S, near), Some(radar));
+    // An empty slot takes the camera car at once.
+    assert_eq!(shown(&mut vision, back + SWAP_HOLD_S + 0.05, [None; 5]), Some(camera));
+}
+
+#[test]
+fn a_camera_only_car_is_drawn_near_the_next_lane_centre() {
+    let (mut vision, now, index, _, _) = camera_car();
+    let lateral = f64::from(run(&mut vision, now, [None; 5])[index].unwrap().lateral);
+    let outward = if index % 2 == 1 { lateral } else { -lateral };
+    assert!((LANE_WIDTH - SIDE_LANE_PLAY - 1e-6..=LANE_WIDTH + SIDE_LANE_PLAY + 1e-6).contains(&outward), "{lateral}");
 }
 
 #[test]
 fn camera_car_follows_the_ego_motion_since_its_frame() {
-    let (vision, scene, k, x, _) = first_on(on_scene());
+    let (mut vision, scene, k, x, _) = first_on(on_scene());
     let now = seconds(scene.frames[k].t_ns) + 0.5;
     let index = 1 + scene.side as usize;
     let mut slots = [None; 5];
