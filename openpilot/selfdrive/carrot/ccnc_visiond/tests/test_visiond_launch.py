@@ -181,14 +181,9 @@ def test_enable_ccnc_visiond_conditions(tmp_path, monkeypatch):
   stored_bytes = {id(hda1): hda1.to_bytes(), id(hda2): hda2.to_bytes()}
   cases = count()
 
-  def make_params(value=None, display=True, persistent=hda1, map_process=True, pos_mode=1):
+  def make_params(display=True, persistent=hda1, pos_mode=1):
     params = Params(str(tmp_path / str(next(cases))))
-    assert params.get_default_value("CcncVisionProcess") == 0
-    if value is not None:
-      with open(params.get_param_path("CcncVisionProcess"), "wb") as out:
-        out.write(value)
     params.put_bool("CcncExtendedDisplay", display)
-    params.put_bool("CcncMapProcess", map_process)
     params.put("CcncPosDisplayMode", pos_mode)
     if persistent is not None:
       params.put("CarParamsPersistent", stored_bytes[id(persistent)])
@@ -200,26 +195,21 @@ def test_enable_ccnc_visiond_conditions(tmp_path, monkeypatch):
   monkeypatch.setattr(process_config, "CCNC_MAPD_FAILED", map_failed)
   enabled = process_config.enable_ccnc_visiond
   cp = car.CarParams.new_message()
-  # Its only reader is ccnc_mapd: on with CcncVisionProcess=1 and CcncMapProcess=1 only.
-  for vision, map_process in ((b"1", True), (b"1", False), (b"0", True), (b"0", False)):
-    assert enabled(True, make_params(vision, map_process=map_process), cp) == (vision == b"1" and map_process), (vision, map_process)
-  # The map process's other conditions hold for the camera too.
-  assert not enabled(True, make_params(b"1", pos_mode=2), cp)
+  # Its only reader is ccnc_mapd: it runs exactly when the map process does.
+  assert enabled(True, make_params(), cp)
+  assert enabled(True, make_params(), hda1)
+  assert not enabled(False, make_params(), cp)
+  assert not enabled(True, make_params(pos_mode=2), cp)
   map_failed.touch()
-  assert not enabled(True, make_params(b"1"), cp)
-  map_failed.unlink()
-  assert enabled(True, make_params(b"1"), cp)
-  assert enabled(True, make_params(b"1"), hda1)
-  assert not enabled(False, make_params(b"1"), cp)
   assert not enabled(True, make_params(), cp)
-  for stored in (b"0", b"2", b"-1", b"11", b"1.5", b"on", b""):
-    assert not enabled(True, make_params(stored), cp), stored
-  assert not enabled(True, make_params(b"1", display=False), cp)
-  assert not enabled(True, make_params(b"1", persistent=None), cp)
-  assert not enabled(True, make_params(b"1", persistent=hda2), cp)
-  assert not enabled(True, make_params(b"1"), hda2), "a live fingerprint vetoes the stored one"
+  map_failed.unlink()
+  assert enabled(True, make_params(), cp)
+  assert not enabled(True, make_params(display=False), cp)
+  assert not enabled(True, make_params(persistent=None), cp)
+  assert not enabled(True, make_params(persistent=hda2), cp)
+  assert not enabled(True, make_params(), hda2), "a live fingerprint vetoes the stored one"
   failed.touch()
-  assert not enabled(True, make_params(b"1"), cp)
+  assert not enabled(True, make_params(), cp)
 
 
 BUILT = LAUNCH.parent / "target/release/ccnc_visiond"

@@ -90,12 +90,11 @@ def test_enable_ccnc_mapd_conditions(tmp_path, monkeypatch):
 
   def make_params(options):
     params = Params(str(tmp_path / str(next(cases))))
-    assert params.get_default_value("CcncMapProcess") is False
     for key, value in options.items():
       params.put(key, value)
     return params
 
-  options = dict(CcncMapProcess=True, CcncExtendedDisplay=True, CcncPosDisplayMode=1,
+  options = dict(CcncExtendedDisplay=True, CcncPosDisplayMode=1,
                  CarParamsPersistent=cp.to_bytes())
   params = make_params(options)
   failed = tmp_path / "mapd.failed"
@@ -104,7 +103,7 @@ def test_enable_ccnc_mapd_conditions(tmp_path, monkeypatch):
   assert enabled(True, params, cp)
   assert enabled(True, params, car.CarParams.new_message())
   assert not enabled(False, params, cp)
-  for name in ("CcncMapProcess", "CcncExtendedDisplay", "CcncPosDisplayMode", "CarParamsPersistent"):
+  for name in ("CcncExtendedDisplay", "CcncPosDisplayMode", "CarParamsPersistent"):
     assert not enabled(True, make_params({key: value for key, value in options.items() if key != name}), cp)
   assert not enabled(True, make_params(dict(options, CcncPosDisplayMode=2)), cp)
   for name, value in (("flags", int(cp.flags | HyundaiFlags.CANFD_HDA2)), ("extFlags", 0), ("brand", "toyota")):

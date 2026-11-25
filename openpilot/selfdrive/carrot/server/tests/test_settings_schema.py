@@ -27,7 +27,7 @@ PARAMS_KEYS_PATH = Path(__file__).resolve().parents[4] / "common" / "params_keys
 KNOWN_DISPLAY_UNITS = {"raw", "speedKph", "distanceCm", "timeSec", "timeMs", "timeMin", "percent", "degree"}
 KNOWN_CONTROL_KINDS = {"toggle", "segmented", "select", "slider"}
 KNOWN_RISK_LEVELS = {"high", "medium"}
-CCNC_HDA1_ONLY = {"CcncExtendedDisplay", "CcncMapProcess", "CcncVisionProcess"}
+CCNC_HDA1_ONLY = {"CcncExtendedDisplay"}
 
 
 @pytest.fixture(scope="module")
