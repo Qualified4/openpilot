@@ -299,6 +299,22 @@ impl Pipeline {
         Ok(None)
     }
 
+    /// Ego's lane between the model's two ego lines (the legacy map's lines, placed at ego's pose now) when both are
+    /// at `MODEL_LANE_PROB` or more, the model is at most 0.25 s old as the legacy map took it, and ego keeps its lane.
+    fn model_lane(&self, now: f64) -> Option<crate::slots::ModelLane> {
+        let fresh = self.model_stamp.is_some_and(|stamp| (0. ..=0.25).contains(&(now - seconds(stamp))));
+        if !fresh || self.world.ego_changing() {
+            return None;
+        }
+        let cache = &self.radar.lane_cache;
+        let line = |role: i64| {
+            let i = usize::try_from(role + self.radar.lane_offset).ok()?;
+            let probable = cache.lines.get(&i)?.probability >= crate::slots::MODEL_LANE_PROB;
+            probable.then(|| cache.geometry.get(&i).cloned()).flatten()
+        };
+        Some(crate::slots::ModelLane::new(line(1)?, line(2)?))
+    }
+
     fn update_radar(&mut self, stamp: u64, input: Vec<live_tracks::RawPoint>) -> Result<MapOut> {
         let Some((_, car)) = self
             .car
@@ -411,6 +427,7 @@ impl Pipeline {
         );
         self.kinds.apply(now, self.world.radar_pose(now).heading, self.tracker.vehicles_mut());
         let cars = self.tracker.vehicles();
+        self.slots.set_model_lane(self.model_lane(now));
         let mut slots = self.slots.update_lead(now, cars, &self.world, display_lead);
         let remembered = if holding {
             // The map's 0.15 s freshness, not the selector's 0.3 s prediction hold, decides when memory takes over.

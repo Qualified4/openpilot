@@ -1,5 +1,5 @@
 use ccnc_map::rear::{WorldInput, WorldRear};
-use ccnc_map::slots::{Assigner, Slot};
+use ccnc_map::slots::{Assigner, ModelLane, Slot};
 use ccnc_map::vehicles::{Flags, Tracker, Vehicle};
 use ccnc_map::world::{World, RADAR_LAG};
 
@@ -644,6 +644,57 @@ fn a_remembered_distance_follows_ego_travel_after_the_last_measurement() {
 
 const LR: usize = 3;
 const RR: usize = 4;
+
+/// The model's ego lane 3.4 m wide, straight ahead.
+fn model_lane() -> ModelLane {
+    ModelLane::new(vec![(0., 1.7), (80., 1.7)], vec![(0., -1.7), (80., -1.7)])
+}
+
+/// A car the world map puts in the left lane while the radar measures it `y` (left +) from ego, `x` ahead.
+fn drifted(world: &World, x: f64, y: f64) -> Vehicle {
+    Vehicle { wy: y as f32, ..vehicle(world, 1, 0., x, -1.) }
+}
+
+fn vids(slots: [Option<Slot>; 5]) -> [Option<u32>; 5] {
+    slots.map(|s| s.map(|s| s.vid))
+}
+
+#[test]
+fn a_side_car_the_model_puts_in_ego_s_lane_is_drawn_in_ff() {
+    // 0000047f 6 41.5 s: the car ahead on a single lane ramp, 14 m, drawn in RF with the wall beside it.
+    let world = road();
+    let mut assigner = Assigner::default();
+    assigner.set_model_lane(Some(model_lane()));
+    let slots = assigner.update(0., &[drifted(&world, 20., 0.4)], &world, None);
+    assert_eq!(vids(slots), [Some(1), None, None, None, None]);
+    // Drawn where the radar measures it, not a lane over.
+    assert!((slots[FF].unwrap().lateral - 0.4).abs() < 0.3, "{:?}", slots[FF]);
+}
+
+#[test]
+fn the_world_lane_picks_the_slot_where_the_model_s_lane_does_not_hold_the_car() {
+    let world = road();
+    let lf = [None, Some(1), None, None, None];
+    for (lane, car, expected) in [
+        // No trusted lines: the world map alone.
+        (None, drifted(&world, 20., 0.4), lf),
+        // Within 0.3 m of the model's left line.
+        (Some(model_lane()), drifted(&world, 20., 1.5), lf),
+        // Beyond 50 m, where the model's lines are not to be trusted.
+        (Some(model_lane()), drifted(&world, 55., 0.4), lf),
+        // Closer than 5 m: a car alongside.
+        (Some(model_lane()), drifted(&world, 4., 0.4), lf),
+    ] {
+        let mut assigner = Assigner::default();
+        assigner.set_model_lane(lane.clone());
+        let at = (car.wx, car.wy);
+        assert_eq!(vids(assigner.update(0., &[car], &world, None)), expected, "{lane:?} at {at:?}");
+    }
+    // A model lane narrower than 1.8 m is not a lane.
+    let mut assigner = Assigner::default();
+    assigner.set_model_lane(Some(ModelLane::new(vec![(0., 0.8), (80., 0.8)], vec![(0., -0.8), (80., -0.8)])));
+    assert_eq!(vids(assigner.update(0., &[drifted(&world, 20., 0.)], &world, None)), lf);
+}
 
 /// A car in a side lane moving with ego (`road` has ego standing).
 fn beside(world: &World, vid: u32, now: f64, x: f64, r: f64) -> Vehicle {

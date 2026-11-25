@@ -2,6 +2,7 @@
 
 use crate::display::{draw_road_frame, HeadingTerm};
 use crate::pos::common::{Track, LANE_WIDTH, LEAD_GATE_X, LEAD_GATE_Y};
+use crate::radar::lanes::interpolate;
 use crate::vehicles::{Link, Vehicle, MAX_VEHICLES};
 use crate::world::{PoseAt, World};
 
@@ -53,6 +54,40 @@ const EDGE_PLACE_Y: f64 = 0.7;
 const ONCOMING_FF_M: f64 = 15.;
 const ONCOMING_FF_EGO_SPEED: f64 = 2.;
 const EPS: f64 = 1e-9;
+/// `ModelLane`: the legacy selector's ego lane between the model's two ego lines (`_lane`, a153574e
+/// hyundaicanfd_ccnc_radar_map.py 446-460), from lines this probable, this far ahead, this wide, with this margin
+/// inside each line.
+pub const MODEL_LANE_PROB: f64 = 0.5;
+const MODEL_LANE_X: std::ops::RangeInclusive<f64> = 5. ..=50.;
+const MODEL_LANE_WIDTH: std::ops::RangeInclusive<f64> = 1.8..=5.;
+const MODEL_LANE_MARGIN: f64 = 0.3;
+
+/// Ego's lane by the model's lines of this frame, placed at ego's pose now (lateral positive to the left). A radar car
+/// inside it is drawn in FF and never in LF or RF, whatever lane the world map gives it. The world map's lane coordinate
+/// drifts by half a lane and more on sharp curves, single lane ramps and far ahead: 0000047f 6 13-57 s, the car ahead
+/// in ego's lane on a single lane ramp drawn in LF and RF at 41-65 m and in RF at 13-20 m, with the wall beside it.
+/// Over 47f and 47d the map drew such a car in LF or RF 1.0 and 1.5 s per minute driven, the legacy selector 0.29.
+#[derive(Clone, Debug, Default)]
+pub struct ModelLane {
+    left: Vec<(f64, f64)>,
+    right: Vec<(f64, f64)>,
+}
+
+impl ModelLane {
+    pub fn new(left: Vec<(f64, f64)>, right: Vec<(f64, f64)>) -> Self {
+        Self { left, right }
+    }
+
+    pub fn contains(&self, x: f64, y: f64) -> bool {
+        if !MODEL_LANE_X.contains(&x) {
+            return false;
+        }
+        let (Some(a), Some(b)) = (interpolate(&self.left, x), interpolate(&self.right, x)) else {
+            return false;
+        };
+        MODEL_LANE_WIDTH.contains(&(a - b)) && b + MODEL_LANE_MARGIN < y && y < a - MODEL_LANE_MARGIN
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Slot {
@@ -174,6 +209,8 @@ pub struct Assigner {
     alongside_alone: [Option<f64>; 2],
     /// Where (world) and when the edge rule last hid a side object.
     edge_hidden: Vec<(f64, f64, f64)>,
+    /// `set_model_lane`.
+    model_lane: Option<ModelLane>,
 }
 
 impl Default for Assigner {
@@ -187,6 +224,7 @@ impl Default for Assigner {
             alongside: [None; 2],
             alongside_alone: [None; 2],
             edge_hidden: Vec::new(),
+            model_lane: None,
         }
     }
 }
@@ -202,6 +240,12 @@ fn shown_kind(car: &Vehicle) -> Option<crate::vehicles::Kind> {
 
 impl Assigner {
     pub const HEADING_TERM: HeadingTerm = HeadingTerm::RoadFrame;
+
+    /// Ego's lane by the model for the next updates, or None while the model's lines are not to be trusted (missing,
+    /// below `MODEL_LANE_PROB`, stale, or ego changing lanes): the world map's lane alone picks the slots then.
+    pub fn set_model_lane(&mut self, lane: Option<ModelLane>) {
+        self.model_lane = lane;
+    }
 
     /// A current per-vid estimate, before filtering for the five output slots.
     pub fn estimate_at(&self, now: f64, vid: u32) -> Option<f64> {
@@ -307,8 +351,16 @@ impl Assigner {
             let v_rel = speed - world.pose.speed();
             let opening_gap = ((v_rel - 0.5) / 1.5).clamp(0., 1.);
             let mut lateral_target = -LANE_WIDTH * r;
-            if x >= 0. && car.radar_id.is_some() && current(car.seen_radar) {
-                let (rx, ry) = radar.to_ego(f64::from(car.wx), f64::from(car.wy));
+            let measured = x >= 0. && car.radar_id.is_some() && current(car.seen_radar);
+            let (rx, ry) = radar.to_ego(f64::from(car.wx), f64::from(car.wy));
+            // A side lane car the model puts in ego's lane is drawn in FF where the radar measures it.
+            let into_ff = measured
+                && drawing.lane.abs() == 1
+                && self.model_lane.as_ref().is_some_and(|lane| lane.contains(rx, ry));
+            if into_ff {
+                lateral_target = ry;
+            }
+            if measured {
                 let report = (now, rx, ry);
                 let track = drawing.radar.get_or_insert_with(|| Track::new(now, report));
                 track.step(Some(report), now, yaw);
@@ -341,7 +393,7 @@ impl Assigner {
             if !eligible(car) && !the_lead {
                 continue;
             }
-            let Some(slot) = slot_index(x, drawing.lane) else {
+            let Some(slot) = (if into_ff { Some(0) } else { slot_index(x, drawing.lane) }) else {
                 continue;
             };
             if slot != 0 && !eligible(car) {
