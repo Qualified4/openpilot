@@ -21,6 +21,13 @@ const ALONGSIDE_EXIT_M: f64 = 6.0;
 const ALONGSIDE_HOLD_S: f64 = 1.0;
 /// ... and this long after its near car does: the radar barely sees within 5 m, and the tracker keeps a car 2 s.
 const ALONGSIDE_NEAR_HOLD_S: f64 = 2.0;
+/// A side car must have moved at least this fast (ground speed, m/s) to be drawn while ego drives at
+/// `WALKER_EGO_SPEED` or faster and it moves at `WALKER_MOVING` or faster: 11-25 0000047d segments 21-22, a pedestrian
+/// and a roadside leaf bag that the radar reported at +1.2-2.6 m/s came into RF for 0.05-0.5 s as cars. A car waiting
+/// beside ego (below `WALKER_MOVING`) and FF are not affected.
+const WALKER_TOP: f64 = 3.0;
+const WALKER_MOVING: f64 = 0.5;
+const WALKER_EGO_SPEED: f64 = 15. / 3.6;
 const EPS: f64 = 1e-9;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -87,6 +94,8 @@ struct Drawing {
     detect: u8,
     seen: f64,
     radar: Option<Track>,
+    /// The vid once moved at `WALKER_TOP` or faster.
+    fast: bool,
 }
 
 impl Drawing {
@@ -98,6 +107,7 @@ impl Drawing {
             detect: 1,
             seen: now,
             radar: None,
+            fast: false,
         }
     }
 
@@ -259,6 +269,8 @@ impl Assigner {
             let drawing = &mut self.drawings[i];
             drawing.seen = now;
             drawing.observe_lane(r_slot);
+            drawing.fast |= speed.abs() >= WALKER_TOP;
+            let walker = !drawing.fast && speed >= WALKER_MOVING && world.pose.speed() >= WALKER_EGO_SPEED;
             let v_rel = speed - world.pose.speed();
             let opening_gap = ((v_rel - 0.5) / 1.5).clamp(0., 1.);
             let mut lateral_target = -LANE_WIDTH * r;
@@ -298,7 +310,7 @@ impl Assigner {
             let Some(slot) = slot_index(x, drawing.lane) else {
                 continue;
             };
-            if slot != 0 && (speed < -1. / 3.6 || car.oncoming) {
+            if slot != 0 && (speed < -1. / 3.6 || car.oncoming || (walker && slot <= 2)) {
                 continue;
             }
             if v_rel > 2. {

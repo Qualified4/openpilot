@@ -958,3 +958,39 @@ fn ff_follows_the_lead_to_another_car() {
     assert_eq!(ff[0], Some(1));
     assert_eq!(ff[1], Some(2));
 }
+
+/// One radar car kept 8 m ahead at lane `r` while ego drives at `ego` m/s; its reported ground speed per frame is
+/// `speed(t)`.
+/// Returns whether its slot drew it, per frame.
+fn walker(ego: f64, r: f64, speed: impl Fn(f64) -> f64) -> Vec<bool> {
+    let mut world = road();
+    let mut assigner = Assigner::default();
+    let slot = if r == 0. { FF } else { RF };
+    (0..60)
+        .map(|i| {
+            let now = f64::from(i) * 0.05;
+            world.car_state(now, ego, false);
+            let car = Vehicle { vx: speed(now) as f32, ..vehicle(&world, 9, now, 8. + ego * now, r) };
+            assigner.update(now, &[car], &world, None)[slot].is_some_and(|s| s.vid == 9)
+        })
+        .collect()
+}
+
+#[test]
+fn a_walking_speed_object_beside_a_driving_ego_is_not_drawn() {
+    // 11-25 0000047d 21 10.39 s / 22 15.45 s: ego 29-35 km/h, the radar point +1.2-2.6 m/s, never 3 m/s.
+    assert!(walker(8., 1., |_| 1.5).iter().all(|drawn| !drawn));
+    assert!(walker(8., 1., |_| 2.9).iter().all(|drawn| !drawn));
+}
+
+#[test]
+fn a_side_car_that_once_moved_a_waiting_side_car_ff_and_a_creeping_ego_still_draw_a_slow_car() {
+    // A car that slowed from 5 m/s to 1.5 m/s.
+    assert!(walker(8., 1., |t| if t < 0.5 { 5. } else { 1.5 }).iter().all(|&drawn| drawn));
+    // A car waiting beside ego (the rule needs 0.5 m/s or more).
+    assert!(walker(8., 1., |_| 0.2).iter().all(|&drawn| drawn));
+    // Ego below 15 km/h.
+    assert!(walker(4., 1., |_| 1.5).iter().all(|&drawn| drawn));
+    // FF is not affected.
+    assert!(walker(8., 0., |_| 1.5).iter().all(|&drawn| drawn));
+}
