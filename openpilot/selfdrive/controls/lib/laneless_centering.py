@@ -28,7 +28,9 @@ lane-centre jump holds it off 1 s) it keeps the safety conditions of the
 corner centering it replaces:
 
 * nothing is pushed toward a side with a BSD warning (held 0.5 s) or a moving
-  radar vehicle in the adjacent lane (-5..30 m, faster than 2 m/s);
+  radar vehicle in the adjacent lane level with the car or just ahead (-5..10 m,
+  faster than 2 m/s). Only that direction is cut: a correction away from the
+  traffic goes on, and one already pushing toward it backs off within 0.5 s;
 * none during a lane change, turn desire, automatic turn or turn signal and
   for 1 s after; none while the driver steers and for 0.5 s after;
 * the lane-line standard deviation fades it out over 0.2..0.4 m;
@@ -74,7 +76,7 @@ MERGE_MAX_RATE = 0.3
 LANE_CHANGE_REST_S = 1.0
 DRIVER_REST_S = 0.5
 BSD_HOLD_S = 0.5
-SIDE_DREL = (-5.0, 30.0)
+SIDE_DREL = (-5.0, 10.0)  # m: level with the car or just ahead
 SIDE_MIN_VLEAD = 2.0
 TURN_DESIRE_MIN = 0.2       # desireState turn/lane-change probabilities, summed
 LANE_CHANGE_DESIRE_MIN = 0.1
@@ -115,6 +117,11 @@ def _normal_width(lx, ly, rx, ry, x):
   return (r - l) * math.cos(yaw)
 
 
+def side_traffic(leads):
+  """A moving radar vehicle in the adjacent lane level with the car or just ahead."""
+  return any(SIDE_DREL[0] <= x.dRel <= SIDE_DREL[1] and x.vLead > SIDE_MIN_VLEAD for x in leads)
+
+
 def atc_active(atc_type):
   """carrotMan.atcType of an automatic turn or lane change under way (a prepare phase is not)."""
   return not (atc_type in ('', 'none', 'straight') or atc_type.endswith(' prepare'))
@@ -139,6 +146,7 @@ class LanelessCentering:
     self.frame_id = None
     self.w_filtered = None
     self.merge = False
+    self.out_step = None
 
   def _lane(self, md):
     """Ego lane lines and path as arrays, or None when modelV2 lacks them."""
@@ -246,37 +254,49 @@ class LanelessCentering:
         fails.append('std')
     self.hold = max(self.hold - DT, 0.0)
 
-    target = None
-    if not fails and offsets is not None:
-      car, path = offsets
-      integral = float(np.clip(self.integral + INTEGRAL_GAIN * car * DT, -INTEGRAL_MAX, INTEGRAL_MAX))
-      cap = ACCEL_MAX + CURVE_CAP_GAIN * min(abs(kappa) * v * v, CURVE_ACCEL_MAX)
-      pursuit = 2.0 * path * v * v / lookahead(v) ** 2
-      target = float(np.clip(pursuit + integral, -cap, cap)) * std_w
-      # never push toward traffic: the side the target or the present output moves the car to
-      pushes = {math.copysign(1.0, x) for x in (target, self.accel) if x != 0.0}
-      if (1.0 in pushes and self.bsd_right > 0.0) or (-1.0 in pushes and self.bsd_left > 0.0):
-        fails.append('bsd')
-      leads = (list(rs.leadsRight) if 1.0 in pushes else []) + (list(rs.leadsLeft) if -1.0 in pushes else [])
-      if any(SIDE_DREL[0] <= x.dRel <= SIDE_DREL[1] and x.vLead > SIDE_MIN_VLEAD for x in leads):
-        fails.append('side')
-      if not fails:
-        self.integral = integral
+    # traffic beside the car: BSD (held 0.5 s) or a moving radar vehicle level with it or just ahead
+    blocked = {-1.0: [r for r, on in (('bsd', self.bsd_left > 0.0), ('side', side_traffic(rs.leadsLeft))) if on],
+               1.0: [r for r, on in (('bsd', self.bsd_right > 0.0), ('side', side_traffic(rs.leadsRight))) if on]}
 
-    if fails:
-      target = None
+    limits = []
+    target = 0.0
+    if fails or offsets is None:
       self.blend = max(self.blend - DT / RAMP_OUT_S, 0.0)
       self.integral *= math.exp(-DT / INTEGRAL_LEAK_S)
     else:
+      car, path = offsets
+      # never push toward traffic: only the direction toward it is cut, the correction away from it stays
+      lo = 0.0 if blocked[-1.0] else -math.inf
+      hi = 0.0 if blocked[1.0] else math.inf
+      self.integral = float(np.clip(np.clip(self.integral + INTEGRAL_GAIN * car * DT, -INTEGRAL_MAX, INTEGRAL_MAX), lo, hi))
+      cap = ACCEL_MAX + CURVE_CAP_GAIN * min(abs(kappa) * v * v, CURVE_ACCEL_MAX)
+      pursuit = 2.0 * path * v * v / lookahead(v) ** 2
+      wanted = float(np.clip(pursuit + self.integral, -cap, cap)) * std_w
+      target = float(np.clip(wanted, lo, hi))
+      for sgn in (-1.0, 1.0):
+        if blocked[sgn] and (wanted * sgn > 0.0 or self.accel * sgn > 0.0):
+          limits += blocked[sgn]
       self.blend = min(self.blend + DT / RAMP_IN_S, 1.0)
-      # the lane centre and the path move a little from one model frame to the next; the 0.5 s filter
-      # and the rate limit keep that from shaking the wheel (2-3 Hz on the Rust branch before them)
-      filtered = self.accel + (target - self.accel) * DT / ACCEL_TAU_S
-      step = ACCEL_RATE_MAX * DT
-      self.accel += float(np.clip(filtered - self.accel, -step, step))
+
+    if self.accel != 0.0 and blocked[math.copysign(1.0, self.accel)]:
+      # already pushing toward traffic that just appeared: back off linearly within RAMP_OUT_S of its
+      # appearance, whether or not other conditions hold the correction off meanwhile
+      if self.out_step is None:
+        self.out_step = abs(self.accel) * DT / RAMP_OUT_S * (1.0 + 1e-9)
+      step = max(ACCEL_RATE_MAX * DT, self.out_step)
+      moved = self.accel + float(np.clip(target - self.accel, -step, step))
+      self.accel = 0.0 if moved * self.accel <= 0.0 and target == 0.0 else moved
+    else:
+      self.out_step = None
+      if not (fails or offsets is None):
+        # the lane centre and the path move a little from one model frame to the next; the 0.5 s filter
+        # and the rate limit keep that from shaking the wheel (2-3 Hz on the Rust branch before them)
+        filtered = self.accel + (target - self.accel) * DT / ACCEL_TAU_S
+        step = ACCEL_RATE_MAX * DT
+        self.accel += float(np.clip(filtered - self.accel, -step, step))
 
     self.block = 0
-    for name in fails:
+    for name in fails + limits:
       self.block |= BLOCK_BITS[name]
     if self.blend == 0.0:
       self.accel = 0.0

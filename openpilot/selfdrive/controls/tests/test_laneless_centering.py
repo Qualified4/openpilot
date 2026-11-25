@@ -130,7 +130,22 @@ def test_never_pushes_toward_traffic_in_the_adjacent_lane(side):
 
 def test_a_slow_or_far_radar_vehicle_does_not_count():
   c = LanelessCentering()
-  assert run(c, model(centre=-0.19), 300, rs=radar(left=[(10.0, 1.0), (40.0, 20.0)])) < 0.0
+  assert run(c, model(centre=-0.19), 300, rs=radar(left=[(10.0, 1.0), (15.0, 20.0), (-6.0, 20.0)])) < 0.0
+
+
+def test_traffic_only_cuts_the_direction_toward_it():
+  # traffic on the left: a correction to the right goes on at full strength
+  free, beside = LanelessCentering(), LanelessCentering()
+  run(free, model(centre=0.19), 300)
+  run(beside, model(centre=0.19), 300, rs=radar(left=[(0.0, 20.0)]), cs=state(leftBlindspot=True))
+  assert beside.accel == pytest.approx(free.accel) and beside.accel > 0.0 and beside.block == 0
+  # toward it: held at 0 without ramping the correction out, and the integral does not build up toward it
+  c = LanelessCentering()
+  assert run(c, model(centre=-0.19), 300, rs=radar(left=[(0.0, 20.0)])) == 0.0
+  assert c.blend == 1.0 and c.integral >= 0.0 and block_names(c.block) == ['side']
+  # once it has gone the correction comes back without a second ramp-in
+  run(c, model(centre=-0.19), 50)
+  assert c.accel < -0.02
 
 
 def test_bsd_is_held_half_a_second():
@@ -206,3 +221,12 @@ def test_missing_model_lines_get_nothing():
   c = LanelessCentering()
   assert run(c, log.ModelDataV2.new_message(), 10) == 0.0
   assert block_names(c.block) == ['input']
+
+
+def test_backs_off_traffic_within_half_a_second_even_when_another_condition_toggles():
+  c = LanelessCentering()
+  traffic = {'rs': radar(left=[(0.0, 20.0)])}
+  run(c, model(centre=-0.19), 300)
+  run(c, model(centre=-0.19, std=0.45), 20, **traffic)  # held off by the lane-line fade meanwhile
+  run(c, model(centre=-0.19), 30, **traffic)
+  assert c.accel == 0.0
