@@ -16,7 +16,7 @@ from openpilot.selfdrive.selfdrived.vehicle_faults import inhibit_faulted_contro
 from opendbc.car.vehicle_model import VehicleModel
 from opendbc.car.interfaces import CarInterfaceBase
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature, get_lag_adjusted_curvature
-from openpilot.selfdrive.controls.lib.corner_center import CornerCenterOutput
+from openpilot.selfdrive.controls.lib.laneless_centering import LanelessCentering
 from openpilot.selfdrive.controls.lib.latcontrol import MIN_LATERAL_CONTROL_SPEED
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.lateral_readiness import LateralStartupGate, lateral_vehicle_parameters
@@ -36,7 +36,7 @@ def control_fixture():
         'MIN_LATERAL_CONTROL_SPEED': MIN_LATERAL_CONTROL_SPEED, 'LaneChangeState': log.LaneChangeState,
         'LaneChangeDirection': log.LaneChangeDirection, 'ACTUATOR_FIELDS': tuple(car.CarControl.Actuators.schema.fields),
         'clip_curvature': clip_curvature, 'get_lag_adjusted_curvature': get_lag_adjusted_curvature,
-        'CornerCenterOutput': CornerCenterOutput,
+        'LanelessCentering': LanelessCentering,
         'resolve_vehicle_model_steer_ratio': resolve_vehicle_model_steer_ratio,
         'lateral_vehicle_parameters': lateral_vehicle_parameters,
         'set_lane_change_blinkers': set_lane_change_blinkers,
@@ -58,7 +58,7 @@ def control_fixture():
           torque_from_lateral_accel=lambda: partial(CarInterfaceBase.torque_from_lateral_accel_linear, None),
           get_pid_accel_limits=lambda *args: (-3.0, 2.0))
   sm = Messages()
-  sm.update(longitudinalPlan=NS(), radarState=NS(), carrotMan=NS(vTurnSpeed=100), liveDelay=NS(lateralDelay=0.1))
+  sm.update(longitudinalPlan=NS(), radarState=NS(leadsLeft=[], leadsRight=[]), carrotMan=NS(vTurnSpeed=100, atcType=''), liveDelay=NS(lateralDelay=0.1))
   sm.frame = 1
   sm.recv_frame = {'longitudinalPlan': 1}
   sm['carState'].gearShifter = 'drive'
@@ -69,7 +69,7 @@ def control_fixture():
   control = NS(CP=cp, CI=ci, sm=sm, params=params, VM=VehicleModel(cp), LaC=LatControlTorque(cp, ci),
                LoC=NS(reset=lambda: None, update=lambda *args: (0.0, 0.0, 0.0), long_control_state='off'),
                carrot_controls=NS(lat_suspend_control=lambda cs, active: active), is_vw_meb=False,
-               desired_curvature=0.0, corner_center=CornerCenterOutput(), lateral_startup=LateralStartupGate(), lateral_started=False,
+               desired_curvature=0.0, laneless_centering=LanelessCentering(), lateral_startup=LateralStartupGate(), lateral_started=False,
                steer_limited_by_safety=False)
   return control, lambda: ns['state_control'](control)
 

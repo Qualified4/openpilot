@@ -868,6 +868,10 @@ struct ControlsState @0x97ff69c53601abf1 {
   forceDecel @51 :Bool;
 
   activeLaneLine @67 : Bool;
+  # Lane centering added to the laneless target (laneless_centering.py): lateral acceleration
+  # in m/s² (+ = right, as curvature) and the bit mask of laneless_centering.BLOCK_REASONS holding it off.
+  lanelessCenteringAccel @68 :Float32;
+  lanelessCenteringBlock @69 :UInt32;
 
   lateralControlState :union {
     pidState @53 :LateralPIDState;
@@ -1379,12 +1383,11 @@ struct LateralPlan @0xe1e9318e2ae8b51e {
   position @35 :XYZTData;
   distances @36 :List(Float32);
 
-  # Corner centering (LatCornerCenterBlend > 0, laneless branch only). controlsd adds
-  # cornerCenterCurvature to modelV2.action.desiredCurvature when cornerCenterActive.
-  cornerCenterCurvature @37 :Float32;  # rad/m
-  cornerCenterActive @38 :Bool;
-  cornerCenterGate @39 :Float32;  # condition weight 0..1
-  cornerCenterBlock @40 :UInt32;  # bit mask, corner_center.BLOCK_REASONS
+  # Removed corner centering (LatCornerCenterBlend); replaced by controlsState.lanelessCentering*.
+  cornerCenterCurvatureDEPRECATED @37 :Float32;
+  cornerCenterActiveDEPRECATED @38 :Bool;
+  cornerCenterGateDEPRECATED @39 :Float32;
+  cornerCenterBlockDEPRECATED @40 :UInt32;
 
   struct SolverState {
     x @0 :List(List(Float32));

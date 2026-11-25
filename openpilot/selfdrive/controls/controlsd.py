@@ -27,7 +27,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.controls.lib.steer_ratio import resolve_vehicle_model_steer_ratio
 from openpilot.selfdrive.controls.lib.lateral_readiness import LateralStartupGate, lateral_vehicle_parameters
-from openpilot.selfdrive.controls.lib.corner_center import CornerCenterOutput
+from openpilot.selfdrive.controls.lib.laneless_centering import LanelessCentering
 
 
 from openpilot.common.realtime import DT_CTRL, DT_MDL
@@ -76,7 +76,7 @@ class Controls:
     self.steer_limited_by_safety = False
     self.curvature = 0.0
     self.desired_curvature = 0.0
-    self.corner_center = CornerCenterOutput()
+    self.laneless_centering = LanelessCentering()
     self.lateral_startup = LateralStartupGate()
     self.lateral_started = False
 
@@ -208,9 +208,9 @@ class Controls:
 
     if not CC.latActive:
       new_desired_curvature = self.curvature
-      self.corner_center.reset()
+      self.laneless_centering.reset()
     elif self.is_vw_meb:
-      self.corner_center.reset()
+      self.laneless_centering.reset()
       # VW MEB(ID.4/ID.5): 기본은 레인리스(raw 모델곡률 = infiniteCable2 동일).
       # carrot 횡플래너가 레인모드 활성(lat_plan.useLaneLines, UseLaneLineSpeed>0 & 차선감지)일 때만
       # 차선기반 lateralPlan 경로를 쓴다(opt-in). 모델 경로 출렁임(차선넘나듦)을 차선 지오메트리로 보완.
@@ -221,17 +221,17 @@ class Controls:
       else:
         new_desired_curvature = float(model_v2.action.desiredCurvature)  # raw 모델곡률 (if2 기본과 동일)
     elif self.lanefull_mode_enabled:
-      self.corner_center.reset()
+      self.laneless_centering.reset()
       if len(lat_plan.curvatures) == 0:
         new_desired_curvature = self.curvature
       else:
         curvature = get_lag_adjusted_curvature(self.CP, CS.vEgo, lat_plan.psis, lat_plan.curvatures, steer_actuator_delay + lat_smooth_seconds, lat_plan.distances)
         new_desired_curvature = smooth_value(curvature, self.desired_curvature, lat_smooth_seconds)
     else:
-      model_curvature = model_v2.action.desiredCurvature
-      if lat_plan.cornerCenterActive or self.corner_center.curvature != 0.0:
-        model_curvature += self.corner_center.update(self.sm, CS.vEgo, CS.steeringPressed)
-      new_desired_curvature = smooth_value(model_curvature, self.desired_curvature, 0.1)
+      model_curvature = model_v2.action.desiredCurvature + self.laneless_centering.update(
+        model_v2, CS, self.sm['radarState'], self.sm['carrotMan'].atcType, CS.vEgo)
+      # 모델 목표 곡률 1차 평활 τ 0.05 s(0.1이면 코너 진입 지연·탈출 과회전이 커진다, 항목 106)
+      new_desired_curvature = smooth_value(model_curvature, self.desired_curvature, 0.05)
 
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
 
@@ -470,6 +470,8 @@ class Controls:
     cs.longitudinalPlanMonoTime = self.sm.logMonoTime['longitudinalPlan']
     cs.lateralPlanMonoTime = self.sm.logMonoTime['modelV2']
     cs.desiredCurvature = self.desired_curvature
+    cs.lanelessCenteringAccel = float(self.laneless_centering.accel_out)
+    cs.lanelessCenteringBlock = int(self.laneless_centering.block)
     cs.longControlState = self.LoC.long_control_state
     cs.upAccelCmd = float(self.LoC.pid.p)
     cs.uiAccelCmd = float(self.LoC.pid.i)

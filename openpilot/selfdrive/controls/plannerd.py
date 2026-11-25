@@ -58,12 +58,9 @@ def main():
   # Hyundai's two inputs wake this serial loop independently; no MPC overlaps.
   sm = messaging.SubMaster(
     ['carControl', 'carState', 'controlsState', 'liveParameters', 'radarState',
-     'liveTracks', 'modelV2', 'selfdriveState', 'carrotMan', 'carrotNavi', 'livePose', 'liveDelay'],
+     'liveTracks', 'modelV2', 'selfdriveState', 'carrotMan', 'carrotNavi', 'livePose'],
     poll=(['modelV2', 'liveTracks'] if live_tracks_longitudinal else 'modelV2'),
-    # liveDelay only feeds corner centering's lat_action_t; it must not affect any validity check.
-    ignore_alive=['liveDelay'],
-    ignore_avg_freq=['radarState', 'liveDelay'],
-    ignore_valid=['liveDelay'],
+    ignore_avg_freq=['radarState'],
   )
   carrot = CarrotPlanner()
   model_frame = 0
