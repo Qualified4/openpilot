@@ -29,6 +29,8 @@ fn f32_at(data: &[u8], offset: usize) -> f64 {
 #[derive(Clone, Copy, Debug)]
 pub struct DisplayLead {
     pub motion: (f64, f64, f64),
+    pub(crate) measured_track: Option<u32>,
+    pub(crate) model_prob: f64,
     /// A positive radar ID backed by a strong model lead. Track 0 is the synthetic main radar lead.
     pub(crate) confirmed_track: Option<i128>,
 }
@@ -41,10 +43,13 @@ impl DisplayLead {
         }
         // RadarState.LeadData.radarTrackId defaults to -1, so the Cap'n Proto field is XOR encoded.
         let id = !i32::from_le_bytes(data_bytes(data, 13 * 4));
+        let track = (id > 0 && flag(data, 322)).then_some(id as u32);
         let probability = f32_at(data, 12);
         Some(Self {
             motion: (x, y, v),
-            confirmed_track: (id > 0 && flag(data, 322) && (0.9..=1.).contains(&probability)).then_some(i128::from(id)),
+            measured_track: track,
+            model_prob: probability,
+            confirmed_track: track.filter(|_| (0.9..=1.).contains(&probability)).map(i128::from),
         })
     }
 }

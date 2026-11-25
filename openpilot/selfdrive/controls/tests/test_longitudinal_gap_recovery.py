@@ -35,6 +35,7 @@ def load_mpc_update(path):
     def __init__(self, *args): self.weights = {}
     def reset(self): pass
     def set(self, *args): pass
+    def get(self, stage, field): return np.zeros(3 if field == 'x' else 1)
     def cost_set(self, i, key, value): self.weights[i, key] = np.copy(value)
     def constraints_set(self, *args): pass
 
@@ -72,14 +73,15 @@ def load_mpc_update(path):
 
 def run_update(cls, level=1, *, distance=45.15, speed=79.04/3.6, lead_speed=None,
                frames=10, status=True, radar=True, enabled=True, reset=False, lane_change=False, mode='acc', lead_index=0,
-               lead_accel=0., driving_mode=3, ego_accel=0., gap_enabled=True, relative_speed=None, stop_distance=6.):
+               lead_accel=0., driving_mode=3, ego_accel=0., gap_enabled=True, relative_speed=None, stop_distance=6.,
+               second_lead=None):
   if lead_speed is None:
     lead_speed = speed-1.96
   lead = SimpleNamespace(status=status, radar=radar, radarTrackId=49, dRel=distance, vLead=lead_speed,
                          vRel=lead_speed-speed if relative_speed is None else relative_speed,
                          aLeadK=lead_accel, aLeadTau=1.5, modelProb=1.)
   absent = SimpleNamespace(status=False, radar=False, radarTrackId=-1, vRel=0., aLeadK=0., modelProb=0.)
-  rs = SimpleNamespace(leadOne=lead if lead_index == 0 else absent, leadTwo=lead if lead_index == 1 else absent)
+  rs = SimpleNamespace(leadOne=lead if lead_index == 0 else absent, leadTwo=lead if lead_index == 1 else second_lead or absent)
   carrot = SimpleNamespace(leadAccelResponse=level, myDrivingMode=driving_mode, jerk_factor=1., comfort_brake=2.4, stop_distance=stop_distance,
                            mode=mode, v_cruise=30., stop_dist=1000., trafficStopDistanceAdjust=0., lane_change_active=lane_change,
                            get_T_FOLLOW=lambda *args, **kwargs: .65)
@@ -107,13 +109,44 @@ def test_soft_brake_changes_the_acceleration_reference_only(mpc_class, monkeypat
     return process_lead(mpc, lead)
 
   monkeypatch.setattr(mpc_class, 'process_lead', predict_stopping_lead)
-  monkeypatch.setattr(mpc_class, 'run', lambda mpc: mpc.prev_a.fill(-2.0))
+  def solve(mpc, **kwargs):
+    mpc.prev_a.fill(-2.0)
+    return 0
+
+  monkeypatch.setattr(mpc_class, 'run', solve)
   inputs = {"speed": 10.0, "lead_speed": 7.0, "lead_accel": -1.3, "distance": 24.0, "frames": 100, "stop_distance": 3.7}
   baseline = run_update(mpc_class, gap_enabled=False, **inputs)
   modified = run_update(mpc_class, gap_enabled=True, **inputs)
   np.testing.assert_array_equal(baseline.params, modified.params)
   np.testing.assert_array_equal(baseline.yref[:,4], 0.0)
   assert np.any(modified.yref[:,4] > 0.0)
+
+  # Inject a terminal-node violation from leadTwo only in the soft trial.
+  danger_margin = mpc_class.danger_margin
+  checked = []
+
+  def danger_at_second_lead(mpc, obstacle, *args):
+    margins = danger_margin(mpc, obstacle, *args)
+    if obstacle[0] > 40.0 and np.any(mpc.yref[:,4]):
+      margins[-1] = -0.01
+      checked.append(True)
+    return margins
+
+  monkeypatch.setattr(mpc_class, 'danger_margin', danger_at_second_lead)
+  second_lead = SimpleNamespace(status=True, radar=True, radarTrackId=51, dRel=50.0, vLead=7.0, vRel=-3.0,
+                                aLeadK=-1.3, aLeadTau=0.0, modelProb=1.0)
+  rejected = run_update(mpc_class, gap_enabled=True, second_lead=second_lead, **inputs)
+  assert checked
+  np.testing.assert_array_equal(rejected.yref[:,4], 0.0)
+
+  def solve_with_less_clearance(mpc, **kwargs):
+    mpc.x_sol[-1, 0] = 0.1 if np.any(mpc.yref[:,4]) else 0.0
+    return solve(mpc, **kwargs)
+
+  monkeypatch.setattr(mpc_class, 'run', solve_with_less_clearance)
+  rejected = run_update(mpc_class, gap_enabled=True, **inputs)
+  np.testing.assert_array_equal(rejected.yref[:,4], 0.0)
+  assert rejected.x_sol[-1, 0] == 0.0
 
 
 @pytest.mark.parametrize('level', range(6))

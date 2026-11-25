@@ -311,6 +311,10 @@ impl Vision {
             let swap = &self.rules[side].swap;
             for (part, seen) in held.seen.iter().enumerate() {
                 let index = 1 + side + 2 * part; // LF, RF, LR, RR
+                if part == 1 && radar[index].is_some_and(|s| s.vid == 0) {
+                    self.swapped[index - 1] = Swapped::default();
+                    continue;
+                }
                 let Some(seen) = seen else {
                     self.swapped[index - 1] = Swapped::default();
                     continue;
@@ -444,6 +448,28 @@ mod placement_tests {
             kind_wanted: false,
             vision: VISION_NONE,
         }
+    }
+
+    #[test]
+    fn bsd_immediately_replaces_an_existing_wide_camera_rear_slot() {
+        let mut vision = Vision::default();
+        vision.held[1] = Some(Held {
+            arrival: 1.,
+            seen: [None, Some(Seen { world: (-2., -3.), run: 2, cut: false })],
+        });
+        let apply = |vision: &mut Vision, now, slots: &mut [Option<Slot>; 5]| {
+            vision.apply(now, 0., PoseAt::default(), [false; 5], slots);
+        };
+        let mut slots = [None; 5];
+        apply(&mut vision, 1., &mut slots);
+        assert_eq!(slots[4].unwrap().vision, VISION_ONLY);
+        assert!(vision.swapped[3].camera);
+
+        let bsd = Slot { vid: 0, distance: 0., lateral: -3., ..radar_slot() };
+        slots[4] = Some(bsd);
+        apply(&mut vision, 1.05, &mut slots);
+        assert_eq!(slots[4], Some(bsd));
+        assert_eq!(vision.swapped[3], Swapped::default());
     }
 
     #[test]

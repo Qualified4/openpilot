@@ -404,16 +404,12 @@ class LongitudinalMpc:
     self.jerk_cost_factor = float(applied_jerk_cost_factor if self.mode == 'acc' else 1.0)
     self.set_cost_weights(cost_weights, constraint_cost_weights)
 
-  def update_predicted_danger_margin(self, lead, lead_obstacle, t_follow, comfort_brake, stop_distance, lead_gap=None):
-    self.predicted_danger_margin = 1e3
-    if lead.status:
-      if lead_gap is None:
-        safe_distance = get_safe_obstacle_distance(self.x_sol[:,1], t_follow, comfort_brake, stop_distance)
-        danger_margin = lead_obstacle - self.x_sol[:,0] - self.lead_danger_factor * safe_distance
-      else:
-        danger_margin = (lead_obstacle - self.x_sol[:,0]
-                         - lead_gap.danger_factor * gap_safe.safe_distance(self.x_sol[:,1], lead_gap, stop_distance))
-      self.predicted_danger_margin = float(np.min(danger_margin[PRED_DANGER_IDXS]))
+  def danger_margin(self, lead_obstacle, t_follow, comfort_brake, stop_distance, lead_gap):
+    if lead_gap is None:
+      safe_distance = get_safe_obstacle_distance(self.x_sol[:,1], t_follow, comfort_brake, stop_distance)
+      return lead_obstacle - self.x_sol[:,0] - self.lead_danger_factor * safe_distance
+    return (lead_obstacle - self.x_sol[:,0]
+            - lead_gap.danger_factor * gap_safe.safe_distance(self.x_sol[:,1], lead_gap, stop_distance))
 
   def set_cur_state(self, v, a):
     v_prev = self.x0[1]
@@ -869,11 +865,7 @@ class LongitudinalMpc:
         accel_ref_delta = soft_brake.soft_brake_reference_delta(
           T_IDXS, self.prev_a, weight=weight, closing=closing, danger_margin=self.predicted_danger_margin,
         )
-        self.yref[:,4] = np.where(binding == 0, accel_ref_delta, 0.0)
     self.yref[:,5] = j
-    for i in range(N):
-      self.solver.set(i, "yref", self.yref[i])
-    self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
 
     danger_factor_default = float(self.params[0,5])
     def set_obstacle_params(binding):
@@ -893,7 +885,52 @@ class LongitudinalMpc:
 
     self.t_follow = lead_t_follow
 
-    self.run()
+    real_obstacles = [
+      (obstacle, gap)
+      for lead, obstacle, gap in zip(
+        (radarstate.leadOne, radarstate.leadTwo), (lead_0_obstacle, lead_1_obstacle), lead_gaps, strict=True)
+      if lead.status
+    ]
+
+    def solver_iterate():
+      return [(i, field, self.solver.get(i, field))
+              for field, stages in (("x", N+1), ("u", N), ("pi", N), ("lam", N+1), ("sl", N+1), ("su", N+1))
+              for i in range(stages)]
+
+    def restore_iterate(iterate):
+      for i, field, value in iterate:
+        self.solver.set(i, field, value)
+
+    def solve_with_brake_reference():
+      if accel_ref_delta is not None:
+        self.yref[:,4] = np.where(binding == 0, accel_ref_delta, 0.0)
+      if not np.any(self.yref[:,4]):
+        self.run()
+        return
+
+      # A rejected trial must not change the SQP-RTI iterate used for the zero-residual solution.
+      iterate = solver_iterate()
+      self.run(reset_on_failure=False)
+      trial_ok = self.solution_status == 0 and all(
+        np.all(self.danger_margin(obstacle, t_follow, comfort_brake, stop_distance, gap) >= 0.0)
+        for obstacle, gap in real_obstacles
+      )
+      if trial_ok:
+        trial_x, trial_u = self.x_sol.copy(), self.u_sol.copy()
+        trial_prev_a, trial_ref = self.prev_a.copy(), self.yref[:,4].copy()
+        trial_iterate = solver_iterate()
+
+      restore_iterate(iterate)
+      self.yref[:,4] = 0.0
+      status = self.rerun()
+      # With the current lead trajectories fixed, no node may lose physical gap or gain closing speed.
+      if trial_ok and status == 0 and np.all(trial_x[:,:2] <= self.x_sol[:,:2] + 1e-10):
+        self.x_sol[:], self.u_sol[:] = trial_x, trial_u
+        self.prev_a = trial_prev_a
+        self.yref[:,4] = trial_ref
+        restore_iterate(trial_iterate)
+
+    solve_with_brake_reference()
     if np.any(comfort_reliefs) and self.solution_status == 0 and any(state.relief > 0.0 for state in self.lead_comfort_states):
       # The previous trajectory only admits a trial. Validate the resulting
       # trajectory too, and resolve once without slack if it spends the reserve.
@@ -916,22 +953,15 @@ class LongitudinalMpc:
         binding = bind_obstacles(x_targets, preferred_targets(bind_margins))
         set_obstacle_params(binding)
         self.yref[:,0] = binding_reference(x_targets, preferred, binding, gap_v)
-        if accel_ref_delta is not None:
-          self.yref[:,4] = np.where(binding == 0, accel_ref_delta, 0.0)
-        for i in range(N):
-          self.solver.set(i, "yref", self.yref[i])
-        self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
         self.desired_distance = displayed_follow_distance(
           self.base_desired_distances, np.array([lead_0_obstacle[0], lead_1_obstacle[0]]),
           x_obstacles[0, :2], self.lead_gap_margins[0] - display_margins[0], (radarstate.leadOne.status, radarstate.leadTwo.status))
-        trial_times = (self.solve_time, self.time_qp_solution, self.time_linearization, self.time_integrator)
-        self.run()
-        self.solve_time += trial_times[0]
-        self.time_qp_solution += trial_times[1]
-        self.time_linearization += trial_times[2]
-        self.time_integrator += trial_times[3]
+        self.rerun(solve_with_brake_reference)
     if mode == 'acc':
-      self.update_predicted_danger_margin(radarstate.leadOne, lead_0_obstacle, t_follow, comfort_brake, stop_distance, lead_gap)
+      self.predicted_danger_margin = min(
+        (float(np.min(self.danger_margin(obstacle, t_follow, comfort_brake, stop_distance, gap)[PRED_DANGER_IDXS]))
+         for obstacle, gap in real_obstacles), default=1e3,
+      )
 
     if (np.any(lead_xv_0[FCW_IDXS,0] - self.x_sol[FCW_IDXS,0] < CRASH_DISTANCE) and
             radarstate.leadOne.modelProb > 0.9):
@@ -954,19 +984,34 @@ class LongitudinalMpc:
          (lead_1_obstacle[0] - lead_0_obstacle[0]):
         self.source = 'lead1'
 
-  def run(self):
+  def rerun(self, solve=None):
+    trial_times = (self.solve_time, self.time_qp_solution, self.time_linearization, self.time_integrator)
+    status = (self.run if solve is None else solve)()
+    self.solve_time += trial_times[0]
+    self.time_qp_solution += trial_times[1]
+    self.time_linearization += trial_times[2]
+    self.time_integrator += trial_times[3]
+    return status
+
+  def run(self, *, reset_on_failure=True):
     # t0 = time.monotonic()
     # reset = 0
     for i in range(N+1):
       self.solver.set(i, 'p', self.params[i])
+    for i in range(N):
+      self.solver.set(i, "yref", self.yref[i])
+    self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
     self.solver.constraints_set(0, "lbx", self.x0)
     self.solver.constraints_set(0, "ubx", self.x0)
 
     self.solution_status = self.solver.solve()
+    status = self.solution_status
     self.solve_time = float(self.solver.get_stats('time_tot')[0])
     self.time_qp_solution = float(self.solver.get_stats('time_qp')[0])
     self.time_linearization = float(self.solver.get_stats('time_lin')[0])
     self.time_integrator = float(self.solver.get_stats('time_sim')[0])
+    if self.solution_status != 0 and not reset_on_failure:
+      return status
 
     # qp_iter = self.solver.get_stats('statistics')[-1][-1] # SQP_RTI specific
     # print(f"long_mpc timings: tot {self.solve_time:.2e}, qp {self.time_qp_solution:.2e}, lin {self.time_linearization:.2e}, \
@@ -995,6 +1040,9 @@ class LongitudinalMpc:
       # reset = 1
     # print(f"long_mpc timings: total internal {self.solve_time:.2e}, external: {(time.monotonic() - t0):.2e} qp {self.time_qp_solution:.2e}, \
     # lin {self.time_linearization:.2e} qp_iter {qp_iter}, reset {reset}")
+
+
+    return status
 
 
 if __name__ == "__main__":

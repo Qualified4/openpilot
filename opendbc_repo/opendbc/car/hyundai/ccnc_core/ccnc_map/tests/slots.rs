@@ -224,15 +224,26 @@ fn lead_one_respects_lane_and_range() {
 #[test]
 fn the_display_lead_draws_a_standing_car_the_radar_has_not_proven_in_ff_only() {
     let world = road();
-    let unproven = |vid, x, r| Vehicle { flags: Flags::default(), vx: 0., ..vehicle(&world, vid, 0., x, r) };
+    let unproven = |vid, now, x, r| Vehicle { flags: Flags::default(), vx: 0., ..vehicle(&world, vid, now, x, r) };
     // A bus standing 15 m ahead in ego's lane, never seen moving (0000047f 12 39.4 s).
-    let cars = [unproven(1, 15., 0.), unproven(2, 6., 1.)];
+    let cars = |now| [unproven(1, now, 15., 0.), unproven(2, now, 6., 1.)];
     let vids = |slots: [Option<Slot>; 5]| slots.map(|s| s.map(|s| s.vid));
-    assert_eq!(vids(Assigner::default().update(0., &cars, &world, Some((15., 0.)))), [None; 5]);
-    assert_eq!(vids(Assigner::default().update_lead(0., &cars, &world, None)), [None; 5]);
-    assert_eq!(vids(Assigner::default().update_lead(0., &cars, &world, Some((15.5, 0.3, 0.)))), [Some(1), None, None, None, None]);
+    assert_eq!(vids(Assigner::default().update(0., &cars(0.), &world, Some((15., 0.)))), [None; 5]);
+    assert_eq!(vids(Assigner::default().update_lead(0., &cars(0.), &world, None)), [None; 5]);
+    let mut assigner = Assigner::default();
+    let lead = Some((15.5, 0.3, 0.));
+    for i in 0..=8 {
+        let now = i as f64 * 0.05;
+        let expected = (i >= 7).then_some(1);
+        assert_eq!(vids(assigner.update_lead(now, &cars(now), &world, lead)), [expected, None, None, None, None]);
+    }
+    // Temporary lead loss keeps the same current observation. The hold expires with continued loss.
+    for (i, expected) in [(9, Some(1)), (28, None)] {
+        let now = i as f64 * 0.05;
+        assert_eq!(vids(assigner.update_lead(now, &cars(now), &world, None)), [expected, None, None, None, None]);
+    }
     // A lead outside ego's lane qualifies nothing, and the unproven side car stays hidden.
-    assert_eq!(vids(Assigner::default().update_lead(0., &cars, &world, Some((6., -3.5, 0.)))), [None; 5]);
+    assert_eq!(vids(Assigner::default().update_lead(0., &cars(0.), &world, Some((6., -3.5, 0.)))), [None; 5]);
 }
 
 #[test]
@@ -243,11 +254,16 @@ fn the_display_lead_qualifies_no_standing_object_where_it_measures_a_moving_car(
     world.model(0., &model(0., 0., 0.));
     world.car_state(0., 4.3, false);
     world.radar(0.);
-    let standing = || Vehicle { flags: Flags::default(), vx: 0., ..vehicle(&world, 1, 0., 8., 0.) };
+    let standing = |now| Vehicle { flags: Flags::default(), vx: 0., ..vehicle(&world, 1, now, 8., 0.) };
     let vids = |slots: [Option<Slot>; 5]| slots.map(|s| s.map(|s| s.vid));
-    assert_eq!(vids(Assigner::default().update_lead(0., &[standing()], &world, Some((7.7, 0., 0.)))), [None; 5]);
-    // The lead measuring it standing (vRel -4.3) still draws it.
-    assert_eq!(vids(Assigner::default().update_lead(0., &[standing()], &world, Some((7.7, 0., -4.3)))), [Some(1), None, None, None, None]);
+    for (lead_speed, expected) in [(0., None), (-4.3, Some(1))] {
+        let mut assigner = Assigner::default();
+        for i in 0..=8 {
+            let now = i as f64 * 0.05;
+            let slots = assigner.update_lead(now, &[standing(now)], &world, Some((7.7, 0., lead_speed)));
+            assert_eq!(vids(slots), [if i >= 7 { expected } else { None }, None, None, None, None]);
+        }
+    }
 }
 
 #[test]
@@ -680,7 +696,12 @@ fn a_side_car_the_model_puts_in_ego_s_lane_is_drawn_in_ff() {
     let world = road();
     let mut assigner = Assigner::default();
     assigner.set_model_lane(Some(model_lane()));
-    let slots = assigner.update(0., &[drifted(&world, 20., 0.4)], &world, None);
+    let mut slots = [None; 5];
+    for i in 0..=8 {
+        let now = i as f64 * 0.05;
+        let car = Vehicle { seen_radar: now, ..drifted(&world, 20., 0.4) };
+        slots = assigner.update(now, &[car], &world, None);
+    }
     assert_eq!(vids(slots), [Some(1), None, None, None, None]);
     // Drawn where the radar measures it, not a lane over.
     assert!((slots[FF].unwrap().lateral - 0.4).abs() < 0.3, "{:?}", slots[FF]);
@@ -1305,12 +1326,15 @@ fn the_display_lead_qualifies_an_unproven_car_inside_the_model_lane_but_no_struc
     let world = road();
     let mut assigner = Assigner::default();
     assigner.set_model_lane(Some(model_lane()));
-    let car = Vehicle { flags: Flags::default(), ..drifted(&world, 20., 0.4) };
-    let rail = Vehicle { vid: 2, flags: Flags { structure: true, ..Flags::default() }, ..vehicle(&world, 2, 0., 19., 0.) };
-    let cars = [rail, car];
-    let slots = assigner.update_lead(0., &cars, &world, Some((19., 0., 20.)));
-    assert_eq!(vids(slots), [Some(1), None, None, None, None]);
-    assert_eq!(vids(assigner.update_lead(0., &cars[..1], &world, Some((19., 0., 20.)))), [None; 5]);
+    let car = |now| Vehicle { seen_radar: now, flags: Flags::default(), ..drifted(&world, 20., 0.4) };
+    let rail = |now| Vehicle { flags: Flags { structure: true, ..Flags::default() }, ..vehicle(&world, 2, now, 19., 0.) };
+    let lead = Some((19., 0., 20.));
+    for i in 0..=16 {
+        let now = i as f64 * 0.05;
+        let slots = assigner.update_lead(now, &[rail(now), car(now)], &world, lead);
+        assert_eq!(vids(slots), [if i >= 14 { Some(1) } else { None }, None, None, None, None]);
+    }
+    assert_eq!(vids(assigner.update_lead(0.85, &[rail(0.85)], &world, lead)), [None; 5]);
 }
 
 #[test]
@@ -1318,9 +1342,19 @@ fn a_model_lane_car_enters_inside_the_margin_and_only_leaves_across_a_line() {
     let world = road();
     let mut assigner = Assigner::default();
     assigner.set_model_lane(Some(model_lane()));
-    for (i, (x, y, ff)) in [(20., 1.3, true), (20., 1.55, true), (52., 1.55, true),
-        (52., 1.75, false), (52., 1.3, false), (20., 1.3, true), (4.5, 1.55, true)].into_iter().enumerate()
-    {
+    for i in 0..=54 {
+        let (x, y, ff) = match i {
+            0..=6 => (20., 1.3, false),
+            7..=8 => (20., 1.3, true),
+            9 => (20., 1.55, true),
+            10 => (52., 1.55, true),
+            11..=15 => (52., 1.75, true),
+            16 => (52., 1.55, true),
+            17..=36 => (52., 1.75, true),
+            37..=45 => (52., 1.75, false),
+            46..=53 => (52., 1.3, false),
+            _ => (4.5, 1.55, false),
+        };
         let now = i as f64 * 0.05;
         let car = Vehicle { seen_radar: now, ..drifted(&world, x, y) };
         let slots = assigner.update(now, std::slice::from_ref(&car), &world, None);

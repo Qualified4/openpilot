@@ -438,7 +438,7 @@ impl Pipeline {
         self.kinds.apply(now, self.world.radar_pose(now).heading, self.tracker.vehicles_mut());
         let cars = self.tracker.vehicles();
         self.slots.set_model_lane(self.model_lane(stamp));
-        let mut slots = self.slots.update_lead(now, cars, &self.world, display_lead.map(|lead| lead.motion));
+        let mut slots = self.slots.update_display_lead(now, cars, &self.world, display_lead);
         let remembered = if holding {
             // The map's 0.15 s freshness, not the selector's 0.3 s prediction hold, decides when memory takes over.
             let (map, frame) = (&self.radar, self.radar.frame());

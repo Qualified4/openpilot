@@ -1,6 +1,7 @@
 //! Assign FF, LF, RF, LR, RR from the reflection-corrected world lane coordinate.
 
 use crate::display::{draw_road_frame, HeadingTerm};
+use crate::input::map_events::DisplayLead;
 use crate::pos::common::{Track, LANE_WIDTH, LEAD_GATE_X, LEAD_GATE_Y};
 use crate::radar::lanes::interpolate;
 use crate::vehicles::{Link, Vehicle, MAX_VEHICLES};
@@ -12,6 +13,9 @@ const INNER_RADIUS: f64 = 0.48;
 const OUTER_RADIUS: f64 = 0.35;
 const OBSERVATION_MAX_AGE: f64 = 0.15;
 const FF_PREFERENCE_M: f32 = 1.0;
+const FF_CONFIRM_S: f64 = 0.35;
+const FF_HOLD_S: f64 = 1.0;
+const FF_BOUNDARY_MAX_EGO_SPEED: f64 = 0.5;
 /// The legacy selector's stop memory range ahead (`Consts::memory_max_x`); the map keeps LF and RF at x >= 0.
 const MEMORY_MAX_X: f64 = 15.;
 /// Two cars in one side lane: the nearer one, this close ahead or less, is drawn alongside in that side's rear slot.
@@ -63,6 +67,7 @@ const ONCOMING_FF_EGO_SPEED: f64 = 2.;
 /// 0.4 s. The leads that qualified real cars standing ahead measured them: 47f 12 the bus (vRel -6, the car -6), 47d 0
 /// and 10-11 standing cars.
 const LEAD_SPEED_MATCH: f64 = 2.;
+const UNPROVEN_LEAD_MIN_PROB: f64 = 0.6;
 const EPS: f64 = 1e-9;
 /// `ModelLane`: the legacy selector's ego lane between the model's two ego lines (`_lane`, a153574e
 /// hyundaicanfd_ccnc_radar_map.py 446-460), from lines this probable, this far ahead, this wide, with this margin
@@ -180,6 +185,8 @@ struct Drawing {
     seen: f64,
     radar: Option<Track>,
     into_ff: bool,
+    ff_change_since: Option<f64>,
+    lane_entry_since: Option<f64>,
     /// The vid once moved at `MOVED` or faster.
     fast: bool,
 }
@@ -194,6 +201,8 @@ impl Drawing {
             seen: now,
             radar: None,
             into_ff: false,
+            ff_change_since: None,
+            lane_entry_since: None,
             fast: false,
         }
     }
@@ -203,6 +212,24 @@ impl Drawing {
         let outward = self.lane.abs() == 1 && lane == 2 * self.lane;
         if (r - f64::from(lane)).abs() <= if outward { OUTER_RADIUS } else { INNER_RADIUS } {
             self.lane = lane;
+        }
+    }
+
+    fn update_model_ff(&mut self, now: f64, can_hold: bool, lane: Option<&ModelLane>, x: f64, y: f64, confirmed: bool) {
+        if !can_hold {
+            self.into_ff = false;
+            self.ff_change_since = None;
+            return;
+        }
+        let inside = lane.is_some_and(|lane| lane.contains_for(x, y, self.into_ff));
+        if inside == self.into_ff {
+            self.ff_change_since = None;
+        } else {
+            let since = *self.ff_change_since.get_or_insert(now);
+            if (inside && confirmed) || now - since >= if inside { FF_CONFIRM_S } else { FF_HOLD_S } {
+                self.into_ff = inside;
+                self.ff_change_since = None;
+            }
         }
     }
 }
@@ -226,6 +253,9 @@ pub struct Assigner {
     generation: u32,
     drawings: Vec<Drawing>,
     previous_ff: Option<u32>,
+    ff_lead: Option<(u32, f64)>,
+    ff_lead_pending: Option<(u32, f64)>,
+    measured_lead_since: Option<(u32, f64)>,
     /// The last radar car drawn in LF and RF within the stop memory's range, with its world position from ego's pose
     /// at that time. A farther car passing through the slot cannot be remembered and does not replace it.
     side_last: [Option<(Slot, (f64, f64))>; 2],
@@ -253,6 +283,9 @@ impl Default for Assigner {
             generation: 0,
             drawings: Vec::with_capacity(MAX_VEHICLES),
             previous_ff: None,
+            ff_lead: None,
+            ff_lead_pending: None,
+            measured_lead_since: None,
             side_last: [None; 2],
             runner_up: [None; 2],
             alongside: [None; 2],
@@ -278,8 +311,8 @@ fn shown_kind(car: &Vehicle) -> Option<crate::vehicles::Kind> {
 impl Assigner {
     pub const HEADING_TERM: HeadingTerm = HeadingTerm::RoadFrame;
 
-    /// Ego's lane by the model for the next updates, or None while the model's lines are not to be trusted (missing,
-    /// below `MODEL_LANE_PROB`, stale, or ego changing lanes): the world map's lane alone picks the slots then.
+    /// Ego's lane by the model for the next updates. An existing promotion can ride out a brief loss of the lines
+    /// while the car is still measured. During an ego lane change the world map picks the slots.
     pub fn set_model_lane(&mut self, lane: Option<ModelLane>) {
         self.model_lane = lane;
     }
@@ -294,7 +327,7 @@ impl Assigner {
     /// The lead is (dRel, yRel) at the radar sensor, lateral positive to the left; it only prefers among the radar's
     /// proven cars.
     pub fn update(&mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<(f64, f64)>) -> [Option<Slot>; 5] {
-        self.update_with(now, vehicles, world, lead, None)
+        self.update_with(now, vehicles, world, lead, None, None)
     }
 
     /// `update` with radarState's display lead (`Event::display_lead`): the radar car at that lead may be drawn in FF
@@ -304,7 +337,16 @@ impl Assigner {
     /// ahead and the lead, FF blank for 59 s. FF only: LF and RF keep the radar's own proof. The lead is (dRel, yRel,
     /// vRel), and qualifies a car only at its speed (`LEAD_SPEED_MATCH`).
     pub fn update_lead(&mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<(f64, f64, f64)>) -> [Option<Slot>; 5] {
-        self.update_with(now, vehicles, world, lead.map(|(x, y, _)| (x, y)), lead.map(|(_, _, v)| v))
+        self.update_with(now, vehicles, world, lead.map(|(x, y, _)| (x, y)), lead.map(|(_, _, v)| v), None)
+    }
+
+    pub(crate) fn update_display_lead(
+        &mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<DisplayLead>,
+    ) -> [Option<Slot>; 5] {
+        self.update_with(
+            now, vehicles, world, lead.map(|lead| (lead.motion.0, lead.motion.1)),
+            lead.map(|lead| lead.motion.2), lead,
+        )
     }
 
     fn update_with(
@@ -314,22 +356,38 @@ impl Assigner {
         world: &World,
         lead: Option<(f64, f64)>,
         lead_v_rel: Option<f64>,
+        display_lead: Option<DisplayLead>,
     ) -> [Option<Slot>; 5] {
         if self.generation != world.generation() {
             self.generation = world.generation();
             self.drawings.clear();
             self.previous_ff = None;
+            self.ff_lead = None;
+            self.ff_lead_pending = None;
+            self.measured_lead_since = None;
             self.side_last = [None; 2];
             self.clear_split();
             self.edge_hidden.clear();
             self.side_lateral = [None; 2];
         }
         if !now.is_finite() || !world.accepts_radar() || !world.u_ego().is_finite() {
+            self.ff_lead = None;
+            self.ff_lead_pending = None;
+            self.measured_lead_since = None;
             self.clear_split();
             return [None; 5];
         }
         self.drawings.retain(|d| now - d.seen <= 2.);
         self.edge_hidden.retain(|h| (0. ..=EDGE_PLACE_S).contains(&(now - h.0)));
+        let lead_track = display_lead.and_then(|lead| lead.measured_track);
+        let supported_lead = display_lead.filter(|lead| (UNPROVEN_LEAD_MIN_PROB..=1.).contains(&lead.model_prob));
+        self.measured_lead_since = lead_track.map(|id| match self.measured_lead_since {
+            Some((track_id, since)) if id == track_id => (id, since),
+            _ => (id, now),
+        });
+        let stable_radar_lead = self.measured_lead_since
+            .filter(|&(_, since)| now - since >= FF_CONFIRM_S)
+            .map(|(id, _)| id);
         let ego = world.pose.at(now);
         // Radar cars sit in the world at the pose RADAR_LAG before `now`. Measure their distance and side from that
         // same pose, so the slot distance is the radar's dRel rather than dRel minus ego's travel over RADAR_LAG.
@@ -337,10 +395,12 @@ impl Assigner {
         let yaw = world.yaw_at(now);
         let current = |stamp: f64| current(world, now, stamp);
         let (sin, cos) = ego.heading.sin_cos();
-        let mut followed: Option<((f64, f64, u32), Slot)> = None;
+        let mut followed: Option<((f64, f64, u32), Slot, bool)> = None;
+        let mut confirmed_lead = None;
         let mut previous = None;
         let mut best: [Option<Slot>; 5] = [None; 5];
         let mut second: [Option<Slot>; 2] = [None; 2];
+        let changing = world.ego_changing();
         for car in vehicles {
             if !current(car.seen_radar.max(car.seen_vision)) {
                 continue;
@@ -357,19 +417,40 @@ impl Assigner {
                 Err(_) => continue,
             };
             let drawing = &mut self.drawings[i];
+            if now - drawing.seen > OBSERVATION_MAX_AGE {
+                drawing.into_ff = false;
+                drawing.ff_change_since = None;
+                drawing.lane_entry_since = None;
+            }
             drawing.seen = now;
+            let original_lane = drawing.lane;
             drawing.observe_lane(r_slot);
-            drawing.fast |= speed.abs() >= MOVED;
-            let still = now - car.born >= SETTLED_S && !drawing.fast;
-            let v_rel = speed - world.pose.speed();
-            let opening_gap = ((v_rel - 0.5) / 1.5).clamp(0., 1.);
-            let mut lateral_target = -LANE_WIDTH * r;
             let measured = x >= 0. && car.radar_id.is_some() && current(car.seen_radar);
             let (rx, ry) = radar.to_ego(f64::from(car.wx), f64::from(car.wy));
+            let v_rel = speed - world.pose.speed();
+            let matching_track = measured && lead_track.is_some() && car.radar_id == lead_track;
+            let confirmed_position = matching_track && lead.zip(lead_v_rel).is_some_and(|((dx, dy), dv)| {
+                (rx - dx).abs() <= LEAD_GATE_X && (ry - dy).abs() <= LEAD_GATE_Y && (v_rel - dv).abs() <= LEAD_SPEED_MATCH
+            });
+            let entering_ff = original_lane.abs() == 1 && drawing.lane == 0;
+            // At low speed a moving map boundary can briefly put a stopped side car in FF.
+            let boundary_entry = entering_ff && measured && !changing && world.pose.speed().abs() < FF_BOUNDARY_MAX_EGO_SPEED
+                && ry.abs() >= LANE_WIDTH / 2. && !confirmed_position;
+            if boundary_entry {
+                if now - *drawing.lane_entry_since.get_or_insert(now) < FF_CONFIRM_S {
+                    drawing.lane = original_lane;
+                }
+            } else {
+                drawing.lane_entry_since = None;
+            }
+            drawing.fast |= speed.abs() >= MOVED;
+            let still = now - car.born >= SETTLED_S && !drawing.fast;
+            let opening_gap = ((v_rel - 0.5) / 1.5).clamp(0., 1.);
+            let mut lateral_target = -LANE_WIDTH * r;
             // A side lane car the model puts in ego's lane is drawn in FF where the radar measures it.
-            drawing.into_ff = measured
-                && drawing.lane.abs() == 1
-                && self.model_lane.as_ref().is_some_and(|lane| lane.contains_for(rx, ry, drawing.into_ff));
+            let can_hold = measured && !changing && drawing.lane.abs() == 1 && MODEL_LANE_KEEP_X.contains(&rx);
+            let confirmed_boundary = confirmed_position && (self.previous_ff == Some(car.vid) || r_slot.abs() <= 0.5);
+            drawing.update_model_ff(now, can_hold, self.model_lane.as_ref(), rx, ry, confirmed_boundary);
             if drawing.into_ff {
                 lateral_target = ry;
             }
@@ -455,14 +536,23 @@ impl Assigner {
                 vision: VISION_NONE,
             };
             if slot == 0 {
+                if measured && self.ff_lead.is_some_and(|(vid, _)| vid == car.vid) {
+                    confirmed_lead = Some(candidate);
+                }
                 if let Some((dx, dy)) = lead.filter(|_| current(car.seen_radar)) {
                     let (ex, ey) = ((rx - dx).abs(), (ry - dy).abs());
                     let rank = (ex, ey, car.vid);
-                    let qualifies = eligible(car) || lead_v_rel.is_some_and(|v| (v_rel - v).abs() <= LEAD_SPEED_MATCH);
+                    let speed_matches = lead_v_rel.is_some_and(|v| (v_rel - v).abs() <= LEAD_SPEED_MATCH);
+                    // Model agreement and matching radar ID keep weak static reflections out of FF.
+                    let supports_unproven = display_lead.is_none() || (supported_lead.is_some() && matching_track);
+                    let qualifies = eligible(car) || (supports_unproven && speed_matches);
                     if qualifies && ex <= LEAD_GATE_X && ey <= LEAD_GATE_Y
-                        && followed.is_none_or(|(old, _)| rank < old)
+                        && followed.is_none_or(|(old, ..)| rank < old)
                     {
-                        followed = Some((rank, candidate));
+                        let corroborated = matching_track && speed_matches
+                            && (stable_radar_lead.is_some() || now - car.born >= FF_CONFIRM_S
+                                || (ex <= 1. && ey <= 0.5));
+                        followed = Some((rank, candidate, corroborated));
                     }
                 }
                 if !eligible(car) {
@@ -484,10 +574,41 @@ impl Assigner {
         }
         // Apply the lead preference among drawable FF candidates. A truck can produce two nearby radar tracks;
         // if the lead moves between them, let the previous FF keep the preference.
-        let followed = followed.map(|(_, slot)| slot);
-        let preferred = match (followed, previous) {
+        let preferred_lead = if lead_v_rel.is_none() && lead.is_some() {
+            // Callers supplying only a position retain the radar-only selector.
+            self.ff_lead_pending = None;
+            followed.map(|(_, slot, _)| slot)
+        } else {
+            // Only current radar observations can survive a brief change in the matched lead.
+            if let Some((_, slot, corroborated)) = followed {
+                let since = match self.ff_lead_pending {
+                    Some((vid, since)) if vid == slot.vid => since,
+                    _ => now,
+                };
+                let current = self.ff_lead.is_some_and(|(vid, _)| vid == slot.vid);
+                let holding = confirmed_lead.is_some()
+                    && self.ff_lead.is_some_and(|(_, last)| now - last < FF_HOLD_S);
+                // A closer, corroborated display lead may enter as soon as it is drawable.
+                let closer = confirmed_lead.is_some_and(|old| slot.distance < old.distance);
+                if current || (corroborated && (closer || !holding)) || (!holding && now - since >= FF_CONFIRM_S) {
+                    self.ff_lead = Some((slot.vid, now));
+                    self.ff_lead_pending = None;
+                    confirmed_lead = Some(slot);
+                } else {
+                    self.ff_lead_pending = Some((slot.vid, since));
+                }
+            } else {
+                self.ff_lead_pending = None;
+            }
+            if confirmed_lead.is_none() || self.ff_lead.is_some_and(|(_, last)| now - last >= FF_HOLD_S) {
+                self.ff_lead = None;
+                confirmed_lead = None;
+            }
+            confirmed_lead
+        };
+        let preferred = match (preferred_lead, previous) {
             (Some(lead), Some(prev)) if twins(vehicles, world, radar, current, lead.vid, prev.vid) => Some(prev),
-            _ => followed.or(previous),
+            _ => preferred_lead.or(previous),
         };
         if let Some(pref) = preferred {
             if best[0].is_none_or(|old| (pref.distance - FF_PREFERENCE_M, pref.vid) < (old.distance, old.vid)) {
