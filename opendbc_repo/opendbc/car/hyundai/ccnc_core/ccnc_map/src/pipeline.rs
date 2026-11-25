@@ -99,7 +99,7 @@ pub struct Pipeline {
     car: Option<(u64, CarState)>,
     model_stamp: Option<u64>,
     /// radarState at its time: leadOne for the radar map, the display lead (`Event::display_lead`) for FF.
-    lead: Option<(u64, Option<(f64, f64)>, Option<(f64, f64)>)>,
+    lead: Option<(u64, Option<(f64, f64)>, Option<(f64, f64, f64)>)>,
     vision: Vision,
     start_guard: det_rules::StartGuard,
     tracks_at: History<Vec<vision::Track>>,
@@ -266,8 +266,8 @@ impl Pipeline {
             }
             RADAR_STATE => {
                 if self.lead.is_none_or(|(last, _, _)| stamp >= last) {
-                    let valid = |lead: Option<(f64, f64)>| lead.filter(|_| event.valid);
-                    self.lead = Some((stamp, valid(event.lead()), valid(event.display_lead())));
+                    let display = event.display_lead().filter(|_| event.valid);
+                    self.lead = Some((stamp, event.lead().filter(|_| event.valid), display));
                 }
             }
             EVENT_LIVE_TRACKS if self.last_tracks.is_none_or(|last| stamp > last) => {

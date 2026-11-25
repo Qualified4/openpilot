@@ -53,6 +53,12 @@ const EDGE_PLACE_Y: f64 = 0.7;
 /// for 1 s at 10 km/h. A car standing ahead is never oncoming; while ego waits FF still draws crossing traffic.
 const ONCOMING_FF_M: f64 = 15.;
 const ONCOMING_FF_EGO_SPEED: f64 = 2.;
+/// The display lead qualifies the car it matches only moving like it: their speeds relative to ego this close (m/s).
+/// 0000047f 1 56.0 s: radarState's lead jumped to 7.7 m with yRel 0, vRel 0 and radarTrackId 0 (going at ego's
+/// 4.3 m/s), on a curve, and qualified a guard rail object standing there (ground speed 0.1 m/s, never proven) in FF for
+/// 0.4 s. The leads that qualified real cars standing ahead measured them: 47f 12 the bus (vRel -6, the car -6), 47d 0
+/// and 10-11 standing cars.
+const LEAD_SPEED_MATCH: f64 = 2.;
 const EPS: f64 = 1e-9;
 /// `ModelLane`: the legacy selector's ego lane between the model's two ego lines (`_lane`, a153574e
 /// hyundaicanfd_ccnc_radar_map.py 446-460), from lines this probable, this far ahead, this wide, with this margin
@@ -257,16 +263,17 @@ impl Assigner {
     /// The lead is (dRel, yRel) at the radar sensor, lateral positive to the left; it only prefers among the radar's
     /// proven cars.
     pub fn update(&mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<(f64, f64)>) -> [Option<Slot>; 5] {
-        self.update_with(now, vehicles, world, lead, false)
+        self.update_with(now, vehicles, world, lead, None)
     }
 
     /// `update` with radarState's display lead (`Event::display_lead`): the radar car at that lead may be drawn in FF
     /// though the radar has not proven it a vehicle by motion or Doppler, as card drew the control lead in FF before
     /// the map (`_apply_ccnc_lead`, 93c5c6af). A car or bus standing ahead in ego's lane: 0000047f 12 39.4 s, a bus
     /// stopped 18-13 m ahead and the lead, FF blank for 0.87 s until it rolled; 0000047d 10-11, a car standing 40-4 m
-    /// ahead and the lead, FF blank for 59 s. FF only: LF and RF keep the radar's own proof.
-    pub fn update_lead(&mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<(f64, f64)>) -> [Option<Slot>; 5] {
-        self.update_with(now, vehicles, world, lead, true)
+    /// ahead and the lead, FF blank for 59 s. FF only: LF and RF keep the radar's own proof. The lead is (dRel, yRel,
+    /// vRel), and qualifies a car only at its speed (`LEAD_SPEED_MATCH`).
+    pub fn update_lead(&mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<(f64, f64, f64)>) -> [Option<Slot>; 5] {
+        self.update_with(now, vehicles, world, lead.map(|(x, y, _)| (x, y)), lead.map(|(_, _, v)| v))
     }
 
     fn update_with(
@@ -275,7 +282,7 @@ impl Assigner {
         vehicles: &[Vehicle],
         world: &World,
         lead: Option<(f64, f64)>,
-        lead_qualifies: bool,
+        lead_v_rel: Option<f64>,
     ) -> [Option<Slot>; 5] {
         if self.generation != world.generation() {
             self.generation = world.generation();
@@ -300,15 +307,15 @@ impl Assigner {
         let followed = lead.and_then(|(dx, dy)| {
             vehicles
                 .iter()
-                .filter(|car| current(car.seen_radar) && (lead_qualifies || eligible(car)))
+                .filter(|car| current(car.seen_radar))
                 .filter_map(|car| {
                     let (x, y) = radar.to_ego(f64::from(car.wx), f64::from(car.wy));
                     let (ex, ey) = ((x - dx).abs(), (y - dy).abs());
-                    (ex <= LEAD_GATE_X
-                        && ey <= LEAD_GATE_Y
-                        && Observation::from_car(car, world, radar)
-                            .is_some_and(|o| o.x >= 0. && o.r.abs() < 0.5))
-                    .then_some((ex, ey, car.vid))
+                    let o = Observation::from_car(car, world, radar)?;
+                    let qualified = eligible(car)
+                        || lead_v_rel.is_some_and(|v| (o.speed - world.pose.speed() - v).abs() <= LEAD_SPEED_MATCH);
+                    (qualified && ex <= LEAD_GATE_X && ey <= LEAD_GATE_Y && o.x >= 0. && o.r.abs() < 0.5)
+                        .then_some((ex, ey, car.vid))
                 })
                 .min_by(|a, b| {
                     a.0.total_cmp(&b.0)
@@ -389,7 +396,7 @@ impl Assigner {
                 play_distance,
                 -lateral_target / LANE_WIDTH,
             );
-            let the_lead = lead_qualifies && followed == Some(car.vid);
+            let the_lead = lead_v_rel.is_some() && followed == Some(car.vid);
             if !eligible(car) && !the_lead {
                 continue;
             }

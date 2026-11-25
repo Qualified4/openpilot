@@ -82,13 +82,13 @@ impl<'a> Event<'a> {
     }
 
     /// The lead card drew in FF before the map (`_display_lead`, 93c5c6af): the nearer of leadOne and leadTwo with
-    /// status on, dRel above 0 and dRel, yRel, vRel finite, leadOne on a tie. (dRel, yRel).
-    pub fn display_lead(&self) -> Option<(f64, f64)> {
+    /// status on, dRel above 0 and dRel, yRel, vRel finite, leadOne on a tie. (dRel, yRel, vRel).
+    pub fn display_lead(&self) -> Option<(f64, f64, f64)> {
         let payload = self.payload()?;
         let lead = |pointer| {
             let lead = self.message.struct_pointer(&payload, pointer)?;
             let (x, y, v) = (f32_at(lead.data, 0), f32_at(lead.data, 1), f32_at(lead.data, 2));
-            (flag(lead.data, 321) && x > 0. && [x, y, v].iter().all(|v| v.is_finite())).then_some((x, y))
+            (flag(lead.data, 321) && x > 0. && [x, y, v].iter().all(|v| v.is_finite())).then_some((x, y, v))
         };
         match (lead(1), lead(2)) {
             (Some(one), Some(two)) => Some(if two.0 < one.0 { two } else { one }),

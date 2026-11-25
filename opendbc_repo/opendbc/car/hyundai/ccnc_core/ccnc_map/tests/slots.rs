@@ -230,9 +230,24 @@ fn the_display_lead_draws_a_standing_car_the_radar_has_not_proven_in_ff_only() {
     let vids = |slots: [Option<Slot>; 5]| slots.map(|s| s.map(|s| s.vid));
     assert_eq!(vids(Assigner::default().update(0., &cars, &world, Some((15., 0.)))), [None; 5]);
     assert_eq!(vids(Assigner::default().update_lead(0., &cars, &world, None)), [None; 5]);
-    assert_eq!(vids(Assigner::default().update_lead(0., &cars, &world, Some((15.5, 0.3)))), [Some(1), None, None, None, None]);
+    assert_eq!(vids(Assigner::default().update_lead(0., &cars, &world, Some((15.5, 0.3, 0.)))), [Some(1), None, None, None, None]);
     // A lead outside ego's lane qualifies nothing, and the unproven side car stays hidden.
-    assert_eq!(vids(Assigner::default().update_lead(0., &cars, &world, Some((6., -3.5)))), [None; 5]);
+    assert_eq!(vids(Assigner::default().update_lead(0., &cars, &world, Some((6., -3.5, 0.)))), [None; 5]);
+}
+
+#[test]
+fn the_display_lead_qualifies_no_standing_object_where_it_measures_a_moving_car() {
+    // 0000047f 1 56.0 s: radarState's lead at 7.7 m going at ego's speed (vRel 0) over a guard rail object standing in
+    // the curve, ego at 4.3 m/s.
+    let mut world = World::new(RADAR_LAG, true);
+    world.model(0., &model(0., 0., 0.));
+    world.car_state(0., 4.3, false);
+    world.radar(0.);
+    let standing = || Vehicle { flags: Flags::default(), vx: 0., ..vehicle(&world, 1, 0., 8., 0.) };
+    let vids = |slots: [Option<Slot>; 5]| slots.map(|s| s.map(|s| s.vid));
+    assert_eq!(vids(Assigner::default().update_lead(0., &[standing()], &world, Some((7.7, 0., 0.)))), [None; 5]);
+    // The lead measuring it standing (vRel -4.3) still draws it.
+    assert_eq!(vids(Assigner::default().update_lead(0., &[standing()], &world, Some((7.7, 0., -4.3)))), [Some(1), None, None, None, None]);
 }
 
 #[test]
