@@ -70,6 +70,8 @@ const LEAD_SPEED_MATCH: f64 = 2.;
 const UNPROVEN_LEAD_MIN_PROB: f64 = 0.6;
 /// A lead first matched in the radar's near gap can be a crossing car or a parked object.
 const UNPROVEN_LEAD_ENTRY_MIN_X: f64 = 5.;
+/// At parking speeds a first match also needs reliable lane geometry at the radar position (m/s).
+const UNPROVEN_LEAD_ENTRY_CREEP_SPEED: f64 = 2.;
 const EPS: f64 = 1e-9;
 /// `ModelLane`: the legacy selector's ego lane between the model's two ego lines (`_lane`, a153574e
 /// hyundaicanfd_ccnc_radar_map.py 446-460), from lines this probable, this far ahead, this wide, with this margin
@@ -550,8 +552,9 @@ impl Assigner {
                     let (ex, ey) = ((rx - dx).abs(), (ry - dy).abs());
                     let rank = (ex, ey, car.vid);
                     let speed_matches = lead_v_rel.is_some_and(|v| (v_rel - v).abs() <= LEAD_SPEED_MATCH);
-                    // Model agreement and matching radar ID keep weak static reflections out of FF.
-                    let supported = current_lead_support && (held_lead || rx >= UNPROVEN_LEAD_ENTRY_MIN_X);
+                    let supported = current_lead_support && (held_lead || (rx >= UNPROVEN_LEAD_ENTRY_MIN_X
+                        && (world.pose.speed().abs() > UNPROVEN_LEAD_ENTRY_CREEP_SPEED
+                            || self.model_lane.as_ref().is_some_and(|lane| lane.contains(rx, ry)))));
                     let qualifies = proven_vehicle || supported || (display_lead.is_none() && speed_matches);
                     if qualifies && ex <= LEAD_GATE_X && ey <= LEAD_GATE_Y
                         && followed.is_none_or(|(old, ..)| rank < old)
@@ -837,6 +840,8 @@ fn eligible(car: &Vehicle) -> bool {
 #[cfg(test)]
 mod review_tests {
     use super::*;
+    use crate::input::model_v2::{Line, Model};
+    use crate::vehicles::{Flags, Link};
 
     #[test]
     fn nearby_edge_measurements_refresh_one_anchor() {
@@ -881,5 +886,114 @@ mod review_tests {
         let lane = ModelLane::with_probability(vec![(0., 1.7), (80., 1.7)], vec![(0., -1.7), (80., -1.7)], 0.49);
         assert!(!lane.contains(20., 0.));
         assert!(lane.contains_for(20., 0., true));
+    }
+
+    fn slot_test_world() -> World {
+        let mut world = World::default();
+        world.model(0., &Model {
+            lane_lines: [-5.25, -1.75, 1.75, 5.25].into_iter()
+                .map(|y| Line { x: vec![0., 5., 10., 20., 40., 80.], y: vec![y; 6] })
+                .collect(),
+            lane_line_probs: vec![0.9; 4],
+            road_edges: Vec::new(),
+        });
+        assert!(world.u_ego().is_finite());
+        world
+    }
+
+    fn stationary_match(
+        assigner: &mut Assigner, world: &mut World, now: f64, ego_speed: f64,
+        track: u32, point: (f64, f64), flags: Flags,
+    ) -> Option<u32> {
+        world.live_pose(now, 0.);
+        world.car_state(now, ego_speed, false);
+        world.radar(now);
+        let (wx, wy) = world.radar_point_world(now, point.0, point.1);
+        let u = (world.u_ego() - point.1 / LANE_WIDTH) as f32;
+        let car = Vehicle {
+            vid: track, wx: wx as f32, wy: wy as f32, vx: 0., vy: 0., off: 0.,
+            u, u_slot: u, ids: Default::default(), hist: Default::default(),
+            link: Link::Sure, kind: None, seen_radar: now, seen_vision: f64::NEG_INFINITY,
+            born: 0., flags, radar_id: Some(track), oncoming: false,
+            oncoming_since: f64::NAN, onward_since: f64::NAN,
+        };
+        let lead = DisplayLead {
+            motion: (point.0, point.1, -ego_speed), measured_track: Some(track),
+            model_prob: 0.98, confirmed_track: Some(i128::from(track)),
+        };
+        assigner.update_display_lead(now, &[car], world, Some(lead))[0].map(|slot| slot.vid)
+    }
+
+    #[test]
+    fn parked_track_32_stays_out_of_ff_at_a_stop_and_when_ego_pulls_away() {
+        // 47c-0/1: a 6.45 m stationary match at a stop persists as ego starts creeping.
+        let mut world = slot_test_world();
+        let mut assigner = Assigner::default();
+        for frame in 0..20 {
+            let now = f64::from(frame) * 0.05;
+            let (speed, distance) = if frame < 10 { (0., 6.45) } else { (0.85, 6.45 - 0.85 * (now - 0.45)) };
+            assert_eq!(stationary_match(&mut assigner, &mut world, now, speed, 32, (distance, 0.10),
+                Flags::default()), None, "frame {frame}");
+        }
+    }
+
+    #[test]
+    fn parking_aisle_track_47_cannot_enter_ff_while_creeping() {
+        // 47d-0: ego is above 0.5 m/s when the 5.1 m stationary return first matches.
+        let mut world = slot_test_world();
+        let mut assigner = Assigner::default();
+        for frame in 0..12 {
+            let now = f64::from(frame) * 0.05;
+            assert_eq!(stationary_match(&mut assigner, &mut world, now, 0.9, 47, (5.1 - 0.9 * now, 0.4),
+                Flags::default()), None, "frame {frame}");
+        }
+    }
+
+    #[test]
+    fn stopped_lead_beyond_five_metres_enters_when_vehicle_evidence_arrives() {
+        let mut world = slot_test_world();
+        let mut assigner = Assigner::default();
+        for frame in 0..9 {
+            let proven = frame >= 6;
+            assert_eq!(stationary_match(&mut assigner, &mut world, f64::from(frame) * 0.05, 0., 1,
+                (8., 0.), Flags { proven, ..Flags::default() }), proven.then_some(1), "frame {frame}");
+        }
+    }
+
+    #[test]
+    fn a_road_without_current_lane_lines_uses_the_normal_vehicle_path_at_creep_speed() {
+        // The world map still has a lane coordinate from earlier observations.
+        for (ego_speed, requires_lane) in [(2., true), (2.01, false)] {
+            let mut world = slot_test_world();
+            let mut assigner = Assigner::default();
+            world.model(0.01, &Model { lane_lines: Vec::new(), lane_line_probs: Vec::new(), road_edges: Vec::new() });
+            for frame in 0..9 {
+                let proven = frame >= 6;
+                let shown = stationary_match(&mut assigner, &mut world, 0.05 + f64::from(frame) * 0.05,
+                    ego_speed, 2, (12., 0.), Flags { proven, ..Flags::default() });
+                assert_eq!(shown, (proven || (!requires_lane && frame >= 1)).then_some(2),
+                    "ego speed {ego_speed}, frame {frame}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_creeping_lead_can_enter_inside_trusted_lines_and_hold_when_the_lines_disappear() {
+        let mut world = slot_test_world();
+        let mut assigner = Assigner::default();
+        let lines = || (vec![(0., 1.7), (80., 1.7)], vec![(0., -1.7), (80., -1.7)]);
+        let (left, right) = lines();
+        assigner.set_model_lane(Some(ModelLane::with_probability(left, right, 0.49)));
+        for frame in 0..10 {
+            if frame == 3 {
+                let (left, right) = lines();
+                assigner.set_model_lane(Some(ModelLane::new(left, right)));
+            } else if frame == 6 {
+                assigner.set_model_lane(None);
+            }
+            assert_eq!(stationary_match(&mut assigner, &mut world, f64::from(frame) * 0.05, 1., 1,
+                (5.26 - f64::from(frame) * 0.05, 0.), Flags::default()), (frame >= 4).then_some(1),
+                "frame {frame}");
+        }
     }
 }
