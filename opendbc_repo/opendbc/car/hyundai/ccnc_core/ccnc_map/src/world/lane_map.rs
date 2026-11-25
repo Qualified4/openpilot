@@ -594,9 +594,6 @@ impl LaneMap {
     }
 
     pub(super) fn camera_ego(&self, model: &Model) -> Option<f64> {
-        if !model.lane_line_probs.get(1..3)?.iter().all(|&p| p > 0.4) {
-            return None;
-        }
         let left = line_at(model.lane_lines.get(1)?, 0.)?;
         let right = line_at(model.lane_lines.get(2)?, 0.)?;
         let width = left - right;

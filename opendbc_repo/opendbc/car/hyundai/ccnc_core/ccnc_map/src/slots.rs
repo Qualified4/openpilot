@@ -192,6 +192,7 @@ impl Observation {
 struct Drawing {
     vid: u32,
     lane: i8,
+    road_lane: Option<i32>,
     shown: Option<f64>,
     detect: u8,
     seen: f64,
@@ -208,6 +209,7 @@ impl Drawing {
         Self {
             vid,
             lane: lane_at(r),
+            road_lane: None,
             shown: None,
             detect: 1,
             seen: now,
@@ -261,7 +263,78 @@ fn slot_index(x: f64, lane: i8) -> Option<usize> {
     }
 }
 
+const ROAD_LANE_HYSTERESIS: f64 = 0.06;
+const ROAD_HANDOFF_S: f64 = 0.85;
+
+/// Schmitt trigger around the shared integer boundaries, in units of lane width.
+fn road_lane(prior: Option<i32>, u: f64) -> Option<i32> {
+    u.is_finite().then(|| {
+        let floor = u.floor() as i32;
+        prior
+            .filter(|&lane| u >= f64::from(lane) - ROAD_LANE_HYSTERESIS && u < f64::from(lane + 1) + ROAD_LANE_HYSTERESIS)
+            .unwrap_or(floor)
+    })
+}
+
+#[derive(Clone, Copy)]
+struct Plan {
+    cost: f64,
+    slots: [Option<Slot>; 5],
+}
+
+/// A 5-bit mask keeps one exact optimum per occupied subset. Each row (vid) is visited once.
+fn match_slots(
+    candidates: &[(Slot, [bool; 5])],
+    ff: Option<Slot>,
+    required: [bool; 5],
+    last: [Option<u32>; 5],
+) -> [Option<Slot>; 5] {
+    const CENTRES: [f64; 5] = [0., -1., 1., -1., 1.];
+    const UNFILLED: [f64; 5] = [10., 4., 4., 2., 2.];
+    let base_cost: f64 = UNFILLED.iter().sum();
+    let empty = Plan { cost: base_cost, slots: [None; 5] };
+    let mut plans = [Plan { cost: f64::INFINITY, slots: [None; 5] }; 32];
+    plans[0] = empty;
+    for &(car, allowed) in candidates {
+        for mask in (0..32usize).rev() {
+            if !plans[mask].cost.is_finite() {
+                continue;
+            }
+            for i in 0..5 {
+                let bit = 1usize << i;
+                let candidate = if i == 0 {
+                    ff.filter(|s| s.vid == car.vid)
+                } else {
+                    allowed[i].then_some(car)
+                };
+                let Some(candidate) = candidate.filter(|_| mask & bit == 0) else {
+                    continue;
+                };
+                let centre = f64::from(candidate.lane_coord_rel) - CENTRES[i];
+                let changed = last.iter().position(|&v| v == Some(candidate.vid)).is_some_and(|j| i != j);
+                let cost = plans[mask].cost - UNFILLED[i]
+                    + centre * centre
+                    + 0.004 * f64::from(candidate.distance.abs())
+                    + if changed { 0.08 } else { 0. };
+                if cost < plans[mask | bit].cost {
+                    let mut slots = plans[mask].slots;
+                    slots[i] = Some(candidate);
+                    plans[mask | bit] = Plan { cost, slots };
+                }
+            }
+        }
+    }
+    plans
+        .into_iter()
+        .filter(|p| required.iter().zip(p.slots).all(|(&needed, slot)| !needed || slot.is_some()))
+        .min_by(|a, b| a.cost.total_cmp(&b.cost))
+        .unwrap_or(empty)
+        .slots
+}
+
 pub struct Assigner {
+    last_commit_seen: Option<f64>,
+    matching_last: [Option<u32>; 5],
     generation: u32,
     drawings: Vec<Drawing>,
     previous_ff: Option<u32>,
@@ -292,6 +365,8 @@ pub struct Assigner {
 impl Default for Assigner {
     fn default() -> Self {
         Self {
+            last_commit_seen: None,
+            matching_last: [None; 5],
             generation: 0,
             drawings: Vec::with_capacity(MAX_VEHICLES),
             previous_ff: None,
@@ -375,6 +450,8 @@ impl Assigner {
         if self.generation != world.generation() {
             self.generation = world.generation();
             self.drawings.clear();
+            self.last_commit_seen = None;
+            self.matching_last = [None; 5];
             self.previous_ff = None;
             self.ff_lead = None;
             self.ff_lead_pending = None;
@@ -385,6 +462,7 @@ impl Assigner {
             self.side_lateral = [None; 2];
         }
         if !now.is_finite() || !world.accepts_radar() || !world.u_ego().is_finite() {
+            self.matching_last = [None; 5];
             self.ff_lead = None;
             self.ff_lead_pending = None;
             self.measured_lead_since = None;
@@ -415,6 +493,24 @@ impl Assigner {
         let mut best: [Option<Slot>; 5] = [None; 5];
         let mut second: [Option<Slot>; 2] = [None; 2];
         let changing = world.ego_changing();
+        let use_road = world.pose.speed() > 2.
+            && world.status() & crate::world::STATUS_NO_LIVE_POSE == 0
+            && !world.lane_held();
+        let ego_committed = use_road.then(|| world.committed_lane()).flatten();
+        let commit_info = world.last_commit();
+        let commit_stamp = commit_info.map(|(ct, _, _)| ct);
+        let post_commit = ego_committed.is_some()
+            && commit_stamp.is_some_and(|ct| (0. ..=ROAD_HANDOFF_S).contains(&(now - ct)));
+        let approaching = ego_committed.is_some() && world.approaching_boundary();
+        if commit_stamp.is_some() && commit_stamp != self.last_commit_seen {
+            self.last_commit_seen = commit_stamp;
+            if use_road {
+                self.side_last = [None; 2];
+                self.clear_split();
+                self.side_lateral = [None; 2];
+            }
+        }
+        let mut matching = post_commit.then(Vec::new);
         for car in vehicles {
             if !current(car.seen_radar.max(car.seen_vision)) {
                 continue;
@@ -435,10 +531,30 @@ impl Assigner {
                 drawing.into_ff = false;
                 drawing.ff_change_since = None;
                 drawing.lane_entry_since = None;
+                drawing.road_lane = None;
             }
             drawing.seen = now;
             let original_lane = drawing.lane;
             drawing.observe_lane(r_slot);
+            let proven_vehicle = eligible(car);
+            let mut projection = None;
+            if let Some(ego_lane) = ego_committed.filter(|_| car.u.is_finite()) {
+                drawing.road_lane = road_lane(drawing.road_lane, f64::from(car.u));
+                projection = drawing.road_lane.map(|l| (l - ego_lane).clamp(-3, 3) as i8);
+            } else {
+                drawing.road_lane = None;
+            }
+            let car_centered = car.u.is_finite()
+                && (f64::from(car.u) - (f64::from(car.u).floor() + 0.5)).abs() <= 0.38;
+            let is_prev_ff = self.previous_ff == Some(car.vid);
+            let proj_safe_visibility = projection.is_some_and(|p| p.abs() <= 1 || r.abs() >= 1.35);
+            let use_projection = (post_commit || approaching)
+                && proven_vehicle
+                && (-20. ..=50.).contains(&x)
+                && car_centered
+                && proj_safe_visibility
+                && (post_commit
+                    || (is_prev_ff && projection == Some(0) && r_slot.abs() <= 0.85));
             let measured = x >= 0. && car.radar_id.is_some() && current(car.seen_radar);
             let (rx, ry) = radar.to_ego(f64::from(car.wx), f64::from(car.wy));
             let v_rel = speed - world.pose.speed();
@@ -447,7 +563,6 @@ impl Assigner {
                 (rx - dx).abs() <= LEAD_GATE_X && (ry - dy).abs() <= LEAD_GATE_Y && (v_rel - dv).abs() <= LEAD_SPEED_MATCH
             });
             let entering_ff = original_lane.abs() == 1 && drawing.lane == 0;
-            let proven_vehicle = eligible(car);
             let current_lead_support = supported_lead.is_some() && confirmed_position;
             let model_boundary_entry = entering_ff && measured && proven_vehicle && !changing
                 && self.model_lane.as_ref().is_some_and(|lane| lane.contains(rx, ry));
@@ -461,12 +576,22 @@ impl Assigner {
             } else {
                 drawing.lane_entry_since = None;
             }
+            let lane = if use_projection {
+                let p = projection.unwrap_or(drawing.lane);
+                if post_commit {
+                    // Sync drawing.lane so post_commit expiry cannot snap back to a stale pre-commit lane.
+                    drawing.lane = p;
+                }
+                p
+            } else {
+                drawing.lane
+            };
             drawing.fast |= speed.abs() >= MOVED;
             let still = now - car.born >= SETTLED_S && !drawing.fast;
             let opening_gap = ((v_rel - 0.5) / 1.5).clamp(0., 1.);
             let mut lateral_target = -LANE_WIDTH * r;
             // A side lane car the model puts in ego's lane is drawn in FF where the radar measures it.
-            let can_hold = measured && !changing && drawing.lane.abs() == 1 && MODEL_LANE_KEEP_X.contains(&rx);
+            let can_hold = measured && !changing && lane.abs() == 1 && MODEL_LANE_KEEP_X.contains(&rx);
             let confirmed_boundary = confirmed_position && (self.previous_ff == Some(car.vid) || r_slot.abs() <= 0.5);
             drawing.update_model_ff(now, can_hold, self.model_lane.as_ref(), rx, ry, confirmed_boundary);
             if drawing.into_ff {
@@ -489,7 +614,7 @@ impl Assigner {
             }
             let distance = x.abs();
             let near = ((40. - distance) / 12.).clamp(0., 1.);
-            let play_distance = if drawing.lane == 0 || drawing.into_ff {
+            let play_distance = if lane == 0 || drawing.into_ff {
                 // Close and mid-range FF have enough noise to cross a 0.1 m CAN step.
                 let extra = 18. * ((x - 10.) / 8.).clamp(0., 1.) * near;
                 distance * (1. + 0.3 * near) + extra
@@ -501,7 +626,7 @@ impl Assigner {
                 play_distance,
                 -lateral_target / LANE_WIDTH,
             );
-            let Some(slot) = (if drawing.into_ff { Some(0) } else { slot_index(x, drawing.lane) }) else {
+            let Some(slot) = (if drawing.into_ff { Some(0) } else { slot_index(x, lane) }) else {
                 continue;
             };
             if car.flags.structure || (slot != 0 && !proven_vehicle) {
@@ -553,6 +678,19 @@ impl Assigner {
                 kind_wanted: false,
                 vision: VISION_NONE,
             };
+            if let Some(candidates) = matching.as_mut() {
+                let side_ok = proven_vehicle && !car.oncoming && speed >= -1. / 3.6;
+                let continuing = x.abs() <= 50. && self.matching_last.contains(&Some(car.vid));
+                let near_side = |sign: f64| side_ok && continuing && (0.40..=1.58).contains(&(sign * r));
+                let allowed = [
+                    false,
+                    slot == 1 || (x >= 0. && near_side(-1.)),
+                    slot == 2 || (x >= 0. && near_side(1.)),
+                    slot == 3 || (x < 0. && near_side(-1.)),
+                    slot == 4 || (x < 0. && near_side(1.)),
+                ];
+                candidates.push((candidate, allowed));
+            }
             if slot == 0 {
                 let held_lead = self.ff_lead.is_some_and(|(vid, _)| vid == car.vid);
                 let primary_match = lead_one.filter(|(one, _)| {
@@ -668,6 +806,21 @@ impl Assigner {
                 best[0] = Some(pref);
             }
         }
+        if let Some(candidates) = matching.as_mut() {
+            for (s, allowed) in candidates.iter_mut() {
+                for (i, flag) in allowed.iter_mut().enumerate().skip(1) {
+                    if let Some(picked) = best[i] {
+                        *flag = picked.vid == s.vid;
+                    } else if best.iter().flatten().any(|picked| picked.vid == s.vid) {
+                        *flag = false;
+                    }
+                }
+            }
+            let ff = best[0];
+            let required = best.map(|s| s.is_some());
+            best = match_slots(candidates, ff, required, self.matching_last);
+        }
+        self.matching_last = best.map(|s| s.map(|s| s.vid));
         self.runner_up = second;
         self.previous_ff = best[0].map(|s| s.vid);
         let ego = world.pose.at(now);

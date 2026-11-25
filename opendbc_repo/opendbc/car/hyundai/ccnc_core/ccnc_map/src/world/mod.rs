@@ -4,6 +4,7 @@ mod lane_change;
 mod lane_map;
 mod pose;
 
+use lane_change::{EgoLaneFilter, EgoLaneInput};
 pub use lane_change::LaneChange;
 pub use lane_map::{near_heading, LaneMap, MODEL_GRID};
 pub use pose::{Pose, PoseAt};
@@ -27,17 +28,31 @@ const EGO_CHANGE_HOLD_S: f64 = 3.;
 /// coordinate this long (`World::lane_held`); longer, the map does not know where ego is.
 const EGO_HOLD_S: f64 = 0.5;
 
+const CAMERA_EGO_MIN_PROB: f64 = 0.20;
+const UNFILTERED_CAMERA_PROB: f32 = 0.4;
+const CAMERA_EGO_GAIN: f64 = 0.8;
+const UNFILTERED_MAX_BIAS_U: f64 = 0.25;
+const BIAS_TAPER_START_U: f64 = 0.18;
+const BIAS_TAPER_WIDTH_U: f64 = 0.12;
+const FILTERED_BLEND_OUTER_U: f64 = 0.32;
+const FILTERED_BLEND_WIDTH_U: f64 = 0.14;
+
 pub struct World {
     pub pose: Pose,
     pub lanes: LaneMap,
     lane_change: LaneChange,
+    ego_filter: EgoLaneFilter,
     yaw: Option<(f64, f64)>,
     last_model: Option<f64>,
     last_radar: Option<f64>,
     u_ego: Option<(f64, f64)>,
+    /// Rate-limited measurement track for lane interiors.
+    u_ego_raw_track: Option<(f64, f64)>,
     /// When the lane map last placed ego (`u_ego` is held after it).
     u_ego_mapped: f64,
     camera_lane_bias: f64,
+    camera_lane_bias_unfiltered: f64,
+    last_min_inner_prob: f64,
     camera_lanes: Option<CameraLanes>,
     generation: u32,
     radar_lag: f64,
@@ -67,12 +82,16 @@ impl World {
             pose: Pose::default(),
             lanes: LaneMap::default(),
             lane_change: LaneChange::default(),
+            ego_filter: EgoLaneFilter::default(),
             yaw: None,
             last_model: None,
             last_radar: None,
             u_ego: None,
+            u_ego_raw_track: None,
             u_ego_mapped: f64::NEG_INFINITY,
             camera_lane_bias: 0.,
+            camera_lane_bias_unfiltered: 0.,
+            last_min_inner_prob: 0.,
             camera_lanes: None,
             generation: 0,
             radar_lag,
@@ -141,17 +160,25 @@ impl World {
         );
         self.camera_lanes = CameraLanes::observe(model, self.pose.at(t), t);
         self.camera_lane_bias = 0.;
-        if !self.lane_change.frozen() {
+        self.camera_lane_bias_unfiltered = 0.;
+        self.last_min_inner_prob = model
+            .lane_line_probs
+            .get(1..3)
+            .map_or(0., |p| f64::from(p[0].min(p[1])));
+        if !self.lane_change.frozen() && self.last_min_inner_prob > CAMERA_EGO_MIN_PROB {
             let at = self.pose.at(t);
-            if let Some((camera, world)) = self
+            if let Some((camera, map)) = self
                 .lanes
                 .camera_ego(model)
                 .zip(self.lanes.coord(at.s, (at.x, at.y)))
             {
-                // Use the near camera observation to correct drift within the matched lane.
-                let bias = camera - world;
-                if bias.abs() <= 0.25 {
-                    self.camera_lane_bias = 0.8 * bias;
+                let bias = camera - map;
+                let taper = 1. - ((bias.abs() - BIAS_TAPER_START_U) / BIAS_TAPER_WIDTH_U).clamp(0., 1.);
+                self.camera_lane_bias = CAMERA_EGO_GAIN * bias * taper;
+                if model.lane_line_probs[1..3].iter().all(|&p| p > UNFILTERED_CAMERA_PROB)
+                    && bias.abs() <= UNFILTERED_MAX_BIAS_U
+                {
+                    self.camera_lane_bias_unfiltered = CAMERA_EGO_GAIN * bias;
                 }
             }
         }
@@ -215,6 +242,18 @@ impl World {
         self.u_ego.map_or(f64::NAN, |(_, u)| u)
     }
 
+    pub(crate) fn committed_lane(&self) -> Option<i32> {
+        self.ego_filter.committed_lane()
+    }
+
+    pub(crate) fn last_commit(&self) -> Option<(f64, i32, i32)> {
+        self.ego_filter.last_commit()
+    }
+
+    pub(crate) fn approaching_boundary(&self) -> bool {
+        self.ego_filter.approaching()
+    }
+
     /// Ego is changing lanes: it was off its lane center within `EGO_CHANGE_HOLD_S`. This process runs with the lane
     /// change freeze off, so `STATUS_FROZEN` cannot tell. The blinker does not count: it is on in 17% of the 65
     /// replayed segments, and the cut-outs it covers kept their old slot lag.
@@ -251,11 +290,15 @@ impl World {
         self.pose.clear();
         self.lanes.clear();
         self.lane_change = LaneChange::default();
+        self.ego_filter.reset();
         self.last_model = None;
         self.last_radar = None;
         self.u_ego = None;
+        self.u_ego_raw_track = None;
         self.u_ego_mapped = f64::NEG_INFINITY;
         self.camera_lane_bias = 0.;
+        self.camera_lane_bias_unfiltered = 0.;
+        self.last_min_inner_prob = 0.;
         self.camera_lanes = None;
         self.ego_change_until = f64::NEG_INFINITY;
         self.generation = self.generation.wrapping_add(1);
@@ -285,30 +328,47 @@ impl World {
         if coordinate.is_some() {
             self.u_ego_mapped = t;
         }
-        let held = self
-            .u_ego
-            .filter(|_| t - self.u_ego_mapped <= EGO_HOLD_S)
+        let expired = coordinate.is_none() && t - self.u_ego_mapped > EGO_HOLD_S;
+        let model_fresh = !self.lane_change.frozen()
+            && self
+                .last_model
+                .is_some_and(|last| (0. ..INPUT_GAP).contains(&(t - last)));
+        // Preserve the rate-limited measurement away from lane boundaries.
+        let held_raw = self
+            .u_ego_raw_track
+            .filter(|_| !expired)
             .map(|(_, u)| (t, u));
-        self.u_ego = coordinate.map(|u| {
-            let u = if !self.lane_change.frozen()
-                && self
-                    .last_model
-                    .is_some_and(|last| (0. ..INPUT_GAP).contains(&(t - last)))
-            {
-                u + self.camera_lane_bias
-            } else {
-                u
-            };
-            let u = if let Some((last, prior)) = self.u_ego {
-                // Crossing a bin seam must not turn a geometry error into an
-                // implausible lateral movement of the ego car.
-                let limit = MAX_EGO_LANE_RATE * (t - last);
-                prior + (u - prior).clamp(-limit, limit)
-            } else {
-                u
-            };
-            (t, u)
-        }).or(held);
+        self.u_ego_raw_track = coordinate
+            .map(|u| {
+                let u = if model_fresh { u + self.camera_lane_bias_unfiltered } else { u };
+                let u = if let Some((last, prior)) = self.u_ego_raw_track {
+                    let limit = MAX_EGO_LANE_RATE * (t - last);
+                    prior + (u - prior).clamp(-limit, limit)
+                } else {
+                    u
+                };
+                (t, u)
+            })
+            .or(held_raw);
+        let filtered = self.ego_filter.step(EgoLaneInput {
+            t,
+            map_u: coordinate,
+            raw_bias: if model_fresh { self.camera_lane_bias } else { 0. },
+            min_inner_prob: if model_fresh { self.last_min_inner_prob } else { 0. },
+            yaw: self.yaw_at(t),
+            speed: self.pose.speed(),
+            renumbers: self.lanes.renumbers(),
+            map_unknown: expired,
+        });
+        // Blend continuously from the filtered coordinate at boundaries to the raw track in lane interiors.
+        self.u_ego = if !expired && filtered.is_finite() {
+            let raw_u = self.u_ego_raw_track.map_or(filtered, |(_, u)| u);
+            let boundary_distance = (filtered - filtered.round()).abs().min((raw_u - raw_u.round()).abs());
+            let w_kf = ((FILTERED_BLEND_OUTER_U - boundary_distance) / FILTERED_BLEND_WIDTH_U).clamp(0., 1.);
+            Some((t, raw_u + w_kf * (filtered - raw_u)))
+        } else {
+            None
+        };
         if let Some((t, u)) = self.u_ego {
             if (u - (u.floor() + 0.5)).abs() > EGO_CHANGE_CENTER {
                 self.ego_change_until = t + EGO_CHANGE_HOLD_S;
