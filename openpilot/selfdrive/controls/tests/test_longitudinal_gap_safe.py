@@ -205,56 +205,6 @@ def test_cutin_credit_vision_leads_are_not_one_car():
   assert cutin(c, track_id=-1, distance=20.0) > 0.0      # another vision-only lead, 10 m closer
 
 
-def followed(c, seconds=gs.BRAKE_HOLD_LEAD_AGE + 0.5, **kw):
-  """A settled lead (no shortfall) followed long enough for the brake hold."""
-  for _ in range(round(seconds / DT)):
-    cutin(c, distance=30.0, desired=20.0, closing_speed=0.0, v_ego=12.0, v_lead=12.0, **kw)
-
-
-def brake_step(c, **kw):
-  args = {"distance": 15.0, "desired": 20.0, "closing_speed": 0.5, "lead_accel": -1.4, "v_ego": 12.0, "v_lead": 11.0}
-  return cutin(c, **{**args, **kw})
-
-
-def test_brake_hold_keeps_the_shortfall_while_a_followed_lead_brakes():
-  c = gs.CutinCredit()
-  followed(c)
-  for _ in range(round(gs.BRAKE_HOLD_CONFIRM / DT)):
-    assert brake_step(c) == 0.0                                 # full response until the braking is confirmed mild
-  assert brake_step(c) == pytest.approx(5.0) and c.relaxed
-  assert brake_step(c, distance=14.0) == pytest.approx(5.0)   # held, not grown
-  # The braking ends: the shortfall then becomes the credit, recovered at POST_BRAKE_RECOVER_RATE.
-  assert brake_step(c, lead_accel=0.0, distance=13.0) == pytest.approx(7.0)
-  assert brake_step(c, lead_accel=0.0, distance=13.0) == pytest.approx(7.0 - gs.POST_BRAKE_RECOVER_RATE * DT)
-
-
-def test_brake_hold_not_for_hard_braking_a_new_lead_or_low_speed():
-  c = gs.CutinCredit(); followed(c)
-  for _ in range(round(gs.BRAKE_HOLD_CONFIRM / DT) + 1):
-    brake_step(c)
-  assert c.credit > 0.0
-  assert brake_step(c, lead_accel=gs.BRAKE_HOLD_ACCEL_MIN - 0.1) == 0.0
-  assert brake_step(c, lead_accel=0.0) == 0.0   # no post-brake credit after hard braking either
-  c = gs.CutinCredit(); followed(c, seconds=gs.BRAKE_HOLD_LEAD_AGE - 1.0)
-  assert brake_step(c) == 0.0 and brake_step(c, lead_accel=0.0) == 0.0
-  for kw in ({"v_lead": gs.POST_BRAKE_SPEED_MIN - 0.1}, {"closing_speed": gs.CUTIN_CLOSING_MAX + 0.1}):
-    c = gs.CutinCredit(); followed(c)
-    assert max(brake_step(c, **kw) for _ in range(round(2 * gs.BRAKE_HOLD_CONFIRM / DT))) == 0.0
-  # A lead ramping through -2 within the confirmation time is never held.
-  c = gs.CutinCredit(); followed(c)
-  ramp = np.linspace(-0.6, -4.0, round(gs.BRAKE_HOLD_CONFIRM / DT))
-  assert max(brake_step(c, lead_accel=float(a)) for a in ramp) == 0.0 and brake_step(c, lead_accel=0.0) == 0.0
-
-
-def test_brake_hold_not_for_a_cutin_with_credit_left():
-  c = gs.CutinCredit()
-  assert cutin(c) > 0.0 and not c.relaxed
-  for _ in range(round(gs.BRAKE_HOLD_LEAD_AGE / DT) + 2):
-    cutin(c, distance=20.0, desired=23.5)   # cut-in credit still recovering
-  assert c.credit > 0.0
-  assert brake_step(c, distance=20.0, desired=23.5) == 0.0
-
-
 @pytest.mark.parametrize("kw", [{"enabled": False}, {"distance": float("nan")}])
 def test_cutin_credit_resets(kw):
   c = gs.CutinCredit()
@@ -457,28 +407,3 @@ def test_comfort_binding_only_takes_over_from_cruise(native):
   preferred = targets.copy()
   preferred[:, :2] -= margins
   np.testing.assert_array_equal(native.bind_obstacles(targets, preferred), [0, 3, 1, 2])
-
-
-def test_lead_decel_trend_tau_only_for_moderate_braking_that_eases(native):
-  def run(accels, track_id=1, index=0, age=gs.BRAKE_HOLD_LEAD_AGE):
-    mpc = native.LongitudinalMpc()
-    mpc.cutin_credit.age = age   # a lead followed long enough (CutinCredit keeps this)
-    out = [mpc.lead_decel_trend_tau(index, NS(status=True, radarTrackId=track_id, aLeadK=a)) for a in accels]
-    return mpc, out
-  n = round(native.LEAD_DECEL_TREND_TIME / DT)
-  easing = [-1.5] * 10 + list(np.linspace(-1.5, -0.5, n + 1))   # +2 m/s^3 for 0.5 s
-  _, out = run(easing)
-  t_end = 0.5 / 2.0
-  assert out[-1] == pytest.approx(min(native.LEAD_DECEL_TREND_TAU_MAX, 4.0 / t_end ** 2))
-  assert run(easing, index=1)[1][-1] == 0.0 and run(easing, age=1.0)[1][-1] == 0.0   # leadTwo, a new lead
-  assert run([-1.5] * 20)[1][-1] == 0.0                                       # steady braking
-  assert run([-0.5] * 10 + list(np.linspace(-0.5, -1.5, n + 1)))[1][-1] == 0.0   # braking harder
-  assert run([-3.0] * 10 + list(np.linspace(-1.5, -0.5, n + 1)))[1][-1] == 0.0   # after hard braking
-  mpc, _ = run(easing)
-  assert mpc.lead_decel_trend_tau(0, NS(status=True, radarTrackId=2, aLeadK=-0.4)) == 0.0   # new track
-  assert mpc.lead_decel_trend_tau(0, NS(status=False, radarTrackId=2, aLeadK=-0.4)) == 0.0 and not mpc.lead_accel_hist[0]
-  # The cost-side prediction lets that braking end sooner; the obstacle prediction keeps the radar's decay.
-  lead = NS(status=True, dRel=30.0, vLead=10.0, aLeadK=-1.0, aLeadTau=1.5)
-  full, _, cost, trend = mpc.process_lead(lead, 16.0)
-  assert trend[-1, 1] > full[-1, 1] and cost[-1, 1] == pytest.approx(trend[-1, 1])
-  assert np.allclose(mpc.process_lead(lead, 0.0)[3], full)

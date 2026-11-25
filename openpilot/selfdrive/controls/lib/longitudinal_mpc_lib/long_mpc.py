@@ -64,24 +64,6 @@ LEAD_ACCEL_COST_POS_REL_SPEEDS = (-2.0, -0.5)
 # replay (FOL 47c/479): weaker at every speed added a brake entry per 15 min (2.02 -> 2.09) and lead-departure
 # rubber banding 19 -> 22 %; gated to 22-32 km/h it kept 2.02 brake entries, cut sign changes 6.63 -> 6.20/min.
 LEAD_ACCEL_COST_POS_EGO_SPEEDS = (6.0, 9.0)
-# Cost-side lead braking that is easing off: with aLeadK rising by more than LEAD_DECEL_TREND_RATE_MIN
-# (m/s^3) over LEAD_DECEL_TREND_TIME (s), the cost prediction lets the braking end about when that trend
-# reaches 0 (decay exp(-tau t^2/2) at e^-2 by then, tau at most LEAD_DECEL_TREND_TAU_MAX), for the lead
-# position and the closing terms. Only for leadOne followed like the brake hold (gap_safe.BRAKE_HOLD_LEAD_AGE)
-# and braking no harder than gap_safe.BRAKE_HOLD_ACCEL_MIN in this braking and over the last
-# LEAD_DECEL_TREND_GATE_TIME (s): a lead easing off from -3 may brake again (synthetic F50 -3 / release / -6
-# lost 0.3 m), and a cut-in easing off from -4 lost 0.1 m. The obstacle and danger constraint keep the radar's decay.
-LEAD_DECEL_TREND_TIME = 0.5
-LEAD_DECEL_TREND_RATE_MIN = 0.5
-LEAD_DECEL_TREND_TAU_MAX = 16.0
-LEAD_DECEL_TREND_GATE_TIME = 2.0
-# While leadOne's braking eases off (trend above) or ends (post-brake credit recovering) and ego brakes harder
-# than it by more than BRAKE_RELEASE_ACCEL_GAP (m/s^2), at or above BRAKE_RELEASE_SPEED_MIN (m/s), the accel
-# change cost drops by this factor (200 -> 10, as LeadAccelResponse does for a lead speeding up), so the brake
-# releases with the lead instead of trailing it (479 10:35: aTarget -1.47 when the lead's braking had ended).
-BRAKE_RELEASE_A_CHANGE_FACTOR = 0.05
-BRAKE_RELEASE_ACCEL_GAP = 0.3
-BRAKE_RELEASE_SPEED_MIN = 5.0
 # Blended lead constraint: share of the closing terms kept on top of the steady comfort target, full at or
 # below the first planned ego speed (m/s), none from the second.
 BLENDED_CLOSING_SPEEDS = (4.0, 7.0)
@@ -357,8 +339,6 @@ class LongitudinalMpc:
     # timers
     self.lead_response_state = LeadAccelResponseState()
     self.lead_gap_states = (LeadGapState(), LeadGapState())
-    self.lead_accel_hist = ([], [])
-    self.brake_release = False  # (radarTrackId, aLeadK) per lead for lead_decel_trend_tau
     self.lead_comfort_states = (LeadComfortState(), LeadComfortState())
     self.stop_gap_state = StopGapWeightState()
     self.approach_state = ApproachState()
@@ -443,40 +423,15 @@ class LongitudinalMpc:
         self.solver.set(i, 'x', self.x0)
 
   @staticmethod
-  def extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau, positive_tau_factor=1.0, negative_tau=0.0):
-    tau = a_lead_tau * positive_tau_factor if a_lead > 0.0 else max(a_lead_tau, negative_tau)
+  def extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau, positive_tau_factor=1.0):
+    tau = a_lead_tau * (positive_tau_factor if a_lead > 0.0 else 1.0)
     a_lead_traj = a_lead * np.exp(-tau * (T_IDXS**2)/2.)
     v_lead_traj = np.clip(v_lead + np.cumsum(T_DIFFS * a_lead_traj), 0.0, 1e8)
     x_lead_traj = x_lead + np.cumsum(T_DIFFS * v_lead_traj)
     lead_xv = np.column_stack((x_lead_traj, v_lead_traj))
     return lead_xv
 
-  def lead_decel_trend_tau(self, index, lead):
-    """Cost-side decay for a lead whose braking eases off (0: none), from its aLeadK over LEAD_DECEL_TREND_TIME."""
-    hist = self.lead_accel_hist[index]
-    if lead is None or not lead.status:
-      hist.clear()
-      return 0.0
-    track_id = getattr(lead, 'radarTrackId', -1)
-    if hist and hist[-1][0] != track_id:
-      hist.clear()
-    hist.append((track_id, float(lead.aLeadK)))
-    n = int(round(LEAD_DECEL_TREND_TIME / self.dt))
-    while len(hist) > int(round(LEAD_DECEL_TREND_GATE_TIME / self.dt)) + 1:
-      hist.pop(0)
-    a_now = hist[-1][1]
-    if len(hist) <= n or a_now >= 0.0 or min(a for _, a in hist) < gap_safe.BRAKE_HOLD_ACCEL_MIN:
-      return 0.0
-    credit = self.cutin_credit
-    if index != 0 or credit.age < gap_safe.BRAKE_HOLD_LEAD_AGE or (credit.braking_seen and credit.brake_min < gap_safe.BRAKE_HOLD_ACCEL_MIN):
-      return 0.0
-    rate = (a_now - hist[-1 - n][1]) / LEAD_DECEL_TREND_TIME
-    if rate <= LEAD_DECEL_TREND_RATE_MIN:
-      return 0.0
-    t_end = -a_now / rate
-    return min(LEAD_DECEL_TREND_TAU_MAX, 4.0 / max(t_end, 1e-3) ** 2)
-
-  def process_lead(self, lead, negative_tau=0.0):
+  def process_lead(self, lead):
     v_ego = self.x0[1]
     if lead is not None and lead.status:
       x_lead = lead.dRel
@@ -502,9 +457,8 @@ class LongitudinalMpc:
     if LEAD_ACCEL_COST_POS_EGO_SPEEDS[1] > 0.0:
       weak *= float(np.interp(v_ego, LEAD_ACCEL_COST_POS_EGO_SPEEDS, (0.0, 1.0)))
     tau_factor = 1.0 + (LEAD_ACCEL_COST_POS_TAU_FACTOR - 1.0) * weak
-    lead_xv_cost = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau, tau_factor, negative_tau)
-    lead_xv_trend = lead_xv if negative_tau <= 0.0 else self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau, 1.0, negative_tau)
-    return lead_xv, v_lead, lead_xv_cost, lead_xv_trend
+    lead_xv_cost = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau, tau_factor)
+    return lead_xv, v_lead, lead_xv_cost
 
   def set_accel_limits(self, min_a, max_a):
     # TODO this sets a max accel limit, but the minimum limit is only for cruise decel
@@ -535,10 +489,8 @@ class LongitudinalMpc:
     t_follow = carrot.get_T_FOLLOW(personality, v_ego, a_ego)
     jerk_factor = carrot.jerk_factor
 
-    trend_tau_0 = self.lead_decel_trend_tau(0, radarstate.leadOne) if self.mode == 'acc' else 0.0
-    lead_xv_0, lead_v_0, lead_xv_cost_0, lead_xv_trend_0 = self.process_lead(radarstate.leadOne, trend_tau_0)
-    lead_xv_1, lead_v_1, lead_xv_cost_1, lead_xv_trend_1 = self.process_lead(
-      radarstate.leadTwo, self.lead_decel_trend_tau(1, radarstate.leadTwo) if self.mode == 'acc' else 0.0)
+    lead_xv_0, lead_v_0, lead_xv_cost_0 = self.process_lead(radarstate.leadOne)
+    lead_xv_1, lead_v_1, lead_xv_cost_1 = self.process_lead(radarstate.leadTwo)
 
     mode = self.mode
     comfort_brake = carrot.comfort_brake
@@ -582,11 +534,10 @@ class LongitudinalMpc:
     def obstacle(lead_xv, gap):
       return lead_xv[:,0] + (get_stopped_equivalence_factor(lead_xv[:,1]) if gap is None else gap_safe.stopped_equivalence(lead_xv[:,1], gap))
     lead_0_obstacle, lead_1_obstacle = obstacle(lead_xv_0, lead_gaps[0]), obstacle(lead_xv_1, lead_gaps[1])
-    # How much closer the cost-side prediction puts each lead obstacle: >= 0 for a weaker positive lead
-    # accel, < 0 only for lead braking that eases off (lead_decel_trend_tau).
+    # How much closer the cost-side prediction (weaker positive lead accel) puts each lead obstacle.
     cost_shifts = np.column_stack([
-      lead_0_obstacle - obstacle(lead_xv_cost_0, lead_gaps[0]),
-      lead_1_obstacle - obstacle(lead_xv_cost_1, lead_gaps[1]),
+      np.maximum(0.0, lead_0_obstacle - obstacle(lead_xv_cost_0, lead_gaps[0])),
+      np.maximum(0.0, lead_1_obstacle - obstacle(lead_xv_cost_1, lead_gaps[1])),
     ])
     # Ego speeds of the previous plan, moved to the current speed (also the comfort-margin speeds below).
     gap_v = np.maximum(0.0, self.x_sol[:,1] + v_ego - self.x_sol[0,1])
@@ -600,9 +551,9 @@ class LongitudinalMpc:
       )
     else:
       approach_weight = self.approach_state.reset()
-    # The closing terms keep the full lead prediction except for braking that eases off: a slower cost-side
-    # lead there raised the target and added brake entries (replay level 2: 2.09 -> 2.31 /min).
-    cost_lead_speeds = (lead_xv_trend_0[:,1], lead_xv_trend_1[:,1])
+    # The closing terms keep the full lead prediction: a slower cost-side lead there raised the target and
+    # added brake entries (replay level 2: 2.09 -> 2.31 /min). Only the lead position moves (cost_shifts).
+    cost_lead_speeds = (lead_xv_0[:,1], lead_xv_1[:,1])
     self.gap_reserves = tuple(
       0.0 if gap is None else gap_safe.gap_reserve(distance=float(lead.dRel), v_ego=float(v_ego), v_lead=float(lead.vLead),
                                                    lead_accel=float(lead.aLeadK), gap=gap, stop_distance=stop_distance)
@@ -617,7 +568,6 @@ class LongitudinalMpc:
         enabled=True, track_id=lead_one.radarTrackId, distance=float(lead_one.dRel),
         desired=gap_safe.steady_distance(v_ego, float(lead_one.vLead), lead_gaps[0], stop_distance), closing_speed=-float(lead_one.vRel),
         lead_accel=float(lead_one.aLeadK), cushion=lead_gap.comfort_time * v_ego, dt=self.dt,
-        v_ego=float(v_ego), v_lead=float(lead_one.vLead),
         grant=not reset_state and not getattr(carrot, 'lane_change_gap', LaneChangeGapPlan()).active,
       )
     cutin_shift = 0.0
@@ -812,16 +762,12 @@ class LongitudinalMpc:
           comfort[:, lead_index] = gap_safe.comfort_margin(gap_v, cost_lead_speeds[lead_index], gap)
       margins += comfort
       if mode == 'acc':
-        # The cost-side lead prediction (weaker positive accel, braking that eases off).
+        # The weaker positive lead accel of the cost-side prediction.
         margins += cost_shifts
       # leadOne's cost reference with a cut-in credit: max(TF following target, comfort target - credit), and
-      # never more than the comfort target. The moved obstacle already took cutin_shift of the credit. Credit
-      # from a followed lead's moderate braking (CutinCredit.relaxed) may hold the reference at the moved obstacle
-      # (no lower than the TF danger floor, see cutin_shift) instead of the TF target or d_min: ego was inside
-      # d_min when the lead's braking ended, and either bound kept braking it 3 km/h below the lead (479 10:35).
+      # never more than the comfort target. The moved obstacle already took cutin_shift of the credit.
       if cutin_credit > 0.0:
-        floor = 0.0 if self.cutin_credit.relaxed else tf_desired_excess
-        margins[:, 0] = np.maximum(np.minimum(margins[:, 0] + cutin_shift, floor), margins[:, 0] - (cutin_credit - cutin_shift))
+        margins[:, 0] = np.maximum(np.minimum(margins[:, 0] + cutin_shift, tf_desired_excess), margins[:, 0] - (cutin_credit - cutin_shift))
       return margins, comfort
     self.cutin_shift = cutin_shift
     self.lead_gap_margins, comfort_margins = lead_margins(True)
@@ -879,19 +825,12 @@ class LongitudinalMpc:
     response_request = self.lead_response_state.update(response_request, self.dt, response_lead.radarTrackId)
     self.lead_accel_response_active = response_request.active
     self.lead_accel_response_level = response_request.level if response_request.active else 0
-    post_brake = (self.cutin_credit.relaxed and self.cutin_credit.credit > 0.0 and not self.cutin_credit.braking_seen)
-    self.brake_release = bool(
-      mode == 'acc' and lead_gaps[0] is not None and radarstate.leadOne.status and (trend_tau_0 > 0.0 or post_brake)
-      and v_ego >= BRAKE_RELEASE_SPEED_MIN and a_ego < radarstate.leadOne.aLeadK - BRAKE_RELEASE_ACCEL_GAP)
-    a_change_cost_factor = response_request.a_change_cost_factor
-    if self.brake_release:
-      a_change_cost_factor = min(a_change_cost_factor, BRAKE_RELEASE_A_CHANGE_FACTOR)
     self.set_weights(
       prev_accel_constraint,
       personality=personality,
       jerk_factor=jerk_factor,
       a_change_cost_starting=a_change_cost_starting,
-      a_change_cost_factor=a_change_cost_factor,
+      a_change_cost_factor=response_request.a_change_cost_factor,
       jerk_cost_factor=response_request.jerk_cost_factor,
       obstacle_cost_factor=self.obstacle_cost_factor,
       a_change_cost_ramp=a_change_cost_ramp,

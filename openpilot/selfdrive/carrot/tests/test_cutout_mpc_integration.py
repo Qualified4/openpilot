@@ -30,7 +30,7 @@ def run_update(*, confidence=0., mode="acc", reset=False, enabled=True, second_d
   tree = ast.parse(path.read_text(encoding="utf-8"))
   mpc = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "LongitudinalMpc")
   methods = [node for node in mpc.body if isinstance(node, ast.FunctionDef)
-             and node.name in ("update", "update_predicted_danger_margin", "process_lead", "extrapolate_lead", "set_weights", "lead_decel_trend_tau")]
+             and node.name in ("update", "update_predicted_danger_margin", "process_lead", "extrapolate_lead", "set_weights")]
   helpers = [node for node in tree.body if isinstance(node, ast.FunctionDef)
              and node.name in ("get_stopped_equivalence_factor", "get_safe_obstacle_distance", "desired_follow_distance", "get_a_change_cost",
                                                "bind_obstacles", "binding_reference")]
@@ -44,7 +44,7 @@ def run_update(*, confidence=0., mode="acc", reset=False, enabled=True, second_d
                    "A_CHANGE_COST": 200., "X_EGO_OBSTACLE_COST": 5.,
                    "X_EGO_COST": 0., "V_EGO_COST": 0., "A_EGO_COST": 0.,
                    "LIMIT_COST": 1e6, "DANGER_ZONE_COST": 100., "LEAD_ACCEL_TAU": 1.5,
-                   "LEAD_ACCEL_COST_POS_TAU_FACTOR": 4., "LEAD_ACCEL_COST_POS_REL_SPEEDS": (-2., -.5), "LEAD_ACCEL_COST_POS_EGO_SPEEDS": (0., 0.), "BLENDED_CLOSING_SPEEDS": (4., 7.), "LEAD_DECEL_TREND_TIME": .5, "LEAD_DECEL_TREND_RATE_MIN": .5, "LEAD_DECEL_TREND_TAU_MAX": 16., "LEAD_DECEL_TREND_GATE_TIME": 2., "BRAKE_RELEASE_A_CHANGE_FACTOR": .05, "BRAKE_RELEASE_ACCEL_GAP": .3, "BRAKE_RELEASE_SPEED_MIN": 5., "MIN_HEADROOM_TF": .5,
+                   "LEAD_ACCEL_COST_POS_TAU_FACTOR": 4., "LEAD_ACCEL_COST_POS_REL_SPEEDS": (-2., -.5), "LEAD_ACCEL_COST_POS_EGO_SPEEDS": (0., 0.), "BLENDED_CLOSING_SPEEDS": (4., 7.), "MIN_HEADROOM_TF": .5,
                    "LEAD_ACCEL_MIN_TRACK_FRAMES": 3,
                    "gap_reference": gap_reference, "displayed_follow_distance": displayed_follow_distance,
                    "braking_gap_reference": braking_gap_reference,
@@ -74,19 +74,17 @@ def run_update(*, confidence=0., mode="acc", reset=False, enabled=True, second_d
             params=np.zeros((13,8)), prev_a=np.zeros(13), yref=np.zeros((13,6)),
             solver=NS(set=lambda *a:None), set_weights=lambda *a,**kw:None, crash_cnt=0,
             x_sol=np.column_stack([15.*times, np.full(13,15.), np.zeros(13)]), run=lambda:None)
-  def process_lead(l, negative_tau=0.):
+  def process_lead(l):
     distance, speed = (l.dRel, l.vLead) if l.status else (50., 25.)
     xv = np.column_stack([distance + speed * times, np.full(13, speed)])
-    return xv, speed, xv, xv
+    return xv, speed, xv
   self.process_lead = process_lead
   self.weight_calls = []
   self.set_cost_weights = lambda *args:self.weight_calls.append(args)
   self.set_weights = lambda *args, **kwargs:namespace['set_weights'](self, *args, **kwargs)
   if lead_tau is not None:
     self.extrapolate_lead = namespace['extrapolate_lead']
-    self.process_lead = lambda lead, negative_tau=0.:namespace['process_lead'](self, lead, negative_tau)
-  self.lead_accel_hist = ([], [])
-  self.lead_decel_trend_tau = lambda *a:namespace["lead_decel_trend_tau"](self, *a)
+    self.process_lead = lambda lead:namespace['process_lead'](self, lead)
   self.update_predicted_danger_margin=lambda *a:namespace["update_predicted_danger_margin"](self,*a)
   arrays=[np.zeros(13) for _ in range(4)]
   namespace["update"](self, carrot, reset, NS(leadOne=lead, leadTwo=second), 20., *arrays, cutout_relief_enabled=enabled)
