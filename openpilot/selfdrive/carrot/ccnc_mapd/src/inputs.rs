@@ -13,7 +13,7 @@ pub const SERVICES: [&str; 6] = [
     "carState",
     "modelV2",
     "radarState",
-    // CcncVision. Present only while ccnc_visiond runs (CcncVisionProcess=1); without it nothing changes.
+    // CcncVision. Present only while ccnc_visiond runs; without it nothing changes.
     "customReserved4",
 ];
 

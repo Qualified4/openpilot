@@ -123,17 +123,14 @@ def _hda1_cluster_display(params: Params, CP: car.CarParams) -> bool:
     return False
 
 def enable_ccnc_mapd(started: bool, params: Params, CP: car.CarParams) -> bool:
-  if not started or not params.get_bool("CcncMapProcess"):
-    return False
-  if params.get("CcncPosDisplayMode") != 1 or os.path.exists(CCNC_MAPD_FAILED):
+  if not started or params.get("CcncPosDisplayMode") != 1 or os.path.exists(CCNC_MAPD_FAILED):
     return False
   return _hda1_cluster_display(params, CP)
 
 CCNC_VISIOND_FAILED = "/dev/shm/ccnc_visiond.failed"
 
 def enable_ccnc_visiond(started: bool, params: Params, CP: car.CarParams) -> bool:
-  # 1 is the only mode. Any other stored value keeps the process off.
-  if params.get("CcncVisionProcess") != 1 or os.path.exists(CCNC_VISIOND_FAILED):
+  if os.path.exists(CCNC_VISIOND_FAILED):
     return False
   # ccnc_mapd is the only reader of CcncVision: no inference without it.
   return enable_ccnc_mapd(started, params, CP)

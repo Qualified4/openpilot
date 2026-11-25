@@ -219,8 +219,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CcncExtendedDisplay", {PERSISTENT, BOOL, "0"}},
     {"CcncStripNetRust", {PERSISTENT, BOOL, "0"}},
     {"CcncPosDisplayMode", {PERSISTENT, INT, "0"}},
-    {"CcncMapProcess", {PERSISTENT, BOOL, "0"}},  // Internal road-test opt-in.
-    {"CcncVisionProcess", {PERSISTENT, INT, "0"}},  // Internal road-test opt-in. 1: wide side views at standstill.
     {"CcncExtendedDisplayMigrationPending", {PERSISTENT, BOOL}},
     {"CcncTrafficBackground", {PERSISTENT, BOOL, "1"}},
 

@@ -75,11 +75,10 @@ def test_generation_change_drops_the_old_slots():
   assert all(values[name] == 0 for name in ("FF_DETECT", "FF_DISTANCE", "FF_LATERAL"))
 
 
-@pytest.mark.parametrize("map_process", (False, True))
-def test_lane_lines_do_not_depend_on_the_map(display, monkeypatch, map_process):  # noqa: F811
+def test_lane_lines_do_not_depend_on_the_map(display, monkeypatch):  # noqa: F811
   """The recognised lane lines stay as with the map off while the map resets, goes missing, is late or invalid, and returns."""
   params, cs, send = display
-  params.update(CcncExtendedDisplay=True, CcncPosDisplayMode=1, CcncMapProcess=map_process)
+  params.update(CcncExtendedDisplay=True, CcncPosDisplayMode=1)
   templates(cs)
   cs.modelV2.meta.laneChangeAvailableLeft = cs.modelV2.meta.laneChangeAvailableRight = False
   clock = SimpleNamespace(now=NS)
@@ -111,17 +110,14 @@ def test_lane_lines_do_not_depend_on_the_map(display, monkeypatch, map_process):
     assert (values["LANELINE_LEFT"], values["LANELINE_RIGHT"]) == (4, 8), t
     link = getattr(canfd.ccnc_extension.state, "_rust_map_link", None)
     using[t] = link is not None and link.using_process
-  if map_process:
-    # Nothing received keeps the last map for 0.25 s after its last message (0.95 s).
-    assert [using[t] for t in (.45, .95, 1.2, 1.25, 1.5, 1.8, 3., 3.85, 3.9, 7.4)] == \
-      [True, True, True, False, False, False, False, False, True, True]
-  else:
-    assert not any(using.values())
+  # Nothing received keeps the last map for 0.25 s after its last message (0.95 s).
+  assert [using[t] for t in (.45, .95, 1.2, 1.25, 1.5, 1.8, 3., 3.85, 3.9, 7.4)] == \
+    [True, True, True, False, False, False, False, False, True, True]
 
 
 def test_extended_display_off_byte_identical(display):  # noqa: F811
   params, cs, send = display
-  params.update(CcncExtendedDisplay=False, CcncPosDisplayMode=1, CcncMapProcess=True)
+  params.update(CcncExtendedDisplay=False, CcncPosDisplayMode=1)
   templates(cs)
   expected = dict(send())
   cs.ccnc_map_bytes = packet(NS), NS
@@ -139,7 +135,7 @@ def test_corrupt_message_falls_back_without_exception(display, monkeypatch):  # 
   pub = messaging.pub_sock("customReserved3")
   sm = CcncMapSubMaster()
   params, cs, send = display
-  params.update(CcncExtendedDisplay=True, CcncPosDisplayMode=1, CcncMapProcess=True)
+  params.update(CcncExtendedDisplay=True, CcncPosDisplayMode=1)
   templates(cs)
   clock = SimpleNamespace(now=NS)
   monkeypatch.setattr(canfd, "time", SimpleNamespace(monotonic_ns=lambda: clock.now, monotonic=lambda: clock.now / NS))
@@ -202,15 +198,12 @@ def test_bad_param_value_is_off(display, monkeypatch, tmp_path):  # noqa: F811
   monkeypatch.setattr(canfd, "Params", lambda: params)
   cs.ccnc_map_bytes = packet(NS), NS
   assert "CCNC_0x162" in dict(send(0))
-  assert not canfd.ccnc_extension.state.ccnc_map_process
-  with open(params.get_param_path("CcncMapProcess"), "wb") as out:
-    out.write(b"invalid")
-  assert "CCNC_0x162" in dict(send(0))
-  assert not canfd.ccnc_extension.state.ccnc_map_process
+  # The map is always on with display A.
+  assert canfd.ccnc_extension.state.ccnc_map_process
   assert canfd.ccnc_extension.state.pos_display_mode == 1
   with open(params.get_param_path("CcncPosDisplayMode"), "wb") as out:
     out.write(b"invalid")
-  params.put_bool("CcncMapProcess", True)
   assert "CCNC_0x162" in dict(send(100))
   assert not canfd.ccnc_extension.state.ccnc_map_process
+  assert canfd.ccnc_extension.state.pos_display_mode == 0
   assert canfd.ccnc_extension.state.pos_display_mode == 0

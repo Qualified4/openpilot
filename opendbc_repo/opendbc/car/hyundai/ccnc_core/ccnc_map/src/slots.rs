@@ -21,6 +21,25 @@ const ALONGSIDE_EXIT_M: f64 = 6.0;
 const ALONGSIDE_HOLD_S: f64 = 1.0;
 /// ... and this long after its near car does: the radar barely sees within 5 m, and the tracker keeps a car 2 s.
 const ALONGSIDE_NEAR_HOLD_S: f64 = 2.0;
+/// A vid that once moved at this ground speed (m/s) or faster is a moving car: `EDGE_ROOM_M` does not apply to it.
+const MOVED: f64 = 3.0;
+/// A car's center sits about half its width or more inside the road edge. A side object that never moved at `MOVED`
+/// is not drawn closer than this to the road edge on its outer side. 0000047d: the median beside ego in the first
+/// lane, drawn in LF for 23 s while ego waited (15 32.4 s, 0.3-0.9 m from the left edge as the model's edge drifted
+/// out); a leaf bag and two pedestrians on the right edge that the radar reported at -0.5 to +2.6 m/s, drawn in RF for
+/// 0.05-0.5 s (21 10.39 s, 21 14.79 s, 22 15.45 s; 0.3 m). Cars that moved are left alone: the map's edge can sit
+/// inside the real one, and the rule cut real cars at 10-15 m/s there (47c side flicker 90 -> 115). Slow cars inside
+/// the road are left alone too: a ground speed rule (any side object below 3 m/s while ego drives) hid a queue of
+/// real cars creeping in the right lane (00000479 12 51-59 s).
+const EDGE_ROOM_M: f64 = 0.9;
+/// The rule above judges a vid once it has been tracked this long: a car pulling out of an alley at the road
+/// edge (0000047d 21 22.89 s) is drawn as it appears.
+const SETTLED_S: f64 = 1.0;
+/// FF does not draw a car measured coming at us (`Vehicle::oncoming`) this close while ego drives at
+/// `ONCOMING_FF_EGO_SPEED` or more: 0000047d 1 9.75 s, a car park pillar the radar measured at -4 m/s, drawn in FF
+/// for 1 s at 10 km/h. A car standing ahead is never oncoming; while ego waits FF still draws crossing traffic.
+const ONCOMING_FF_M: f64 = 15.;
+const ONCOMING_FF_EGO_SPEED: f64 = 2.;
 const EPS: f64 = 1e-9;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -87,6 +106,8 @@ struct Drawing {
     detect: u8,
     seen: f64,
     radar: Option<Track>,
+    /// The vid once moved at `MOVED` or faster.
+    fast: bool,
 }
 
 impl Drawing {
@@ -98,6 +119,7 @@ impl Drawing {
             detect: 1,
             seen: now,
             radar: None,
+            fast: false,
         }
     }
 
@@ -259,6 +281,8 @@ impl Assigner {
             let drawing = &mut self.drawings[i];
             drawing.seen = now;
             drawing.observe_lane(r_slot);
+            drawing.fast |= speed.abs() >= MOVED;
+            let still = now - car.born >= SETTLED_S && !drawing.fast;
             let v_rel = speed - world.pose.speed();
             let opening_gap = ((v_rel - 0.5) / 1.5).clamp(0., 1.);
             let mut lateral_target = -LANE_WIDTH * r;
@@ -298,7 +322,10 @@ impl Assigner {
             let Some(slot) = slot_index(x, drawing.lane) else {
                 continue;
             };
-            if slot != 0 && (speed < -1. / 3.6 || car.oncoming) {
+            if slot != 0 && (speed < -1. / 3.6 || car.oncoming || (slot <= 2 && still && at_edge(world, now, car, slot))) {
+                continue;
+            }
+            if slot == 0 && car.oncoming && x <= ONCOMING_FF_M && world.pose.speed() >= ONCOMING_FF_EGO_SPEED {
                 continue;
             }
             if v_rel > 2. {
@@ -470,6 +497,15 @@ fn twins(vehicles: &[Vehicle], world: &World, radar: PoseAt, current: impl Fn(f6
         && at(a).zip(at(b)).is_some_and(|((ax, ay, av), (bx, by, bv))| {
             (ax - bx).abs() <= TWIN_LON_M && (ay - by).abs() <= TWIN_LAT_M && (av - bv).abs() <= TWIN_SPEED
         })
+}
+
+/// The side car in LF (`slot` 1) or RF (2) is within `EDGE_ROOM_M` of the road edge beyond it: the map has no lane
+/// coordinate that far further out.
+fn at_edge(world: &World, now: f64, car: &Vehicle, slot: usize) -> bool {
+    let ego = world.pose.at(now);
+    let (x, y) = ego.to_ego(f64::from(car.wx), f64::from(car.wy));
+    let outward = if slot == 1 { EDGE_ROOM_M } else { -EDGE_ROOM_M };
+    world.vehicle_lane_coord(now, ego.s + x, ego.to_world(x, y + outward)).is_none()
 }
 
 fn eligible(car: &Vehicle) -> bool {

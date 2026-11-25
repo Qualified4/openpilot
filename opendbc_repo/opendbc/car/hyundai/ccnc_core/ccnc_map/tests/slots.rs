@@ -958,3 +958,100 @@ fn ff_follows_the_lead_to_another_car() {
     assert_eq!(ff[0], Some(1));
     assert_eq!(ff[1], Some(2));
 }
+
+/// One radar car kept 8 m ahead at lane `r` while ego drives at `ego` m/s; its reported ground speed per frame is
+/// `speed(t)`.
+/// Returns whether its slot drew it, per frame.
+fn walker(ego: f64, r: f64, speed: impl Fn(f64) -> f64) -> Vec<bool> {
+    let mut world = road();
+    let mut assigner = Assigner::default();
+    let slot = if r == 0. { FF } else { RF };
+    (0..60)
+        .map(|i| {
+            let now = f64::from(i) * 0.05;
+            world.car_state(now, ego, false);
+            let car = Vehicle { vx: speed(now) as f32, ..vehicle(&world, 9, now, 8. + ego * now, r) };
+            assigner.update(now, &[car], &world, None)[slot].is_some_and(|s| s.vid == 9)
+        })
+        .collect()
+}
+
+#[test]
+fn a_slow_car_inside_the_road_beside_a_driving_ego_is_drawn() {
+    // 00000479 12 51-59 s: real cars creeping at 1-3 m/s in the right lane while ego passes at 27-33 km/h.
+    assert!(walker(8., 1., |_| 1.5).iter().all(|&drawn| drawn));
+    assert!(walker(8., 1., |_| 2.9).iter().all(|&drawn| drawn));
+}
+
+#[test]
+fn a_side_car_that_slowed_a_waiting_side_car_ff_and_a_creeping_ego_draw_a_slow_car() {
+    // A car that slowed from 5 m/s to 1.5 m/s.
+    assert!(walker(8., 1., |t| if t < 0.5 { 5. } else { 1.5 }).iter().all(|&drawn| drawn));
+    // A car waiting beside ego (the rule needs 0.5 m/s or more).
+    assert!(walker(8., 1., |_| 0.2).iter().all(|&drawn| drawn));
+    // Ego below 15 km/h.
+    assert!(walker(4., 1., |_| 1.5).iter().all(|&drawn| drawn));
+    // FF is not affected.
+    assert!(walker(8., 0., |_| 1.5).iter().all(|&drawn| drawn));
+}
+
+/// Straight road with a left road edge `edge` m left of ego's lane center (modelV2 is right-positive). One radar car
+/// born at 0 s kept 10 m ahead, `y` m left (LF), while ego drives at `ego` m/s; its ground speed per frame is
+/// `speed(t)`. Returns whether LF drew it, per frame (20 Hz, 3 s).
+fn beside_the_left_edge(ego: f64, edge: f64, y: f64, speed: impl Fn(f64) -> f64) -> Vec<bool> {
+    let mut world = World::default();
+    let mut assigner = Assigner::default();
+    let mut m = model(0., 0., 0.);
+    let grid = m.lane_lines[0].x.clone();
+    m.road_edges = vec![
+        ccnc_map::input::model_v2::Line { x: grid.clone(), y: vec![-edge as f32; grid.len()] },
+        ccnc_map::input::model_v2::Line { x: grid.clone(), y: vec![9.; grid.len()] },
+    ];
+    (0..60)
+        .map(|i| {
+            let now = f64::from(i) * 0.05;
+            world.car_state(now, ego, false);
+            world.model(now, &m);
+            let car = Vehicle { vx: speed(now) as f32, ..vehicle(&world, 9, now, 10. + ego * now, -y / 3.5) };
+            assigner.update(now, &[car], &world, None)[LF].is_some_and(|s| s.vid == 9)
+        })
+        .collect()
+}
+
+#[test]
+fn a_still_object_at_the_road_edge_beside_a_waiting_ego_is_drawn_for_its_first_second_only() {
+    // 0000047d 15 32.4 s: the median 3.2 m left, the model's left edge 0.2-0.8 m beyond it, ego waiting.
+    let shown = beside_the_left_edge(0., 3.6, 3.0, |_| 0.);
+    assert!(shown[..19].iter().all(|&drawn| drawn), "{shown:?}");
+    assert!(shown[21..].iter().all(|&drawn| !drawn), "{shown:?}");
+}
+
+#[test]
+fn a_walking_object_at_the_edge_is_not_drawn_but_a_waiting_car_inside_and_a_moving_car_at_the_edge_are() {
+    // 0000047d 21 10.39 s / 22 15.45 s: a leaf bag and a pedestrian on the right edge at +1.2-2.6 m/s, ego 29-35 km/h
+    // (here on the left edge).
+    let shown = beside_the_left_edge(8., 3.6, 3.0, |_| 1.5);
+    assert!(shown[..19].iter().all(|&drawn| drawn) && shown[21..].iter().all(|&drawn| !drawn), "{shown:?}");
+    // A car waiting in LF with the road edge 3 m beyond it.
+    assert!(beside_the_left_edge(0., 6.0, 3.0, |_| 0.).iter().all(|&drawn| drawn));
+    // A car that drove at 8 m/s, close to an edge the map may have too far in.
+    assert!(beside_the_left_edge(0., 3.6, 3.0, |t| if t < 0.5 { 8. } else { 0. }).iter().all(|&drawn| drawn));
+}
+
+/// One radar car measured coming at us (oncoming) `x` m ahead in ego's lane while ego drives at `ego` m/s: whether FF
+/// drew it.
+fn oncoming_ahead(ego: f64, x: f64) -> bool {
+    let mut world = road();
+    world.car_state(0., ego, false);
+    let car = Vehicle { vx: -4., oncoming: true, ..vehicle(&world, 3, 0., x, 0.) };
+    Assigner::default().update(0., &[car], &world, None)[FF].is_some()
+}
+
+#[test]
+fn ff_skips_a_near_oncoming_object_only_while_ego_drives() {
+    // 0000047d 1 9.75 s: a car park pillar measured at -4 m/s, 6-10 m ahead, ego 10 km/h.
+    assert!(!oncoming_ahead(2.8, 8.));
+    // Crossing or oncoming traffic while ego waits, and farther ahead, stays.
+    assert!(oncoming_ahead(0., 8.));
+    assert!(oncoming_ahead(2.8, 20.));
+}
