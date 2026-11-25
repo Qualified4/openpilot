@@ -19,6 +19,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_braking_gap import (
   COMFORT_RELIEF_MIN_TF, LeadComfortState, comfort_path_has_reserve,
 )
 from openpilot.selfdrive.controls.lib import longitudinal_gap_safe as gap_safe
+from openpilot.selfdrive.controls.lib import longitudinal_soft_brake as soft_brake
 from openpilot.selfdrive.controls.lib.longitudinal_approach import ApproachState
 from openpilot.selfdrive.controls.lib.longitudinal_stop_gap import StopGapWeightState
 from openpilot.selfdrive.carrot.radar_motion.lane_change_gap import LaneChangeGapPlan
@@ -339,6 +340,7 @@ class LongitudinalMpc:
     self.lead_response_state = LeadAccelResponseState()
     self.lead_gap_states = (LeadGapState(), LeadGapState())
     self.lead_comfort_states = (LeadComfortState(), LeadComfortState())
+    self.soft_brake_state = soft_brake.SoftBrakeState()
     self.stop_gap_state = StopGapWeightState()
     self.approach_state = ApproachState()
     self.obstacle_cost_factor = 1.0
@@ -843,6 +845,31 @@ class LongitudinalMpc:
     self.yref[:,1] = x
     self.yref[:,2] = v
     self.yref[:,3] = a
+    # The acceleration-change residual is a_ego - prev_a. Its reference
+    # spreads a moderate brake without changing the constraints or obstacle selection.
+    lead_one_track = lead_one.radarTrackId if lead_one.status and lead_one.radar and lead_one.radarTrackId >= 0 else None
+    closing = v_ego - lead_v_0
+    self.soft_brake_state.update(
+      lead_one_track, reset=reset_state or mode != 'acc', lead_accel=lead_one.aLeadK,
+      ego_accel=min(a_ego, measured_a_ego), closing=closing,
+      time_gap=lead_one.dRel / max(v_ego, 0.1) if lead_one_track is not None else math.inf,
+    )
+    self.yref[:,4] = 0.0
+    accel_ref_delta = None
+    if (mode == 'acc' and not reset_state and lead_gap_enabled and not tesla_stop_active
+        and self.max_a >= 0.0 and approach_weight == 0.0 and lead_one_track is not None
+        and not self.soft_brake_state.blocked and lead_gaps[0] is not None
+        and lead_track_frames and lead_track_frames[0] * self.dt >= soft_brake.SOFT_BRAKE_TRACK_TIME):
+      weight = soft_brake.soft_brake_weight(
+        distance=lead_one.dRel, ego_speed=v_ego, lead_speed=lead_v_0, lead_accel=lead_one.aLeadK,
+        lead_end_speed=lead_xv_0[-1, 1], planned_decel=-np.min(self.prev_a[T_IDXS <= 3.0]),
+        gap=lead_gaps[0], stop_distance=stop_distance,
+      )
+      if weight > 0.0:
+        accel_ref_delta = soft_brake.soft_brake_reference_delta(
+          T_IDXS, self.prev_a, weight=weight, closing=closing, danger_margin=self.predicted_danger_margin,
+        )
+        self.yref[:,4] = np.where(binding == 0, accel_ref_delta, 0.0)
     self.yref[:,5] = j
     for i in range(N):
       self.solver.set(i, "yref", self.yref[i])
@@ -889,6 +916,8 @@ class LongitudinalMpc:
         binding = bind_obstacles(x_targets, preferred_targets(bind_margins))
         set_obstacle_params(binding)
         self.yref[:,0] = binding_reference(x_targets, preferred, binding, gap_v)
+        if accel_ref_delta is not None:
+          self.yref[:,4] = np.where(binding == 0, accel_ref_delta, 0.0)
         for i in range(N):
           self.solver.set(i, "yref", self.yref[i])
         self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
