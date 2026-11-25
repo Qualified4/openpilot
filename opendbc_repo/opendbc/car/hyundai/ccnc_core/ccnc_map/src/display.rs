@@ -6,6 +6,7 @@ use crate::radar::lanes::interpolate;
 const BEND_MIN_CURVATURE: f64 = 0.002;
 const BEND_START_YAW: f64 = 0.020;
 const BEND_FULL_YAW: f64 = 0.040;
+const STRAIGHT_MAX_CURVATURE: f64 = 0.003;
 
 pub(crate) struct ModelPath {
     points: Vec<(f64, f64)>,
@@ -45,6 +46,10 @@ impl ModelPath {
         }
         let weight = ((yaw.abs() - BEND_START_YAW) / (BEND_FULL_YAW - BEND_START_YAW)).min(1.);
         Some((self, weight))
+    }
+
+    pub(crate) fn straight(&self, yaw: f64) -> bool {
+        yaw.abs() <= BEND_START_YAW && self.curvature.abs() < STRAIGHT_MAX_CURVATURE
     }
 
     pub(crate) fn offset_at(&self, x: f64) -> Option<f64> {

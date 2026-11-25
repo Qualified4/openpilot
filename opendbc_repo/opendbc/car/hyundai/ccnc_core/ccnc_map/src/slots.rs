@@ -362,6 +362,7 @@ pub struct Assigner {
     model_lane: Option<ModelLane>,
     /// Last shown lateral kept only across consecutive reports of the same opening side car.
     side_lateral: [Option<(u32, f64, f32)>; 2],
+    front_lateral: [Option<(u32, f64, f32)>; 3],
 }
 
 impl Default for Assigner {
@@ -384,6 +385,7 @@ impl Default for Assigner {
             edge_hidden: Vec::new(),
             model_lane: None,
             side_lateral: [None; 2],
+            front_lateral: [None; 3],
         }
     }
 }
@@ -464,9 +466,11 @@ impl Assigner {
             self.clear_split();
             self.edge_hidden.clear();
             self.side_lateral = [None; 2];
+            self.front_lateral = [None; 3];
         }
         if !now.is_finite() || !world.accepts_radar() || !world.u_ego().is_finite() {
             self.matching_last = [None; 5];
+            self.front_lateral = [None; 3];
             self.ff_lead = None;
             self.ff_lead_pending = None;
             self.measured_lead_since = None;
@@ -964,6 +968,31 @@ impl Assigner {
         }
     }
 
+    /// Smooth display positions only while the same radar vid stays in the same front slot on a straight.
+    pub(crate) fn smooth_straight_front(&mut self, now: f64, straight: bool, slots: &mut [Option<Slot>; 5]) {
+        const NEAR_M: f64 = 10.;
+        const FAR_M: f64 = 65.;
+        const NEAR_TAU_S: f64 = 0.18;
+        const FAR_TAU_S: f64 = 0.42;
+
+        for (current, previous) in slots[..3].iter_mut().zip(&mut self.front_lateral) {
+            let Some(slot) = current.as_mut().filter(|s| straight && s.vid != 0 && s.vision != VISION_ONLY) else {
+                *previous = None;
+                continue;
+            };
+            if let Some((vid, at, lateral)) = *previous {
+                let dt = now - at;
+                if vid == slot.vid && dt > 0. && dt <= OBSERVATION_MAX_AGE {
+                    let far = ((f64::from(slot.distance) - NEAR_M) / (FAR_M - NEAR_M)).clamp(0., 1.);
+                    let tau = NEAR_TAU_S + far * (FAR_TAU_S - NEAR_TAU_S);
+                    let alpha = -(-dt / tau).exp_m1() as f32;
+                    slot.lateral = lateral + alpha * (slot.lateral - lateral);
+                }
+            }
+            *previous = Some((slot.vid, now, slot.lateral));
+        }
+    }
+
     fn clear_split(&mut self) {
         self.runner_up = [None; 2];
         self.alongside = [None; 2];
@@ -1081,6 +1110,26 @@ mod review_tests {
         }
         assert_eq!(hidden.len(), MAX_VEHICLES);
         assert!(hidden.iter().all(|h| h.0 >= 6.));
+    }
+
+    #[test]
+    fn straight_smoothing_drops_the_previous_position_on_a_curve_or_vid_change() {
+        let mut assigner = Assigner::default();
+        let first = Slot {
+            vid: 42, distance: 20., lateral: 0., v_rel: 1.,
+            detect: 1, lane_coord_rel: 0., kind: 0, kind_confirmed: false, kind_wanted: false, vision: VISION_NONE,
+        };
+        let changed = Slot { lateral: 1., ..first };
+        let mut front = |now, straight, current| {
+            let mut slots = [Some(current), None, None, None, None];
+            assigner.smooth_straight_front(now, straight, &mut slots);
+            slots[0].unwrap().lateral
+        };
+        assert_eq!(front(0., true, first), 0.);
+        assert!((0. ..1.).contains(&front(0.05, true, changed)));
+        assert_eq!(front(0.10, false, changed), 1.);
+        assert_eq!(front(0.15, true, first), 0.);
+        assert_eq!(front(0.20, true, Slot { vid: 43, ..changed }), 1.);
     }
 
     #[test]

@@ -501,6 +501,8 @@ impl Pipeline {
             && measured_yaw.is_some_and(|rate| rate.abs() <= 0.04);
         self.slots.smooth_opening_sides(now, straight, &mut slots);
         self.slots.apply_bend(now, &mut slots);
+        let steady = speed >= 0.5 && path.zip(measured_yaw).is_some_and(|(path, yaw)| path.straight(yaw));
+        self.slots.smooth_straight_front(now, steady, &mut slots);
         let asking = self.vision_seen.is_some_and(|seen| stamp.saturating_sub(seen) <= VISION_ALIVE_NS);
         for slot in slots[..3].iter_mut().flatten() {
             slot.kind_wanted = asking
