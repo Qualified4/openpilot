@@ -177,7 +177,7 @@ fn on_scene() -> usize {
 }
 
 fn radar_slot(distance: f32, lateral: f32) -> Slot {
-    Slot { vid: 7, distance, lateral, detect: 1, lane_coord_rel: 0., v_rel: 0., kind: 0, kind_confirmed: false, kind_wanted: false, vision: VISION_NONE }
+    Slot { vid: 7, distance, lateral, detect: 1, lane_coord_rel: 0., v_rel: 1., kind: 0, kind_confirmed: false, kind_wanted: false, vision: VISION_NONE }
 }
 
 #[test]

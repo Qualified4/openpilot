@@ -275,6 +275,7 @@ fn run() -> io::Result<()> {
     let mut quiet = Quiet { last: None };
     let mut failures = 0;
     let mut wrong_size = None;
+    let mut wide_unavailable = false;
     let mut threads_rechecked = false;
     while !STOP.load(Ordering::Relaxed) {
         for bytes in speed.drain() {
@@ -317,14 +318,24 @@ fn run() -> io::Result<()> {
             eprintln!("ccnc_visiond: kind thread ended; road camera off until restart");
             front_pace = None;
         }
+        let ready = detector.fixed() || calibrated;
+        let phase = gate.phase(clock_ns(libc::CLOCK_MONOTONIC), ready);
+        if phase == gate::Phase::Opened {
+            // Discard frames from above the speed limit and try the wide stream before its first road turn.
+            camera.discard();
+            wide_unavailable = false;
+        }
         // Road camera answers are placed with liveCalibration: none without it.
         if let Some(pace) = front_pace.filter(|_| calibrated) {
             let now = clock_ns(libc::CLOCK_MONOTONIC);
-            if gate.front_due(now, last_front, pace) {
+            if gate.front_due(now, last_front, pace)
+                && (phase == gate::Phase::Closed || wide_unavailable || gate.front_fits(now))
+            {
                 if let Some(frame) = road.poll() {
                     let size = (frame.layout.width, frame.layout.height);
                     if size != wcam::WIDE_SIZE {
                         last_front = Some(now);
+                        gate.front_finished(0);
                         if road_wrong_size != Some(size) {
                             eprintln!("ccnc_visiond: road camera frame {}x{}, not {}x{}; not used", size.0, size.1, wcam::WIDE_SIZE.0, wcam::WIDE_SIZE.1);
                         }
@@ -365,23 +376,17 @@ fn run() -> io::Result<()> {
                         }
                         Err(err) => eprintln!("ccnc_visiond: road frame {} dropped: {err:#}", frame.frame_id),
                     }
+                    gate.front_finished(started.elapsed().as_nanos() as u64);
                     continue;
                 }
             }
         }
-        let ready = detector.fixed() || calibrated;
-        match gate.phase(clock_ns(libc::CLOCK_MONOTONIC), ready) {
-            gate::Phase::Closed => {
-                camera.discard();
-                let status = if ready { Status::Resting } else { Status::NotCalibrated };
-                quiet.report(&publisher, status, gate.next_target().view(), latest)?;
-                sleep(IDLE);
-                continue;
-            }
-            // Frames of the time above the speed limit are never processed later, including the ones that came
-            // during the last sleep.
-            gate::Phase::Opened => camera.discard(),
-            gate::Phase::Open => {}
+        if phase == gate::Phase::Closed {
+            camera.discard();
+            let status = if ready { Status::Resting } else { Status::NotCalibrated };
+            quiet.report(&publisher, status, gate.next_target().view(), latest)?;
+            sleep(IDLE);
+            continue;
         }
         if let Some(took) = calib.usable().and_then(|c| detector.calibrate(c)) {
             // Frames that came while building are skipped: the camera gives only the latest one.
@@ -398,6 +403,7 @@ fn run() -> io::Result<()> {
             if camera.connected() {
                 sleep(FRAME_WAIT);
             } else {
+                wide_unavailable = true;
                 quiet.report(&publisher, Status::NoCamera, gate.next_target().view(), latest)?;
                 sleep(IDLE);
             }
@@ -409,11 +415,13 @@ fn run() -> io::Result<()> {
                 eprintln!("ccnc_visiond: wide camera frame {}x{}, the lens model is for {}x{}; frames are not processed", size.0, size.1, wcam::WIDE_SIZE.0, wcam::WIDE_SIZE.1);
             }
             wrong_size = Some(size);
+            wide_unavailable = true;
             quiet.report(&publisher, Status::UnsupportedCamera, gate.next_target().view(), latest)?;
             sleep(IDLE);
             continue;
         }
         wrong_size = None;
+        wide_unavailable = false;
         let target = gate.take_target(clock_ns(libc::CLOCK_MONOTONIC));
         let found = match detector.run(frame.layout, &frame.nv12, target) {
             Ok(found) => {
@@ -463,6 +471,11 @@ fn run() -> io::Result<()> {
         };
         send(&publisher, &out)?;
         quiet.frame();
+        gate.wide_finished(
+            target,
+            clock_ns(libc::CLOCK_MONOTONIC),
+            started.elapsed().max(sched_cfg.min_period).as_nanos() as u64,
+        );
         if !sched_cfg.min_period.is_zero() {
             sleep_interruptible(sched_cfg.min_period.saturating_sub(started.elapsed()));
         }

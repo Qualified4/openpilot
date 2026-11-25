@@ -299,20 +299,20 @@ impl Pipeline {
         Ok(None)
     }
 
-    /// Ego's lane between the model's two ego lines (the legacy map's lines, placed at ego's pose now) when both are
-    /// at `MODEL_LANE_PROB` or more, the model is at most 0.25 s old as the legacy map took it, and ego keeps its lane.
-    fn model_lane(&self, now: f64) -> Option<crate::slots::ModelLane> {
-        let fresh = self.model_stamp.is_some_and(|stamp| (0. ..=0.25).contains(&(now - seconds(stamp))));
-        if !fresh || self.world.ego_changing() {
+    /// The model's two ego lines at the radar tick, unless the data is stale or ego is changing lanes.
+    fn model_lane(&self, stamp: u64) -> Option<crate::slots::ModelLane> {
+        if !self.model_stamp.is_some_and(|model_stamp| current(stamp, model_stamp)) || self.world.ego_changing() {
             return None;
         }
         let cache = &self.radar.lane_cache;
         let line = |role: i64| {
             let i = usize::try_from(role + self.radar.lane_offset).ok()?;
-            let probable = cache.lines.get(&i)?.probability >= crate::slots::MODEL_LANE_PROB;
-            probable.then(|| cache.geometry.get(&i).cloned()).flatten()
+            let probability = cache.lines.get(&i)?.probability;
+            probability.is_finite().then_some((cache.geometry.get(&i)?, probability))
         };
-        Some(crate::slots::ModelLane::new(line(1)?, line(2)?))
+        let (left, left_prob) = line(1)?;
+        let (right, right_prob) = line(2)?;
+        Some(crate::slots::ModelLane::with_probability(left.clone(), right.clone(), left_prob.min(right_prob)))
     }
 
     fn update_radar(&mut self, stamp: u64, input: Vec<live_tracks::RawPoint>) -> Result<MapOut> {
@@ -369,7 +369,8 @@ impl Pipeline {
                 }
             }
         }
-        let yaw = self.world.yaw_at(now).unwrap_or(0.);
+        let measured_yaw = self.world.yaw_at(now);
+        let yaw = measured_yaw.unwrap_or(0.);
         let changing = self.world.status() & STATUS_FROZEN != 0;
         self.radar.advance(
             now,
@@ -427,7 +428,7 @@ impl Pipeline {
         );
         self.kinds.apply(now, self.world.radar_pose(now).heading, self.tracker.vehicles_mut());
         let cars = self.tracker.vehicles();
-        self.slots.set_model_lane(self.model_lane(now));
+        self.slots.set_model_lane(self.model_lane(stamp));
         let mut slots = self.slots.update_lead(now, cars, &self.world, display_lead);
         let remembered = if holding {
             // The map's 0.15 s freshness, not the selector's 0.3 s prediction hold, decides when memory takes over.
@@ -456,10 +457,13 @@ impl Pipeline {
             },
             &mut slots,
         )?;
-        let split = self.slots.split_alongside(now, cars, &mut slots);
+        let split = self.slots.split_alongside(now, cars, remembered, &mut slots);
         self.radar_slots = slots;
         let protected = [false, remembered[0] || split[0], remembered[1] || split[1], split[0], split[1]];
         self.vision.apply(now, car.speed, self.world.pose.at(now), protected, &mut slots);
+        let straight = speed >= 0.5 && !car.blinker && !self.world.ego_changing()
+            && measured_yaw.is_some_and(|rate| rate.abs() <= 0.04);
+        self.slots.smooth_opening_sides(now, straight, &mut slots);
         let asking = self.vision_seen.is_some_and(|seen| stamp.saturating_sub(seen) <= VISION_ALIVE_NS);
         for slot in slots[..3].iter_mut().flatten() {
             slot.kind_wanted = asking
@@ -628,6 +632,21 @@ mod tests {
             pipe.update_radar(stamp, Vec::new()).unwrap();
             assert_eq!(pipe.world.radar_stamp() == Some(seconds(stamp)), runs, "car state {car_after_ms} ms after the tracks");
         }
+    }
+
+    #[test]
+    fn a_model_frame_newer_than_the_tracks_can_still_supply_the_ego_lane() {
+        let mut pipe = Pipeline::new(0);
+        pipe.radar.lane_offset = 0;
+        for (role, y) in [(1, 1.7), (2, -1.7)] {
+            let points = vec![(0., y), (80., y)];
+            pipe.radar.lane_cache.geometry.insert(role, points.clone());
+            pipe.radar.lane_cache.lines.insert(role, crate::radar::lanes::Boundary { points, probability: 1., consistent: 1 });
+        }
+        pipe.model_stamp = Some(2_000_000_000);
+        assert!(pipe.model_lane(1_995_000_000).is_some_and(|lane| lane.contains(20., 0.)));
+        assert!(pipe.model_lane(1_745_000_000).is_none());
+        assert!(pipe.model_lane(2_255_000_000).is_none());
     }
 
     #[test]

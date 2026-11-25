@@ -48,17 +48,22 @@ impl Target {
     }
 }
 
+// Match the side deadlines in ccnc_map::vision. A Raw result extends each side from
+// its own arrival, so it can give Left more time than Right.
+const SIDE_HOLD_NS: u64 = 3_500_000_000;
+const RAW_EXTEND_NS: u64 = 1_500_000_000;
+const RAW_MAX_HOLD_NS: u64 = 4_500_000_000;
+const FRAME_MARGIN_NS: u64 = 50_000_000;
+const FRONT_BUDGET_NS: u64 = 800_000_000;
+
 /// How often the road camera is looked at, while a radar car ahead (FF, LF, RF) has no confirmed kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrontPace {
     /// Above `WIDE_MAX_SPEED`, when nothing else runs: the rest after a road frame's detection, 500 ms by default
     /// (two answers 0.8 s apart confirm a kind, so a shorter rest would only spend the little cores).
     pub moving_ns: u64,
-    /// While the side views run and only confirmed cars are asked about (rechecks): one road frame every this long
-    /// takes a side frame's turn. The car ahead of a standing car does not change, and the side cars are what the
-    /// stop is for (their rules count frames). A car ahead without a confirmed kind takes `moving_ns` instead: it is
-    /// shorter than a side frame (0.7-1.1 s on the device), so road and side frames take turns, a road frame every
-    /// ~1.2 s, until the two answers a confirmation needs came (47d: every 3.3 s at p50 with this pace).
+    /// Minimum rest between rechecks of a confirmed kind while the side views run. All road frames also
+    /// need an opening between wide cycles whenever the wide stream is available.
     pub standing_ns: u64,
 }
 
@@ -83,6 +88,11 @@ pub struct Gate {
     pending_raw: bool,
     was_open: bool,
     front_kind: Option<(KindAsk, u64)>,
+    /// Last successful publish time and measured cost (including the minimum period) of each side.
+    side_frames: [Option<(u64, u64)>; 2],
+    raw_at: Option<u64>,
+    front_turn: bool,
+    front_cost: u64,
 }
 
 impl Gate {
@@ -108,6 +118,38 @@ impl Gate {
         ask != KindAsk::None && forward && last_ns.is_none_or(|last| now_ns.saturating_sub(last) >= period)
     }
 
+    /// Take at most one road frame after L/R or L/R/Raw, and only if both sides can be refreshed before
+    /// the map's deadline at the observed processing costs. Under load or with a slow Raw turn, skip the road frame.
+    pub fn front_fits(&self, now_ns: u64) -> bool {
+        let (Some((left, left_cost)), Some((right, right_cost))) = (self.side_frames[0], self.side_frames[1]) else {
+            return false;
+        };
+        let deadline = |side| {
+            let hold = side + SIDE_HOLD_NS;
+            self.raw_at.filter(|&raw| raw > side).map_or(hold, |raw| {
+                hold.max(raw + RAW_EXTEND_NS).min(side + RAW_MAX_HOLD_NS)
+            })
+        };
+        let front = self.front_cost.max(FRONT_BUDGET_NS) + FRAME_MARGIN_NS;
+        self.front_turn
+            && now_ns + front + left_cost + FRAME_MARGIN_NS <= deadline(left)
+            && now_ns + front + left_cost + right_cost + 2 * FRAME_MARGIN_NS <= deadline(right)
+    }
+
+    pub fn front_finished(&mut self, cost_ns: u64) {
+        self.front_cost = cost_ns;
+        self.front_turn = false;
+    }
+
+    pub fn wide_finished(&mut self, target: Target, now_ns: u64, cost_ns: u64) {
+        match target {
+            Target::Left => self.side_frames[0] = Some((now_ns, cost_ns)),
+            Target::Right => self.side_frames[1] = Some((now_ns, cost_ns)),
+            Target::Raw => self.raw_at = Some(now_ns),
+        }
+        self.front_turn = self.next_target() == Target::Left;
+    }
+
     fn want_raw(&self, now_ns: u64) -> bool {
         self.front_vision
             .is_some_and(|(on, at)| on && now_ns.saturating_sub(at) <= MAP_TIMEOUT_NS)
@@ -125,7 +167,13 @@ impl Gate {
                 self.pending_raw = false;
                 Phase::Closed
             }
-            (false, true) => Phase::Opened,
+            (false, true) => {
+                self.next = Side::Left;
+                self.side_frames = [None; 2];
+                self.raw_at = None;
+                self.front_turn = false;
+                Phase::Opened
+            }
             (true, true) => Phase::Open,
         };
         self.was_open = open;
@@ -156,6 +204,7 @@ impl Gate {
 
     /// The target to process now: L, R alternating, with Raw inserted after R while LF or RF has a camera car.
     pub fn take_target(&mut self, now_ns: u64) -> Target {
+        self.front_turn = false;
         if self.pending_raw {
             self.pending_raw = false;
             return Target::Raw;
@@ -285,4 +334,33 @@ mod tests {
         assert_eq!(gate.phase(10_000, false), Phase::Closed);
         assert_eq!(gate.next_target(), Target::Left);
     }
+    #[test]
+    fn a_standing_front_frame_waits_for_the_wide_round_and_both_deadlines() {
+        fn wide(gate: &mut Gate, target: Target, end_ms: u64, cost_ms: u64) {
+            let ns = end_ms * 1_000_000;
+            assert_eq!(gate.take_target(ns), target);
+            gate.wide_finished(target, ns, cost_ms * 1_000_000);
+        }
+        let mut gate = Gate::default();
+        wide(&mut gate, Target::Left, 1100, 1100);
+        assert!(!gate.front_fits(1_100_000_000), "wide right goes first");
+        wide(&mut gate, Target::Right, 2200, 1100);
+        assert!(gate.front_fits(2_200_000_000), "two side views and one front fit in 3.5 s");
+        gate.front_finished(790_000_000);
+        assert!(!gate.front_fits(2_200_000_000), "only one front per round");
+
+        wide(&mut gate, Target::Left, 4100, 1100);
+        gate.front_vision(true, 5_200_000_000);
+        wide(&mut gate, Target::Right, 5200, 1100);
+        assert!(!gate.front_fits(5_200_000_000), "the pending Raw must go first");
+        wide(&mut gate, Target::Raw, 6300, 1100);
+        assert!(!gate.front_fits(6_300_000_000), "Raw alone does not extend Right's deadline enough for another front");
+
+        wide(&mut gate, Target::Left, 6900, 600);
+        gate.front_vision(true, 7_500_000_000);
+        wide(&mut gate, Target::Right, 7500, 600);
+        wide(&mut gate, Target::Raw, 8100, 600);
+        assert!(gate.front_fits(8_100_000_000), "even with Raw, the faster wide cycle leaves a road turn");
+    }
+
 }

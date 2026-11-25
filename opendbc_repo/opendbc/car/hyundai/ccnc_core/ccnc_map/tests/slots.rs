@@ -720,7 +720,7 @@ fn beside(world: &World, vid: u32, now: f64, x: f64, r: f64) -> Vehicle {
 fn side_pair(assigner: &mut Assigner, world: &World, now: f64, xs: &[f64], r: f64) -> [Option<Slot>; 5] {
     let cars: Vec<_> = xs.iter().enumerate().map(|(i, &x)| beside(world, i as u32 + 1, now, x, r)).collect();
     let mut slots = assigner.update(now, &cars, world, None);
-    assigner.split_alongside(now, &cars, &mut slots);
+    assigner.split_alongside(now, &cars, [false; 2], &mut slots);
     slots
 }
 
@@ -776,7 +776,7 @@ fn the_car_alongside_replaces_a_rear_handover_drawing() {
     let cars = [beside(&world, 1, 0., 3., -1.), beside(&world, 2, 0., 35., -1.)];
     let mut slots = assigner.update(0., &cars, &world, None);
     slots[LR] = Some(Slot { vid: 9, distance: -8., ..slots[LF].unwrap() });
-    assert_eq!(assigner.split_alongside(0., &cars, &mut slots), [true, false]);
+    assert_eq!(assigner.split_alongside(0., &cars, [false; 2], &mut slots), [true, false]);
     assert_eq!(slots[LR].map(|s| s.vid), Some(1));
 }
 
@@ -834,7 +834,7 @@ fn a_car_passing_ego_goes_on_from_the_front_slot_to_the_rear_one() {
         let now = i as f64 * 0.05;
         let cars = [Vehicle { vx: 5., ..vehicle(&world, 1, now, x, 1.) }, Vehicle { vx: 5., ..vehicle(&world, 2, now, 11., 1.) }];
         let mut slots = assigner.update(now, &cars, &world, None);
-        assert_eq!(assigner.split_alongside(now, &cars, &mut slots), [false, false]);
+        assert_eq!(assigner.split_alongside(now, &cars, [false; 2], &mut slots), [false, false]);
         assert_eq!(slots[RF].map(|s| (s.vid, s.distance)), Some((1, x as f32)), "at {now:.2}");
         assert_eq!(slots[RR], None);
     }
@@ -851,7 +851,7 @@ fn a_split_side_ends_once_the_near_car_leaves_ego_s_speed() {
         let v = if i < 10 { 0. } else { 4. };
         let cars = [Vehicle { vx: v, ..beside(&world, 1, now, 3., -1.) }, beside(&world, 2, now, 35., -1.)];
         let mut slots = assigner.update(now, &cars, &world, None);
-        assigner.split_alongside(now, &cars, &mut slots);
+        assigner.split_alongside(now, &cars, [false; 2], &mut slots);
         let state = (slots[LF].map(|s| s.vid), slots[LR].map(|s| s.vid));
         if drawn.last().is_none_or(|(_, last)| *last != state) {
             drawn.push((now, state));
@@ -871,7 +871,7 @@ fn a_split_side_stays_split_while_the_near_car_s_speed_wavers_around_the_limit()
         let v = if i % 4 < 2 { 1.8 } else { 2.6 };
         let cars = [Vehicle { vx: v, ..beside(&world, 1, now, 3., -1.) }, beside(&world, 2, now, 35., -1.)];
         let mut slots = assigner.update(now, &cars, &world, None);
-        assigner.split_alongside(now, &cars, &mut slots);
+        assigner.split_alongside(now, &cars, [false; 2], &mut slots);
         assert_eq!((slots[LF].map(|s| s.vid), slots[LR].map(|s| s.vid)), (Some(2), Some(1)), "at {now:.2}");
     }
 }
@@ -879,7 +879,8 @@ fn a_split_side_stays_split_while_the_near_car_s_speed_wavers_around_the_limit()
 #[test]
 fn a_passing_car_the_radar_stops_reporting_alongside_stays_drawn_in_the_rear_slot() {
     // 00000454 34: a car ego passes 9 m/s faster left RF at 2.7 m and came back in RR from the rear handover 0.7 s later.
-    let world = road();
+    let mut world = road();
+    world.car_state(0., 10., false);
     let mut assigner = Assigner::default();
     let mut drawn = Vec::new();
     for i in 0..60 {
@@ -888,7 +889,7 @@ fn a_passing_car_the_radar_stops_reporting_alongside_stays_drawn_in_the_rear_slo
         let passing = Vehicle { vx: 5., ..vehicle(&world, 1, if i < 10 { now } else { 0.45 }, 2., 1.) };
         let cars = [passing, Vehicle { vx: 5., ..vehicle(&world, 2, now, 30., 1.) }];
         let mut slots = assigner.update(now, &cars, &world, None);
-        assert_eq!(assigner.split_alongside(now, &cars, &mut slots), [false, (10..51).contains(&i)], "at {now:.2}");
+        assert_eq!(assigner.split_alongside(now, &cars, [false; 2], &mut slots), [false, (10..51).contains(&i)], "at {now:.2}");
         let state = (slots[RF].map(|s| (s.vid, s.distance)), slots[RR].map(|s| (s.vid, s.distance)));
         if drawn.last().is_none_or(|(_, last)| *last != state) {
             drawn.push((now, state));
@@ -914,7 +915,7 @@ fn near_lost(assigner: &mut Assigner, world: &World, now: f64, lost: bool) -> [O
     let near = beside(world, 1, if lost { now - 1. } else { now }, 3., -1.);
     let cars = [near, beside(world, 2, now, 35., -1.)];
     let mut slots = assigner.update(now, &cars, world, None);
-    assigner.split_alongside(now, &cars, &mut slots);
+    assigner.split_alongside(now, &cars, [false; 2], &mut slots);
     slots
 }
 
@@ -966,7 +967,7 @@ fn a_split_near_car_unreported_for_over_2_s_leaves_the_rear_slot_once() {
     near_lost(&mut assigner, &world, 0., false);
     let cars = [beside(&world, 2, 0.05, 35., -1.)];
     let mut slots = assigner.update(0.05, &cars, &world, None);
-    assigner.split_alongside(0.05, &cars, &mut slots);
+    assigner.split_alongside(0.05, &cars, [false; 2], &mut slots);
     assert_eq!(slots[LR], None);
 }
 
@@ -1179,6 +1180,11 @@ fn a_new_vid_where_the_edge_rule_just_hid_a_still_object_is_hidden_at_once() {
         ccnc_map::input::model_v2::Line { x: grid.clone(), y: vec![-3.6; grid.len()] },
         ccnc_map::input::model_v2::Line { x: grid.clone(), y: vec![9.; grid.len()] },
     ];
+    let mut moved_edge = model(0., 0., 0.);
+    moved_edge.road_edges = vec![
+        ccnc_map::input::model_v2::Line { x: grid.clone(), y: vec![-6.; grid.len()] },
+        ccnc_map::input::model_v2::Line { x: grid.clone(), y: vec![9.; grid.len()] },
+    ];
     // (vid, born, x, y left, ground speed) in the radar frame of each 20 Hz step.
     let scene = |now: f64| -> Option<(u32, f64, f64, f64, f32)> {
         match now {
@@ -1186,7 +1192,7 @@ fn a_new_vid_where_the_edge_rule_just_hid_a_still_object_is_hidden_at_once() {
             t if t < 2.5 => None,
             t if t < 3.0 => Some((10, 2.5, 12., 2.6, 0.)),
             t if t < 3.5 => Some((11, 3.0, 11., 3.0, 8.)),
-            t if (5.0..5.5).contains(&t) => Some((12, 5.0, 10., 3.0, 0.)),
+            t if (3.55..4.0).contains(&t) => Some((12, 3.55, 12., 2.6, 0.)),
             _ => None,
         }
     };
@@ -1194,7 +1200,7 @@ fn a_new_vid_where_the_edge_rule_just_hid_a_still_object_is_hidden_at_once() {
         .map(|i| {
             let now = f64::from(i) * 0.05;
             world.car_state(now, 0., false);
-            world.model(now, &m);
+            world.model(now, if now < 1.5 { &m } else { &moved_edge });
             let car = scene(now);
             let cars: Vec<Vehicle> = car
                 .iter()
@@ -1211,7 +1217,7 @@ fn a_new_vid_where_the_edge_rule_just_hid_a_still_object_is_hidden_at_once() {
     assert!(during(2.5, 3.0).all(|d| d.2.is_none()), "{drawn:?}");
     // A car that moves is drawn there, and so is a new still vid once no object was hidden there for 2 s.
     assert!(during(3.0, 3.5).all(|d| d.2 == d.1), "{drawn:?}");
-    assert!(during(5.0, 5.5).all(|d| d.2 == d.1), "{drawn:?}");
+    assert!(during(3.55, 4.0).all(|d| d.2 == d.1), "a hidden vid must not extend the edge memory: {drawn:?}");
 }
 
 /// One radar car measured coming at us (oncoming) `x` m ahead in ego's lane while ego drives at `ego` m/s: whether FF
@@ -1230,4 +1236,77 @@ fn ff_skips_a_near_oncoming_object_only_while_ego_drives() {
     // Crossing or oncoming traffic while ego waits, and farther ahead, stays.
     assert!(oncoming_ahead(0., 8.));
     assert!(oncoming_ahead(2.8, 20.));
+}
+
+#[test]
+fn a_departing_car_does_not_bridge_into_the_rear_slot() {
+    let world = road();
+    let mut assigner = Assigner::default();
+    let car = vehicle(&world, 1, 0., 3., 1.);
+    let mut slots = assigner.update(0., std::slice::from_ref(&car), &world, None);
+    assert_eq!(slots[RF].unwrap().vid, 1);
+    assigner.split_alongside(0., std::slice::from_ref(&car), [false; 2], &mut slots);
+    let mut slots = assigner.update(0.05, std::slice::from_ref(&car), &world, None);
+    assert_eq!(assigner.split_alongside(0.05, std::slice::from_ref(&car), [false; 2], &mut slots), [false; 2]);
+    assert!(slots[RR].is_none());
+}
+
+#[test]
+fn live_bsd_is_kept_when_a_passed_car_has_just_disappeared() {
+    let mut world = road();
+    world.car_state(0., 10., false);
+    let mut assigner = Assigner::default();
+    let car = Vehicle { vx: 5., ..vehicle(&world, 1, 0., 3., 1.) };
+    let mut slots = assigner.update(0., std::slice::from_ref(&car), &world, None);
+    let bsd = Slot { vid: 0, distance: -8., ..slots[RF].unwrap() };
+    assigner.split_alongside(0., std::slice::from_ref(&car), [false; 2], &mut slots);
+    let mut slots = assigner.update(0.05, std::slice::from_ref(&car), &world, None);
+    slots[RR] = Some(bsd);
+    assert_eq!(assigner.split_alongside(0.05, std::slice::from_ref(&car), [false; 2], &mut slots), [false; 2]);
+    assert_eq!(slots[RR], Some(bsd));
+}
+
+#[test]
+fn a_bridged_passed_car_does_not_get_the_split_speed_and_distance_bands() {
+    let mut world = road();
+    world.car_state(0., 10., false);
+    let mut assigner = Assigner::default();
+    let car = Vehicle { vx: 5., ..vehicle(&world, 1, 0., 3., 1.) };
+    let mut slots = assigner.update(0., std::slice::from_ref(&car), &world, None);
+    assigner.split_alongside(0., std::slice::from_ref(&car), [false; 2], &mut slots);
+    let mut slots = assigner.update(0.05, std::slice::from_ref(&car), &world, None);
+    assert_eq!(assigner.split_alongside(0.05, std::slice::from_ref(&car), [false; 2], &mut slots), [false, true]);
+    let car = Vehicle { vx: 7.2, ..vehicle(&world, 1, 0.1, 5.5, 1.) };
+    let cars = [car, vehicle(&world, 2, 0.1, 20., 1.)];
+    let mut slots = assigner.update(0.1, &cars, &world, None);
+    assert_eq!(assigner.split_alongside(0.1, &cars, [false; 2], &mut slots), [false; 2]);
+    assert_eq!(slots[RF].unwrap().vid, 1);
+}
+
+#[test]
+fn the_display_lead_qualifies_an_unproven_car_inside_the_model_lane_but_no_structure() {
+    let world = road();
+    let mut assigner = Assigner::default();
+    assigner.set_model_lane(Some(model_lane()));
+    let car = Vehicle { flags: Flags::default(), ..drifted(&world, 20., 0.4) };
+    let rail = Vehicle { vid: 2, flags: Flags { structure: true, ..Flags::default() }, ..vehicle(&world, 2, 0., 19., 0.) };
+    let cars = [rail, car];
+    let slots = assigner.update_lead(0., &cars, &world, Some((19., 0., 20.)));
+    assert_eq!(vids(slots), [Some(1), None, None, None, None]);
+    assert_eq!(vids(assigner.update_lead(0., &cars[..1], &world, Some((19., 0., 20.)))), [None; 5]);
+}
+
+#[test]
+fn a_model_lane_car_enters_inside_the_margin_and_only_leaves_across_a_line() {
+    let world = road();
+    let mut assigner = Assigner::default();
+    assigner.set_model_lane(Some(model_lane()));
+    for (i, (x, y, ff)) in [(20., 1.3, true), (20., 1.55, true), (52., 1.55, true),
+        (52., 1.75, false), (52., 1.3, false), (20., 1.3, true), (4.5, 1.55, true)].into_iter().enumerate()
+    {
+        let now = i as f64 * 0.05;
+        let car = Vehicle { seen_radar: now, ..drifted(&world, x, y) };
+        let slots = assigner.update(now, std::slice::from_ref(&car), &world, None);
+        assert_eq!(slots[FF].is_some(), ff, "at {x}, {y}");
+    }
 }

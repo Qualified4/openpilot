@@ -562,9 +562,8 @@ impl Kinds {
         self.votes.is_empty()
     }
 
-    /// Give each vid born at `now` the confirmed vote of a car it can be the same vehicle as (along and across the
-    /// ego heading, the old car moved on at its speed), or with no confirmed one, the counted answers of a car not
-    /// confirmed yet. Candidates of different shapes give nothing.
+    /// Hand off votes to a new vid in the same lane, where an earlier car would be after moving at its speed.
+    /// Prefer confirmed votes unless a closer pending vote of a different shape better matches the new track.
     fn inherit(&mut self, now: f64, heading: f64, cars: &[Vehicle]) {
         if self.votes.is_empty() {
             return;
@@ -575,10 +574,16 @@ impl Kinds {
                 continue;
             }
             // Confirmed votes first, then the pending answers of votes not confirmed yet.
-            let mut found = [None::<(f64, Vote)>; 2];
+            let mut found = [None::<(f64, bool, Vote)>; 2];
             let mut shapes = [[false; 2]; 2];
             // Not from another vid born now: no chain of inheritances within one update.
-            for old in cars.iter().filter(|old| old.born != now && now - old.seen_radar <= INHERIT_GAP_S) {
+            let lane = |car: &Vehicle| if car.u_slot.is_finite() { car.u_slot } else { car.u };
+            for old in cars.iter().filter(|old| old.born != now && (0. ..=INHERIT_GAP_S).contains(&(now - old.seen_radar))) {
+                let (new_lane, old_lane) = (lane(car), lane(old));
+                let lanes_known = new_lane.is_finite() && old_lane.is_finite();
+                if lanes_known && (new_lane - old_lane).abs() > 0.5 {
+                    continue;
+                }
                 let Some(vote) = self.votes.get(&old.vid) else { continue };
                 let (rank, truck) = match vote.pending() {
                     None if vote.confirmed() && vote.relay => (0, is_truck(vote.shown)),
@@ -592,20 +597,31 @@ impl Kinds {
                 );
                 let (lon, lat) = (cos * dx + sin * dy, -sin * dx + cos * dy);
                 let dv = cos * f64::from(car.vx - old.vx) + sin * f64::from(car.vy - old.vy);
-                let length = if truck { SAME_TRUCK_LON_M } else { SAME_CAR_LON_M };
-                if !(lon.abs() <= length && lat.abs() <= SAME_CAR_LAT_M && dv.abs() <= SAME_CAR_SPEED) {
+                // A live radar track can be another point on the same car, but it is not a lost track whose
+                // reflection may have jumped from the rear of a truck to its cab.
+                let length = if truck && dt > 0. { SAME_TRUCK_LON_M } else { SAME_CAR_LON_M };
+                let width = if lanes_known && dt > 0. { SAME_CAR_LAT_M } else { 1.0 };
+                if !(lon.abs() <= length && lat.abs() <= width && dv.abs() <= SAME_CAR_SPEED) {
                     continue;
                 }
+                let distance = lon.hypot(lat);
                 shapes[rank][usize::from(truck)] = true;
-                if found[rank].is_none_or(|(d, _)| lon.abs() < d) {
-                    found[rank] = Some((lon.abs(), *vote));
+                if found[rank].is_none_or(|(d, _, _)| distance < d) {
+                    found[rank] = Some((distance, truck, *vote));
                 }
             }
-            if let (Some((_, vote)), false) = (found[0], shapes[0][0] && shapes[0][1]) {
+            let pending = found[1].filter(|_| !(shapes[1][0] && shapes[1][1]));
+            let confirmed = found[0].filter(|&(distance, truck, _)| {
+                !(shapes[0][0] && shapes[0][1])
+                    && !pending.is_some_and(|(d, pending_truck, _)| d < distance && pending_truck != truck)
+            });
+            if let Some((_, _, vote)) = confirmed {
                 self.votes.insert(car.vid, Vote { streak: (0, 0), streak_from: f64::NEG_INFINITY, inherited: true, relay: false, ..vote });
-            } else if let (None, Some((_, vote)), false) = (found[0], found[1], shapes[1][0] && shapes[1][1]) {
-                // Not a confirmed kind: shown only on a sure link, like the vid's own answers.
-                self.votes.insert(car.vid, vote);
+            } else if found[0].is_none() || !(shapes[0][0] && shapes[0][1]) {
+                if let Some((_, _, vote)) = pending {
+                    // A pending kind stays unconfirmed and is shown only on a sure link.
+                    self.votes.insert(car.vid, vote);
+                }
             }
         }
     }
@@ -1241,4 +1257,45 @@ mod tests {
         kinds.apply(2.0, f64::NAN, &mut cars_nan_heading);
         assert!(!kinds.votes.contains_key(&4), "NaN heading must not inherit confirmed kind");
     }
+    #[test]
+    fn a_live_bus_does_not_give_its_vote_to_a_new_suv_in_the_next_lane() {
+        use crate::vehicles::{Flags, History, Link};
+        let make_car = |vid, born, seen_radar, wx, wy| Vehicle {
+            vid,
+            wx,
+            wy,
+            vx: 10.,
+            vy: 0.,
+            off: 0.,
+            u: 0.5,
+            u_slot: 0.5,
+            ids: History::default(),
+            hist: History::default(),
+            link: Link::Sure,
+            kind: None,
+            seen_radar,
+            seen_vision: f64::NEG_INFINITY,
+            born,
+            flags: Flags::default(),
+            radar_id: Some(vid),
+            oncoming: false,
+            oncoming_since: f64::NAN,
+            onward_since: f64::NAN,
+        };
+        let mut kinds = Kinds::default();
+        kinds.count(1, 0.0, KIND_BUS, 0.99, 3.0);
+        kinds.count(2, 1.0, KIND_CAR, 0.95, 1.7);
+        let bus = make_car(1, 0.0, 1.5, 13.2, 0.95);
+        let suv = |vid, born, seen| Vehicle {
+            u_slot: -0.45,
+            u: -0.45,
+            ..make_car(vid, born, seen, 4.2, 2.45)
+        };
+        let mut cars = [bus, suv(2, 1.0, 1.45), suv(3, 1.5, 1.5)];
+        kinds.apply(1.5, 0.0, &mut cars);
+        assert_eq!(cars[0].kind.unwrap().class, KIND_BUS);
+        assert_eq!(kinds.votes[&3].pending(), Some(KIND_CAR));
+        assert!(!kinds.votes[&3].confirmed());
+    }
+
 }

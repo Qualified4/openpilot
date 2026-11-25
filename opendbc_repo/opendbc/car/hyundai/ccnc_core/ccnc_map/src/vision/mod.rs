@@ -32,6 +32,8 @@ pub const LATE_S: f64 = 3.0;
 /// Covers a 3.0 s per-side cadence (1.5 s/view on little cores) without blinking while still clearing promptly if
 /// `ccnc_visiond` stops or starves.
 pub const HOLD_S: f64 = 3.5;
+/// The newest vision and radar messages in a daemon batch can be stamped slightly out of order.
+const ARRIVAL_SKEW_S: f64 = 0.05;
 /// How long cached full-frame raw candidates stay usable for subsequent side-view frames (~1 slow L/R/raw cycle).
 pub const RAW_HOLD_S: f64 = 4.0;
 /// When a full-frame raw result arrives after a side result (3-view L/R/raw cycle), keep the held side car alive
@@ -155,15 +157,18 @@ const RECENT_SIDE_FRAMES: usize = 4;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Swapped {
     camera: bool,
-    since: Option<f64>,
+    pending: Option<(f64, f64)>,
 }
 
 impl Swapped {
-    fn step(&mut self, now: f64, camera: bool) -> bool {
+    fn step(&mut self, now: f64, arrival: f64, camera: bool, corroborate: bool) -> bool {
         if camera == self.camera {
-            self.since = None;
-        } else if now - *self.since.get_or_insert(now) >= SWAP_HOLD_S {
-            *self = Swapped { camera, since: None };
+            self.pending = None;
+        } else {
+            let (since, first_frame) = *self.pending.get_or_insert((now, arrival));
+            if now - since >= SWAP_HOLD_S && (!corroborate || arrival > first_frame) {
+                *self = Swapped { camera, pending: None };
+            }
         }
         self.camera
     }
@@ -289,7 +294,7 @@ impl Vision {
         let raw_arrival = self.raw.as_ref().map(|r| r.arrival);
         for (side, held) in self.held.iter().enumerate() {
             let Some(held) = held.filter(|h| {
-                if now < h.arrival {
+                if h.arrival - now > ARRIVAL_SKEW_S {
                     return false;
                 }
                 let mut deadline = h.arrival + HOLD_S;
@@ -310,7 +315,7 @@ impl Vision {
                     self.swapped[index - 1] = Swapped::default();
                     continue;
                 };
-                place(now, index, part == 1, seen, swap, ego, &radar, protected[index], slots, &mut self.swapped[index - 1]);
+                place(now, held.arrival, v_ego, index, part == 1, seen, swap, ego, &radar, protected[index], slots, &mut self.swapped[index - 1]);
             }
         }
     }
@@ -329,6 +334,8 @@ fn along(index: usize, slot: &Slot) -> f64 {
 #[allow(clippy::too_many_arguments)]
 fn place(
     now: f64,
+    arrival: f64,
+    v_ego: f64,
     index: usize,
     rear: bool,
     seen: &Seen,
@@ -341,6 +348,10 @@ fn place(
 ) {
     let (x, y) = ego.to_ego(seen.world.0, seen.world.1);
     let distance = if rear { (-x).max(0.) } else { x };
+    if distance < 0. || !swap.allows(distance, seen.cut, seen.run) {
+        *swapped = Swapped::default();
+        return;
+    }
     let here = radar[index];
     let same_car = here.is_some_and(|s| {
         (along(index, &s) - x).abs() <= SAME_SLOT_X && (f64::from(s.lateral) - y).abs() <= SAME_SLOT_Y
@@ -364,13 +375,17 @@ fn place(
     // two, half of them as the stop memory or a side pair came and went under a camera car the rules kept choosing.
     let act = match act {
         Some(Act::Fill) => {
-            *swapped = Swapped { camera: true, since: None };
+            *swapped = Swapped { camera: true, pending: None };
             act
         }
         Some(Act::Swap | Act::Keep) => {
             let radar_closer = here.is_some_and(|s| distance - f64::from(s.distance).abs() > swap.margin);
             let camera = if swapped.camera { !radar_closer } else { act == Some(Act::Swap) && !protected };
-            Some(if swapped.step(now, camera) { Act::Swap } else { Act::Keep })
+            // A single wide frame stays in memory long enough to pass the time gate on its own. At rest,
+            // require another wide frame to corroborate replacing a stopped radar car (47f-14, LF at 48 s).
+            let corroborate = !rear && camera && v_ego.abs() <= 0.25
+                && here.is_some_and(|s| s.vid != 0 && (v_ego + f64::from(s.v_rel)).abs() <= 0.5);
+            Some(if swapped.step(now, arrival, camera, corroborate) { Act::Swap } else { Act::Keep })
         }
         None => {
             *swapped = Swapped::default();
@@ -396,7 +411,7 @@ fn place(
                 let y = if left { 1. } else { -1. } * (if left { y } else { -y }).clamp(LANE_WIDTH - SIDE_LANE_PLAY, LANE_WIDTH + SIDE_LANE_PLAY);
                 slots[index] = Some(Slot {
                     vid: VISION_VID[index - 1],
-                    distance: (if rear { distance } else { x }) as f32,
+                    distance: distance as f32,
                     lateral: y as f32,
                     detect: 1,
                     lane_coord_rel: (-y / LANE_WIDTH) as f32,
@@ -408,5 +423,80 @@ fn place(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+    use crate::slots::VISION_NONE;
+
+    fn radar_slot() -> Slot {
+        Slot {
+            vid: 1,
+            distance: 6.6,
+            lateral: 3.,
+            detect: 2,
+            lane_coord_rel: -1.,
+            v_rel: 0.,
+            kind: 0,
+            kind_confirmed: false,
+            kind_wanted: false,
+            vision: VISION_NONE,
+        }
+    }
+
+    #[test]
+    fn an_existing_camera_swap_is_cleared_when_it_leaves_the_rules_range() {
+        let cfg = SwapCfg { allow_cut: false, ..SwapCfg::default() };
+        let radar = [None, Some(radar_slot()), None, None, None];
+        for (x, run, cut) in [(-2., 2, false), (8., 2, false), (2., 1, false), (2., 2, true)] {
+            let mut slots = radar;
+            let mut swap = Swapped { camera: true, pending: None };
+            let seen = Seen { world: (x, 3.), run, cut };
+            place(1., 1., 2., 1, false, &seen, &cfg, PoseAt::default(), &radar, false, &mut slots, &mut swap);
+            assert_eq!(slots, radar, "x={x}, run={run}, cut={cut}");
+            assert_eq!(swap, Swapped::default());
+        }
+    }
+
+    #[test]
+    fn a_stationary_radar_car_needs_two_wide_frames_before_it_is_replaced() {
+        let mut vision = Vision::default();
+        let radar = [None, Some(radar_slot()), None, None, None];
+        let seen = |x| Some(Seen { world: (x, 2.5), run: 2, cut: false });
+        let held = |arrival, x| Some(Held { arrival, seen: [seen(x), None] });
+        vision.held[0] = held(1., 1.5);
+        for now in [1., 1.5, 2.] {
+            let mut slots = radar;
+            vision.apply(now, 0., PoseAt::default(), [false; 5], &mut slots);
+            assert_eq!(slots[1].unwrap().vid, 1);
+        }
+        vision.held[0] = held(2.5, 3.5);
+        let mut slots = radar;
+        vision.apply(2.5, 0., PoseAt::default(), [false; 5], &mut slots);
+        assert_eq!(slots[1].unwrap().vid, 1, "the next observation no longer calls for a swap");
+
+        for (t, expected) in [(3., VISION_CONFIRMS), (4., VISION_ONLY)] {
+            vision.held[0] = held(t, 1.5);
+            let mut slots = radar;
+            vision.apply(t, 0., PoseAt::default(), [false; 5], &mut slots);
+            assert_eq!(slots[1].unwrap().vision, expected);
+        }
+    }
+
+    #[test]
+    fn a_held_wide_result_in_the_same_batch_survives_small_stamp_skew() {
+        let mut vision = Vision::default();
+        vision.held[0] = Some(Held {
+            arrival: 2.,
+            seen: [Some(Seen { world: (2., 3.), run: 2, cut: false }), None],
+        });
+        let mut slots = [None; 5];
+        vision.apply(1.99, 0., PoseAt::default(), [false; 5], &mut slots);
+        assert_eq!(slots[1].unwrap().vision, VISION_ONLY);
+        let mut slots = [None; 5];
+        vision.apply(1.90, 0., PoseAt::default(), [false; 5], &mut slots);
+        assert_eq!(slots, [None; 5]);
     }
 }
