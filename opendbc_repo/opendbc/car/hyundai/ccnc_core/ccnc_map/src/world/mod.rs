@@ -361,13 +361,14 @@ impl World {
             map_unknown: expired,
         });
         // Blend continuously from the filtered coordinate at boundaries to the raw track in lane interiors.
-        self.u_ego = if !expired && filtered.is_finite() {
+        // At intersections and while re-locking after map loss, the filter has no trustworthy road lane.
+        self.u_ego = if !expired && filtered.is_finite() && self.ego_filter.committed_lane().is_some() {
             let raw_u = self.u_ego_raw_track.map_or(filtered, |(_, u)| u);
             let boundary_distance = (filtered - filtered.round()).abs().min((raw_u - raw_u.round()).abs());
             let w_kf = ((FILTERED_BLEND_OUTER_U - boundary_distance) / FILTERED_BLEND_WIDTH_U).clamp(0., 1.);
             Some((t, raw_u + w_kf * (filtered - raw_u)))
         } else {
-            None
+            self.u_ego_raw_track
         };
         if let Some((t, u)) = self.u_ego {
             if (u - (u.floor() + 0.5)).abs() > EGO_CHANGE_CENTER {
