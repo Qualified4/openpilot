@@ -1,4 +1,4 @@
-use super::object::{Evidence, TrackedObject};
+use super::object::{Evidence, RadarSample, TrackedObject};
 use super::road_frame::{RoadFrame, LANE_WIDTH};
 use super::{VehicleKind, VisionObservation};
 use crate::input::{live_tracks::RawPoint, map_events::DisplayLead};
@@ -47,6 +47,12 @@ impl Tracker {
             lane_filtered: lane_u,
             radar_hits: 0,
             motion_hits: 0,
+            radar_sample: None,
+            motion_time: 0.,
+            verified_travel: 0.,
+            moved: false,
+            range_consistent: false,
+            handoff_until: f64::NEG_INFINITY,
             vision_hits: 0,
             last_lead_sample: None,
             rear: s < 0.,
@@ -87,6 +93,7 @@ impl Tracker {
         now: f64,
         speed: f64,
         frame: &RoadFrame,
+        ego: PoseAt,
         points: &[RawPoint],
     ) -> Vec<(f64, f64)> {
         let measurements: Vec<_> = points
@@ -151,13 +158,13 @@ impl Tracker {
             }
             seen_point[mi] = true;
             seen_object[oi] = true;
-            update_radar(&mut self.objects[oi], measurements[mi], now);
+            update_radar(&mut self.objects[oi], measurements[mi], now, ego, speed);
         }
         for (i, &m) in measurements.iter().enumerate() {
             if !seen_point[i] {
                 let u = frame.lane_u(m.s, m.d);
                 if let Some(o) = self.create(m.s, m.d, m.speed, u) {
-                    update_radar(o, m, now);
+                    update_radar(o, m, now, ego, speed);
                 }
             }
         }
@@ -182,7 +189,7 @@ impl Tracker {
             .iter_mut()
             .filter(|o| {
                 o.s > 0.
-                    && frame.lane_u(o.s, o.d).abs() < 0.7
+                    && frame.lane_u(o.s, o.d).abs() < if ids_match(o) { 0.82 } else { 0.7 }
                     && (o.s - s).abs() <= if ids_match(o) { 4. } else { 2.0 }
                     && (o.d - d).abs() <= 1.8
                     && (o.v_s - v).abs() <= 3.
@@ -285,27 +292,36 @@ impl Tracker {
             let side = o.lane_u.abs() > 0.5;
             let in_bsd = side && (-8. ..=0.).contains(&o.s);
             let bsd = in_bsd && blind[usize::from(o.lane_u > 0.)];
-            let occluded = x > 4.
+            let occluded = x > 6.
                 && radar.iter().any(|&(near_x, near_y)| {
-                    near_x > 0.5 && near_x + 2. < x && (y * near_x / x - near_y).abs() < 0.95
+                    let fraction = near_x / x;
+                    near_x >= 3.
+                        && near_x + 2. < x
+                        && (y * fraction - near_y).abs() <= 0.9 - 0.7 * fraction
                 });
-            let visible = (6. ..=50.).contains(&x) && y.abs() < 1. + x * 0.55 && !occluded;
+            let visible = (6. ..=50.).contains(&o.s) && y.abs() < 1. + x * 0.55 && !occluded;
             // A current return at the predicted location consumed by another object
             // is stronger negative evidence than the absence of a return in a blind zone.
             let replaced = radar
                 .iter()
                 .any(|&(rx, ry)| (x - rx).abs() < 0.65 && (y - ry).abs() < 0.55);
-            let decay = if visible || replaced {
-                24.
+            let decay = if replaced {
+                30.
+            } else if visible {
+                22.
             } else if bsd {
                 o.evidence.last_bsd_t = Some(now);
-                0.30
-            } else if in_bsd && o.evidence.last_bsd_t.is_some_and(|t| now - t < 0.25) {
-                10.
-            } else if (side && (-8. ..6.).contains(&o.s)) || occluded {
-                1.7
+                if now <= o.handoff_until {
+                    0.30
+                } else {
+                    8.
+                }
+            } else if now <= o.handoff_until && o.s < 6. {
+                3.2
+            } else if occluded {
+                8.
             } else {
-                6.
+                12.
             };
             o.support(-decay * dt);
         }
@@ -318,7 +334,8 @@ impl Tracker {
     }
 }
 
-fn update_radar(o: &mut TrackedObject, m: Measurement, now: f64) {
+fn update_radar(o: &mut TrackedObject, m: Measurement, now: f64, ego: PoseAt, speed: f64) {
+    update_motion(o, m, now, ego, speed);
     let ds = m.s - o.s;
     let dd = m.d - o.d;
     // Huber influence bounds the displacement from a single inconsistent reflection.
@@ -342,6 +359,9 @@ fn update_radar(o: &mut TrackedObject, m: Measurement, now: f64) {
             o.motion_hits.saturating_sub(1)
         };
     }
+    if m.s < 6. && (o.moved || speed <= 5. && o.motion_hits >= 3) {
+        o.handoff_until = now + 1.15;
+    }
     let quality = if m.moving {
         0.85
     } else if o.s > 1.5 && prior.is_some() {
@@ -350,4 +370,48 @@ fn update_radar(o: &mut TrackedObject, m: Measurement, now: f64) {
         0.10
     };
     o.support(quality);
+}
+
+fn update_motion(o: &mut TrackedObject, m: Measurement, now: f64, ego: PoseAt, speed: f64) {
+    let (world_x, world_y) = ego.to_world(m.x, -m.y);
+    let sample = RadarSample {
+        time: now,
+        range: m.x.hypot(m.y),
+        relative_speed: m.speed,
+        world_x,
+        world_y,
+    };
+    if o.radar_age(now) > 0.20 {
+        o.radar_sample = Some(sample);
+        o.motion_time = 0.;
+        return;
+    }
+    let Some(previous) = o.radar_sample else {
+        o.radar_sample = Some(sample);
+        return;
+    };
+    let interval = now - previous.time;
+    if interval < 0.24 {
+        return;
+    }
+    o.radar_sample = Some(sample);
+
+    // Doppler must agree with the change in slant range. Use ego-compensated
+    // Cartesian displacement for motion: a near static post can have a large
+    // positive vRel + vEgo because the radar observes it at an oblique angle.
+    let doppler = (sample.relative_speed + previous.relative_speed) * 0.5;
+    let range_error = (sample.range - previous.range - doppler * interval).abs();
+    o.range_consistent = range_error <= 0.65 + 2.0 * interval;
+    let (previous_x, _) = ego.to_ego(previous.world_x, previous.world_y);
+    let ground_speed = (m.x - previous_x) / interval;
+    if o.range_consistent
+        && ground_speed > 1.5
+        && (m.x >= 6. || m.speed.abs() < 0.5 * speed || o.moved)
+    {
+        o.motion_time += interval;
+        o.verified_travel = (o.verified_travel + ground_speed * interval).min(10.);
+        o.moved |= o.motion_time >= if ground_speed >= 4. { 0.24 } else { 0.48 };
+    } else {
+        o.motion_time = 0.;
+    }
 }

@@ -34,6 +34,12 @@ pub struct TrackedObject {
     pub(super) lane_filtered: f64,
     pub(super) radar_hits: u32,
     pub(super) motion_hits: u8,
+    pub(super) radar_sample: Option<RadarSample>,
+    pub(super) motion_time: f64,
+    pub(super) verified_travel: f64,
+    pub(super) moved: bool,
+    pub(super) range_consistent: bool,
+    pub(super) handoff_until: f64,
     pub(super) vision_hits: u32,
     pub(super) last_lead_sample: Option<f64>,
     pub(super) rear: bool,
@@ -42,6 +48,12 @@ pub struct TrackedObject {
 }
 
 impl TrackedObject {
+    pub(super) fn radar_age(&self, now: f64) -> f64 {
+        self.evidence
+            .last_radar_t
+            .map_or(f64::INFINITY, |t| now - t)
+    }
+
     pub fn existence_p(&self) -> f64 {
         1. / (1. + (-self.existence_log_odds).exp())
     }
@@ -63,4 +75,12 @@ impl TrackedObject {
             self.kind = VehicleKind::Car;
         }
     }
+}
+#[derive(Clone, Copy, Debug)]
+pub(super) struct RadarSample {
+    pub time: f64,
+    pub range: f64,
+    pub relative_speed: f64,
+    pub world_x: f64,
+    pub world_y: f64,
 }

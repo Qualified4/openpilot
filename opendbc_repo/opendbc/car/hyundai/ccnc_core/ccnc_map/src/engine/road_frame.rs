@@ -42,13 +42,27 @@ impl RoadFrame {
             })
             .collect();
         points.push((0., 0.));
-        points.extend(
-            path.iter()
-                .copied()
-                .map(to_ego)
-                .take_while(|(x, y)| x.is_finite() && y.is_finite())
-                .skip_while(|p| p.0 < 0.35),
-        );
+        let mut direction = None;
+        for point in path
+            .iter()
+            .copied()
+            .map(to_ego)
+            .take_while(|(x, y)| x.is_finite() && y.is_finite())
+            .skip_while(|p| p.0 < 0.35)
+        {
+            let previous = points[points.len() - 1];
+            let (dx, dy) = (point.0 - previous.0, point.1 - previous.1);
+            if dx.hypot(dy) < 0.01 {
+                continue;
+            }
+            // A stopping forecast can fold back on itself. Extrapolate the
+            // forward path before that fold so distant returns keep their range.
+            if direction.is_some_and(|(tx, ty)| dx * tx + dy * ty <= 0.) {
+                break;
+            }
+            direction = Some((dx, dy));
+            points.push(point);
+        }
         if points.last().is_none_or(|p| p.0 < 1. && p.1.abs() < 1.) {
             points.push((50., 0.));
         }

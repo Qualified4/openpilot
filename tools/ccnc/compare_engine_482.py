@@ -1,4 +1,4 @@
-"""Score #191 Stage 1 on paired rc18 and engine ticks. Requires pycapnp and matplotlib.
+"""Score #191 on paired rc18 and shadow ticks. Requires pycapnp and matplotlib.
 
   python tools/ccnc/compare_engine_482.py CACHE_DIR TICKS_TSV OUTPUT_DIR
 """
@@ -11,7 +11,6 @@ from pathlib import Path
 from replay_engine import schema
 
 SLOTS = ("FF", "LF", "RF", "LR", "RR")
-SEGMENTS = (2, 7, 10, 11, 12, 18)
 ROUTE = "00000482--2b8fe366ed"
 
 # Windows are in seconds since the first carState, using the recorded map publication time.
@@ -39,6 +38,7 @@ class Draw:
   y: float
   s: float
   speed: float
+  vision: bool = False
 
 
 @dataclass(frozen=True)
@@ -71,15 +71,20 @@ class Tick:
 
 
 def read_shadow(path):
+  with path.open() as stream:
+    return parse_shadow(stream)
+
+
+def parse_shadow(lines):
   result = {}
-  for line in path.read_text().splitlines():
+  for line in lines:
     if line.startswith("# "):
       seg = int(line.rsplit("--", 1)[1])
       if seg in result:
         raise ValueError(f"repeated segment {seg}")
       ticks = result[seg] = {}
       continue
-    stamp, valid, *fields = line.split("\t")
+    stamp, valid, *fields = line.rstrip("\n").split("\t")
     slots = []
     for field in fields[:5]:
       if field == "-":
@@ -126,7 +131,8 @@ def read_segment(log, path, shadow):
       counts["kind_answers"] += len(p.kinds) if e.valid else 0
     elif which == "customReserved3":
       m = e.customReserved3
-      baseline = tuple(Draw(p.vid, 0, p.distance, p.lateral, p.distance, p.vRel) if p.present else None for p in m.slots)
+      baseline = tuple(Draw(p.vid, 0, p.distance, p.lateral, p.distance, p.vRel, p.vision != 0)
+                       if p.present else None for p in m.slots)
       if m.radarLogMonoTime in recordings:
         counts["repeated_map_stamp"] += 1
       recordings[m.radarLogMonoTime] = (ns, m.valid and e.valid, baseline)
@@ -272,11 +278,30 @@ def split_score(rows, side, output, fixed=None):
   return dict(result)
 
 
+def observation_proxy(rows, index, output):
+  """Use the same range/speed association for both drawings. rc18 has no object evidence flags."""
+  counts = Counter(shown=0, no_match_or_camera_or_lead=0, stationary_radar_only=0)
+  for row in rows:
+    draw = getattr(row, output)[index]
+    if draw is None or draw.identity == 0:  # A BSD symbol is not a vehicle object.
+      continue
+    counts["shown"] += 1
+    radar_match = any(abs(draw.x - p.x) <= 2.0 and abs(draw.speed - p.relative_speed) <= 2.5
+                      for p in row.raw.values())
+    camera = draw.vision if output == "old" else row.support[draw.identity].vision
+    lead_match = index == 0 and row.lead is not None and abs(draw.x - row.lead[2]) <= 2.5
+    counts["no_match_or_camera_or_lead"] += not (radar_match or camera or lead_match)
+    counts["stationary_radar_only"] += (index in (1, 2) and radar_match and not camera
+                                       and row.speed > 5. and abs(row.speed + draw.speed) < 1.5)
+  return dict(counts)
+
+
 def segment_score(rows):
   result = {"rc18": {}, "engine": {}, "changes": {}}
   for index, name in enumerate(SLOTS):
     for label, output in (("rc18", "old"), ("engine", "new")):
       result[label][name] = {**continuity(rows, output, (index,)),
+                             "observation_proxy": observation_proxy(rows, index, output),
                              "shown": sum(getattr(r, output)[index] is not None for r in rows)}
     c = Counter({key: 0 for key in ("newly_filled", "newly_empty", "new_coasted", "new_radar_only_stationary")})
     for r in rows:
@@ -351,6 +376,29 @@ def range_span(target_stats):
   return round(max(samples) - min(samples), 3) if samples else None
 
 
+def summarize(segments):
+  result = {}
+  for label in ("rc18", "engine"):
+    counters, proxy = Counter(), Counter()
+    for seg in segments.values():
+      for name in SLOTS:
+        slot = seg[label][name]
+        counters.update({key: slot[key] for key in ("shown", "flickers", "same_id_jumps", "replacement_jumps")})
+        proxy.update(slot["observation_proxy"])
+    result[label] = {**counters, "observation_proxy": dict(proxy)}
+  for name in ("counts", "lead_concordant_ff"):
+    counters = Counter()
+    for seg in segments.values():
+      counters.update(seg[name])
+    result[name] = dict(counters)
+  changes = Counter()
+  for seg in segments.values():
+    for slot in seg["changes"].values():
+      changes.update(slot)
+  result["changes"] = dict(changes)
+  return result
+
+
 def plot_scene(scene, seg, windows, samples, indices, path):
   import matplotlib
   matplotlib.use("Agg")
@@ -402,11 +450,15 @@ def main():
 
   replay = {}
   result = {"route": ROUTE, "rc18": "e4fe0dbf600cc53abfcebb8c921dad7742b58a33", "segments": {}, "scenes": {}}
-  for seg in SEGMENTS:
+  for seg in sorted(shadow):
     rows, counts = read_segment(log, args.cache / f"{ROUTE}--{seg}.capnp", shadow[seg])
-    replay[seg] = rows
+    if any(seg == scene[0] for scene in SCENES.values()):
+      replay[seg] = rows
     result["segments"][seg] = {"counts": counts, **segment_score(rows)}
+  result["summary"] = summarize(result["segments"])
   for name, (seg, windows, indices) in SCENES.items():
+    if seg not in replay:
+      continue
     samples = [[row for row in replay[seg] if a <= row.t <= b] for a, b in windows]
     result["scenes"][name] = {"segment": seg, "windows": [
       {"start": a, "end": b, **scene_score(rows, name, indices)} for (a, b), rows in zip(windows, samples, strict=True)]}

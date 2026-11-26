@@ -107,6 +107,20 @@ fn trusted_lane_pair_corrects_width_and_small_centre_offset() {
 }
 
 #[test]
+fn stopping_path_extrapolates_from_its_last_forward_segment() {
+    let frame = RoadFrame::new(
+        &[(0., 0.), (6., 0.), (12., 0.), (11.5, 0.), (11., 0.)],
+        None,
+        PoseAt::default(),
+        PoseAt::default(),
+        std::iter::empty(),
+        false,
+    );
+    assert_eq!(frame.project(35., 1.), (35., 1.));
+    assert_eq!(frame.cartesian(35., 1.), (35., 1.));
+}
+
+#[test]
 fn one_tick_range_spike_and_radar_id_change_keep_the_same_object() {
     let mut engine = MapEngine::default();
     let start = confirm(&mut engine, &[radar(40, 11.4, 0., 0.)]).slots[0].unwrap();
@@ -118,7 +132,7 @@ fn one_tick_range_spike_and_radar_id_change_keep_the_same_object() {
 }
 
 #[test]
-fn two_objects_get_distinct_slots_and_a_measurement_beats_a_coasted_rear() {
+fn two_observed_vehicles_get_distinct_slots_over_an_unverified_coast() {
     for (side, sign) in [(0, -1.), (1, 1.)] {
         let mut engine = MapEngine::default();
         let mut out = EngineOutput::default();
@@ -136,15 +150,98 @@ fn two_objects_get_distinct_slots_and_a_measurement_beats_a_coasted_rear() {
             entry.speed = 7.;
             out = engine.step(entry);
         }
-        let coasting = out
-            .objects
-            .iter()
-            .find(|o| o.evidence.last_track_id == Some(50))
-            .unwrap();
-        assert!(coasting.s < 0. && coasting.existence_log_odds >= tracker::CONFIRM);
         assert_eq!(out.slots[side + 1].unwrap().last_track_id, Some(41));
         assert_eq!(out.slots[side + 3].unwrap().last_track_id, Some(40));
         assert!((out.slots[side + 3].unwrap().s - 5.5).abs() < 0.05);
+    }
+}
+
+#[test]
+fn moving_side_vehicles_need_doppler_consistent_travel() {
+    let mut engine = MapEngine::default();
+    for tick in 0..35 {
+        // The right echo stays at the same distance despite high closing/opening evidence.
+        let points = [radar(41, 21., 3.5, 13.), radar(42, 24., -3.5, 0.)];
+        let mut entry = input(tick, &points);
+        entry.speed = 13.;
+        let out = engine.step(entry);
+        assert!(out.slots[2].is_none());
+        if tick >= 6 {
+            assert_eq!(out.slots[1].unwrap().last_track_id, Some(42));
+        }
+    }
+}
+
+#[test]
+fn established_vehicle_can_stop_but_a_stationary_oblique_echo_cannot_promote() {
+    let mut engine = MapEngine::default();
+    let mut x = 24.;
+    for tick in 0_u32..37 {
+        let relative = -0.6 * tick.saturating_sub(13).min(17) as f32;
+        x += relative * STEP as f32;
+        let fixed_x = 24. - tick as f32 * 10. * STEP as f32;
+        let radial = |x: f32, v: f32| v * x / x.hypot(3.5);
+        let points = [
+            radar(41, fixed_x, 3.5, radial(fixed_x, -10.)),
+            radar(42, x, -3.5, radial(x, relative)),
+        ];
+        let mut entry = input(tick, &points);
+        entry.speed = 10.;
+        let out = engine.step(entry);
+        assert!(out.slots[2].is_none());
+        if tick >= 32 {
+            assert_eq!(out.slots[1].unwrap().last_track_id, Some(42));
+        }
+    }
+}
+
+#[test]
+fn observed_pass_holds_rear_when_a_front_echo_is_at_the_lane_edge() {
+    let mut engine = MapEngine::default();
+    for tick in 0..62 {
+        let x = 13. - 6. * STEP as f32 * tick as f32;
+        let mut points = vec![];
+        if x > 1. {
+            points.push(radar(40, x, 3.5, -6.));
+        }
+        if tick >= 49 {
+            points.extend([radar(41, 5.8, 3.5, 0.), radar(42, 25., 5.1, 0.)]);
+        }
+        let mut entry = input(tick, &points);
+        entry.speed = 10.;
+        let out = engine.step(entry);
+        if (56..61).contains(&tick) {
+            let rear = out.slots[4].unwrap();
+            assert!(rear.s < 0.);
+            assert_eq!(rear.last_track_id, Some(40));
+        } else if tick == 61 {
+            assert_eq!(out.slots[4].unwrap().last_track_id, Some(41));
+        }
+    }
+}
+
+#[test]
+fn close_lead_stays_in_ff_through_path_transition_then_moves_to_side() {
+    let mut engine = MapEngine::default();
+    for tick in 0_u32..26 {
+        let y = tick.saturating_sub(9).min(6) as f32 * 0.45;
+        let points = [radar(40, 10., y, 0.)];
+        let mut entry = input(tick, &points);
+        entry.speed = 10.;
+        entry.road = Some(RoadObservation {
+            time: entry.time,
+            path: &[(0., 0.), (40., 0.)],
+            lines: None,
+            changing_lanes: (10..16).contains(&tick),
+        });
+        let out = engine.step(entry);
+        if (3..21).contains(&tick) {
+            assert_eq!(out.slots[0].unwrap().last_track_id, Some(40));
+        }
+        if tick >= 23 {
+            assert!(out.slots[0].is_none());
+            assert_eq!(out.slots[2].unwrap().last_track_id, Some(40));
+        }
     }
 }
 

@@ -83,6 +83,8 @@ pub struct MapEngine {
     pose: Pose,
     behind: VecDeque<PoseAt>,
     previous: Option<RoadFrame>,
+    occupied: [Option<u64>; 5],
+    last_lane_change: Option<f64>,
     time: Option<f64>,
 }
 
@@ -100,6 +102,8 @@ impl MapEngine {
             self.pose = Pose::default();
             self.behind.clear();
             self.previous = None;
+            self.occupied = [None; 5];
+            self.last_lane_change = None;
         }
         let previous_pose = self.pose.current();
         self.pose.advance(now, speed, input.yaw);
@@ -118,6 +122,9 @@ impl MapEngine {
         let road = input
             .road
             .filter(|r| (0. ..=0.25).contains(&(now - r.time)));
+        if road.is_some_and(|r| r.changing_lanes) {
+            self.last_lane_change = Some(now);
+        }
         let frame = RoadFrame::new(
             road.map_or(&[], |r| r.path),
             road.and_then(|r| r.lines),
@@ -130,7 +137,7 @@ impl MapEngine {
             self.tracker
                 .predict(dt, speed, previous, &frame, previous_pose, ego);
         }
-        let visible = self.tracker.radar(now, speed, &frame, input.radar);
+        let visible = self.tracker.radar(now, speed, &frame, ego, input.radar);
         self.tracker.lead(now, input.lead, &frame);
         for &observation in input.vision {
             let age = now - observation.time;
@@ -147,7 +154,16 @@ impl MapEngine {
         }
         self.tracker
             .lifecycle(now, dt.min(0.25), &frame, &visible, input.blind);
-        let slots = selector::select(now, &frame, &mut self.tracker.objects);
+        let changing = self.last_lane_change.is_some_and(|t| now - t <= 0.32);
+        let slots = selector::select(
+            now,
+            speed,
+            changing,
+            &frame,
+            &mut self.tracker.objects,
+            self.occupied,
+        );
+        self.occupied = slots.map(|slot| slot.map(|o| o.obj_id));
         self.previous = Some(frame);
         self.time = Some(now);
         EngineOutput {
