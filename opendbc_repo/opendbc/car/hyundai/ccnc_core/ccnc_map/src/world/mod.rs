@@ -8,8 +8,8 @@ pub use lane_change::LaneChange;
 pub use lane_map::{near_heading, LaneMap, MODEL_GRID};
 pub use pose::{Pose, PoseAt};
 
-use crate::{input::model_v2::Model, radar::MapState};
-use lane_map::CameraLanes;
+use crate::{display::ModelPath, input::model_v2::Model, radar::MapState};
+use lane_map::{observed_width, CameraLanes, RoadAhead};
 
 pub const RADAR_LAG: f64 = 0.2;
 pub const STATUS_FROZEN: u8 = 1;
@@ -39,6 +39,8 @@ pub struct World {
     u_ego_mapped: f64,
     camera_lane_bias: f64,
     camera_lanes: Option<CameraLanes>,
+    road_ahead: Option<RoadAhead>,
+    observed_width: Option<(f64, f64)>,
     generation: u32,
     radar_lag: f64,
     freeze_enabled: bool,
@@ -74,6 +76,8 @@ impl World {
             u_ego_mapped: f64::NEG_INFINITY,
             camera_lane_bias: 0.,
             camera_lanes: None,
+            road_ahead: None,
+            observed_width: None,
             generation: 0,
             radar_lag,
             freeze_enabled,
@@ -159,6 +163,22 @@ impl World {
         self.update_lane(t);
     }
 
+    pub(crate) fn model_road_ahead(&mut self, t: f64, model: &Model, road: Option<(ModelPath, bool, [f32; 2])>) {
+        if self.last_model != Some(t) {
+            return;
+        }
+        if let Some(width) = observed_width(model) {
+            let width = self.observed_width.filter(|(last, _)| t - last <= 5.)
+                .map_or(width, |(_, old)| old + 0.15 * (width - old));
+            self.observed_width = Some((t, width));
+        }
+        self.road_ahead = road.map(|(path, changing, edges)| {
+            let mut road = RoadAhead::new(model, self.pose.at(t), t, path, changing, edges, self.observed_width);
+            road.align(&self.lanes, self.u_ego());
+            road
+        });
+    }
+
     /// Advance the lane-change state at the radar cadence and detect a broken input stream.
     pub fn radar(&mut self, t: f64) {
         if self.invalid_motion || !t.is_finite() || self.last_radar.is_some_and(|last| t <= last) {
@@ -190,17 +210,44 @@ impl World {
 
     /// Locate a world-space radar point after lateral reflection correction.
     pub fn vehicle_lane_coord(&self, t: f64, s: f64, point: (f64, f64)) -> Option<f64> {
-        let mapped = self.lanes.coord(s, point)?;
+        let mapped = self.lanes.coord(s, point);
         if self.lane_change.frozen() {
-            return Some(mapped);
+            return mapped;
         }
+        let mapped = mapped.map(|u| self.with_camera_lane(t, s, point, u));
+        let Some(road) = self.road_ahead.as_ref().filter(|r| (t - r.stamp).abs() <= INPUT_GAP) else {
+            return mapped;
+        };
+        if self.pose.speed() <= 2. {
+            return mapped;
+        }
+        // The predicted path can already be in the destination lane during a
+        // crossing. Keep the observed lane as the reference until ego settles.
+        let crossing = self.blinker || road.changing || self.ego_changing();
+        road.coord(point, self.u_ego(), mapped, crossing, self.yaw_at(t).unwrap_or(0.))
+    }
+
+    pub(crate) fn radar_lateral(&self, t: f64, x: f64, y: f64, lane: i8) -> f64 {
+        // Ego's path describes its own lane. Keep observed adjacent
+        // geometry at splits, even when the predicted ego bend is strong.
+        if lane != 0 || self.blinker || self.lane_change.frozen() || self.pose.speed() <= 5. {
+            return y;
+        }
+        self.road_ahead.as_ref()
+            .filter(|road| !road.changing && (t - road.stamp).abs() <= INPUT_GAP)
+            .zip(self.yaw_at(t))
+            .and_then(|(road, yaw)| road.radar_lateral(x, y, yaw))
+            .unwrap_or(y)
+    }
+
+    fn with_camera_lane(&self, t: f64, s: f64, point: (f64, f64), mapped: f64) -> f64 {
         let weight = self.lanes.camera_weight(s, mapped);
         let Some(camera) = self
             .camera_lanes
             .as_ref()
             .filter(|c| weight > 0. && (0. ..INPUT_GAP).contains(&(t - c.stamp)))
         else {
-            return Some(mapped);
+            return mapped;
         };
         let ego = self.pose.at(t);
         let camera_offset = camera
@@ -208,7 +255,7 @@ impl World {
             .zip(camera.coord((ego.x, ego.y)))
             .map(|(car, near)| self.u_ego() + car - near - mapped)
             .filter(|delta| delta.abs() <= 0.5);
-        Some(mapped + weight * camera_offset.unwrap_or(0.))
+        mapped + weight * camera_offset.unwrap_or(0.)
     }
 
     pub fn u_ego(&self) -> f64 {
@@ -257,6 +304,8 @@ impl World {
         self.u_ego_mapped = f64::NEG_INFINITY;
         self.camera_lane_bias = 0.;
         self.camera_lanes = None;
+        self.road_ahead = None;
+        self.observed_width = None;
         self.ego_change_until = f64::NEG_INFINITY;
         self.generation = self.generation.wrapping_add(1);
         self.invalid_motion = false;

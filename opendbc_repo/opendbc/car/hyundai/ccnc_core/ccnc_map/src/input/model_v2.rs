@@ -11,6 +11,9 @@ pub const EVENT_MODEL_V2: u16 = 73;
 pub const EVENT_MODEL_V2_POINTER: usize = 0;
 /// `ModelDataV2` pointer indices.
 pub const POSITION_POINTER: usize = 0; // XYZTData
+const META_POINTER: usize = 8; // ModelDataV2.MetaData
+const LANE_CHANGE_STATE_OFFSET: usize = 9 * 2; // LaneChangeState enum (UInt16)
+const ROAD_EDGE_STDS_POINTER: usize = 10; // List(Float32)
 pub const LANE_LINES_POINTER: usize = 4; // List(XYZTData)
 pub const LANE_LINE_PROBS_POINTER: usize = 5; // List(Float32)
 pub const ROAD_EDGES_POINTER: usize = 6; // List(XYZTData)
@@ -80,4 +83,24 @@ pub fn parse_path(bytes: &[u8]) -> Option<((Vec<f64>, Vec<f64>), Vec<f64>)> {
         (read(XYZT_X_POINTER)?, read(XYZT_Y_POINTER)?),
         read(XYZT_Y_STD_POINTER)?,
     ))
+}
+
+/// Vehicle path and confidence used by the world map.
+pub(crate) fn parse_road_path(bytes: &[u8]) -> Option<(crate::display::ModelPath, bool, [f32; 2])> {
+    let message = Message::new(bytes)?;
+    let model = model_root(&message)?;
+    let changing = message.struct_pointer(&model, META_POINTER)
+        .is_none_or(|meta| u16::from_le_bytes(data_bytes(meta.data, LANE_CHANGE_STATE_OFFSET)) != 0);
+    let position = message.struct_pointer(&model, POSITION_POINTER)?;
+    let xs = message.f32_list(&position, XYZT_X_POINTER)?;
+    let mut ys = message.f32_list(&position, XYZT_Y_POINTER)?;
+    // modelV2 uses right-positive lateral. The radar pose and display use left-positive lateral.
+    for y in &mut ys {
+        *y = -*y;
+    }
+    let path = crate::display::ModelPath::new(xs, ys)?
+        .with_deviations(message.f32_list(&position, XYZT_Y_STD_POINTER).unwrap_or_default());
+    let edges = message.f32_list(&model, ROAD_EDGE_STDS_POINTER).unwrap_or_default();
+    let edge_stds = [0, 1].map(|i| edges.get(i).copied().unwrap_or(f32::INFINITY));
+    Some((path, changing, edge_stds))
 }

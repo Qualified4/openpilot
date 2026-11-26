@@ -254,6 +254,7 @@ impl Pipeline {
                 if let Some(model) = model_v2::parse(bytes) {
                     self.lprob_at.push(stamp, model.lane_line_probs.iter().map(|&p| f64::from(p)).collect());
                     self.world.model_with_walls(now, &model, Some(&self.radar));
+                    self.world.model_road_ahead(now, &model, model_v2::parse_road_path(bytes));
                     let (px, py, heading) = self.radar.pose_at(now).unwrap_or(self.radar.pose);
                     let (s, c) = heading.sin_cos();
                     let frame = self.radar.frame();

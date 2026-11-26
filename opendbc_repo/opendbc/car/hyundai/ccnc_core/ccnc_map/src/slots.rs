@@ -514,6 +514,7 @@ impl Assigner {
             if drawing.into_ff {
                 lateral_target = ry;
             }
+            let mut observed_lateral_target = lateral_target;
             if measured {
                 let report = (now, rx, ry);
                 let track = drawing.radar.get_or_insert_with(|| Track::new(now, report));
@@ -527,7 +528,9 @@ impl Assigner {
                 let release = (0.75 - opening_gap * (0.75 - 0.5))
                     * ((speed - 6.) / 2.).clamp(0., 1.);
                 let radar_y = track.y + release * track.b;
-                lateral_target += weight * (radar_y - lateral_target);
+                observed_lateral_target += weight * (radar_y - observed_lateral_target);
+                let road_y = world.radar_lateral(now, rx, radar_y, if drawing.into_ff { 0 } else { drawing.lane });
+                lateral_target += weight * (road_y - lateral_target);
             }
             let distance = x.abs();
             let near = ((40. - distance) / 12.).clamp(0., 1.);
@@ -538,6 +541,7 @@ impl Assigner {
             } else {
                 distance
             };
+            let mut observed_shown = drawing.shown;
             let lateral = draw_road_frame(
                 &mut drawing.shown,
                 play_distance,
@@ -600,7 +604,9 @@ impl Assigner {
                     occupied_ff = Some(candidate);
                 } else if let Some(side) = previous_side.filter(|_| proven_vehicle) {
                     if held_challenger_side.is_none_or(|(_, old): (usize, Slot)| candidate.distance < old.distance) {
-                        held_challenger_side = Some((side, candidate));
+                        // If FF keeps its occupant, the challenger returns to its observed side geometry.
+                        let lateral = draw_road_frame(&mut observed_shown, play_distance, -observed_lateral_target / LANE_WIDTH);
+                        held_challenger_side = Some((side, Slot { lateral: lateral as f32, ..candidate }));
                     }
                 }
                 // Record measured entries independently of an FF occupant held outside the lane.
