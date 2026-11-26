@@ -276,7 +276,6 @@ const ROAD_LANE_HYSTERESIS: f64 = 0.06;
 const ROAD_HANDOFF_S: f64 = 0.85;
 const ROAD_APPROACH_MAX_U: f64 = 0.85;
 const ROAD_APPROACH_NEAR_M: f64 = 10.;
-const ROAD_APPROACH_FAR_M: f64 = 15.;
 
 /// Schmitt trigger around the shared integer boundaries, in units of lane width.
 fn road_lane(prior: Option<i32>, u: f64) -> Option<i32> {
@@ -536,11 +535,8 @@ impl Assigner {
                     .filter(|car| car.radar_id.is_some() && current(car.seen_radar))
                     .and_then(|car| Observation::from_car(car, world, radar))
                     .is_some_and(|obs| {
-                        let side = 1. - INNER_RADIUS;
-                        let far = ((obs.x - ROAD_APPROACH_NEAR_M) / (ROAD_APPROACH_FAR_M - ROAD_APPROACH_NEAR_M))
-                            .clamp(0., 1.);
-                        let limit = side + far * (ROAD_APPROACH_MAX_U - side);
-                        (0. ..ROAD_APPROACH_FAR_M).contains(&obs.x) && obs.r_slot.abs() >= limit
+                        (0. ..=ROAD_APPROACH_NEAR_M).contains(&obs.x)
+                            && obs.r_slot.abs() >= 1. - INNER_RADIUS
                     })
             });
         if commit_stamp.is_some() && commit_stamp != self.last_commit_seen {
