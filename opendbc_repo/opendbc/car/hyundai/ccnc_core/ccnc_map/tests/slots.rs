@@ -969,6 +969,22 @@ fn a_car_alongside_on_the_right_with_another_ahead_is_drawn_in_rr() {
     assert_eq!((slots[LF], slots[LR]), (None, None));
 }
 
+#[test]
+fn an_alongside_split_returns_the_measured_distance_on_a_hard_exit_or_far_replacement() {
+    let world = road();
+    for (distance, partner) in [(9.4, 2), (4.9, 3)] {
+        let mut assigner = Assigner::default();
+        let split = (0..=13).map(|i| side_pair(&mut assigner, &world, f64::from(i) * 0.05, &[4.9, 35.], 1.))
+            .last().unwrap();
+        assert_eq!(split[RR].map(|s| s.vid), Some(1));
+        let cars = [beside(&world, 1, 0.7, distance, 1.), beside(&world, partner, 0.7, 60., 1.)];
+        let mut slots = assigner.update(0.7, &cars, &world, None);
+        assert_eq!(assigner.split_alongside(0.7, &cars, [false; 2], &mut slots), [false; 2]);
+        assert_eq!(slots[RF].map(|s| (s.vid, s.distance)), Some((1, distance as f32)));
+        assert!(slots[RR].is_none());
+    }
+}
+
 /// Left lane: the near car at 3 m, unreported (radar coverage ends alongside) while `lost` holds, and the next at 35 m.
 fn near_lost(assigner: &mut Assigner, world: &World, now: f64, lost: bool) -> [Option<Slot>; 5] {
     let near = beside(world, 1, if lost { 0.75 } else { now }, 3., -1.);

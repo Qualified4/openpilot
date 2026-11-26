@@ -787,7 +787,8 @@ impl RearState {
                     let dt = if clock_reset { 0. } else { dt };
                     state.flow.render(
                         &flow_configs[i],
-                        bsd_join_limit.unwrap_or(flow_configs[i].gap),
+                        bsd_join_limit,
+                        self.fresh && selected[i + 1].is_some_and(|key| self.points.contains_key(&key.0)),
                         slot,
                         i,
                         now,

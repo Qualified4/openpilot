@@ -192,7 +192,8 @@ impl Flow {
     pub(super) fn render(
         &mut self,
         k: &Consts,
-        bsd_join_limit: f64,
+        bsd_join_limit: Option<f64>,
+        measured_front: bool,
         slots: &mut SideSlots,
         side: usize,
         now: f64,
@@ -219,6 +220,7 @@ impl Flow {
         let (front, rear) = self.update(
             k,
             bsd_join_limit,
+            measured_front,
             now,
             dt,
             candidate,
@@ -247,7 +249,8 @@ impl Flow {
     fn update(
         &mut self,
         k: &Consts,
-        bsd_join_limit: f64,
+        bsd_join_limit: Option<f64>,
+        measured_front: bool,
         now: f64,
         dt: f64,
         candidate: Option<Candidate>,
@@ -293,6 +296,19 @@ impl Flow {
                 *drawing = None;
             }
         }
+        let beyond_handoff = |front: Candidate, rear: &Drawing| {
+            measured_front && bsd_join_limit.is_some_and(|limit| front.x.value() - rear.x.value() > limit)
+        };
+        if let Some(front) = candidate.filter(|front| self.rear.as_ref().is_some_and(|rear| {
+            Some(front.key) == rear.key && beyond_handoff(*front, rear)
+        })) {
+            // The remeasured front car cannot be at the stale rear position.
+            // An active BSD signal can still start a separate anonymous drawing.
+            self.rear = None;
+            self.front = Some(Drawing::front(front));
+            self.after_pass = false;
+            self.events.push("rear_replaced_by_measurement");
+        }
         let rear_start = self.rear.as_ref().map(|rear| rear.x.value());
         let f_owned = self
             .front
@@ -332,7 +348,8 @@ impl Flow {
             if let Some(candidate) = candidate.filter(|_| self.front.is_none()) {
                 if rear.phase != Phase::ToFront
                     && (Some(candidate.key) == rear.key
-                        || candidate.x.value() <= bsd_join_limit && eligible_bsd && !self.after_pass)
+                        || candidate.x.value() <= bsd_join_limit.unwrap_or(k.gap)
+                            && eligible_bsd && !self.after_pass && !beyond_handoff(candidate, rear))
                 {
                     rear.phase = Phase::ToFront;
                     rear.key = Some(candidate.key);
@@ -524,4 +541,29 @@ fn update_rear(
         rear.advance(k, target, lateral, if spawned { 0. } else { dt }, speed, tau)?;
     }
     Ok((rear.x.value() == -k.end && !eligible_bsd).then_some("rear_exit"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_measured_front_car_does_not_join_a_discontinuous_rear_drawing() {
+        let key = Key::Radar(Identity(7, 1.));
+        let lateral = Number::Float(2.8);
+        let detect = Number::Integer(2);
+        let candidate = Candidate { key, x: Number::Float(4.), y: lateral, detect };
+        for rear_key in [None, Some(key)] {
+            let mut flow = Flow {
+                rear: Some(Drawing::new(rear_key, Number::Float(-12.), lateral, detect, Phase::Bsd)),
+                ..Flow::default()
+            };
+            let (front, rear) = flow.update(
+                &Consts::default(), Some(4.8), true, 2., 0.05, Some(candidate), true,
+                lateral, [None; 2], None, None, false,
+            ).unwrap();
+            assert_eq!(front.map(|drawing| (drawing.key, drawing.x.value())), Some((Some(key), 4.)));
+            assert!(rear.is_some_and(|drawing| drawing.key.is_none()));
+        }
+    }
 }
