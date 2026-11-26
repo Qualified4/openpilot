@@ -420,6 +420,7 @@ impl Assigner {
         let mut confirmed_lead = None;
         let mut previous = None;
         let mut occupied_ff = None;
+        let mut centered_ff = [None::<Slot>; 2];
         let mut held_challenger_side = None;
         let mut ff_missing_geometry = false;
         let mut best: [Option<Slot>; 5] = [None; 5];
@@ -602,6 +603,13 @@ impl Assigner {
                         held_challenger_side = Some((side, candidate));
                     }
                 }
+                // Record measured entries independently of an FF occupant held outside the lane.
+                if measured && proven_vehicle && !hold_ff && r_slot.abs() <= 0.45 {
+                    let best = &mut centered_ff[usize::from(r_slot.is_sign_positive())];
+                    if best.is_none_or(|old| (candidate.distance, candidate.vid) < (old.distance, old.vid)) {
+                        *best = Some(candidate);
+                    }
+                }
                 let held_lead = self.ff_lead.is_some_and(|(vid, _)| vid == car.vid);
                 let primary_match = lead_one.filter(|(one, _)| {
                     let (dx, dy, dv) = one.motion;
@@ -727,9 +735,20 @@ impl Assigner {
                     lead.measured_track.is_some() && vehicles.iter().any(|car| car.vid == s.vid && car.radar_id == lead.measured_track)
                 })
             });
+            // Beyond the model-lane gate, a measured car whose fast coordinate has
+            // crossed first can take over from a held occupant on the opposite boundary.
+            let opposite_entry = centered_ff[usize::from(owner.lane_coord_rel.is_sign_negative())]
+                .filter(|entry| {
+                    owner.lane_coord_rel.abs() > 1. - INNER_RADIUS as f32
+                        && f64::from(entry.distance) > *MODEL_LANE_KEEP_X.end()
+                        && entry.lane_coord_rel.abs() > 0.35
+                });
             if !strong {
-                best[0] = Some(owner);
-                if let Some((side, s)) = held_challenger_side.filter(|(_, s)| challenger.is_some_and(|c| c.vid == s.vid)) {
+                let selected = opposite_entry.unwrap_or(owner);
+                best[0] = Some(selected);
+                if let Some((side, s)) = held_challenger_side.filter(|(_, s)| {
+                    s.vid != selected.vid && challenger.is_some_and(|c| c.vid == s.vid)
+                }) {
                     if best[side].is_none_or(|old| s.distance < old.distance) {
                         second[side - 1] = best[side];
                         best[side] = Some(s);

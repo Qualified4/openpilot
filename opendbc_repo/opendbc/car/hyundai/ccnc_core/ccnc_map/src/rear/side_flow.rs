@@ -192,6 +192,7 @@ impl Flow {
     pub(super) fn render(
         &mut self,
         k: &Consts,
+        bsd_join_limit: f64,
         slots: &mut SideSlots,
         side: usize,
         now: f64,
@@ -217,6 +218,7 @@ impl Flow {
         });
         let (front, rear) = self.update(
             k,
+            bsd_join_limit,
             now,
             dt,
             candidate,
@@ -245,6 +247,7 @@ impl Flow {
     fn update(
         &mut self,
         k: &Consts,
+        bsd_join_limit: f64,
         now: f64,
         dt: f64,
         candidate: Option<Candidate>,
@@ -329,7 +332,7 @@ impl Flow {
             if let Some(candidate) = candidate.filter(|_| self.front.is_none()) {
                 if rear.phase != Phase::ToFront
                     && (Some(candidate.key) == rear.key
-                        || candidate.x.value() <= k.gap && eligible_bsd && !self.after_pass)
+                        || candidate.x.value() <= bsd_join_limit && eligible_bsd && !self.after_pass)
                 {
                     rear.phase = Phase::ToFront;
                     rear.key = Some(candidate.key);

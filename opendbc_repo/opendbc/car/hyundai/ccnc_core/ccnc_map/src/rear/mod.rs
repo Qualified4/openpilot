@@ -514,7 +514,7 @@ impl WorldRear {
                 detect: Some(Number::Integer(detect)),
             };
         }
-        self.state.update(
+        self.state.update_with_bsd_join_limit(
             &self.constants,
             Input {
                 now,
@@ -532,6 +532,9 @@ impl WorldRear {
             selected,
             proven,
             &mut sides,
+            // BSD alone cannot identify a car beyond the near handoff zone. The
+            // legacy flow uses scaled display units, while that zone is in metres.
+            Some(6. * self.constants.scale),
         )?;
 
         for (i, side) in self.state.sides.iter().enumerate() {
@@ -684,6 +687,18 @@ impl RearState {
         proven: [bool; 2],
         slots: &mut RearSlots,
     ) -> Result<()> {
+        self.update_with_bsd_join_limit(k, input, selected, proven, slots, None)
+    }
+
+    fn update_with_bsd_join_limit(
+        &mut self,
+        k: &Consts,
+        input: Input<'_>,
+        selected: [Option<Identity>; 3],
+        proven: [bool; 2],
+        slots: &mut RearSlots,
+        bsd_join_limit: Option<f64>,
+    ) -> Result<()> {
         let now = input.now;
         let dt = self.last.map_or(0., |last| now - last);
         let clock_reset = input.context_changed || !(0. < dt && dt <= 0.2);
@@ -772,6 +787,7 @@ impl RearState {
                     let dt = if clock_reset { 0. } else { dt };
                     state.flow.render(
                         &flow_configs[i],
+                        bsd_join_limit.unwrap_or(flow_configs[i].gap),
                         slot,
                         i,
                         now,
