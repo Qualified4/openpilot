@@ -774,17 +774,18 @@ impl Assigner {
                 continue;
             }
             if let Some((kept, _)) = state.split {
+                let last = state.positions.back().map_or(now, |(t, _)| *t);
                 let carried = vehicles.iter().find(|car| car.vid == kept.vid);
                 let lost = carried.is_some_and(|car| {
                     car.radar_id.is_some() && !car.flags.structure && !car.oncoming
-                        && car.seen_radar < now && now - car.seen_radar <= 2.
+                        && (0. ..=2.).contains(&(now - car.seen_radar))
+                        && (car.seen_radar < now || (now - last <= OBSERVATION_MAX_AGE && eligible(car)))
                         && !vehicles.iter().any(|new| new.vid != car.vid && new.seen_radar == now && new.radar_id == car.radar_id)
                 });
                 if lost && slots.iter().all(|s| s.is_none_or(|s| s.vid != kept.vid))
                     && state.split.is_some_and(|(_, t)| now - t + EPS >= ALONGSIDE_EASE_S)
                     && slots[rear].is_none_or(|s| !vehicles.iter().any(|car| car.vid == s.vid && car.seen_radar == now))
                 {
-                    let last = state.positions.back().map_or(now, |(t, _)| *t);
                     if now - last <= 2. {
                         slots[rear] = Some(Slot { distance: 0., ..kept });
                         split[side] = true;

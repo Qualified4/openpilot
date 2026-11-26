@@ -225,11 +225,116 @@ impl Alongside {
     }
 }
 
+/// Joins the displayed position to a legacy rear estimate when stop memory was the last visible source.
+#[derive(Default)]
+pub(super) struct DisplayJoin {
+    previous: [Option<Slot>; 2],
+    at: Option<f64>,
+    transition: Option<(Slot, f64)>,
+}
+
+impl DisplayJoin {
+    pub(super) fn update(
+        &mut self,
+        now: f64,
+        side: usize,
+        slots: &mut [Option<Slot>; 5],
+    ) -> Option<usize> {
+        let indices = [side + 1, side + 3];
+        let current = indices.map(|i| slots[i]);
+        let dt = self.at.map_or(0., |at| now - at);
+        self.at = Some(now);
+        if !(0. < dt && dt <= MAX_STEP_TIME) {
+            self.transition = None;
+            self.previous = current;
+            return None;
+        }
+        let old = self.transition.map(|(slot, _)| slot);
+        if old.is_none() {
+            self.transition = (0..2).find_map(|direction| {
+                let (from, to) = self.previous[direction].zip(current[1 - direction])?;
+                (from.vid != 0
+                    && from.vid == to.vid
+                    && from.distance.abs() <= 6.
+                    && to.distance.abs() <= 6.
+                    && ((from.distance - to.distance).abs() > 1.5
+                        || (from.lateral - to.lateral).abs() > 0.35))
+                    .then_some((from, now - dt))
+            });
+        }
+        let drawn = self.transition.and_then(|(from, started)| {
+            let i = current
+                .iter()
+                .position(|s| s.is_some_and(|s| s.vid == from.vid))?;
+            let to = current[i]?;
+            let progress = ((now - started) / 0.35) as f32;
+            if progress >= 1. {
+                return None;
+            }
+            let x = from.distance + (to.distance - from.distance) * progress;
+            let y = from.lateral + (to.lateral - from.lateral) * progress;
+            let target = usize::from(x < 0.);
+            if target != i && current[target].is_some() {
+                return None;
+            }
+            slots[indices[i]] = None;
+            slots[indices[target]] = Some(Slot {
+                distance: x,
+                lateral: y,
+                ..to
+            });
+            Some(indices[target])
+        });
+        if drawn.is_none() {
+            self.transition = None;
+        }
+        self.previous = indices.map(|i| slots[i]);
+        drawn
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::vehicles::Tracker;
     use crate::world::World;
+
+    #[test]
+    fn legacy_handoff_continues_from_the_displayed_stop_memory() {
+        let mut join = DisplayJoin::default();
+        let front = Slot {
+            vid: 17,
+            distance: 3.15,
+            lateral: 2.08,
+            detect: 2,
+            lane_coord_rel: -1.,
+            v_rel: -5.,
+            kind: 0,
+            kind_confirmed: false,
+            kind_wanted: false,
+            vision: 0,
+        };
+        let rear = Slot {
+            distance: -3.73,
+            lateral: 2.64,
+            ..front
+        };
+        let mut slots = [None, Some(front), None, None, None];
+        assert_eq!(join.update(1., 0, &mut slots), None);
+        let mut last = front;
+        for step in 1..=8 {
+            let now = 1. + f64::from(step) * 0.05;
+            let mut slots = [None, None, None, Some(rear), None];
+            join.update(now, 0, &mut slots);
+            assert_ne!(slots[1].is_some(), slots[3].is_some());
+            let current = slots[1].or(slots[3]).unwrap();
+            assert_eq!(current.vid, 17);
+            assert!(current.distance < last.distance || current == rear);
+            assert!((current.distance - last.distance).abs() < 1.);
+            last = current;
+        }
+        assert_eq!(last, rear);
+    }
 
     #[test]
     fn measured_vehicle_crosses_zero_once_in_each_direction_through_bsd() {

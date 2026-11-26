@@ -425,6 +425,7 @@ pub struct WorldRear {
     /// drawing it for up to 10 s, with this kind.
     kinds: Vec<(u32, Kind)>,
     alongside: [Option<continuity::Alongside>; 2],
+    joins: [continuity::DisplayJoin; 2],
     side_radar_ids: HashMap<u32, (u32, f64)>,
 }
 
@@ -446,6 +447,7 @@ impl WorldRear {
         if context_changed {
             self.kinds.clear();
             self.alongside = [None; 2];
+            self.joins = Default::default();
             self.side_radar_ids.clear();
         }
         for car in input.vehicles {
@@ -615,6 +617,7 @@ impl WorldRear {
     ) -> [Option<usize>; 2] {
         if !world.accepts_radar() || !input.can_valid {
             self.alongside = [None; 2];
+            self.joins = Default::default();
             self.side_radar_ids.clear();
             return [None; 2];
         }
@@ -660,6 +663,11 @@ impl WorldRear {
                         continuous[side] = None;
                     }
                 }
+            }
+        }
+        for (side, active) in continuous.iter_mut().enumerate() {
+            if let Some(joined) = self.joins[side].update(input.now, side, slots) {
+                *active = Some(joined);
             }
         }
         continuous
