@@ -276,6 +276,7 @@ const ROAD_LANE_HYSTERESIS: f64 = 0.06;
 const ROAD_HANDOFF_S: f64 = 0.85;
 const ROAD_APPROACH_MAX_U: f64 = 0.85;
 const ROAD_APPROACH_NEAR_M: f64 = 10.;
+const ROAD_NEAR_SIDE_HANDOFF_M: f64 = 20.;
 
 /// Schmitt trigger around the shared integer boundaries, in units of lane width.
 fn road_lane(prior: Option<i32>, u: f64) -> Option<i32> {
@@ -589,7 +590,14 @@ impl Assigner {
             let car_centered = car.u.is_finite()
                 && (f64::from(car.u) - (f64::from(car.u).floor() + 0.5)).abs() <= 0.38;
             let is_prev_ff = self.previous_ff == Some(car.vid);
-            let proj_safe_visibility = projection.is_some_and(|p| p.abs() <= 1 || r.abs() >= 1.35);
+            let proj_safe_visibility = projection.is_some_and(|p| {
+                // A farther return still inside the relative lane needs evidence of an adjacent lane
+                // before the road-lane handoff moves it out of FF.
+                if p.abs() == 1 && drawing.lane == 0 && x > ROAD_NEAR_SIDE_HANDOFF_M {
+                    return f64::from(p) * r_slot >= 1. - INNER_RADIUS;
+                }
+                p.abs() <= 1 || r.abs() >= 1.35
+            });
             let use_projection = (post_commit || approaching)
                 && proven_vehicle
                 && (-20. ..=50.).contains(&x)
