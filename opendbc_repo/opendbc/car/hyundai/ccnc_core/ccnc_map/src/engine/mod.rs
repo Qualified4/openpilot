@@ -141,13 +141,16 @@ impl MapEngine {
         self.tracker.lead(now, input.lead, &frame);
         for &observation in input.vision {
             let age = now - observation.time;
-            if !(0. ..=0.5).contains(&age)
+            if !(0. ..=1.5).contains(&age)
                 || !observation.x.is_finite()
                 || !observation.y.is_finite()
             {
                 continue;
             }
             let capture = self.pose.at(observation.time);
+            if age > 0.5 && (capture.t > observation.time || ego.s - capture.s > 1.5) {
+                continue;
+            }
             let (wx, wy) = capture.to_world(observation.x, -observation.y);
             let (x, y) = ego.to_ego(wx, wy);
             self.tracker.vision(now, speed, &frame, observation, x, -y);

@@ -17,6 +17,9 @@ pub struct Evidence {
     pub last_track_id: Option<u64>,
 }
 
+// Sparse front detections may be several seconds apart at a stop.
+pub(super) const STATIONARY_VISION_WINDOW: f64 = 8.;
+
 #[derive(Clone, Debug)]
 pub struct TrackedObject {
     pub obj_id: u64,
@@ -41,6 +44,8 @@ pub struct TrackedObject {
     pub(super) range_consistent: bool,
     pub(super) handoff_until: f64,
     pub(super) vision_hits: u32,
+    pub(super) stationary_vision_t: Option<f64>,
+    pub(super) stationary_vision_confirmed: bool,
     pub(super) last_lead_sample: Option<f64>,
     pub(super) rear: bool,
     pub(super) split_until: f64,
@@ -52,6 +57,14 @@ impl TrackedObject {
         self.evidence
             .last_radar_t
             .map_or(f64::INFINITY, |t| now - t)
+    }
+
+    pub(super) fn supports_stationary_vision(&self, now: f64, speed: f64) -> bool {
+        self.evidence.last_radar_t == Some(now)
+            && self.radar_hits >= 6
+            && (1.5..=30.).contains(&self.s)
+            && (0.55..=1.45).contains(&self.lane_u.abs())
+            && (self.v_s + speed).abs() <= 1.
     }
 
     pub fn existence_p(&self) -> f64 {

@@ -1,8 +1,9 @@
-use super::object::{Evidence, RadarSample, TrackedObject};
+use super::object::{Evidence, RadarSample, TrackedObject, STATIONARY_VISION_WINDOW};
 use super::road_frame::{RoadFrame, LANE_WIDTH};
 use super::{VehicleKind, VisionObservation};
 use crate::input::{live_tracks::RawPoint, map_events::DisplayLead};
 use crate::world::PoseAt;
+use det_rules::CAM2B;
 
 pub(super) const CONFIRM: f64 = 0.85;
 const DROP: f64 = -1.8;
@@ -54,6 +55,8 @@ impl Tracker {
             range_consistent: false,
             handoff_until: f64::NEG_INFINITY,
             vision_hits: 0,
+            stationary_vision_t: None,
+            stationary_vision_confirmed: false,
             last_lead_sample: None,
             rear: s < 0.,
             split_until: f64::NEG_INFINITY,
@@ -223,6 +226,43 @@ impl Tracker {
         }
         let (s, d) = frame.project(x, y);
         let age = now - obs.time;
+        if age > 0.5 {
+            // Slow camera frames can confirm a stopped vehicle that radar still sees.
+            // Keep these frame votes out of the position update and radar coasting rules.
+            if !obs.position || obs.confidence < 0.55 || speed > 3. {
+                return;
+            }
+            let vision_range = x + CAM2B;
+            if vision_range <= CAM2B {
+                return;
+            }
+            let candidate = self
+                .objects
+                .iter_mut()
+                .filter(|o| o.supports_stationary_vision(now, speed))
+                .filter_map(|o| {
+                    let (rx, ry) = frame.cartesian(o.s, o.d);
+                    let radar_range = rx + CAM2B;
+                    // Flat-road range inferred from a box bottom is noisy. Bearing
+                    // constrains the match without letting a close box label a distant echo.
+                    let ratio = vision_range / radar_range;
+                    let lateral_error = (y / ratio - ry).abs();
+                    ((0.55..=1.6).contains(&ratio) && lateral_error <= 0.75)
+                        .then_some((o, lateral_error + ratio.ln().abs()))
+                })
+                .min_by(|(_, a), (_, b)| a.total_cmp(b))
+                .map(|(o, _)| o);
+            if let Some(o) = candidate {
+                let gap = o
+                    .stationary_vision_t
+                    .map_or(f64::INFINITY, |t| obs.time - t);
+                if gap >= 0.25 {
+                    o.stationary_vision_confirmed = gap <= STATIONARY_VISION_WINDOW;
+                    o.stationary_vision_t = Some(obs.time);
+                }
+            }
+            return;
+        }
         let match_cost = |o: &TrackedObject| {
             // Warp the static ground contact with ego pose, then let association account for
             // the object's own travel since capture. Camera range is noticeably noisier than radar.
@@ -384,6 +424,8 @@ fn update_motion(o: &mut TrackedObject, m: Measurement, now: f64, ego: PoseAt, s
     if o.radar_age(now) > 0.20 {
         o.radar_sample = Some(sample);
         o.motion_time = 0.;
+        o.stationary_vision_t = None;
+        o.stationary_vision_confirmed = false;
         return;
     }
     let Some(previous) = o.radar_sample else {

@@ -406,3 +406,31 @@ fn persistent_static_return_requires_independent_vehicle_evidence() {
         assert!(out.slots.iter().all(Option::is_none));
     }
 }
+
+#[test]
+fn delayed_camera_confirms_a_stopped_side_vehicle_only_with_current_radar() {
+    let mut engine = MapEngine::default();
+    let mut reflector = radar(55, 12., 3.5, 0.);
+    reflector.motion_state = 1;
+    let points = [reflector];
+    for tick in 0..208 {
+        let mut entry = input(tick, if tick == 64 { &[] } else { &points });
+        let time = match tick {
+            30 | 40 => Some(0.6), // A repeat of the same capture is one vote.
+            60 => Some(2.),
+            _ => None,
+        };
+        let observations = time.map(|time| VisionObservation {
+            time,
+            x: 12.,
+            y: 3.5,
+            kind: VehicleKind::Car,
+            confidence: 0.9,
+            position: true,
+        });
+        entry.vision = observations.as_slice();
+        let out = engine.step(entry);
+        let expected = (60..=200).contains(&tick) && tick != 64;
+        assert_eq!(out.slots[2].is_some(), expected, "tick {tick}");
+    }
+}

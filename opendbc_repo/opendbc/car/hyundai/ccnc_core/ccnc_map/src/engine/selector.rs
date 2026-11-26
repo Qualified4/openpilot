@@ -1,4 +1,4 @@
-use super::object::TrackedObject;
+use super::object::{TrackedObject, STATIONARY_VISION_WINDOW};
 use super::road_frame::RoadFrame;
 use super::tracker::CONFIRM;
 use super::EngineSlot;
@@ -84,7 +84,13 @@ pub(super) fn select(
             0.20
         };
         let stationary = speed > 5. && (o.v_s + speed).abs() < 1.5;
+        let confirmed_stopped = speed <= 3.
+            && o.stationary_vision_confirmed
+            && o.stationary_vision_t
+                .is_some_and(|t| now - t <= STATIONARY_VISION_WINDOW)
+            && o.supports_stationary_vision(now, speed);
         let measured_vehicle = vision(now, o)
+            || confirmed_stopped
             || o.moved
                 && (o.range_consistent || near_continuity || handoff)
                 && (!stationary || o.verified_travel >= 3.)
