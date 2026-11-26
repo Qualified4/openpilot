@@ -24,6 +24,10 @@ pub(super) struct Alongside {
 }
 
 impl Alongside {
+    pub(super) fn vid(self) -> u32 {
+        self.measured.vid
+    }
+
     fn new(now: f64, ego: f64, measured: Slot, car: &Vehicle) -> Self {
         Self {
             measured,

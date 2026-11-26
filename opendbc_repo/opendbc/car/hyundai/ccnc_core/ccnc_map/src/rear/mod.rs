@@ -626,7 +626,9 @@ impl WorldRear {
         });
         // Keep the originating radar ID through the longest rear animation, including after a VID
         // leaves the tracker. This prevents a retired slot drawing from coming back after one empty tick.
-        self.side_radar_ids.retain(|_, (_, seen)| input.now - *seen <= 10.);
+        self.side_radar_ids.retain(|vid, (_, seen)| {
+            input.now - *seen <= 10. || slots.iter().flatten().any(|slot| slot.vid == *vid)
+        });
         self.side_radar_ids.extend(input.vehicles.iter().filter_map(|car| {
             Some((car.vid, (car.radar_id.or(car.flags.source)?, car.seen_radar)))
         }));
@@ -637,7 +639,23 @@ impl WorldRear {
                 if ft == rt {
                     // Prefer the latest observation of this radar ID over an older drawing.
                     let drop = if fs >= rs { rear } else { front };
-                    slots[drop] = None;
+                    let retired = slots[drop].take().unwrap().vid;
+                    if self.alongside[side].is_some_and(|motion| motion.vid() == retired) {
+                        self.alongside[side] = None;
+                    }
+                    let state = &mut self.state.sides[side];
+                    let owns = |key: Identity| key.0 == i128::from(retired);
+                    if state.front.as_ref().is_some_and(|track| owns(track.key)) {
+                        state.front = None;
+                    }
+                    if state.rear.as_ref().is_some_and(|track| owns(track.key)) {
+                        state.rear = None;
+                    }
+                    if state.flow.rear.as_ref().is_some_and(|drawn| {
+                        matches!(drawn.key, Some(side_flow::Key::Radar(key)) if owns(key))
+                    }) {
+                        state.flow.rear = None;
+                    }
                     if continuous[side] == Some(drop) {
                         continuous[side] = None;
                     }
