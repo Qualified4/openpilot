@@ -391,8 +391,7 @@ impl RoadAhead {
         // Keep an observed lane assignment through forks and merges. Use
         // the more accurate far curve only if both fits agree on the lane
         // and the point is clear of a possibly moving boundary.
-        let lane = observed.round();
-        if (observed - lane).abs().max((predicted - lane).abs()) > 0.30 {
+        if observed.abs().max(predicted.abs()) > 0.22 {
             return mapped;
         }
         let fade = ((x - PATH_BLEND_START) / (PATH_BLEND_END - PATH_BLEND_START)).clamp(0., 1.);
@@ -400,7 +399,7 @@ impl RoadAhead {
         Some(observed_u + weight * (path_u - observed_u))
     }
 
-    pub(super) fn radar_lateral(&self, x: f64, y: f64, yaw: f64) -> Option<f64> {
+    pub(super) fn radar_lateral(&self, x: f64, y: f64, yaw: f64, lane: i8) -> Option<f64> {
         let bend = self.path.bend_weight(yaw);
         if bend == 0. {
             return None;
@@ -409,7 +408,12 @@ impl RoadAhead {
         // the model path's intercept so a shift of its origin cannot move cars.
         let (near, _) = self.path.project_lateral(0., 0., self.width)?;
         let (far, confidence) = self.path.project_lateral(x, y, self.width)?;
-        Some(y + (bend * confidence) * (far - near - y))
+        let projected = far - near;
+        let lane_offset = (projected / self.width + f64::from(lane)).abs();
+        // Paths past a junction can bend away while the tracked car is still
+        // in the current lane. Fade the projection as the two disagree.
+        let agreement = ((0.55 - lane_offset) / 0.20).clamp(0., 1.);
+        Some(y + (bend * confidence * agreement) * (projected - y))
     }
 
     fn side_geometry(&self, x: f64, side: usize) -> SideGeometry {

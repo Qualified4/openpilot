@@ -484,7 +484,7 @@ impl Assigner {
                 // release less of the offset as the radar weight rises.
                 let release = (0.75 - opening_gap * (0.75 - 0.5))
                     * ((speed - 6.) / 2.).clamp(0., 1.);
-                let radar_y = world.radar_lateral(now, rx, track.y + release * track.b);
+                let radar_y = world.radar_lateral(now, rx, track.y + release * track.b, if drawing.into_ff { 0 } else { drawing.lane });
                 lateral_target += weight * (radar_y - lateral_target);
             }
             let distance = x.abs();
