@@ -218,7 +218,7 @@ impl World {
         let Some(road) = self.road_ahead.as_ref().filter(|r| (t - r.stamp).abs() <= INPUT_GAP) else {
             return mapped;
         };
-        if self.pose.speed() <= 2. || (mapped.is_none() && self.lanes.outside_road(s, point)) {
+        if self.pose.speed() <= 2. {
             return mapped;
         }
         // The predicted path can already be in the destination lane during a

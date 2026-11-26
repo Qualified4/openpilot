@@ -360,41 +360,47 @@ impl RoadAhead {
     }
 
     pub(super) fn coord(&self, point: Point, ego_u: f64, mapped: Option<f64>, crossing: bool) -> Option<f64> {
+        let observed_u = mapped?;
         let (x, y) = self.pose.to_ego(point.0, point.1);
-        if !ego_u.is_finite() || x <= PATH_BLEND_START || x > 80. || crossing {
+        if !ego_u.is_finite() || x <= PATH_BLEND_START || x > 80. {
             return mapped;
         }
-        let fade = ((x - PATH_BLEND_START) / (PATH_BLEND_END - PATH_BLEND_START)).clamp(0., 1.);
         let Some((center, slope, confidence)) = self.path.road_sample(x, self.width) else {
             return mapped;
         };
-        let weight = confidence * fade * fade * (3. - 2. * fade);
-        let baseline = self.reference_u.unwrap_or(ego_u);
-        let path_u = baseline + (center - y) / (self.width * slope.hypot(1.));
-        let relative = path_u - ego_u;
-        let blended = mapped.map_or(path_u, |u| u + weight * (path_u - u));
-        let blended_relative = blended - ego_u;
-        let side = usize::from(blended_relative > 0.);
-        let side_geometry = self.side_geometry(point, side);
-        if blended_relative.abs() >= 0.5 && side_geometry != SideGeometry::Lane {
-            // A predicted centreline alone cannot create a new adjacent lane.
-            // Trust an existing assignment unless both reliable edge samples
-            // put the return outside a corridor even along the predicted bend.
-            if x >= PATH_BLEND_END && confidence >= 0.5 && relative.abs() >= 0.7
-                && relative.signum() == blended_relative.signum()
-                && side_geometry == SideGeometry::Edge
-                && self.side_geometry(self.pose.to_world(20., 0.), side) == SideGeometry::Edge
-                && mapped.is_some_and(|u| (u - ego_u).abs() >= 0.5)
-            {
-                return None;
-            }
+        let origin = self.reference_u.unwrap_or(ego_u);
+        let path_u = origin + (center - y) / (self.width * slope.hypot(1.));
+        let observed = observed_u - ego_u;
+        let predicted = path_u - ego_u;
+        let side = usize::from(predicted > 0.);
+        // A far return cannot establish a side lane past a nearby and
+        // distant shoulder. Require agreement with the observed placement
+        // and a confident prediction that the return is outside our lane.
+        if self.weak_lines && x >= PATH_BLEND_END && confidence >= 0.5
+            && observed.abs() >= 0.5 && predicted.abs() >= 0.7
+            && observed.signum() == predicted.signum()
+            && self.side_geometry(x, side) == SideGeometry::Edge
+            && self.side_geometry(20., side) == SideGeometry::Edge
+        {
+            return None;
+        }
+        if crossing {
             return mapped;
         }
-        mapped.or_else(|| (weight >= 0.5).then_some(blended)).map(|_| blended)
+
+        // Keep an observed lane assignment through forks and merges. Use
+        // the more accurate far curve only if both fits agree on the lane
+        // and the point is clear of a possibly moving boundary.
+        let lane = observed.round();
+        if (observed - lane).abs().max((predicted - lane).abs()) > 0.30 {
+            return mapped;
+        }
+        let fade = ((x - PATH_BLEND_START) / (PATH_BLEND_END - PATH_BLEND_START)).clamp(0., 1.);
+        let weight = confidence * fade * fade * (3. - 2. * fade);
+        Some(observed_u + weight * (path_u - observed_u))
     }
 
-    pub(super) fn side_geometry(&self, point: Point, side: usize) -> SideGeometry {
-        let (x, _) = self.pose.to_ego(point.0, point.1);
+    fn side_geometry(&self, x: f64, side: usize) -> SideGeometry {
         let x = x.clamp(0., 80.);
         let i = MODEL_GRID.partition_point(|&d| f64::from(d) < x);
         let end = self.sides[side][i];
@@ -766,7 +772,7 @@ impl LaneMap {
         (count >= 2).then(|| f64::from(prior.0) - prior.1 / LANE_WIDTH)
     }
 
-    pub(super) fn outside_road(&self, s: f64, point: Point) -> bool {
+    fn outside_road(&self, s: f64, point: Point) -> bool {
         self.edges.iter().enumerate().any(|(side, edge)| {
             edge.lateral(s, point).is_some_and(|y| if side == 0 { y > 0. } else { y < 0. })
         })
@@ -861,10 +867,13 @@ mod tests {
             .with_deviations(vec![0.3, 0.3, 0.3, 0.3, 3.5]);
         let road = RoadAhead::new(&model, PoseAt::default(), 0., path, false, [0.5, 0.5], Some((0., 3.5)));
         assert_eq!(road.coord((20., -3.), 1.5, Some(2.4), false), Some(2.4));
-        assert_eq!(road.coord((60., -3.), 1.5, Some(2.4), false), Some(1.5));
+        assert_eq!(road.coord((60., -3.), 1.5, Some(1.7), false), Some(1.5));
+        assert_eq!(road.coord((60., -3.), 1.5, Some(2.4), false), Some(2.4));
+        assert_eq!(road.coord((60., -3.), 1.5, Some(1.7), true), Some(1.7));
+        assert_eq!(road.coord((60., -3.), 1.5, None, false), None);
         assert_eq!(road.coord((80., -5.), 1.5, Some(2.4), false), Some(2.4));
-        assert_eq!(road.side_geometry((60., 3.), 0), SideGeometry::Lane);
-        assert_eq!(road.side_geometry((60., -3.), 1), SideGeometry::Edge);
+        assert_eq!(road.side_geometry(60., 0), SideGeometry::Lane);
+        assert_eq!(road.side_geometry(60., 1), SideGeometry::Edge);
     }
 
     #[test]
