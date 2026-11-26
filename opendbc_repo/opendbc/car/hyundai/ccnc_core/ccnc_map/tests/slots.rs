@@ -158,6 +158,49 @@ fn straddling_car_belongs_to_the_lane_containing_its_center() {
 }
 
 #[test]
+fn while_ego_crosses_the_near_boundary_car_fills_the_side_if_ff_is_taken() {
+    let mut world = World::new(RADAR_LAG, false);
+    for step in 0..=50 {
+        let t = f64::from(step) * 0.05;
+        world.live_pose(t, 0.);
+        world.car_state(t, 0., false);
+        world.model(t, &model(if step >= 40 { -0.3 * 3.5 } else { 0. }, 0., 0.));
+        world.radar(t);
+    }
+    assert!(world.ego_changing());
+
+    let mut assigner = Assigner::default();
+    let ff = vehicle(&world, 1, 2.5, 8., -0.4);
+    let near = vehicle(&world, 2, 2.5, 13.75, 0.485);
+    let far = vehicle(&world, 3, 2.5, 70., 0.9);
+    let cars = [near, far, ff];
+    let slots = assigner.update(2.5, &cars, &world, None);
+    assert_eq!(slots[FF].unwrap().vid, 1);
+    assert_eq!(slots[RF].unwrap().vid, 2);
+
+    let slots = assigner.update(2.5, &cars[..2], &world, None);
+    assert_eq!(slots[FF].unwrap().vid, 2);
+    assert_eq!(slots[RF].unwrap().vid, 3);
+}
+
+#[test]
+fn a_distant_boundary_car_needs_persistence_but_a_clear_side_car_can_enter_immediately() {
+    let mut assigner = Assigner::default();
+    let mut world = road();
+    for step in 0..=8 {
+        let t = f64::from(step) * 0.05;
+        world.live_pose(t, 0.);
+        world.car_state(t, 0., false);
+        world.radar(t);
+        let distant = vehicle(&world, 1, t, 78., 0.75);
+        let centered = vehicle(&world, 2, t, 78., -0.95);
+        let slots = assigner.update(t, &[distant, centered], &world, None);
+        assert_eq!(slots[LF].map(|slot| slot.vid), Some(2));
+        assert_eq!(slots[RF].map(|slot| slot.vid), (step >= 7).then_some(1));
+    }
+}
+
+#[test]
 fn the_front_occupant_holds_a_brief_boundary_excursion_and_releases_beyond_the_margin() {
     let world = road();
     let mut assigner = Assigner::default();

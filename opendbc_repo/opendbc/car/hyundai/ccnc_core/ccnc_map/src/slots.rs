@@ -78,6 +78,8 @@ const MODEL_LANE_WIDTH: std::ops::RangeInclusive<f64> = 1.8..=5.;
 const MODEL_LANE_MARGIN: f64 = 0.3;
 const MODEL_LANE_KEEP_PROB: f64 = 0.45;
 const MODEL_LANE_KEEP_X: std::ops::RangeInclusive<f64> = 4. ..=55.;
+const FAR_SIDE_CONFIRM_S: f64 = 0.35;
+const NEAR_SIDE_BOUNDARY_M: f64 = 30.;
 
 /// Ego's lane by the model's lines of this frame, placed at ego's pose now (lateral positive to the left). A radar car
 /// inside it is drawn in FF and never in LF or RF, whatever lane the world map gives it. The world map's lane coordinate
@@ -195,6 +197,7 @@ struct Drawing {
     into_ff: bool,
     ff_change_since: Option<f64>,
     lane_entry_since: Option<f64>,
+    far_side_since: Option<(usize, f64)>,
     outside_since: Option<f64>,
     /// The vid once moved at `MOVED` or faster.
     fast: bool,
@@ -212,6 +215,7 @@ impl Drawing {
             into_ff: false,
             ff_change_since: None,
             lane_entry_since: None,
+            far_side_since: None,
             outside_since: None,
             fast: false,
         }
@@ -223,6 +227,24 @@ impl Drawing {
         if (r - f64::from(lane)).abs() <= if outward { OUTER_RADIUS } else { INNER_RADIUS } {
             self.lane = lane;
         }
+    }
+
+    fn ready_for_side(&mut self, now: f64, slot: Option<usize>, previous_side: Option<usize>, x: f64, r: f64) -> bool {
+        let model_limit = *MODEL_LANE_KEEP_X.end();
+        let Some(side) = slot.filter(|&i| (1..=2).contains(&i) && x > model_limit) else {
+            self.far_side_since = None;
+            return true;
+        };
+        let since = match self.far_side_since {
+            Some((old, since)) if old == side => since,
+            _ => now,
+        };
+        self.far_side_since = Some((side, since));
+        // Distant map fits can put a car across a lane line for only a few reports.
+        // Accept a clear placement immediately and let a stable boundary placement settle.
+        let margin = 0.35 * ((x - model_limit) / 15.).clamp(0., 1.);
+        let side_coord = if side == 1 { -r } else { r };
+        previous_side == Some(side) || side_coord >= 0.5 + margin || now - since >= FAR_SIDE_CONFIRM_S
     }
 
     fn update_model_ff(&mut self, now: f64, can_hold: bool, lane: Option<&ModelLane>, x: f64, y: f64, confirmed: bool) {
@@ -256,6 +278,15 @@ fn slot_index(x: f64, lane: i8) -> Option<usize> {
         (false, -1) => Some(3),
         (false, 1) => Some(4),
         _ => None,
+    }
+}
+
+fn rank_side(candidate: Slot, best: &mut Option<Slot>, second: &mut Option<Slot>) {
+    let rank = |slot: Slot| (slot.distance, slot.vid);
+    if best.is_none_or(|old| rank(candidate) < rank(old)) {
+        *second = best.replace(candidate);
+    } else if second.is_none_or(|old| rank(candidate) < rank(old)) {
+        *second = Some(candidate);
     }
 }
 
@@ -425,6 +456,7 @@ impl Assigner {
         let mut ff_missing_geometry = false;
         let mut best: [Option<Slot>; 5] = [None; 5];
         let mut second: [Option<Slot>; 2] = [None; 2];
+        let mut boundary = [(None, None); 2];
         let changing = world.ego_changing();
         for car in vehicles {
             if !current(car.seen_radar.max(car.seen_vision)) {
@@ -447,6 +479,7 @@ impl Assigner {
                 drawing.into_ff = false;
                 drawing.ff_change_since = None;
                 drawing.lane_entry_since = None;
+                drawing.far_side_since = None;
                 drawing.outside_since = None;
             }
             drawing.seen = now;
@@ -547,9 +580,11 @@ impl Assigner {
                 play_distance,
                 -lateral_target / LANE_WIDTH,
             );
-            let Some(slot) = (if drawing.into_ff || hold_ff { Some(0) } else { slot_index(x, side_lane_hold.unwrap_or(drawing.lane)) }) else {
+            let slot = if drawing.into_ff || hold_ff { Some(0) } else { slot_index(x, side_lane_hold.unwrap_or(drawing.lane)) };
+            if !drawing.ready_for_side(now, slot.filter(|_| measured && proven_vehicle), previous_side, x, r_slot) {
                 continue;
-            };
+            }
+            let Some(slot) = slot else { continue };
             if car.flags.structure || (slot != 0 && !proven_vehicle) {
                 continue;
             }
@@ -600,6 +635,16 @@ impl Assigner {
                 vision: VISION_NONE,
             };
             if slot == 0 {
+                // While ego crosses, a nearby car can still belong to FF by
+                // hysteresis after a closer car has taken that slot.
+                if changing && measured && proven_vehicle && !car.oncoming && speed >= -1. / 3.6
+                    && x <= NEAR_SIDE_BOUNDARY_M && (0.45..=1. - INNER_RADIUS).contains(&r_slot.abs())
+                {
+                    let side = usize::from(r_slot > 0.);
+                    let lateral = draw_road_frame(&mut observed_shown, distance, -observed_lateral_target / LANE_WIDTH);
+                    let (first, next) = &mut boundary[side];
+                    rank_side(Slot { lateral: lateral as f32, detect: drawing.detect, ..candidate }, first, next);
+                }
                 if hold_ff {
                     occupied_ff = Some(candidate);
                 } else if let Some(side) = previous_side.filter(|_| proven_vehicle) {
@@ -768,6 +813,13 @@ impl Assigner {
             best[0] = self.occupants[0];
         } else {
             self.ff_seen = best[0].map(|_| now);
+        }
+        for (side, (first, next)) in boundary.into_iter().enumerate() {
+            for candidate in [first, next].into_iter().flatten() {
+                if best[0].is_none_or(|ff| ff.vid != candidate.vid) {
+                    rank_side(candidate, &mut best[side + 1], &mut second[side]);
+                }
+            }
         }
         self.runner_up = second;
         self.previous_ff = best[0].map(|s| s.vid);
