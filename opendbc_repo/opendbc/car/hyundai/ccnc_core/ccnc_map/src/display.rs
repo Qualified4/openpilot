@@ -1,10 +1,12 @@
 //! Display A in the world map, with lateral positive to the left.
 
 use crate::pos::{common::LANE_WIDTH, display_a::backlash};
+use crate::radar::lanes::interpolate;
 
 pub(crate) struct ModelPath {
     points: Vec<(f64, f64)>,
     deviations: Vec<f64>,
+    curvature: f64,
 }
 
 impl ModelPath {
@@ -18,7 +20,19 @@ impl ModelPath {
         {
             return None;
         }
-        (points.len() >= 2).then_some(Self { points, deviations: Vec::new() })
+        let start = 5.;
+        let end = points.last()?.0.min(35.);
+        let span = (end - start) / 2.;
+        let curvature = if span >= 5. {
+            let a = interpolate(&points, start)?;
+            let b = interpolate(&points, start + span)?;
+            let c = interpolate(&points, end)?;
+            let slope = (c - a) / (2. * span);
+            (a - 2. * b + c) / (span * span * slope.hypot(1.).powi(3))
+        } else {
+            0.
+        };
+        (points.len() >= 2).then_some(Self { points, deviations: Vec::new(), curvature })
     }
 
     pub(crate) fn with_deviations(mut self, deviations: Vec<f32>) -> Self {
@@ -26,6 +40,18 @@ impl ModelPath {
             self.deviations = deviations.into_iter().map(f64::from).collect();
         }
         self
+    }
+
+    pub(crate) fn bend_weight(&self, yaw: f64) -> f64 {
+        if self.curvature.abs() <= 0.002 || yaw * self.curvature <= 0. {
+            return 0.;
+        }
+        ((yaw.abs() - 0.020) / 0.020).clamp(0., 1.)
+    }
+
+    pub(crate) fn project_lateral(&self, x: f64, y: f64, width: f64) -> Option<(f64, f64)> {
+        let (center, slope, confidence) = self.road_sample(x, width)?;
+        Some(((y - center) / slope.hypot(1.), confidence))
     }
 
     pub(crate) fn road_sample(&self, x: f64, lane_width: f64) -> Option<(f64, f64, f64)> {
@@ -50,7 +76,6 @@ impl ModelPath {
         let horizon = ((end - x) / 8.).clamp(0., 1.);
         Some((ya + f * (yb - ya), (yb - ya) / (b - a), confidence * horizon))
     }
-
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

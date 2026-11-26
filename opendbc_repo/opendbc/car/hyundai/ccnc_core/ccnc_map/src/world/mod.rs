@@ -227,6 +227,17 @@ impl World {
         road.coord(point, self.u_ego(), mapped, crossing)
     }
 
+    pub(crate) fn radar_lateral(&self, t: f64, x: f64, y: f64) -> f64 {
+        if self.blinker || self.lane_change.frozen() || self.pose.speed() <= 2. {
+            return y;
+        }
+        self.road_ahead.as_ref()
+            .filter(|road| !road.changing && (t - road.stamp).abs() <= INPUT_GAP)
+            .zip(self.yaw_at(t))
+            .and_then(|(road, yaw)| road.radar_lateral(x, y, yaw))
+            .unwrap_or(y)
+    }
+
     fn with_camera_lane(&self, t: f64, s: f64, point: (f64, f64), mapped: f64) -> f64 {
         let weight = self.lanes.camera_weight(s, mapped);
         let Some(camera) = self

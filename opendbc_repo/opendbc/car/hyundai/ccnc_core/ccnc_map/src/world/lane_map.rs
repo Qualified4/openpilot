@@ -365,11 +365,11 @@ impl RoadAhead {
         if !ego_u.is_finite() || x <= PATH_BLEND_START || x > 80. {
             return mapped;
         }
-        let Some((center, slope, confidence)) = self.path.road_sample(x, self.width) else {
+        let Some((lateral, confidence)) = self.path.project_lateral(x, y, self.width) else {
             return mapped;
         };
         let origin = self.reference_u.unwrap_or(ego_u);
-        let path_u = origin + (center - y) / (self.width * slope.hypot(1.));
+        let path_u = origin - lateral / self.width;
         let observed = observed_u - ego_u;
         let predicted = path_u - ego_u;
         let side = usize::from(predicted > 0.);
@@ -398,6 +398,18 @@ impl RoadAhead {
         let fade = ((x - PATH_BLEND_START) / (PATH_BLEND_END - PATH_BLEND_START)).clamp(0., 1.);
         let weight = confidence * fade * fade * (3. - 2. * fade);
         Some(observed_u + weight * (path_u - observed_u))
+    }
+
+    pub(super) fn radar_lateral(&self, x: f64, y: f64, yaw: f64) -> Option<f64> {
+        let bend = self.path.bend_weight(yaw);
+        if bend == 0. {
+            return None;
+        }
+        // The radar blend expresses lateral displacement from ego. Remove
+        // the model path's intercept so a shift of its origin cannot move cars.
+        let (near, _) = self.path.project_lateral(0., 0., self.width)?;
+        let (far, confidence) = self.path.project_lateral(x, y, self.width)?;
+        Some(y + (bend * confidence) * (far - near - y))
     }
 
     fn side_geometry(&self, x: f64, side: usize) -> SideGeometry {
