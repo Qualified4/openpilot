@@ -365,12 +365,8 @@ Device compute (average per cluster update): Off about 0.9 ms, On about 2.4 ms (
 
 While extended display is on, the cluster's vehicle positions come from the radar map built by a separate process (core 4). There is no separate setting to turn it on or off. If the map is late or stops, the cluster falls back to the existing display. Display only; ACC, braking and steering are unaffected.
 
-- Works only while the internal comparison value `CcncPosDisplayMode` is 1. That value is not in the settings screen.
 - If the process dies within 60 s of starting, or dies three times, it stays off until the device reboots.
-- An object that has never exceeded 3 m/s is not drawn in a side slot within 0.9 m of the road edge (a median, something at the roadside, a pedestrian). It is drawn for its first second. Cars that have moved, and slow cars inside the road, are unaffected.
-- While the car drives at 7 km/h or more, an object measured coming toward it within 15 m (for example a car park pillar with a wrong radar speed) is not drawn in the front slot. Nothing changes while stopped.
-
-Device compute: about 13 ms/s at standstill. Values while driving are unverified.
+- The map tracks vehicles across radar and camera observations. It carries the confirmed vehicle type when the same vehicle moves from a front side slot to a rear slot.
 
 <a id="ccnc-vision-process"></a>
 #### Camera vehicle detection

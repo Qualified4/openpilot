@@ -1348,10 +1348,10 @@ def _ccnc_display_options(CP, CS, frame, override):
   supported = hda1_cluster_supported(CP)
   if not hasattr(create_ccnc_messages, '_display_options') or frame % 100 == 0:
     params = Params()
-    pos_mode = params.get("CcncPosDisplayMode") if supported else 0
+    pos_mode = params.get("CcncPosDisplayMode", return_default=True) if supported else 0
     create_ccnc_messages._display_options = (
       supported and params.get_bool("CcncExtendedDisplay"), bool(params.get_int("CcncTrafficBackground")),
-      pos_mode if pos_mode in (1, 2) else 0, pos_mode == 1,
+      pos_mode if pos_mode in (1, 2) else 0, pos_mode in (0, 1),
     )
   requested, traffic_background, pos_mode, map_process = create_ccnc_messages._display_options
   # Internal comparison switch of the Rust front-slot display (0 existing, 1 display A, 2 display B); not a setting.

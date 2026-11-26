@@ -31,8 +31,6 @@ pub struct DisplayLead {
     pub motion: (f64, f64, f64),
     pub(crate) measured_track: Option<u32>,
     pub(crate) model_prob: f64,
-    /// A positive radar ID backed by a strong model lead. Track 0 is the synthetic main radar lead.
-    pub(crate) confirmed_track: Option<i128>,
 }
 
 impl DisplayLead {
@@ -49,7 +47,6 @@ impl DisplayLead {
             motion: (x, y, v),
             measured_track: track,
             model_prob: probability,
-            confirmed_track: track.filter(|_| (0.9..=1.).contains(&probability)).map(i128::from),
         })
     }
 }
@@ -103,22 +100,10 @@ impl<'a> Event<'a> {
         (flag(rate.data, 192) && yaw.is_finite()).then_some(yaw)
     }
 
-    pub fn lead(&self) -> Option<(f64, f64)> {
-        let lead = self.message.struct_pointer(&self.payload()?, 1)?;
-        let (x, y) = (f32_at(lead.data, 0), f32_at(lead.data, 1));
-        (flag(lead.data, 321) && x.is_finite() && y.is_finite()).then_some((x, y))
-    }
 
-    /// The nearer valid display lead (leadOne on a tie), and leadOne itself for unproven FF entry.
-    pub fn display_leads(&self) -> (Option<DisplayLead>, Option<DisplayLead>) {
-        let Some(payload) = self.payload() else { return (None, None) };
-        let lead = |pointer| DisplayLead::read(self.message.struct_pointer(&payload, pointer)?.data);
-        let one = lead(1);
-        let preferred = match (one, lead(2)) {
-            (Some(one), Some(two)) => Some(if one.motion.0 <= two.motion.0 { one } else { two }),
-            (one, two) => one.or(two),
-        };
-        (preferred, one)
+    pub fn primary_display_lead(&self) -> Option<DisplayLead> {
+        let payload = self.payload()?;
+        DisplayLead::read(self.message.struct_pointer(&payload, 1)?.data)
     }
 }
 
@@ -127,20 +112,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_real_radar_lead_with_model_agreement_supplies_wall_evidence() {
+    fn only_a_positive_measured_radar_id_identifies_the_lead() {
         let mut data = [0; 56];
         data[..4].copy_from_slice(&4.15f32.to_le_bytes());
         for (id, radar, probability, expected) in [
             (57, true, 0.99f32, Some(57)),
             (0, true, 0.99, None),
             (57, false, 0.99, None),
-            (57, true, 0.5, None),
+            (57, true, 0.5, Some(57)),
             (-1, true, 0.99, None),
         ] {
             data[40] = 0b10 | ((radar as u8) << 2);
             data[48..52].copy_from_slice(&probability.to_le_bytes());
             data[52..56].copy_from_slice(&(!id as i32).to_le_bytes());
-            assert_eq!(DisplayLead::read(&data).unwrap().confirmed_track, expected);
+            assert_eq!(DisplayLead::read(&data).unwrap().measured_track, expected);
         }
     }
 }

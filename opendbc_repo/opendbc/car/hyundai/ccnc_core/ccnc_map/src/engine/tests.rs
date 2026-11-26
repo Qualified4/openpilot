@@ -33,12 +33,11 @@ fn input(tick: u32, radar: &[RawPoint]) -> EngineInput<'_> {
     }
 }
 
-fn confirm(engine: &mut MapEngine, points: &[RawPoint]) -> EngineOutput {
-    let mut out = EngineOutput::default();
-    for tick in 0..8 {
-        out = engine.step(input(tick, points));
+fn confirm<'a>(engine: &'a mut MapEngine, points: &[RawPoint]) -> EngineOutput<'a> {
+    for tick in 0..7 {
+        engine.step(input(tick, points));
     }
-    out
+    engine.step(input(7, points))
 }
 
 #[test]
@@ -352,7 +351,6 @@ fn a_matched_lead_supplies_ff_evidence_but_cannot_create_a_ghost() {
                 motion: (10., -2.1, 0.),
                 measured_track: Some(40),
                 model_prob: 0.95,
-                confirmed_track: Some(40),
             },
         ));
         let out = engine.step(entry);
@@ -368,7 +366,6 @@ fn a_matched_lead_supplies_ff_evidence_but_cannot_create_a_ghost() {
             motion: (10., 0., 0.),
             measured_track: Some(40),
             model_prob: 0.98,
-            confirmed_track: Some(40),
         },
     ));
     assert!(MapEngine::default().step(entry).objects.is_empty());

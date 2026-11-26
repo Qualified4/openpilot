@@ -365,9 +365,9 @@ def test_display_entry_returns_every_slot_in_one_call(display, monkeypatch, capl
     if native:
       entered = core.update_display
 
-      def counted(cs, md, frame, inputs, *args):
+      def counted(cs, md, frame, inputs, *args, **kwargs):
         calls.append((frame, inputs is not None))
-        rendered = entered(cs, md, frame, inputs, *args)
+        rendered = entered(cs, md, frame, inputs, *args, **kwargs)
         if inputs is not None:
           assert set(VEHICLE_FIELDS) <= set(rendered[1])
         return rendered

@@ -40,9 +40,10 @@ def test_display_matrix(display, monkeypatch, on, cluster, traffic, flags, longi
   calls = []
   entered = core.update_display
 
-  def traced(cs, model, frame, inputs, *args):
+  def traced(cs, model, frame, inputs, *args, **kwargs):
+    assert "process_now_ns" in kwargs
     calls.append((frame, inputs is not None))
-    return entered(cs, model, frame, inputs, *args)
+    return entered(cs, model, frame, inputs, *args, **kwargs)
 
   monkeypatch.setattr(core, "update_display", traced)
   for frame in range(10):
@@ -88,7 +89,7 @@ def test_failed_rust_call_falls_back_and_filters_lead_once(display, monkeypatch)
   calls = []
   logged = []
 
-  def fail(*args):
+  def fail(*args, **_kwargs):
     calls.append(args[2])
     return core._panic_for_test()
 

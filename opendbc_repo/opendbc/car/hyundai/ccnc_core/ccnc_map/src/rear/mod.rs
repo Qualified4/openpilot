@@ -1,6 +1,5 @@
 //! Rear handover and continuous side drawings for the legacy CCNC map.
 
-mod continuity;
 pub mod side_flow;
 
 use std::collections::{HashMap, VecDeque};
@@ -424,9 +423,6 @@ pub struct WorldRear {
     /// Confirmed kinds by vid. The tracker forgets a car 2 s after its last radar update; the rear handover keeps
     /// drawing it for up to 10 s, with this kind.
     kinds: Vec<(u32, Kind)>,
-    alongside: [Option<continuity::Alongside>; 2],
-    joins: [continuity::DisplayJoin; 2],
-    side_radar_ids: HashMap<u32, (u32, f64)>,
 }
 
 impl WorldRear {
@@ -448,9 +444,6 @@ impl WorldRear {
         let lateral = bsd_laterals(width, width);
         if context_changed {
             self.kinds.clear();
-            self.alongside = [None; 2];
-            self.joins = Default::default();
-            self.side_radar_ids.clear();
         }
         for car in input.vehicles {
             if let Some(kind) = car
@@ -620,72 +613,6 @@ impl WorldRear {
         });
         Ok(())
     }
-    pub(crate) fn continue_sides(
-        &mut self,
-        world: &World,
-        input: WorldInput<'_>,
-        remembered: [bool; 2],
-        selected: &[Option<WorldSlot>; 5],
-        slots: &mut [Option<WorldSlot>; 5],
-    ) -> [Option<usize>; 2] {
-        if !world.accepts_radar() || !input.can_valid {
-            self.alongside = [None; 2];
-            self.joins = Default::default();
-            self.side_radar_ids.clear();
-            return [None; 2];
-        }
-        let mut continuous = std::array::from_fn(|side| {
-            continuity::Alongside::update(
-                &mut self.alongside[side], side, input.now, world.pose.speed(), input.blind[side],
-                remembered[side], selected, input.vehicles, slots,
-            )
-        });
-        // Keep the originating radar ID through the longest rear animation, including after a VID
-        // leaves the tracker. This prevents a retired slot drawing from coming back after one empty tick.
-        self.side_radar_ids.retain(|vid, (_, seen)| {
-            input.now - *seen <= 10. || slots.iter().flatten().any(|slot| slot.vid == *vid)
-        });
-        self.side_radar_ids.extend(input.vehicles.iter().filter_map(|car| {
-            Some((car.vid, (car.radar_id.or(car.flags.source)?, car.seen_radar)))
-        }));
-        for side in 0..2 {
-            let (front, rear) = (side + 1, side + 3);
-            let radar = |index: usize| slots[index].and_then(|s| self.side_radar_ids.get(&s.vid).copied());
-            if let Some(((ft, fs), (rt, rs))) = radar(front).zip(radar(rear)) {
-                if ft == rt {
-                    // Prefer the latest observation of this radar ID over an older drawing.
-                    let drop = if fs >= rs { rear } else { front };
-                    let retired = slots[drop].take().unwrap().vid;
-                    if self.alongside[side].is_some_and(|motion| motion.vid() == retired) {
-                        self.alongside[side] = None;
-                    }
-                    let state = &mut self.state.sides[side];
-                    let owns = |key: Identity| key.0 == i128::from(retired);
-                    if state.front.as_ref().is_some_and(|track| owns(track.key)) {
-                        state.front = None;
-                    }
-                    if state.rear.as_ref().is_some_and(|track| owns(track.key)) {
-                        state.rear = None;
-                    }
-                    if state.flow.rear.as_ref().is_some_and(|drawn| {
-                        matches!(drawn.key, Some(side_flow::Key::Radar(key)) if owns(key))
-                    }) {
-                        state.flow.rear = None;
-                    }
-                    if continuous[side] == Some(drop) {
-                        continuous[side] = None;
-                    }
-                }
-            }
-        }
-        for (side, active) in continuous.iter_mut().enumerate() {
-            if let Some(joined) = self.joins[side].update(input.now, side, slots) {
-                *active = Some(joined);
-            }
-        }
-        continuous
-    }
-
 }
 
 impl RearState {

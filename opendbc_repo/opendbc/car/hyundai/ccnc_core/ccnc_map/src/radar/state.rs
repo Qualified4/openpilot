@@ -246,11 +246,6 @@ impl MapState {
         }
     }
 
-    /// The world map uses the radar's observation and wall stages with its own slot selector.
-    pub(crate) fn for_observation() -> Self {
-        Self { selection_history: false, ..Self::new() }
-    }
-
     pub fn frame(&self) -> Frame {
         Frame {
             px: self.pose.0,

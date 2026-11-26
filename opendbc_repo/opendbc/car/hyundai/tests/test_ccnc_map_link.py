@@ -17,11 +17,12 @@ TICK = NS // 20
 STALE = 250_000_000
 
 
-def packet(stamp, *, generation=1, valid=True, occupied=True):
+def packet(stamp, *, generation=1, valid=True, occupied=True, status=0):
   event = messaging.new_message("customReserved3", logMonoTime=stamp, valid=valid)
   payload = event.customReserved3
   payload.radarLogMonoTime = stamp
   payload.generation = generation
+  payload.status = status
   payload.valid = valid
   slots = payload.init("slots", 5)
   if occupied:
@@ -36,6 +37,19 @@ def test_fresh_message_uses_process():
   values = {}
   core.apply_cmap(values, packet(NS))
   assert (values["FF_DETECT"], values["FF_DISTANCE"], values["FF_LATERAL"]) == (4, 16., -1.25)
+
+
+def test_cmap_bsd_box_yields_to_a_confirmed_rear_vehicle():
+  core = ccnc_core_loader.load()
+  with log.Event.from_bytes(packet(NS, status=0x30)) as reader:
+    event = reader.as_builder()
+  slot = event.customReserved3.slots[4]
+  slot.present, slot.vid, slot.distance, slot.lateral = True, 9, -5., -3.
+  slot.detect, slot.kind, slot.kindConfirmed = 2, 2, True
+  values = {}
+  core.apply_cmap(values, event.to_bytes())
+  assert (values["LR_DETECT"], values["LR_DETECT_DISTANCE"], values["LR_DETECT_LATERAL"]) == (2, 8., 2.8)
+  assert (values["RR_DETECT"], values["RR_DETECT_DISTANCE"], values["RR_DETECT_LATERAL"]) == (6, 4., 3.)
 
 
 def test_stale_after_0_25s_uses_mode0():
@@ -120,7 +134,7 @@ def test_extended_display_off_byte_identical(display):  # noqa: F811
   params.update(CcncExtendedDisplay=False, CcncPosDisplayMode=1)
   templates(cs)
   expected = dict(send())
-  cs.ccnc_map_bytes = packet(NS), NS
+  cs.ccnc_map_bytes = packet(NS, status=0x30), NS
   actual = dict(send())
   for name in ("ADRV_0x161", "CCNC_0x162"):
     baseline, candidate = CANPacker("hyundai_canfd_generated"), CANPacker("hyundai_canfd_generated")
@@ -186,24 +200,21 @@ def test_same_message_is_decoded_once():
   assert not link.use_process(NS + STALE + 2, raw, NS + STALE + 2), "recovering after the gap"
 
 
-def test_bad_param_value_is_off(display, monkeypatch, tmp_path):  # noqa: F811
+def test_default_and_invalid_pos_mode_use_map(display, monkeypatch, tmp_path):  # noqa: F811
   options, cs, send = display
   options["CcncExtendedDisplay"] = True  # Route the fixture through the real display options.
   templates(cs)
   params = Params(str(tmp_path / "map-link-params"))
   params.put_bool("CcncExtendedDisplay", True)
-  params.put("CcncPosDisplayMode", 1)
   for key in ("LaneLineCheck", "CcncClusterDisplay", "CcncTrafficBackground", "MyDrivingMode", "HDPuse"):
     params.put(key, params.get_default_value(key))
   monkeypatch.setattr(canfd, "Params", lambda: params)
   cs.ccnc_map_bytes = packet(NS), NS
   assert "CCNC_0x162" in dict(send(0))
-  # The map is always on with display A.
   assert canfd.ccnc_extension.state.ccnc_map_process
-  assert canfd.ccnc_extension.state.pos_display_mode == 1
+  assert canfd.ccnc_extension.state.pos_display_mode == 0
   with open(params.get_param_path("CcncPosDisplayMode"), "wb") as out:
     out.write(b"invalid")
   assert "CCNC_0x162" in dict(send(100))
-  assert not canfd.ccnc_extension.state.ccnc_map_process
-  assert canfd.ccnc_extension.state.pos_display_mode == 0
+  assert canfd.ccnc_extension.state.ccnc_map_process
   assert canfd.ccnc_extension.state.pos_display_mode == 0

@@ -32,7 +32,7 @@ pub(super) struct Tracker {
     pub objects: Vec<TrackedObject>,
     last_id: u64,
     camera_history: VecDeque<(u64, Vec<Track>)>,
-    kinds: Kinds,
+    pub(super) kinds: Kinds,
 }
 
 impl Tracker {

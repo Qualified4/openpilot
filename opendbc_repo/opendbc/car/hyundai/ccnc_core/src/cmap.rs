@@ -163,7 +163,7 @@ pub(crate) fn apply_slots(values: &Bound<'_, PyDict>, map: &MapOut) -> PyResult<
         .zip(map.slots)
         .enumerate()
     {
-        let (x, y, code) = slot.map_or((0., 0., 0), |slot| {
+        let (x, y, code) = if let Some(slot) = slot {
             // The map has already computed Display A's lateral position.
             let signed_y = f64::from(slot.lateral);
             let y = match index {
@@ -178,7 +178,15 @@ pub(crate) fn apply_slots(values: &Bound<'_, PyDict>, map: &MapOut) -> PyResult<
             };
             let code = detect_code(&slot);
             ((0.8 * x).clamp(0., max), y, code)
-        });
+        } else {
+            // The existing rear warning is an 8 m white box. Keep it separate from tracked vehicle IDs.
+            let warning = match index {
+                3 => map.status & cmap::STATUS_BSD_LEFT != 0,
+                4 => map.status & cmap::STATUS_BSD_RIGHT != 0,
+                _ => false,
+            };
+            if warning { (8., 2.8, 2) } else { (0., 0., 0) }
+        };
         values.set_item(distance, x)?;
         values.set_item(lateral, y)?;
         values.set_item(detect, code)?;

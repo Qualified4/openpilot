@@ -1,0 +1,33 @@
+--- a/EN-CCNC-extended-display-(HDA1).md
++++ b/EN-CCNC-extended-display-(HDA1).md
+@@ -29,2 +29,8 @@
+ <!-- CARROT:REVIEW reviewed-for="" -->
++
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++When enabled on a supported vehicle, a dedicated radar map process tracks traffic ahead and alongside for the cluster. The cluster keeps the confirmed vehicle type when the same vehicle moves from a front side slot to a rear slot. The cluster falls back to the existing display if map messages are late or stop.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CcncExtendedDisplay -->
+--- a/KO-CCNC-확장-표시-(HDA1).md
++++ b/KO-CCNC-확장-표시-(HDA1).md
+@@ -29,2 +29,8 @@
+ <!-- CARROT:REVIEW reviewed-for="" -->
++
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++켜면 지원 차량의 전방과 양옆 차량을 별도 레이더 지도 프로세스가 추적해 계기판에 표시합니다. 같은 차량이 옆 앞 칸에서 뒤 칸으로 이동할 때 확인된 차종을 이어서 표시합니다. 지도 메시지가 늦거나 끊기면 기존 표시로 복귀합니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CcncExtendedDisplay -->
+--- a/ZH-CCNC-扩展显示-(HDA1).md
++++ b/ZH-CCNC-扩展显示-(HDA1).md
+@@ -29,2 +29,8 @@
+ <!-- CARROT:REVIEW reviewed-for="" -->
++
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++在受支持的车辆上开启后，独立的雷达地图进程跟踪前方和两侧车辆并在仪表上显示。同一车辆从侧前方移至侧后方时，仪表保留已确认的车辆类型。地图消息延迟或停止时，恢复原有显示。
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CcncExtendedDisplay -->

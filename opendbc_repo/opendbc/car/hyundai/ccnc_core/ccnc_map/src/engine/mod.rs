@@ -1,4 +1,4 @@
-//! Offline/shadow object tracking. The production map pipeline does not call this module.
+//! Display-only object tracking and slot selection.
 
 mod object;
 mod road_frame;
@@ -68,13 +68,15 @@ pub struct EngineSlot {
     pub kind: VehicleKind,
     pub existence_p: f64,
     pub last_track_id: Option<u64>,
+    pub lane_u: f64,
+    pub camera_seen: bool,
 }
 
 #[derive(Debug, Default)]
-pub struct EngineOutput {
+pub struct EngineOutput<'a> {
     /// FF, LF, RF, LR, RR.
     pub slots: [Option<EngineSlot>; 5],
-    pub objects: Vec<TrackedObject>,
+    pub objects: &'a [TrackedObject],
     pub blind: [bool; 2],
 }
 
@@ -90,6 +92,18 @@ pub struct MapEngine {
 }
 
 impl MapEngine {
+    pub fn objects(&self) -> &[TrackedObject] {
+        &self.tracker.objects
+    }
+
+    pub(crate) fn kind_frame(&mut self, time_ns: u64) {
+        self.tracker.kinds.front_frame(time_ns);
+    }
+
+    pub(crate) fn kind_wanted(&mut self, vid: u32, now: f64) -> bool {
+        self.tracker.kinds.wanted(vid, now)
+    }
+
     /// Associate classifier answers with the radar objects at their capture time.
     pub fn observe_front_kinds(
         &mut self,
@@ -105,7 +119,7 @@ impl MapEngine {
         self.tracker.front_boxes(capture, camera, boxes);
     }
 
-    pub fn step(&mut self, input: EngineInput<'_>) -> EngineOutput {
+    pub fn step(&mut self, input: EngineInput<'_>) -> EngineOutput<'_> {
         let now = input.time;
         let speed = input.speed.max(0.);
         if !now.is_finite() || !input.speed.is_finite() || self.time.is_some_and(|t| t >= now) {
@@ -187,7 +201,7 @@ impl MapEngine {
         self.time = Some(now);
         EngineOutput {
             slots,
-            objects: self.tracker.objects.clone(),
+            objects: &self.tracker.objects,
             blind: input.blind,
         }
     }

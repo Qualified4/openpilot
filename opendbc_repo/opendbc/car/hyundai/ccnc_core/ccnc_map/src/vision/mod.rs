@@ -84,6 +84,11 @@ pub struct Box {
     pub class_id: u8,
 }
 
+pub struct FrontBox {
+    pub detection: Box,
+    pub cut: bool,
+}
+
 /// One CcncVision frame result.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
@@ -185,7 +190,7 @@ pub struct Vision {
     recent: std::collections::VecDeque<(u64, Side, Vec<Cand>)>,
 }
 
-fn calib_of(values: &[f32; 7]) -> Option<Calib> {
+pub(crate) fn calib_of(values: &[f32; 7]) -> Option<Calib> {
     values.iter().all(|v| v.is_finite()).then(|| {
         let v = values.map(f64::from);
         Calib {

@@ -137,6 +137,15 @@ fn stale_inputs_mark_invalid() {
 }
 
 #[test]
+fn a_blind_spot_warning_round_trips_without_creating_a_car() {
+    let (_, _, map) = pipeline_fixture();
+    let wire = decode(&encode(&map)).unwrap();
+    assert_eq!(wire.status & (ccnc_map::cmap::STATUS_BSD_LEFT | ccnc_map::cmap::STATUS_BSD_RIGHT),
+               ccnc_map::cmap::STATUS_BSD_LEFT);
+    assert_eq!(wire.slots, [None; 5]);
+}
+
+#[test]
 fn generation_increments_on_reset() {
     let (mut pipe, mut input, before) = pipeline_fixture();
     let mut frame = Vec::new();

@@ -57,6 +57,7 @@ def events():
   cs = log.Event.new_message(logMonoTime=1_000_000_000, valid=True)
   state = cs.init("carState")
   state.canValid, state.vEgo, state.gearShifter = True, 10.0, "drive"
+  state.leftBlindspot = True
   md = log.Event.new_message(logMonoTime=1_025_000_000, valid=True)
   model = md.init("modelV2")
   model.laneLineProbs = [1.0] * 4

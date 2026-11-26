@@ -94,8 +94,7 @@ def test_enable_ccnc_mapd_conditions(tmp_path, monkeypatch):
       params.put(key, value)
     return params
 
-  options = dict(CcncExtendedDisplay=True, CcncPosDisplayMode=1,
-                 CarParamsPersistent=cp.to_bytes())
+  options = {"CcncExtendedDisplay": True, "CarParamsPersistent": cp.to_bytes()}
   params = make_params(options)
   failed = tmp_path / "mapd.failed"
   monkeypatch.setattr(process_config, "CCNC_MAPD_FAILED", failed)
@@ -103,8 +102,9 @@ def test_enable_ccnc_mapd_conditions(tmp_path, monkeypatch):
   assert enabled(True, params, cp)
   assert enabled(True, params, car.CarParams.new_message())
   assert not enabled(False, params, cp)
-  for name in ("CcncExtendedDisplay", "CcncPosDisplayMode", "CarParamsPersistent"):
+  for name in ("CcncExtendedDisplay", "CarParamsPersistent"):
     assert not enabled(True, make_params({key: value for key, value in options.items() if key != name}), cp)
+  assert enabled(True, make_params(dict(options, CcncPosDisplayMode=1)), cp)
   assert not enabled(True, make_params(dict(options, CcncPosDisplayMode=2)), cp)
   for name, value in (("flags", int(cp.flags | HyundaiFlags.CANFD_HDA2)), ("extFlags", 0), ("brand", "toyota")):
     with car.CarParams.from_bytes(options["CarParamsPersistent"]) as persistent:

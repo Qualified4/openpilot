@@ -197,6 +197,7 @@ def test_enable_ccnc_visiond_conditions(tmp_path, monkeypatch):
   cp = car.CarParams.new_message()
   # Its only reader is ccnc_mapd: it runs exactly when the map process does.
   assert enabled(True, make_params(), cp)
+  assert enabled(True, make_params(pos_mode=0), cp)
   assert enabled(True, make_params(), hda1)
   assert not enabled(False, make_params(), cp)
   assert not enabled(True, make_params(pos_mode=2), cp)

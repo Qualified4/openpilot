@@ -179,7 +179,7 @@ fn write_tick(
     out: &mut impl Write,
     stamp: u64,
     valid: bool,
-    output: EngineOutput,
+    output: EngineOutput<'_>,
 ) -> io::Result<()> {
     write!(out, "{stamp}\t{}", u8::from(valid))?;
     for slot in output.slots {
@@ -274,8 +274,7 @@ fn replay(path: &Path, out: &mut impl Write) -> io::Result<()> {
             }
             RADAR_STATE => {
                 lead = event
-                    .display_leads()
-                    .1
+                    .primary_display_lead()
                     .filter(|_| event.valid)
                     .map(|p| (secs(stamp), p))
             }

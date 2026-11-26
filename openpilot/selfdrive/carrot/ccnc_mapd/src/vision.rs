@@ -2,21 +2,32 @@
 
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use ccnc_map::vision::{Box, Calib, Frame, FrameView, Geometry, KindResult, KindView, Side};
+use ccnc_map::pipeline::Pipeline;
+use ccnc_map::vision::{Box, Calib, Frame, FrameView, FrontBox, Geometry, KindResult, KindView, Side};
 use ccnc_vision_msg::{Status, View};
 
 /// What a CcncVision Event holds for the map.
 pub struct Message {
     /// The Event's logMonoTime.
     pub stamp: u64,
-    /// A wide camera frame result. Status messages and road camera frames (their boxes are only classified) have none.
+    /// A wide camera frame result.
     pub frame: Option<Frame>,
-    /// The frame time of a road camera frame (its boxes go to the classifier; the map only counts it).
+    /// The frame time of a road camera frame.
     pub front_frame: Option<u64>,
+    front_boxes: Vec<FrontBox>,
     /// Classifier answers for boxes of earlier frames.
     pub kinds: Vec<KindResult>,
     /// rpyCalib, wideFromDeviceEuler, height of the message.
     pub calibration: [f32; 7],
+}
+
+impl Message {
+    pub fn observe_front(&self, pipeline: &mut Pipeline) {
+        pipeline.kinds(self.stamp, &self.kinds, &self.calibration);
+        if let Some(time) = self.front_frame {
+            pipeline.front_frame(time, &self.calibration, &self.front_boxes);
+        }
+    }
 }
 
 /// A CcncVision Event. A frame's time is `frameMonoTime`, on liveTracks' clock; `timestampSof` (the camera's
@@ -33,15 +44,16 @@ pub fn message(bytes: &[u8]) -> Option<Message> {
         (Status::Frame, View::Full) => Some(FrameView::Raw),
         _ => None,
     };
+    let detection = |b: &ccnc_vision_msg::VisionBox| Box {
+        xyxy: b.xyxy.map(f64::from),
+        confidence: f64::from(b.confidence),
+        class_id: b.class_id,
+    };
     let frame = view.map(|view| Frame {
         time_ns: out.frame_mono_time,
         view,
         calibration,
-        boxes: out
-            .boxes
-            .iter()
-            .map(|b| Box { xyxy: b.xyxy.map(f64::from), confidence: f64::from(b.confidence), class_id: b.class_id })
-            .collect(),
+        boxes: out.boxes.iter().map(detection).collect(),
     });
     let kinds = out
         .kinds
@@ -57,7 +69,12 @@ pub fn message(bytes: &[u8]) -> Option<Message> {
         })
         .collect();
     let front_frame = (out.status == Status::Frame && out.view == View::CropFront).then_some(out.frame_mono_time);
-    Some(Message { stamp, frame, front_frame, kinds, calibration })
+    let front_boxes = if front_frame.is_some() {
+        out.boxes.iter().map(|b| FrontBox { detection: detection(b), cut: b.cut }).collect()
+    } else {
+        Vec::new()
+    };
+    Some(Message { stamp, frame, front_frame, front_boxes, kinds, calibration })
 }
 
 /// A wide camera frame result with the Event's logMonoTime.

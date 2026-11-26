@@ -123,9 +123,9 @@ def _hda1_cluster_display(params: Params, CP: car.CarParams) -> bool:
     return False
 
 def enable_ccnc_mapd(started: bool, params: Params, CP: car.CarParams) -> bool:
-  if not started or params.get("CcncPosDisplayMode") != 1 or os.path.exists(CCNC_MAPD_FAILED):
+  if not started or os.path.exists(CCNC_MAPD_FAILED):
     return False
-  return _hda1_cluster_display(params, CP)
+  return _hda1_cluster_display(params, CP) and params.get("CcncPosDisplayMode", return_default=True) in (0, 1)
 
 CCNC_VISIOND_FAILED = "/dev/shm/ccnc_visiond.failed"
 

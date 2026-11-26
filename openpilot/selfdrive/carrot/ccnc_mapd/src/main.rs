@@ -93,7 +93,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         for (_, bytes) in input.read() {
             if let Some(message) = vision::message(&bytes) {
-                pipeline.kinds(message.stamp, message.front_frame, &message.kinds, &message.calibration);
+                message.observe_front(&mut pipeline);
                 let Some(frame) = message.frame else { continue };
                 let stamp = message.stamp;
                 match pipeline.vision(stamp, &frame) {

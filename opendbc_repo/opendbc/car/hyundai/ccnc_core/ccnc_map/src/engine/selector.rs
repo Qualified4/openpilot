@@ -136,7 +136,7 @@ pub(super) fn select(
                 cost(now, a, a.s, occupied[0]).total_cmp(&cost(now, b, b.s, occupied[0]))
             })
         })
-        .map(|o| slot(frame, o));
+        .map(|o| slot(frame, o, now));
     let front_within_range = |o: &TrackedObject| {
         o.s <= SIDE_FRONT_LIMIT && frame.cartesian(o.s, o.d).0 <= SIDE_FRONT_LIMIT
     };
@@ -210,8 +210,8 @@ pub(super) fn select(
             // Promote the farther vehicle only when the same assignment places the nearer one.
             (front_default, behind)
         };
-        slots[side + 1] = front.map(|o| slot(frame, o));
-        slots[side + 3] = rear.map(|o| slot(frame, o));
+        slots[side + 1] = front.map(|o| slot(frame, o, now));
+        slots[side + 3] = rear.map(|o| slot(frame, o, now));
     }
     for o in objects
         .iter_mut()
@@ -235,7 +235,7 @@ fn update_lane(o: &mut TrackedObject) {
     }
 }
 
-fn slot(frame: &RoadFrame, o: &TrackedObject) -> EngineSlot {
+fn slot(frame: &RoadFrame, o: &TrackedObject, now: f64) -> EngineSlot {
     let (x, y) = frame.cartesian(o.s, o.d);
     EngineSlot {
         obj_id: o.obj_id,
@@ -247,5 +247,7 @@ fn slot(frame: &RoadFrame, o: &TrackedObject) -> EngineSlot {
         kind: o.kind,
         existence_p: o.existence_p(),
         last_track_id: o.evidence.last_track_id,
+        lane_u: o.lane_u,
+        camera_seen: vision(now, o),
     }
 }

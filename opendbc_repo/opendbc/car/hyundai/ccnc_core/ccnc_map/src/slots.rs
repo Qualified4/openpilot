@@ -449,8 +449,6 @@ pub struct Assigner {
     edge_hidden: Vec<(f64, f64, f64)>,
     /// `set_model_lane`.
     model_lane: Option<ModelLane>,
-    /// Last shown lateral kept only across consecutive reports of the same opening side car.
-    side_lateral: [Option<(u32, f64, f32)>; 2],
 }
 
 impl Default for Assigner {
@@ -469,7 +467,6 @@ impl Default for Assigner {
             ff_seen: None,
             edge_hidden: Vec::new(),
             model_lane: None,
-            side_lateral: [None; 2],
         }
     }
 }
@@ -515,7 +512,8 @@ impl Assigner {
         self.update_with(now, vehicles, world, lead.map(|(x, y, _)| (x, y)), lead.map(|(_, _, v)| v), None, None)
     }
 
-    pub(crate) fn update_display_lead(
+    #[cfg(test)]
+    fn update_display_lead(
         &mut self, now: f64, vehicles: &[Vehicle], world: &World, lead: Option<DisplayLead>,
         lead_one: Option<(DisplayLead, bool)>,
     ) -> [Option<Slot>; 5] {
@@ -547,7 +545,6 @@ impl Assigner {
             self.side_last = [None; 2];
             self.clear_split();
             self.edge_hidden.clear();
-            self.side_lateral = [None; 2];
         }
         if !now.is_finite() || !world.accepts_radar() || !world.u_ego().is_finite() {
             self.ff_lead = None;
@@ -1233,29 +1230,6 @@ impl Assigner {
         split
     }
 
-    /// Limit lateral display jumps from a moving side radar return on a straight road. 47f-14 at 34 s:
-    /// one radar ID and vid receded smoothly, but its measured lateral moved 1.6 m and partly bounced back.
-    /// Apply the limit after slot selection and fusion, so it cannot alter range, lane assignment or visibility.
-    pub(crate) fn smooth_opening_sides(&mut self, now: f64, straight: bool, slots: &mut [Option<Slot>; 5]) {
-        const MAX_LATERAL_RATE: f64 = 2.0;
-        for (current, previous) in slots[1..3].iter_mut().zip(&mut self.side_lateral) {
-            let Some(slot) = current.as_mut().filter(|s| {
-                straight && s.vid != 0 && s.vision != VISION_ONLY && s.distance >= 8. && s.v_rel > 2.
-            }) else {
-                *previous = None;
-                continue;
-            };
-            if let Some((vid, at, lateral)) = *previous {
-                let dt = now - at;
-                if slot.vid == vid && dt > 0. && dt <= OBSERVATION_MAX_AGE {
-                    let limit = (MAX_LATERAL_RATE * dt) as f32;
-                    slot.lateral = lateral + (slot.lateral - lateral).clamp(-limit, limit);
-                }
-            }
-            *previous = Some((slot.vid, now, slot.lateral));
-        }
-    }
-
     fn clear_split(&mut self) {
         self.runner_up = [None; 2];
         self.side_occupancy = Default::default();
@@ -1373,30 +1347,6 @@ mod review_tests {
     }
 
     #[test]
-    fn a_receding_radar_car_on_a_straight_road_limits_only_lateral_jump() {
-        let mut assigner = Assigner::default();
-        let base = Slot {
-            vid: 7325, distance: 20., lateral: -3.05, v_rel: 6.,
-            detect: 1, lane_coord_rel: 1., kind: 0, kind_confirmed: false, kind_wanted: false, vision: VISION_NONE,
-        };
-        let mut slots = [None, None, Some(base), None, None];
-        assigner.smooth_opening_sides(33., true, &mut slots);
-        let measured = Slot { distance: 20.3, lateral: -3.35, ..base };
-        slots[2] = Some(measured);
-        assigner.smooth_opening_sides(33.05, true, &mut slots);
-        assert_eq!(slots[2], Some(Slot { lateral: -3.05 - 0.1, ..measured }));
-
-        let new_vid = Slot { vid: 7326, ..measured };
-        slots[2] = Some(new_vid);
-        assigner.smooth_opening_sides(33.1, true, &mut slots);
-        assert_eq!(slots[2], Some(new_vid), "another car must start at its own lateral");
-
-        slots[2] = Some(Slot { lateral: -4.2, ..new_vid });
-        assigner.smooth_opening_sides(33.15, false, &mut slots);
-        assert_eq!(slots[2].unwrap().lateral, -4.2, "on turns and lane changes the drawing follows the input");
-    }
-
-    #[test]
     fn a_weak_line_can_hold_a_car_but_cannot_move_it_into_ff() {
         let lane = ModelLane::with_probability(vec![(0., 1.7), (80., 1.7)], vec![(0., -1.7), (80., -1.7)], 0.49);
         assert!(!lane.contains(20., 0.));
@@ -1437,7 +1387,7 @@ mod review_tests {
     fn stationary_lead(track: u32, point: (f64, f64), ego_speed: f64) -> DisplayLead {
         DisplayLead {
             motion: (point.0, point.1, -ego_speed), measured_track: Some(track),
-            model_prob: 0.98, confirmed_track: Some(i128::from(track)),
+            model_prob: 0.98,
         }
     }
 

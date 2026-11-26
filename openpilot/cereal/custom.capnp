@@ -228,7 +228,7 @@ struct CarrotNaviMedia @0xf35cc4560bbf6ec2 {
 struct CustomReserved3 @0xda96579883444c35 {
   radarLogMonoTime @0 :UInt64;
   generation @1 :UInt32;
-  status @2 :UInt8;  # bits: frozen, no live pose, map unknown, blinker
+  status @2 :UInt8;  # bits: frozen, no live pose, map unknown, blinker, left BSD, right BSD
   egoLaneCoord @3 :Float32;
   slots @4 :List(Slot);  # FF, LF, RF, LR, RR.
   valid @5 :Bool;

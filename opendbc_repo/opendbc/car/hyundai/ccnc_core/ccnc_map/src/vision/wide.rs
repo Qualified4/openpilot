@@ -1,6 +1,6 @@
 //! A wide camera frame through det_rules: boxes to candidates with the frame's calibration, then the side's rules.
 
-use super::{Context, Frame, Side};
+use super::{Context, Frame, FrameView, Side};
 use det_rules::{Calib, Cand, DetRules, SideOutput, View, WideDet, WideFrame, WideGeometry};
 
 /// det_rules' raw and side views, band masks and camera for one set of calibration angles.
@@ -27,17 +27,26 @@ impl Geometry {
     }
 
     /// The height takes no part in the views and masks: only the angles must match.
-    pub(super) fn serves(&self, calib: &Calib) -> bool {
+    pub(crate) fn serves(&self, calib: &Calib) -> bool {
         self.angles == angles(calib)
     }
 
     pub(super) fn raw_candidates(&mut self, frame: &Frame, calib: &Calib) -> Vec<Cand> {
+        self.candidates(frame, calib)
+    }
+
+    pub(crate) fn candidates(&mut self, frame: &Frame, calib: &Calib) -> Vec<Cand> {
         self.wide.cam.h = calib.height;
+        let view = match frame.view {
+            FrameView::Raw => View::Raw,
+            FrameView::Side(Side::Left) => View::SideL,
+            FrameView::Side(Side::Right) => View::SideR,
+        };
         let detections: Vec<WideDet> = frame
             .boxes
             .iter()
             .map(|b| WideDet {
-                view: View::Raw,
+                view,
                 bbox: b.xyxy,
                 score: b.confidence,
                 class: i32::from(b.class_id),
@@ -55,22 +64,7 @@ impl Geometry {
         context: &Context,
         raw_cands: &[Cand],
     ) -> (Vec<Cand>, SideOutput) {
-        self.wide.cam.h = calib.height;
-        let view = match side {
-            Side::Left => View::SideL,
-            Side::Right => View::SideR,
-        };
-        let detections: Vec<WideDet> = frame
-            .boxes
-            .iter()
-            .map(|b| WideDet {
-                view,
-                bbox: b.xyxy,
-                score: b.confidence,
-                class: i32::from(b.class_id),
-            })
-            .collect();
-        let mut cands = self.wide.candidates(&detections);
+        let mut cands = self.candidates(frame, calib);
         if !raw_cands.is_empty() {
             cands.extend_from_slice(raw_cands);
         }

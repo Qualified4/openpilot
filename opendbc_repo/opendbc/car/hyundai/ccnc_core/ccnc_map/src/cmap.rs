@@ -13,6 +13,10 @@ const KIND_CONFIRMED_BIT: usize = 112;
 const SLOT_PRESENT_BIT: usize = 113;
 const KIND_WANTED_BIT: usize = 114;
 
+/// Rear warning indicators use status bits independently of the tracked vehicle slots.
+pub const STATUS_BSD_LEFT: u8 = 1 << 4;
+pub const STATUS_BSD_RIGHT: u8 = 1 << 5;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapOut {
     pub radar_log_mono_time: u64,
