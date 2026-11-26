@@ -192,8 +192,9 @@ impl Flow {
     pub(super) fn render(
         &mut self,
         k: &Consts,
-        bsd_join_limit: Option<f64>,
+        measured_handoff_limit: Option<f64>,
         measured_front: bool,
+        observed_rear: bool,
         slots: &mut SideSlots,
         side: usize,
         now: f64,
@@ -219,8 +220,9 @@ impl Flow {
         });
         let (front, rear) = self.update(
             k,
-            bsd_join_limit,
+            measured_handoff_limit,
             measured_front,
+            observed_rear,
             now,
             dt,
             candidate,
@@ -249,8 +251,9 @@ impl Flow {
     fn update(
         &mut self,
         k: &Consts,
-        bsd_join_limit: Option<f64>,
+        measured_handoff_limit: Option<f64>,
         measured_front: bool,
+        observed_rear: bool,
         now: f64,
         dt: f64,
         candidate: Option<Candidate>,
@@ -275,6 +278,8 @@ impl Flow {
             return Ok((None, None));
         }
         let eligible_bsd = bsd || self.bsd_off.is_some_and(|off| now - off < k.hold);
+        let map_context = measured_handoff_limit.is_some();
+        let bsd_admits = eligible_bsd && !map_context;
 
         for drawing in [&mut self.front, &mut self.rear] {
             let Some(obj) = drawing else { continue };
@@ -297,13 +302,12 @@ impl Flow {
             }
         }
         let beyond_handoff = |front: Candidate, rear: &Drawing| {
-            measured_front && bsd_join_limit.is_some_and(|limit| front.x.value() - rear.x.value() > limit)
+            measured_front && measured_handoff_limit.is_some_and(|limit| front.x.value() - rear.x.value() > limit)
         };
         if let Some(front) = candidate.filter(|front| self.rear.as_ref().is_some_and(|rear| {
             Some(front.key) == rear.key && beyond_handoff(*front, rear)
         })) {
             // The remeasured front car cannot be at the stale rear position.
-            // An active BSD signal can still start a separate anonymous drawing.
             self.rear = None;
             self.front = Some(Drawing::front(front));
             self.after_pass = false;
@@ -319,7 +323,7 @@ impl Flow {
             let same = candidate.is_some_and(|candidate| Some(candidate.key) == front.key);
             if front.phase == Phase::ToRear && same {
                 front.phase = Phase::JoinFront;
-            } else if front.phase == Phase::ToRear && !f_owned && !eligible_bsd && !front.display_pass.unwrap_or(false)
+            } else if front.phase == Phase::ToRear && !f_owned && !bsd_admits && !front.display_pass.unwrap_or(false)
             {
                 self.front = None;
             } else if front.phase != Phase::ToRear && !same {
@@ -334,7 +338,7 @@ impl Flow {
             }
         }
 
-        let spawned = self.rear.is_none() && bsd;
+        let spawned = self.rear.is_none() && bsd && !map_context;
         if spawned {
             self.rear = Some(Drawing::new(
                 None,
@@ -348,8 +352,8 @@ impl Flow {
             if let Some(candidate) = candidate.filter(|_| self.front.is_none()) {
                 if rear.phase != Phase::ToFront
                     && (Some(candidate.key) == rear.key
-                        || candidate.x.value() <= bsd_join_limit.unwrap_or(k.gap)
-                            && eligible_bsd && !self.after_pass && !beyond_handoff(candidate, rear))
+                        || candidate.x.value() <= measured_handoff_limit.unwrap_or(k.gap)
+                            && bsd_admits && !self.after_pass && !beyond_handoff(candidate, rear))
                 {
                     rear.phase = Phase::ToFront;
                     rear.key = Some(candidate.key);
@@ -378,11 +382,16 @@ impl Flow {
                     self.events.push("rear_to_front");
                     return Ok((self.front.as_ref(), None));
                 }
-            } else if let Some(event) =
-                update_rear(k, rear, motion, lateral, now, dt, eligible_bsd, bsd, changing, spawned)?
-            {
-                self.rear = None;
-                self.events.push(event);
+            } else {
+                // In the map, BSD assists only an existing car as its rear
+                // drawing disappears. The BSD flag itself is sent separately.
+                let assist = !map_context || (!observed_rear && matches!(rear.phase, Phase::Virtual | Phase::Exit));
+                if let Some(event) = update_rear(k, rear, motion, lateral, now, dt,
+                    eligible_bsd && assist, bsd && assist, changing, spawned)?
+                {
+                    self.rear = None;
+                    self.events.push(event);
+                }
             }
         }
 
@@ -559,11 +568,20 @@ mod tests {
                 ..Flow::default()
             };
             let (front, rear) = flow.update(
-                &Consts::default(), Some(4.8), true, 2., 0.05, Some(candidate), true,
+                &Consts::default(), Some(4.8), true, false, 2., 0.05, Some(candidate), true,
                 lateral, [None; 2], None, None, false,
             ).unwrap();
             assert_eq!(front.map(|drawing| (drawing.key, drawing.x.value())), Some((Some(key), 4.)));
-            assert!(rear.is_some_and(|drawing| drawing.key.is_none()));
+            assert!(rear.is_none() || rear.is_some_and(|drawing| drawing.key.is_none()));
         }
+    }
+
+    #[test]
+    fn a_blind_spot_signal_alone_does_not_add_a_map_car() {
+        let (front, rear) = Flow::default().update(
+            &Consts::default(), Some(4.8), false, false, 2., 0.05, None, true,
+            Number::Float(2.8), [None; 2], None, None, false,
+        ).map(|(front, rear)| (front.is_some(), rear.is_some())).unwrap();
+        assert!(!front && !rear);
     }
 }

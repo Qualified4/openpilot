@@ -9,7 +9,8 @@ pub use lane_map::{near_heading, LaneMap, MODEL_GRID};
 pub use pose::{Pose, PoseAt};
 
 use crate::{display::ModelPath, input::model_v2::Model, radar::MapState};
-use lane_map::{observed_width, CameraLanes, RoadAhead};
+use lane_map::{observed_width, CameraLanes};
+pub(crate) use lane_map::RoadAhead;
 
 pub const RADAR_LAG: f64 = 0.2;
 pub const STATUS_FROZEN: u8 = 1;
@@ -142,6 +143,9 @@ impl World {
             self.lane_change.frozen(),
             self.no_live_pose,
             walls,
+            self.road_ahead.as_ref().filter(|road| (0. ..INPUT_GAP).contains(&(t - road.stamp))
+                && !road.changing && !self.blinker && !self.ego_changing()
+                && road.path.bend_weight(self.yaw_at(t).unwrap_or(0.)) > 0.),
         );
         self.camera_lanes = CameraLanes::observe(model, self.pose.at(t), t);
         self.camera_lane_bias = 0.;
@@ -206,6 +210,27 @@ impl World {
 
     pub(crate) fn radar_pose(&self, stamp: f64) -> PoseAt {
         self.pose.at(stamp - self.radar_lag)
+    }
+
+    pub(crate) fn crossing_projection(&self, t: f64) -> Option<&RoadAhead> {
+        if self.lane_change.frozen() || self.pose.speed() <= 2. {
+            return None;
+        }
+        self.road_ahead.as_ref().filter(|road| (t - road.stamp).abs() <= INPUT_GAP
+            && (self.blinker || self.ego_changing() || road.changing))
+    }
+
+    pub(crate) fn path_lateral(&self, t: f64, wx: f32, wy: f32) -> Option<f64> {
+        self.road_ahead.as_ref()
+            .filter(|road| (t - road.stamp).abs() <= INPUT_GAP)
+            .and_then(|road| road.project_row(wx, wy))
+    }
+
+    pub(crate) fn far_lane_coord(&self, t: f64, wx: f32, wy: f32) -> Option<f64> {
+        let point = (f64::from(wx), f64::from(wy));
+        let pose = self.pose.at(t);
+        let (x, _) = pose.to_ego(point.0, point.1);
+        self.lanes.far_coord(pose.s + x, point)
     }
 
     /// Locate a world-space radar point after lateral reflection correction.

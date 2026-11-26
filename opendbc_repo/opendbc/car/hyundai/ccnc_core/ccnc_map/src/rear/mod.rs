@@ -514,7 +514,7 @@ impl WorldRear {
                 detect: Some(Number::Integer(detect)),
             };
         }
-        self.state.update_with_bsd_join_limit(
+        self.state.update_with_measured_handoff_limit(
             &self.constants,
             Input {
                 now,
@@ -532,14 +532,13 @@ impl WorldRear {
             selected,
             proven,
             &mut sides,
-            // BSD alone cannot identify a car beyond the near handoff zone. The
-            // legacy flow uses scaled display units, while that zone is in metres.
+            // The flow uses scaled display units for the measured handoff zone.
             Some(6. * self.constants.scale),
         )?;
 
         for (i, side) in self.state.sides.iter().enumerate() {
-            // Preserve measured rear slots. A live BSD signal supplies its own drawing.
-            if slots[i + 3].is_some() && !input.blind[i] {
+            // A selected rear car takes precedence over a disappearing drawing.
+            if slots[i + 3].is_some() {
                 continue;
             }
             let Some(drawn) = side
@@ -687,17 +686,17 @@ impl RearState {
         proven: [bool; 2],
         slots: &mut RearSlots,
     ) -> Result<()> {
-        self.update_with_bsd_join_limit(k, input, selected, proven, slots, None)
+        self.update_with_measured_handoff_limit(k, input, selected, proven, slots, None)
     }
 
-    fn update_with_bsd_join_limit(
+    fn update_with_measured_handoff_limit(
         &mut self,
         k: &Consts,
         input: Input<'_>,
         selected: [Option<Identity>; 3],
         proven: [bool; 2],
         slots: &mut RearSlots,
-        bsd_join_limit: Option<f64>,
+        measured_handoff_limit: Option<f64>,
     ) -> Result<()> {
         let now = input.now;
         let dt = self.last.map_or(0., |last| now - last);
@@ -767,7 +766,7 @@ impl RearState {
                 selected[i + 1],
                 [selected[0], selected[2 - i]],
                 proven[i],
-                input.blind[i],
+                input.blind[i] && measured_handoff_limit.is_none(),
                 input.lost[i],
                 blocked,
                 dt,
@@ -784,11 +783,15 @@ impl RearState {
                 for (i, slot) in slots.iter_mut().enumerate() {
                     let state = &mut self.sides[i];
                     let motion = state.rear.as_ref().map(|track| track.motion(k, None));
+                    let observed_rear = self.fresh && state.flow.rear.as_ref().is_some_and(|rear| {
+                        matches!(rear.key, Some(side_flow::Key::Radar(key)) if self.points.contains_key(&key.0))
+                    });
                     let dt = if clock_reset { 0. } else { dt };
                     state.flow.render(
                         &flow_configs[i],
-                        bsd_join_limit,
+                        measured_handoff_limit,
                         self.fresh && selected[i + 1].is_some_and(|key| self.points.contains_key(&key.0)),
+                        observed_rear,
                         slot,
                         i,
                         now,

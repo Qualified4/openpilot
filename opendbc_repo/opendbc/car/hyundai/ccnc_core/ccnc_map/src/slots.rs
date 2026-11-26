@@ -24,11 +24,11 @@ const ALONGSIDE_ENTER_M: f64 = 5.0;
 const ALONGSIDE_EXIT_M: f64 = 6.0;
 /// The next car and the near car must be observed together before splitting.
 const ALONGSIDE_CONFIRM_S: f64 = 0.3;
+const ALONGSIDE_ESTABLISHED_PAIR_S: f64 = 0.10;
 const ALONGSIDE_MIN_S: f64 = 1.;
 const ALONGSIDE_RELOCK_S: f64 = 2.;
 const ALONGSIDE_FAR_REPLACEMENT_M: f32 = 40.;
-const ALONGSIDE_OPENING_MPS: f64 = 1.;
-const ALONGSIDE_CLOSING_MPS: f64 = -2.5;
+const ALONGSIDE_SPEED_MPS: f64 = 2.;
 const ALONGSIDE_EASE_S: f64 = 0.35;
 const FF_OUTSIDE_S: f64 = 1.;
 const SIDE_OUTSIDE_S: f64 = 0.25;
@@ -79,10 +79,16 @@ const MODEL_LANE_WIDTH: std::ops::RangeInclusive<f64> = 1.8..=5.;
 const MODEL_LANE_MARGIN: f64 = 0.3;
 const MODEL_LANE_KEEP_PROB: f64 = 0.45;
 const MODEL_LANE_KEEP_X: std::ops::RangeInclusive<f64> = 4. ..=55.;
-const FAR_SIDE_CONFIRM_S: f64 = 0.35;
+pub(crate) const SIDE_FRONT_MAX_M: f64 = 50.;
+const SIDE_FRONT_REENTRY_M: f64 = 48.;
+const SIDE_FRONT_REENTRY_S: f64 = 0.35;
 const NEAR_SIDE_BOUNDARY_M: f64 = 30.;
 const CROSSING_FF_MIN_PROB: f64 = 0.75;
 const CROSSING_FF_MAX_LATERAL_M: f64 = 1.2;
+const CROSSING_ROW_NEAR_M: f64 = 15.;
+const CROSSING_ROW_MID_M: f64 = 35.;
+const CROSSING_ROW_GAP_S: f64 = 0.1;
+const FF_MAX_LATERAL_M: f64 = 1.5 * LANE_WIDTH;
 
 /// Ego's lane by the model's lines of this frame, placed at ego's pose now (lateral positive to the left). A radar car
 /// inside it is drawn in FF and never in LF or RF, whatever lane the world map gives it. The world map's lane coordinate
@@ -184,9 +190,104 @@ impl Observation {
         };
         let fast = f64::from(car.u_slot) - u_ego;
         let r_slot = if fast.is_finite() && !world.ego_changing() { fast } else { r };
+        Self::with_relative_lane(car, pose, x, r, r_slot)
+    }
+
+    fn with_relative_lane(car: &Vehicle, pose: PoseAt, x: f64, r: f64, r_slot: f64) -> Option<Self> {
         let (sin, cos) = pose.heading.sin_cos();
         let speed = cos * f64::from(car.vx) + sin * f64::from(car.vy);
         (r.is_finite() && speed.is_finite()).then_some(Self { x, r, r_slot, speed })
+    }
+}
+
+struct CrossingRow<'a> {
+    path: &'a crate::world::RoadAhead,
+    lead_vid: u32,
+    lead_projected: f64,
+    relative: f64,
+    aligned: bool,
+    middle: Option<f64>,
+}
+
+impl<'a> CrossingRow<'a> {
+    fn observe(
+        now: f64, cars: &[Vehicle], world: &'a World, pose: PoseAt,
+        lead_one: Option<(DisplayLead, bool)>,
+    ) -> Option<Self> {
+        let (lead, settled) = lead_one?;
+        let id = lead.measured_track?;
+        let path = world.crossing_projection(now)?;
+        let (lx, ly, lv) = lead.motion;
+        if !(CROSSING_FF_MIN_PROB..=1.).contains(&lead.model_prob) || ly.abs() > LANE_WIDTH {
+            return None;
+        }
+        let usable = |car: &Vehicle| current(world, now, car.seen_radar)
+            && car.radar_id.is_some() && eligible(car) && !car.oncoming;
+        let anchor = cars.iter().find(|car| car.radar_id == Some(id) && usable(car))?;
+        let (x, y) = pose.to_ego(f64::from(anchor.wx), f64::from(anchor.wy));
+        let Observation { r, speed, .. } = Observation::from_car(anchor, world, pose)?;
+        if !(UNPROVEN_LEAD_ENTRY_MIN_X..=CROSSING_ROW_NEAR_M).contains(&x)
+            || (x - lx).abs() > LEAD_GATE_X || (y - ly).abs() > LEAD_GATE_Y
+            || speed < MOVED || (speed - world.pose.speed() - lv).abs() > LEAD_SPEED_MATCH
+            || r.abs() >= 1.5
+        {
+            return None;
+        }
+        let aligned = settled && y.abs().max(ly.abs()) <= CROSSING_FF_MAX_LATERAL_M;
+        // Before reaching the new lane, both measurements must put the
+        // primary on the same side of ego.
+        if !aligned && (r.abs() < 1. - INNER_RADIUS || r * y >= 0.) {
+            return None;
+        }
+        let lead_projected = path.project_row(anchor.wx, anchor.wy)?;
+        let middle = cars.iter()
+            .filter(|car| usable(car) && car.radar_id != Some(id))
+            .filter_map(|car| {
+                let (x, _) = pose.to_ego(f64::from(car.wx), f64::from(car.wy));
+                if !(CROSSING_ROW_NEAR_M..=CROSSING_ROW_MID_M).contains(&x) {
+                    return None;
+                }
+                path.project_row(car.wx, car.wy).filter(|offset| (offset - lead_projected).abs() <= 0.5 * LANE_WIDTH)
+            })
+            .min_by(|a, b| (a - lead_projected).abs().total_cmp(&(b - lead_projected).abs()));
+        Some(Self { path, lead_vid: anchor.vid, lead_projected, relative: if aligned { -y / LANE_WIDTH } else { r }, aligned, middle })
+    }
+
+    fn relative_lane(&self, car: &Vehicle, x: f64, previous_ff: Option<u32>) -> Option<f64> {
+        if car.vid == self.lead_vid {
+            // Match the display's ego reference to the aligned radar lead.
+            // The world coordinate still tracks the observed lane boundaries.
+            return (self.aligned && (self.middle.is_some() || previous_ff == Some(car.vid))).then_some(self.relative);
+        }
+        if !(CROSSING_ROW_NEAR_M..=CROSSING_ROW_MID_M).contains(&x) || car.u.is_finite() {
+            return None;
+        }
+        let delta = (self.lead_projected - self.path.project_row(car.wx, car.wy)?) / LANE_WIDTH;
+        if delta.abs() > 0.5 {
+            return None;
+        }
+        let r = self.relative + delta;
+        Some(if self.aligned { r } else {
+            self.relative.signum() * (r * self.relative.signum()).clamp(1. - INNER_RADIUS, 1. + INNER_RADIUS)
+        })
+    }
+
+    fn contradicts_far_ff(&self, world: &World, now: f64, car: &Vehicle, x: f64, y: f64) -> bool {
+        if x <= *MODEL_LANE_KEEP_X.end() {
+            return false;
+        }
+        let Some(far) = self.path.project_row(car.wx, car.wy) else {
+            return false;
+        };
+        if y.abs() > FF_MAX_LATERAL_M && far * y > 0. && far.abs() > 0.8 * LANE_WIDTH {
+            return true;
+        }
+        !self.aligned && self.middle.is_some_and(|mid| {
+            (far - self.lead_projected).abs() <= 0.85 * LANE_WIDTH
+                && ((far - mid).abs() <= 0.65 * LANE_WIDTH
+                    || world.far_lane_coord(now, car.wx, car.wy)
+                        .is_some_and(|u| lane_at(u - world.u_ego()) == lane_at(self.relative)))
+        })
     }
 }
 
@@ -200,7 +301,8 @@ struct Drawing {
     into_ff: bool,
     ff_change_since: Option<f64>,
     lane_entry_since: Option<f64>,
-    far_side_since: Option<(usize, f64)>,
+    side_range_since: Option<(usize, f64)>,
+    far_side_at: Option<f64>,
     outside_since: Option<f64>,
     /// The vid once moved at `MOVED` or faster.
     fast: bool,
@@ -218,7 +320,8 @@ impl Drawing {
             into_ff: false,
             ff_change_since: None,
             lane_entry_since: None,
-            far_side_since: None,
+            side_range_since: None,
+            far_side_at: None,
             outside_since: None,
             fast: false,
         }
@@ -232,22 +335,23 @@ impl Drawing {
         }
     }
 
-    fn ready_for_side(&mut self, now: f64, slot: Option<usize>, previous_side: Option<usize>, x: f64, r: f64) -> bool {
-        let model_limit = *MODEL_LANE_KEEP_X.end();
-        let Some(side) = slot.filter(|&i| (1..=2).contains(&i) && x > model_limit) else {
-            self.far_side_since = None;
+    fn ready_for_side(&mut self, now: f64, slot: Option<usize>, previous_side: Option<usize>, x: f64) -> bool {
+        let Some(side) = slot.filter(|i| (1..=2).contains(i)) else {
+            self.side_range_since = None;
             return true;
         };
-        let since = match self.far_side_since {
+        if x > SIDE_FRONT_MAX_M {
+            self.side_range_since = None;
+            return false;
+        }
+        let since = match self.side_range_since {
             Some((old, since)) if old == side => since,
             _ => now,
         };
-        self.far_side_since = Some((side, since));
-        // Distant map fits can put a car across a lane line for only a few reports.
-        // Accept a clear placement immediately and let a stable boundary placement settle.
-        let margin = 0.35 * ((x - model_limit) / 15.).clamp(0., 1.);
-        let side_coord = if side == 1 { -r } else { r };
-        previous_side == Some(side) || side_coord >= 0.5 + margin || now - since >= FAR_SIDE_CONFIRM_S
+        self.side_range_since = Some((side, since));
+        // Keep the incumbent up to 50 m. Inside the last two metres, a
+        // new approach must remain in range before it can return.
+        previous_side == Some(side) || x <= SIDE_FRONT_REENTRY_M || now - since + EPS >= SIDE_FRONT_REENTRY_S
     }
 
     fn update_model_ff(&mut self, now: f64, can_hold: bool, lane: Option<&ModelLane>, x: f64, y: f64, confirmed: bool) {
@@ -300,7 +404,28 @@ struct SideOccupancy {
     rejoin: Option<(u32, f64, bool)>,
     next_seen: Option<f64>,
     positions: std::collections::VecDeque<(f64, f64)>,
-    near: Option<u32>,
+    near: Option<SideMeasurement>,
+    next: Option<SideMeasurement>,
+}
+
+#[derive(Clone, Copy)]
+struct SideMeasurement {
+    radar_id: u32,
+    slot: Slot,
+    time: f64,
+}
+
+impl SideMeasurement {
+    /// A radar return can acquire a new display ID during the same pass.
+    /// Keep the split's clock only when the track and positions still agree.
+    fn renewed(previous: Option<Self>, new: Self) -> Option<u32> {
+        previous.filter(|previous| previous.slot.vid != new.slot.vid
+            && previous.radar_id == new.radar_id
+            && (0. ..=OBSERVATION_MAX_AGE).contains(&(new.time - previous.time))
+            && (previous.slot.distance - new.slot.distance).abs() <= 1.5
+            && (previous.slot.lateral - new.slot.lateral).abs() <= 0.8)
+            .map(|previous| previous.slot.vid)
+    }
 }
 
 pub struct Assigner {
@@ -463,11 +588,19 @@ impl Assigner {
         let mut second: [Option<Slot>; 2] = [None; 2];
         let mut boundary = [(None, None); 2];
         let changing = world.ego_changing();
+        let crossing_row = CrossingRow::observe(now, vehicles, world, radar, lead_one);
         for car in vehicles {
             if !current(car.seen_radar.max(car.seen_vision)) {
                 continue;
             }
-            let Some(Observation { x, r, r_slot, speed }) = Observation::from_car(car, world, radar) else {
+            let (rx, ry) = radar.to_ego(f64::from(car.wx), f64::from(car.wy));
+            let measured = rx >= 0. && car.radar_id.is_some() && current(car.seen_radar);
+            let row_relative = crossing_row.as_ref()
+                .filter(|_| measured && eligible(car) && !car.oncoming)
+                .and_then(|row| row.relative_lane(car, rx, self.previous_ff));
+            let observation = row_relative.and_then(|r| Observation::with_relative_lane(car, radar, rx, r, r))
+                .or_else(|| Observation::from_car(car, world, radar));
+            let Some(Observation { x, r, r_slot, speed }) = observation else {
                 ff_missing_geometry |= self.previous_ff == Some(car.vid) && !car.flags.structure && !car.oncoming;
                 continue;
             };
@@ -484,14 +617,13 @@ impl Assigner {
                 drawing.into_ff = false;
                 drawing.ff_change_since = None;
                 drawing.lane_entry_since = None;
-                drawing.far_side_since = None;
+                drawing.side_range_since = None;
+                drawing.far_side_at = None;
                 drawing.outside_since = None;
             }
             drawing.seen = now;
             let original_lane = drawing.lane;
             drawing.observe_lane(r_slot);
-            let measured = x >= 0. && car.radar_id.is_some() && current(car.seen_radar);
-            let (rx, ry) = radar.to_ego(f64::from(car.wx), f64::from(car.wy));
             let v_rel = speed - world.pose.speed();
             let matching_track = measured && lead_track.is_some() && car.radar_id == lead_track;
             let confirmed_position = matching_track && lead.zip(lead_v_rel).is_some_and(|((dx, dy), dv)| {
@@ -595,14 +727,35 @@ impl Assigner {
                 distance
             };
             let mut observed_shown = drawing.shown;
-            let lateral = draw_road_frame(
+            let mut lateral = draw_road_frame(
                 &mut drawing.shown,
                 play_distance,
                 -lateral_target / LANE_WIDTH,
             );
             let slot = if drawing.into_ff || hold_ff { Some(0) } else { slot_index(x, side_lane_hold.unwrap_or(drawing.lane)) };
-            let side_ready = drawing.ready_for_side(now, slot.filter(|_| measured && proven_vehicle), previous_side, x, r_slot);
+            let side_ready = drawing.ready_for_side(now, slot, previous_side, x);
             let Some(slot) = slot else { continue };
+            if slot == 0 && measured {
+                if let Some(row) = &crossing_row {
+                    drawing.far_side_at = row.contradicts_far_ff(world, now, car, rx, ry).then_some(now);
+                }
+                // Hold a confirmed adjacent placement across a missed row update.
+                if rx > *MODEL_LANE_KEEP_X.end()
+                    && drawing.far_side_at.is_some_and(|t| now - t <= CROSSING_ROW_GAP_S)
+                {
+                    continue;
+                }
+                if ry.abs() > FF_MAX_LATERAL_M && lateral.abs() > FF_MAX_LATERAL_M {
+                    // On a bend, a current forward car can be far from the
+                    // radar axis. Both the map and the path must keep it inside.
+                    let Some(path_y) = (rx > CROSSING_ROW_MID_M && ff_owner && r_slot.abs() <= 0.5)
+                        .then(|| world.path_lateral(now, car.wx, car.wy)).flatten()
+                        .filter(|y| y.abs() <= 0.45 * LANE_WIDTH)
+                    else { continue };
+                    drawing.shown = observed_shown;
+                    lateral = draw_road_frame(&mut drawing.shown, play_distance, -path_y / LANE_WIDTH);
+                }
+            }
             // While ego crosses, the world coordinate can keep a settled primary lead in an adjacent lane.
             // A matching moving radar car near the forward axis can fill an otherwise empty FF.
             let crossing_lead_support = (1..=2).contains(&slot) && changing && primary_match.is_some_and(|(one, settled)| {
@@ -888,12 +1041,15 @@ impl Assigner {
         for side in 0..2 {
             let state = &mut self.side_occupancy[side];
             let (front, rear) = (side + 1, side + 3);
-            if protected[side] || slots[rear].is_some_and(|slot| slot.vid == 0) {
+            let measured = |slot: Slot| vehicles.iter()
+                .find(|car| car.vid == slot.vid && car.seen_radar == now)
+                .and_then(|car| Some(SideMeasurement { radar_id: car.radar_id?, slot, time: now }));
+            if protected[side] || slots[rear].and_then(measured).is_some() {
                 *state = SideOccupancy::default();
                 continue;
             }
             if let Some((kept, _, started)) = state.split {
-                let last = state.positions.back().map_or(now, |(t, _)| *t);
+                let last = state.positions.back().map_or(now, |(t, ..)| *t);
                 let carried = vehicles.iter().find(|car| car.vid == kept.vid);
                 let lost = carried.is_some_and(|car| {
                     car.radar_id.is_some() && !car.flags.structure && !car.oncoming
@@ -912,32 +1068,61 @@ impl Assigner {
                     }
                 }
             }
-            let Some(near) = slots[front].filter(|slot| vehicles.iter().any(|car| {
-                car.vid == slot.vid && car.radar_id.is_some() && car.seen_radar == now
-            })) else {
+            let Some(observation) = slots[front].and_then(measured) else {
                 state.pair = None;
                 continue;
             };
+            let near = observation.slot;
             let x = f64::from(near.distance);
-            if state.near != Some(near.vid)
-                || state.positions.back().is_some_and(|(t, _)| now - t > OBSERVATION_MAX_AGE)
+            let previous_near = state.near;
+            if let Some(old) = SideMeasurement::renewed(state.near, observation) {
+                if let Some((near_id, _, _)) = state.pair.as_mut().filter(|pair| pair.0 == old) {
+                    *near_id = near.vid;
+                }
+                if let Some((slot, _, _)) = state.split.as_mut().filter(|split| split.0.vid == old) {
+                    *slot = near;
+                }
+                if let Some((near_id, _, _)) = state.rejoin.as_mut().filter(|rejoin| rejoin.0 == old) {
+                    *near_id = near.vid;
+                }
+            } else if state.near.is_none_or(|near| near.slot.vid != observation.slot.vid)
+                || state.positions.back().is_some_and(|(t, ..)| now - t > OBSERVATION_MAX_AGE)
             {
                 state.positions.clear();
-                state.near = Some(near.vid);
             }
-            state.positions.retain(|(t, _)| now - t <= 0.55);
-            if state.positions.back().is_none_or(|(t, _)| *t < now) {
+            state.near = Some(observation);
+            state.positions.retain(|(t, ..)| now - t <= 0.55);
+            if state.positions.back().is_none_or(|(t, ..)| *t < now) {
                 if state.positions.len() == 12 {
                     state.positions.pop_front();
                 }
                 state.positions.push_back((now, x));
             }
             let next = self.runner_up[side].filter(|s| s.vid != near.vid);
+            if let Some(next) = next.and_then(measured) {
+                if let Some(old) = SideMeasurement::renewed(state.next, next) {
+                    if let Some((_, partner, _)) = state.pair.as_mut().filter(|pair| pair.1 == old) {
+                        *partner = next.slot.vid;
+                    }
+                    if let Some((_, partner, _)) = state.split.as_mut().filter(|split| split.1 == old) {
+                        *partner = next.slot.vid;
+                    }
+                }
+                state.next = Some(next);
+            }
             state.pair = next.map(|next| match state.pair {
                 Some((a, b, since)) if (a, b) == (near.vid, next.vid) => (a, b, since),
                 _ => (near.vid, next.vid, now),
             });
             let hard_exit = x > ALONGSIDE_EXIT_M + 2.;
+            // Use the measured range trend for relative speed; a single
+            // Doppler change does not prove the car is pulling away.
+            let pulling_ahead = x >= ALONGSIDE_ENTER_M - 0.3 && f64::from(near.v_rel) > ALONGSIDE_SPEED_MPS
+                && previous_near.is_some_and(|prev| prev.radar_id == observation.radar_id
+                    && now - prev.time <= OBSERVATION_MAX_AGE && f64::from(prev.slot.v_rel) > ALONGSIDE_SPEED_MPS)
+                && state.positions.iter().rev()
+                .find(|(t, ..)| now - t + EPS >= 0.25)
+                .is_some_and(|(t, start)| (x - start) / (now - t) > ALONGSIDE_SPEED_MPS);
             if let Some((_, partner, since)) = state.split.filter(|(slot, _, _)| slot.vid == near.vid) {
                 let outside = state.positions.iter().rev().take(3).filter(|(_, x)| *x > ALONGSIDE_EXIT_M).count() >= 2;
                 if next.is_some() {
@@ -945,8 +1130,14 @@ impl Assigner {
                 }
                 let next_lost = state.next_seen.is_none_or(|t| now - t > ALONGSIDE_MIN_S + EPS);
                 let replaced_far_partner = next.is_some_and(|s| s.vid != partner && s.distance > ALONGSIDE_FAR_REPLACEMENT_M);
-                if outside || hard_exit || replaced_far_partner || (now - since >= ALONGSIDE_MIN_S && next_lost) {
-                    state.rejoin = Some((near.vid, now, !hard_exit && !replaced_far_partner));
+                // Count the rear dwell after the front animation. A car
+                // pulling away during the animation can still stay in front.
+                let rear_visible = previous_near.is_some_and(|prev| prev.time - since + EPS >= ALONGSIDE_EASE_S);
+                let rear_settled = now - since + EPS >= ALONGSIDE_EASE_S + ALONGSIDE_MIN_S;
+                if hard_exit || replaced_far_partner || (pulling_ahead && !rear_visible)
+                    || (rear_settled && (outside || pulling_ahead || next_lost))
+                {
+                    state.rejoin = Some((near.vid, now, !hard_exit && !pulling_ahead && !replaced_far_partner));
                     state.split = None;
                 } else {
                     state.split = Some((near, next.map_or(partner, |s| s.vid), since));
@@ -956,12 +1147,34 @@ impl Assigner {
                 state.split = None;
                 let relocked = state.rejoin.is_some_and(|(vid, t, _)| vid == near.vid
                     && now - t < ALONGSIDE_RELOCK_S && x >= 3.);
-                let alongside = state.positions.front().is_some_and(|(t, start)| {
-                    now - t + EPS >= ALONGSIDE_CONFIRM_S
-                        && (ALONGSIDE_CLOSING_MPS..=ALONGSIDE_OPENING_MPS).contains(&((x - start) / (now - t)))
+                // Two distinct longitudinal radar measurements can confirm
+                // the pair while the near car's range trend still supplies
+                // the full alongside confirmation.
+                let established_partner = next.is_some_and(|s| {
+                    s.distance <= NEAR_SIDE_BOUNDARY_M as f32 && s.distance - near.distance >= ALONGSIDE_EXIT_M as f32
+                        && vehicles.iter().any(|car| car.vid == s.vid && car.seen_radar == now
+                            && now - car.born >= ALONGSIDE_CONFIRM_S)
                 });
-                if let Some((_, partner, _)) = state.pair.filter(|&(_, _, t)| now - t + EPS >= ALONGSIDE_CONFIRM_S)
-                    .filter(|_| !relocked && alongside && (0. ..=ALONGSIDE_ENTER_M).contains(&x))
+                let pair_confirm = if established_partner { ALONGSIDE_ESTABLISHED_PAIR_S } else { ALONGSIDE_CONFIRM_S };
+                let alongside = state.positions.front().is_some_and(|(t, start)| {
+                    let age = now - t;
+                    // Seven 20 Hz observations give six intervals. Allow
+                    // timestamp jitter once the separate partner is verified.
+                    if age + EPS < ALONGSIDE_CONFIRM_S
+                        && !(established_partner && state.positions.len() >= 7 && age >= ALONGSIDE_CONFIRM_S - 0.02)
+                    {
+                        return false;
+                    }
+                    let rate = (x - start) / age;
+                    // Close returns move between reflection points on the same
+                    // car. Use agreeing Doppler to resolve a marginal slope.
+                    let doppler = f64::from(near.v_rel);
+                    rate.abs() <= ALONGSIDE_SPEED_MPS || ((rate - doppler).abs() <= 0.5
+                        && (0.5 * (rate + doppler)).abs() <= ALONGSIDE_SPEED_MPS)
+                });
+                if let Some((_, partner, _)) = state.pair.filter(|&(_, _, t)| now - t + EPS >= pair_confirm)
+                    .filter(|_| !relocked && alongside && !pulling_ahead
+                        && (0. ..=ALONGSIDE_ENTER_M).contains(&x))
                 {
                     state.split = Some((near, partner, now));
                     state.next_seen = Some(now);

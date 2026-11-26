@@ -32,6 +32,9 @@ type Point = (f64, f64);
 struct Bin {
     index: i64,
     point: Point,
+    /// Confidence-weighted distant estimate for checking a radar row.
+    /// The observed point still anchors ego and near-lane tracking.
+    far_point: Point,
     observations: u32,
     /// When the bin last took a point.
     seen: f64,
@@ -52,12 +55,22 @@ impl Default for Boundary {
 }
 
 impl Boundary {
-    fn observe(&mut self, index: i64, point: Point, x: f64, degraded: bool, t: f64) {
+    fn observe(&mut self, index: i64, point: Point, x: f64, degraded: bool, t: f64, far: (Point, f64)) {
         let slot = index.rem_euclid(BIN_COUNT as i64) as usize;
         let alpha = 0.15 * ((60. - x) / 40.).clamp(0.1, 1.);
         if let Some(bin) = self.bins[slot].as_mut().filter(|b| b.index == index) {
             bin.point.0 += alpha * (point.0 - bin.point.0);
             bin.point.1 += alpha * (point.1 - bin.point.1);
+            if x > PATH_BLEND_START {
+                let (target, probability) = far;
+                let history = f64::from(bin.observations.min(6)) / 6.;
+                let trust = far_weight(x) * (1. - probability);
+                let gain = alpha * (1. - trust * (0.25 + 0.25 * history));
+                bin.far_point.0 += gain * (target.0 - bin.far_point.0);
+                bin.far_point.1 += gain * (target.1 - bin.far_point.1);
+            } else {
+                bin.far_point = bin.point;
+            }
             bin.observations = bin.observations.saturating_add(1);
             bin.seen = t;
         } else {
@@ -74,6 +87,7 @@ impl Boundary {
             self.bins[slot] = Some(Bin {
                 index,
                 point,
+                far_point: if x > PATH_BLEND_START { far.0 } else { point },
                 observations: 1,
                 seen: t,
             });
@@ -86,6 +100,10 @@ impl Boundary {
 
     /// Interpolate between nearby bins, using a curvature fit for long forward extensions.
     fn point(&self, s: f64) -> Option<(Point, Point)> {
+        self.point_for(s, false)
+    }
+
+    fn point_for(&self, s: f64, far: bool) -> Option<(Point, Point)> {
         let index = bin_number(s);
         let bins = || self.bins.iter().flatten();
         let before = bins().filter(|b| b.index <= index).max_by_key(|b| b.index);
@@ -106,13 +124,18 @@ impl Boundary {
             ),
             _ => return None,
         };
-        let (dx, dy) = (b.point.0 - a.point.0, b.point.1 - a.point.1);
+        let (p, q) = if far && before.is_some() && after.is_some() {
+            (a.far_point, b.far_point)
+        } else {
+            (a.point, b.point)
+        };
+        let (dx, dy) = (q.0 - p.0, q.1 - p.1);
         let len = dx.hypot(dy);
         if len < 1e-3 {
             return None;
         }
         let f = (s / BIN_M - a.index as f64) / (b.index - a.index) as f64;
-        let linear = (a.point.0 + f * dx, a.point.1 + f * dy);
+        let linear = (p.0 + f * dx, p.1 + f * dy);
         let tangent = (dx / len, dy / len);
         if after.is_none() {
             // Close to the mapped road, retain its tangent. Blend in the curvature farther ahead.
@@ -215,9 +238,17 @@ impl Boundary {
     }
 
     fn lateral(&self, s: f64, p: Point) -> Option<f64> {
-        let ((x, y), (ux, uy)) = self.point(s)?;
+        self.lateral_for(s, p, false)
+    }
+
+    fn lateral_for(&self, s: f64, p: Point, far: bool) -> Option<f64> {
+        let ((x, y), (ux, uy)) = self.point_for(s, far)?;
         Some(-uy * (p.0 - x) + ux * (p.1 - y))
     }
+}
+
+fn far_weight(x: f64) -> f64 {
+    ((x - PATH_BLEND_START) / (PATH_BLEND_END - PATH_BLEND_START)).clamp(0., 1.)
 }
 
 fn bin_number(s: f64) -> i64 {
@@ -230,6 +261,7 @@ struct Observation {
     id: i32,
     index: i64,
     point: Point,
+    far: (Point, f64),
     x: f64,
     degraded: bool,
 }
@@ -299,7 +331,7 @@ pub(super) struct CameraLanes {
     points: [[f32; MODEL_GRID.len()]; 4],
 }
 
-pub(super) struct RoadAhead {
+pub(crate) struct RoadAhead {
     pub(super) stamp: f64,
     pub(super) path: ModelPath,
     pub(super) changing: bool,
@@ -318,6 +350,21 @@ pub(super) enum SideGeometry {
 }
 
 impl RoadAhead {
+    /// Lateral position relative to the predicted path. Its origin cancels
+    /// when two returns are compared against the same path.
+    pub(crate) fn project_row(&self, wx: f32, wy: f32) -> Option<f64> {
+        let (x, y) = self.pose.to_ego(f64::from(wx), f64::from(wy));
+        let (lateral, confidence) = self.path.project_lateral(x, y, self.width)?;
+        (confidence >= 0.65).then_some(lateral)
+    }
+
+    fn line_reference(&self, point: Point) -> Option<f64> {
+        self.reference_u?;
+        let (x, y) = self.pose.to_ego(point.0, point.1);
+        let (center, _, confidence) = self.path.road_sample(x, self.width)?;
+        (confidence >= 0.65).then_some(y - center)
+    }
+
     pub(super) fn new(
         model: &Model, pose: PoseAt, stamp: f64, path: ModelPath, changing: bool,
         edge_stds: [f32; 2], width: Option<(f64, f64)>,
@@ -544,7 +591,7 @@ pub fn near_heading(model: &Model) -> Option<(f64, f64)> {
 
 impl LaneMap {
     pub fn ingest(&mut self, t: f64, model: &Model, pose: &Pose, frozen: bool) {
-        self.ingest_with_walls(t, model, pose, frozen, false, &[]);
+        self.ingest_with_walls(t, model, pose, frozen, false, &[], None);
     }
 
     pub(super) fn ingest_with_walls(
@@ -555,6 +602,7 @@ impl LaneMap {
         frozen: bool,
         degraded: bool,
         walls: &[Vec<Point>],
+        road: Option<&RoadAhead>,
     ) {
         if !t.is_finite() || self.stamp.is_some_and(|last| t <= last) {
             return;
@@ -578,13 +626,27 @@ impl LaneMap {
             };
             let id = self.offset + i as i32;
             let ring = id.rem_euclid(BOUNDARY_COUNT as i32) as usize;
-            self.ingest_line(t, at, ring, id, degraded, |x| line_at(line, x));
+            let probability = model.lane_line_probs.get(i).copied()
+                .filter(|p| (0. ..=1.).contains(p)).map_or(0., f64::from);
+            let reference = road.zip(line_at(line, 20.))
+                .and_then(|(road, y)| road.line_reference(at.to_world(20., y)));
+            self.ingest_line(t, at, ring, id, degraded, probability, |x| {
+                let y = line_at(line, x)?;
+                let correction = reference.zip(road).filter(|_| x > PATH_BLEND_START)
+                    .and_then(|(reference, road)| {
+                        let offset = road.line_reference(at.to_world(x, y))?;
+                        let shift = (reference - offset).clamp(-0.5 * road.width, 0.5 * road.width);
+                        Some(shift * (at.heading - road.pose.heading).cos())
+                    })
+                    .unwrap_or(0.);
+                Some((y, y + far_weight(x) * (1. - probability) * correction))
+            });
         }
         for side in 0..2 {
             let outer = side * 3;
             let inner = 1 + side;
             let sign = if side == 0 { 1. } else { -1. };
-            self.ingest_line(t, at, BOUNDARY_COUNT + side, side as i32, degraded, |x| {
+            self.ingest_line(t, at, BOUNDARY_COUNT + side, side as i32, degraded, 1., |x| {
                 let inside = line_at(model.lane_lines.get(inner)?, x)?;
                 if let Some(y) = model
                     .road_edges
@@ -592,7 +654,7 @@ impl LaneMap {
                     .and_then(|edge| line_at(edge, x))
                     .filter(|y| sign * (y - inside) > 0.)
                 {
-                    return Some(y);
+                    return Some((y, y));
                 }
                 if usable_lane(model, outer).is_some() {
                     return None;
@@ -608,6 +670,7 @@ impl LaneMap {
                     .map(|y| y - sign * 0.5)
                     .filter(|y| sign * (y - inside) > 0. && (y - expected).abs() <= 3.)
                     .min_by(|a, b| (a - expected).abs().total_cmp(&(b - expected).abs()))
+                    .map(|y| (y, y))
             });
         }
         while self.pending.front().is_some_and(|o| t - o.t >= 1.) {
@@ -625,7 +688,8 @@ impl LaneMap {
         line: usize,
         id: i32,
         degraded: bool,
-        sample: impl Fn(f64) -> Option<f64>,
+        probability: f64,
+        sample: impl Fn(f64) -> Option<(f64, f64)>,
     ) {
         // The near field (through the bin of the 20 m grid point) takes the line at the bins of its grid points, and
         // at every other bin that has not had it for STALE_S. On the grid points only, the bins between them kept their
@@ -648,7 +712,7 @@ impl LaneMap {
             // meet when ego stopped with a grid point at a bin seam, and their tangent turned by 60 to 100 degrees
             // (11-24 0000047c segment 5 at 41.8 s).
             let x = (index as f64 + 0.5) * BIN_M - at.s;
-            let Some(y) = sample(x) else {
+            let Some((y, far_y)) = sample(x) else {
                 continue;
             };
             let obs = Observation {
@@ -657,6 +721,7 @@ impl LaneMap {
                 id,
                 index,
                 point: at.to_world(x, y),
+                far: (at.to_world(x, far_y), probability),
                 x,
                 degraded,
             };
@@ -695,7 +760,7 @@ impl LaneMap {
             bound.id = o.id;
         }
         if !self.frozen || bound.last().is_none_or(|last| o.index > last) {
-            bound.observe(o.index, o.point, o.x, o.degraded, o.t);
+            bound.observe(o.index, o.point, o.x, o.degraded, o.t, o.far);
         }
     }
 
@@ -751,6 +816,14 @@ impl LaneMap {
     }
 
     pub fn coord(&self, s: f64, p: Point) -> Option<f64> {
+        self.coord_for(s, p, false)
+    }
+
+    pub(super) fn far_coord(&self, s: f64, p: Point) -> Option<f64> {
+        self.coord_for(s, p, true)
+    }
+
+    fn coord_for(&self, s: f64, p: Point, far: bool) -> Option<f64> {
         if !p.0.is_finite() || !p.1.is_finite() || !(-40. ..=80.).contains(&(s - self.s)) {
             return None;
         }
@@ -765,7 +838,7 @@ impl LaneMap {
         let mut distances = [(0, 0.); BOUNDARY_COUNT];
         let mut n = 0;
         for b in &self.bounds {
-            if let Some(y) = b.lateral(s, p) {
+            if let Some(y) = b.lateral_for(s, p, far) {
                 distances[n] = (b.id, y);
                 n += 1;
             }
@@ -913,7 +986,8 @@ mod tests {
         let mut boundary = Boundary::default();
         for index in 0..=12 {
             let s = index as f64 * BIN_M;
-            boundary.observe(index, (s, 0.0005 * s * s), s, false, 0.);
+            let point = (s, 0.0005 * s * s);
+            boundary.observe(index, point, s, false, 0., (point, 1.));
         }
         let ((_, near_y), _) = boundary.point(30.).unwrap();
         assert!((near_y - 0.402).abs() < 1e-9);
@@ -927,10 +1001,10 @@ mod tests {
     fn two_bins_that_meet_take_their_tangent_from_a_farther_bin() {
         let mut boundary = Boundary::default();
         // Bins 4 and 5 hold points 0.05 m apart along the road and 0.6 m apart across it.
-        boundary.observe(3, (7., 5.), 7., false, 0.);
-        boundary.observe(4, (9.95, 5.), 10., false, 0.);
-        boundary.observe(5, (10., 5.6), 10., false, 0.);
-        boundary.observe(6, (13., 5.6), 13., false, 0.);
+        boundary.observe(3, (7., 5.), 7., false, 0., ((7., 5.), 1.));
+        boundary.observe(4, (9.95, 5.), 10., false, 0., ((9.95, 5.), 1.));
+        boundary.observe(5, (10., 5.6), 10., false, 0., ((10., 5.6), 1.));
+        boundary.observe(6, (13., 5.6), 13., false, 0., ((13., 5.6), 1.));
         let (_, (dx, dy)) = boundary.point(9.).unwrap();
         assert!(dy.atan2(dx).to_degrees().abs() < 15., "{dx} {dy}");
     }

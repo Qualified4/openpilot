@@ -143,11 +143,12 @@ impl Alongside {
             // Before the zero crossing, coast only if the last motion was toward or through the radar gap.
             let approaching = (motion.measured.distance >= 0. && v_rel < -0.5)
                 || (motion.measured.distance < 0. && v_rel > 0.5);
-            let age_limit = if blind { MAX_BSD_AGE } else { MAX_AGE };
+            let bsd_rear = blind && motion.rear;
+            let age_limit = if bsd_rear { MAX_BSD_AGE } else { MAX_AGE };
             if measured_age > age_limit
                 || !(-20. ..=8.).contains(&predicted)
-                || !(approaching || rear_supported || blind)
-                || (motion.measured.distance > 5. && !rear_supported && !blind)
+                || !(approaching || rear_supported || bsd_rear)
+                || (motion.measured.distance > 5. && !rear_supported && !bsd_rear)
             {
                 *state = nearest.map(|(s, car)| Self::new(now, ego, s, car));
                 return None;

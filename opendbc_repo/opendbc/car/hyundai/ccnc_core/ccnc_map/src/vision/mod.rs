@@ -19,7 +19,7 @@ pub use kind::{KindResult, KindView, Kinds};
 pub use wide::Geometry;
 
 use crate::pos::common::LANE_WIDTH;
-use crate::slots::{Slot, VISION_CONFIRMS, VISION_ONLY};
+use crate::slots::{Slot, SIDE_FRONT_MAX_M, VISION_CONFIRMS, VISION_ONLY};
 use crate::world::PoseAt;
 use det_rules::{swap_decision, Act, DetRules, SwapCfg};
 
@@ -352,7 +352,7 @@ fn place(
 ) {
     let (x, y) = ego.to_ego(seen.world.0, seen.world.1);
     let distance = if rear { (-x).max(0.) } else { x };
-    if distance < 0. || !swap.allows(distance, seen.cut, seen.run) {
+    if distance < 0. || (!rear && distance > SIDE_FRONT_MAX_M) || !swap.allows(distance, seen.cut, seen.run) {
         *swapped = Swapped::default();
         return;
     }
