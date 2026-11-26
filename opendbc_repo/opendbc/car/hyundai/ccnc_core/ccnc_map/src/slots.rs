@@ -30,6 +30,7 @@ const ALONGSIDE_RELOCK_S: f64 = 2.;
 const ALONGSIDE_FAR_REPLACEMENT_M: f32 = 40.;
 const ALONGSIDE_SPEED_MPS: f64 = 2.;
 const ALONGSIDE_EASE_S: f64 = 0.35;
+const ALONGSIDE_REJOIN_MPS: f64 = 20.;
 const FF_OUTSIDE_S: f64 = 1.;
 const SIDE_OUTSIDE_S: f64 = 0.25;
 /// A vid that once moved at this ground speed (m/s) or faster is a moving car: `EDGE_ROOM_M` does not apply to it.
@@ -402,6 +403,7 @@ struct SideOccupancy {
     pair: Option<(u32, u32, f64)>,
     split: Option<(Slot, u32, f64)>,
     rejoin: Option<(u32, f64, bool)>,
+    drawn: Option<(u32, f64, f32)>,
     next_seen: Option<f64>,
     positions: std::collections::VecDeque<(f64, f64)>,
     near: Option<SideMeasurement>,
@@ -1040,6 +1042,7 @@ impl Assigner {
         let mut split = [false; 2];
         for side in 0..2 {
             let state = &mut self.side_occupancy[side];
+            let mut drawn = state.drawn.take();
             let (front, rear) = (side + 1, side + 3);
             let measured = |slot: Slot| vehicles.iter()
                 .find(|car| car.vid == slot.vid && car.seen_radar == now)
@@ -1063,6 +1066,7 @@ impl Assigner {
                 {
                     if now - last <= 2. {
                         slots[rear] = Some(Slot { distance: 0., ..kept });
+                        state.drawn = Some((kept.vid, now, 0.));
                         split[side] = true;
                         continue;
                     }
@@ -1082,7 +1086,10 @@ impl Assigner {
                 if let Some((slot, _, _)) = state.split.as_mut().filter(|split| split.0.vid == old) {
                     *slot = near;
                 }
-                if let Some((near_id, _, _)) = state.rejoin.as_mut().filter(|rejoin| rejoin.0 == old) {
+                if let Some((near_id, ..)) = state.rejoin.as_mut().filter(|rejoin| rejoin.0 == old) {
+                    *near_id = near.vid;
+                }
+                if let Some((near_id, ..)) = drawn.as_mut().filter(|drawn| drawn.0 == old) {
                     *near_id = near.vid;
                 }
             } else if state.near.is_none_or(|near| near.slot.vid != observation.slot.vid)
@@ -1098,8 +1105,11 @@ impl Assigner {
                 }
                 state.positions.push_back((now, x));
             }
-            let next = self.runner_up[side].filter(|s| s.vid != near.vid);
-            if let Some(next) = next.and_then(measured) {
+            let next_measurement = self.runner_up[side].and_then(measured)
+                .filter(|next| next.radar_id != observation.radar_id
+                    && next.slot.distance - near.distance > TWIN_LON_M as f32);
+            let next = next_measurement.map(|next| next.slot);
+            if let Some(next) = next_measurement {
                 if let Some(old) = SideMeasurement::renewed(state.next, next) {
                     if let Some((_, partner, _)) = state.pair.as_mut().filter(|pair| pair.1 == old) {
                         *partner = next.slot.vid;
@@ -1114,7 +1124,18 @@ impl Assigner {
                 Some((a, b, since)) if (a, b) == (near.vid, next.vid) => (a, b, since),
                 _ => (near.vid, next.vid, now),
             });
+            let established_partner = next.is_some_and(|s| {
+                s.distance <= NEAR_SIDE_BOUNDARY_M as f32 && s.distance - near.distance >= ALONGSIDE_EXIT_M as f32
+                    && vehicles.iter().any(|car| car.vid == s.vid && now - car.born >= ALONGSIDE_CONFIRM_S)
+            });
             let hard_exit = x > ALONGSIDE_EXIT_M + 2.;
+            // A hard exit can also be a new radar reflection point on the same track
+            // (479-12). Only join a measured range that continues the previous one.
+            if hard_exit && previous_near.is_some_and(|prev| {
+                x - f64::from(prev.slot.distance) > (35. * (now - prev.time)).max(TWIN_LON_M)
+            }) {
+                drawn = None;
+            }
             // Use the measured range trend for relative speed; a single
             // Doppler change does not prove the car is pulling away.
             let pulling_ahead = x >= ALONGSIDE_ENTER_M - 0.3 && f64::from(near.v_rel) > ALONGSIDE_SPEED_MPS
@@ -1134,8 +1155,11 @@ impl Assigner {
                 // pulling away during the animation can still stay in front.
                 let rear_visible = previous_near.is_some_and(|prev| prev.time - since + EPS >= ALONGSIDE_EASE_S);
                 let rear_settled = now - since + EPS >= ALONGSIDE_EASE_S + ALONGSIDE_MIN_S;
+                let keep_close_pair = x <= ALONGSIDE_EXIT_M && established_partner
+                    && state.pair.is_some_and(|(_, vid, started)| vid == partner
+                        && now - started + EPS >= ALONGSIDE_CONFIRM_S);
                 if hard_exit || replaced_far_partner || (pulling_ahead && !rear_visible)
-                    || (rear_settled && (outside || pulling_ahead || next_lost))
+                    || (rear_settled && !keep_close_pair && (outside || pulling_ahead || next_lost))
                 {
                     state.rejoin = Some((near.vid, now, !hard_exit && !pulling_ahead && !replaced_far_partner));
                     state.split = None;
@@ -1150,11 +1174,6 @@ impl Assigner {
                 // Two distinct longitudinal radar measurements can confirm
                 // the pair while the near car's range trend still supplies
                 // the full alongside confirmation.
-                let established_partner = next.is_some_and(|s| {
-                    s.distance <= NEAR_SIDE_BOUNDARY_M as f32 && s.distance - near.distance >= ALONGSIDE_EXIT_M as f32
-                        && vehicles.iter().any(|car| car.vid == s.vid && car.seen_radar == now
-                            && now - car.born >= ALONGSIDE_CONFIRM_S)
-                });
                 let pair_confirm = if established_partner { ALONGSIDE_ESTABLISHED_PAIR_S } else { ALONGSIDE_CONFIRM_S };
                 let alongside = state.positions.front().is_some_and(|(t, start)| {
                     let age = now - t;
@@ -1188,17 +1207,26 @@ impl Assigner {
             if let Some((_, _, started)) = state.split.filter(|_| split[side]) {
                 if now - started + EPS < ALONGSIDE_EASE_S {
                     split[side] = false;
-                    slots[front] = Some(Slot { distance: near.distance * (1. - eased(started)), ..near });
+                    let distance = near.distance * (1. - eased(started));
+                    slots[front] = Some(Slot { distance, ..near });
+                    state.drawn = Some((near.vid, now, distance));
                 } else {
                     slots[rear] = Some(Slot { distance: 0., ..near });
                     slots[front] = next;
+                    state.drawn = Some((near.vid, now, 0.));
                 }
-            } else if let Some((vid, released, ease)) = &mut state.rejoin {
-                if hard_exit {
-                    *ease = false;
-                }
-                if *vid == near.vid && *ease && now - *released < ALONGSIDE_EASE_S {
-                    slots[front] = Some(Slot { distance: near.distance * eased(*released), ..near });
+            } else if let Some((_, released, ease)) = state.rejoin.as_mut().filter(|(vid, ..)| *vid == near.vid) {
+                if let Some((_, at, previous)) = drawn.filter(|&(vid, at, _)| {
+                    vid == near.vid && (0. ..=OBSERVATION_MAX_AGE).contains(&(now - at))
+                }) {
+                    *ease &= !hard_exit;
+                    let target = near.distance * if *ease { eased(*released) } else { 1. };
+                    let step = (ALONGSIDE_REJOIN_MPS * (now - at)) as f32;
+                    let distance = previous + (target - previous).clamp(-step, step);
+                    slots[front] = Some(Slot { distance, ..near });
+                    if distance != near.distance {
+                        state.drawn = Some((near.vid, now, distance));
+                    }
                 }
             }
         }

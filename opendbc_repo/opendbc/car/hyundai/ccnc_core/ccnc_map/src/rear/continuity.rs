@@ -171,6 +171,19 @@ impl Alongside {
         }
         *state = Some(motion);
 
+        // The side selector already owns the distance when easing a split
+        // car in or out. Its measured partner must keep the front slot.
+        if let Some((measured, _)) = observation.filter(|(s, _)| s.distance >= 0.) {
+            if slots[front].is_some_and(|s| s.vid == vid && s.distance != measured.distance) {
+                return Some(front);
+            }
+            if slots[rear].is_some_and(|s| s.vid == vid && s.distance == 0.)
+                && slots[front].is_some_and(|s| s.vid != vid)
+            {
+                return None;
+            }
+        }
+
         if observation.is_some()
             && !motion.rejoining
             && slots.iter().any(|s| s.is_some_and(|s| s.vid == vid))

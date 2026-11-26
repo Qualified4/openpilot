@@ -19,7 +19,7 @@ from opendbc.car.hyundai.stop_object import signal_stop_object_requested
 from opendbc.car.volkswagen.values import MEB_CURVATURE_PID_KP, MEB_CURVATURE_PID_KI, MEB_CURVATURE_PID_KF, MEB_CURVATURE_MAX
 
 from openpilot.selfdrive.car.voice_indicator import set_lane_change_blinkers
-from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature, get_lag_adjusted_curvature, is_volkswagen_meb
+from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature, curvature_step_limit, get_lag_adjusted_curvature, is_volkswagen_meb
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl, MIN_LATERAL_CONTROL_SPEED
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
@@ -76,6 +76,8 @@ class Controls:
     self.steer_limited_by_safety = False
     self.curvature = 0.0
     self.desired_curvature = 0.0
+    self.model_curvature = 0.0
+    self.centering_curvature = 0.0
     self.laneless_centering = LanelessCentering(strength_from_param(self.params.get_int("LanelessCentering")))
     self.lateral_startup = LateralStartupGate()
     self.lateral_started = False
@@ -179,6 +181,8 @@ class Controls:
       self.LaC.reset()
     if CC.latActive and not self.lateral_started:
       self.desired_curvature = self.curvature
+      self.model_curvature = self.curvature
+      self.centering_curvature = 0.0
       self.lateral_started = True
     if not CC.longActive:
       self.LoC.reset()
@@ -206,6 +210,8 @@ class Controls:
       alpha = 1 - np.exp(-DT_CTRL / tau) if tau > 0 else 1
       return alpha * val + (1 - alpha) * prev_val
 
+    correction = 0.0
+    correction_limits = None
     if not CC.latActive:
       new_desired_curvature = self.curvature
       self.laneless_centering.reset()
@@ -217,7 +223,7 @@ class Controls:
       if getattr(lat_plan, 'useLaneLines', False) and len(lat_plan.curvatures) > 0:
         curvature = get_lag_adjusted_curvature(self.CP, CS.vEgo, lat_plan.psis, lat_plan.curvatures,
                                                steer_actuator_delay + lat_smooth_seconds, lat_plan.distances)
-        new_desired_curvature = smooth_value(curvature, self.desired_curvature, lat_smooth_seconds)
+        new_desired_curvature = smooth_value(curvature, self.model_curvature, lat_smooth_seconds)
       else:
         new_desired_curvature = float(model_v2.action.desiredCurvature)  # raw 모델곡률 (if2 기본과 동일)
     elif self.lanefull_mode_enabled:
@@ -226,17 +232,34 @@ class Controls:
         new_desired_curvature = self.curvature
       else:
         curvature = get_lag_adjusted_curvature(self.CP, CS.vEgo, lat_plan.psis, lat_plan.curvatures, steer_actuator_delay + lat_smooth_seconds, lat_plan.distances)
-        new_desired_curvature = smooth_value(curvature, self.desired_curvature, lat_smooth_seconds)
+        new_desired_curvature = smooth_value(curvature, self.model_curvature, lat_smooth_seconds)
     else:
       radar = 'radarState'
       # Only radar received within 0.2 s at 100 Hz may relax a side block.
       radar_fresh = self.sm.seen[radar] and self.sm.valid[radar] and self.sm.frame - self.sm.recv_frame[radar] <= 20
-      model_curvature = model_v2.action.desiredCurvature + self.laneless_centering.update(
+      correction = self.laneless_centering.update(
         model_v2, CS, self.sm[radar], self.sm['carrotMan'].atcType, CS.vEgo, radar_valid=radar_fresh)
       # 모델 목표 곡률 1차 평활 τ 0.05 s(0.1이면 코너 진입 지연·탈출 과회전이 커진다, 항목 106)
-      new_desired_curvature = smooth_value(model_curvature, self.desired_curvature, 0.05)
+      new_desired_curvature = smooth_value(model_v2.action.desiredCurvature, self.model_curvature, 0.05)
+      correction_limits = self.laneless_centering.curvature_limits
+      correction = float(smooth_value(correction, self.centering_curvature, 0.05))
 
-    self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
+    model_prev = self.model_curvature
+    self.model_curvature, curvature_limited = clip_curvature(CS.vEgo, model_prev, new_desired_curvature, lp.roll)
+    if correction_limits is not None and correction:
+      # Leave room to remove the correction in one step if a side closes,
+      # with 20% of the step reserved for changes in model rate and speed.
+      step = 0.8 * curvature_step_limit(CS.vEgo)
+      model_step = self.model_curvature - model_prev
+      left, right = correction_limits
+      lo = max(left, min(0.0, max(0.0, model_step) - step))
+      hi = min(right, max(0.0, min(0.0, model_step) + step))
+      correction = float(np.clip(correction, lo, hi))
+    if correction or self.centering_curvature:
+      command, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, self.model_curvature + correction, lp.roll)
+      correction = command - self.model_curvature
+    self.centering_curvature = correction
+    self.desired_curvature = self.model_curvature + correction
 
     actuators.curvature = float(self.desired_curvature)
 

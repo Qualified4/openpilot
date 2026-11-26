@@ -285,7 +285,10 @@ impl Vision {
 
     /// Put the held camera cars on the radar slots of `now`. `protected` slots (FF, LF, RF, LR, RR) hold a car of the
     /// radar's own rules (the stop memory, a side pair): the camera does not take them over, it only confirms them.
-    pub fn apply(&mut self, now: f64, v_ego: f64, ego: PoseAt, protected: [bool; 5], slots: &mut [Option<Slot>; 5]) {
+    pub fn apply(
+        &mut self, now: f64, v_ego: f64, ego: PoseAt, protected: [bool; 5],
+        current_front: [bool; 2], slots: &mut [Option<Slot>; 5],
+    ) {
         if !(-STANDSTILL_NOISE..=SLOW).contains(&v_ego) {
             self.swapped = [Swapped::default(); 4];
             return;
@@ -309,17 +312,19 @@ impl Vision {
                 continue;
             };
             let swap = &self.rules[side].swap;
-            for (part, seen) in held.seen.iter().enumerate() {
+            // Give a rear camera observation first use of the rear slot.
+            for part in [1, 0] {
                 let index = 1 + side + 2 * part; // LF, RF, LR, RR
                 if part == 1 && radar[index].is_some_and(|s| s.vid == 0) {
                     self.swapped[index - 1] = Swapped::default();
                     continue;
                 }
-                let Some(seen) = seen else {
+                let Some(seen) = &held.seen[part] else {
                     self.swapped[index - 1] = Swapped::default();
                     continue;
                 };
-                place(now, held.arrival, v_ego, index, part == 1, seen, swap, ego, &radar, protected[index], slots, &mut self.swapped[index - 1]);
+                place(now, held.arrival, v_ego, index, part == 1, seen, swap, ego, &radar,
+                    protected[index], current_front[side], slots, &mut self.swapped[index - 1]);
             }
         }
     }
@@ -347,6 +352,7 @@ fn place(
     ego: PoseAt,
     radar: &[Option<Slot>; 5],
     protected: bool,
+    current_front: bool,
     slots: &mut [Option<Slot>; 5],
     swapped: &mut Swapped,
 ) {
@@ -360,6 +366,13 @@ fn place(
     let same_car = here.is_some_and(|s| {
         (along(index, &s) - x).abs() <= SAME_SLOT_X && (f64::from(s.lateral) - y).abs() <= SAME_SLOT_Y
     });
+    if protected && current_front && here.is_some() {
+        *swapped = Swapped::default();
+        if same_car {
+            slots[index].as_mut().unwrap().vision = VISION_CONFIRMS;
+        }
+        return;
+    }
     let act = swap_decision(
         true,
         Some((distance, seen.cut)),
@@ -404,18 +417,26 @@ fn place(
             }
         }
         Some(Act::Fill | Act::Swap) => {
+            let alongside = !rear && current_front && distance <= 5. && here.is_some_and(|s| {
+                f64::from(s.distance) > x + SAME_SLOT_X && s.distance <= 30.
+                    && (f64::from(s.lateral) - y).abs() <= SAME_SLOT_Y
+            });
+            let target = if alongside { index + 2 } else { index };
+            if alongside && slots[target].is_some_and(|s| s.vid != 0) {
+                return;
+            }
             // The same car already drawn by the radar in a neighbouring slot stays the radar's.
             let elsewhere = radar.iter().enumerate().any(|(i, s)| {
-                i != index && s.is_some_and(|s| (along(i, &s) - x).abs() <= MERGE_X && (f64::from(s.lateral) - y).abs() <= MERGE_Y)
+                i != index && s.is_some_and(|s| s.vid != 0 && (along(i, &s) - x).abs() <= MERGE_X && (f64::from(s.lateral) - y).abs() <= MERGE_Y)
             });
             if elsewhere {
                 *swapped = Swapped::default();
             } else {
                 let left = index % 2 == 1; // LF, LR
                 let y = if left { 1. } else { -1. } * (if left { y } else { -y }).clamp(LANE_WIDTH - SIDE_LANE_PLAY, LANE_WIDTH + SIDE_LANE_PLAY);
-                slots[index] = Some(Slot {
-                    vid: VISION_VID[index - 1],
-                    distance: distance as f32,
+                slots[target] = Some(Slot {
+                    vid: VISION_VID[target - 1],
+                    distance: if alongside { 0. } else { distance as f32 },
                     lateral: y as f32,
                     detect: 1,
                     lane_coord_rel: (-y / LANE_WIDTH) as f32,
@@ -458,7 +479,7 @@ mod placement_tests {
             seen: [None, Some(Seen { world: (-2., -3.), run: 2, cut: false })],
         });
         let apply = |vision: &mut Vision, now, slots: &mut [Option<Slot>; 5]| {
-            vision.apply(now, 0., PoseAt::default(), [false; 5], slots);
+            vision.apply(now, 0., PoseAt::default(), [false; 5], [false; 2], slots);
         };
         let mut slots = [None; 5];
         apply(&mut vision, 1., &mut slots);
@@ -480,7 +501,7 @@ mod placement_tests {
             let mut slots = radar;
             let mut swap = Swapped { camera: true, pending: None };
             let seen = Seen { world: (x, 3.), run, cut };
-            place(1., 1., 2., 1, false, &seen, &cfg, PoseAt::default(), &radar, false, &mut slots, &mut swap);
+            place(1., 1., 2., 1, false, &seen, &cfg, PoseAt::default(), &radar, false, false, &mut slots, &mut swap);
             assert_eq!(slots, radar, "x={x}, run={run}, cut={cut}");
             assert_eq!(swap, Swapped::default());
         }
@@ -495,18 +516,18 @@ mod placement_tests {
         vision.held[0] = held(1., 1.5);
         for now in [1., 1.5, 2.] {
             let mut slots = radar;
-            vision.apply(now, 0., PoseAt::default(), [false; 5], &mut slots);
+            vision.apply(now, 0., PoseAt::default(), [false; 5], [false; 2], &mut slots);
             assert_eq!(slots[1].unwrap().vid, 1);
         }
         vision.held[0] = held(2.5, 3.5);
         let mut slots = radar;
-        vision.apply(2.5, 0., PoseAt::default(), [false; 5], &mut slots);
+        vision.apply(2.5, 0., PoseAt::default(), [false; 5], [false; 2], &mut slots);
         assert_eq!(slots[1].unwrap().vid, 1, "the next observation no longer calls for a swap");
 
         for (t, expected) in [(3., VISION_CONFIRMS), (4., VISION_ONLY)] {
             vision.held[0] = held(t, 1.5);
             let mut slots = radar;
-            vision.apply(t, 0., PoseAt::default(), [false; 5], &mut slots);
+            vision.apply(t, 0., PoseAt::default(), [false; 5], [false; 2], &mut slots);
             assert_eq!(slots[1].unwrap().vision, expected);
         }
     }
@@ -519,10 +540,10 @@ mod placement_tests {
             seen: [Some(Seen { world: (2., 3.), run: 2, cut: false }), None],
         });
         let mut slots = [None; 5];
-        vision.apply(1.99, 0., PoseAt::default(), [false; 5], &mut slots);
+        vision.apply(1.99, 0., PoseAt::default(), [false; 5], [false; 2], &mut slots);
         assert_eq!(slots[1].unwrap().vision, VISION_ONLY);
         let mut slots = [None; 5];
-        vision.apply(1.90, 0., PoseAt::default(), [false; 5], &mut slots);
+        vision.apply(1.90, 0., PoseAt::default(), [false; 5], [false; 2], &mut slots);
         assert_eq!(slots, [None; 5]);
     }
 }

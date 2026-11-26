@@ -82,13 +82,17 @@ def smooth_value(val, prev_val, tau, dt=DT_MDL):
   alpha = 1 - np.exp(-dt/tau) if tau > 0 else 1
   return alpha * val + (1 - alpha) * prev_val
 
+def curvature_step_limit(v_ego):
+  return MAX_LATERAL_JERK / max(v_ego, MIN_SPEED) ** 2 * DT_CTRL
+
+
 def clip_curvature(v_ego, prev_curvature, new_curvature, roll):
   # This function respects ISO lateral jerk and acceleration limits + a max curvature
   v_ego = max(v_ego, MIN_SPEED)
-  max_curvature_rate = MAX_LATERAL_JERK / (v_ego ** 2)  # inexact calculation, check https://github.com/commaai/openpilot/pull/24755
+  max_step = curvature_step_limit(v_ego)  # inexact calculation, see https://github.com/commaai/openpilot/pull/24755
   new_curvature = np.clip(new_curvature,
-                          prev_curvature - max_curvature_rate * DT_CTRL,
-                          prev_curvature + max_curvature_rate * DT_CTRL)
+                          prev_curvature - max_step,
+                          prev_curvature + max_step)
 
   roll_compensation = roll * ACCELERATION_DUE_TO_GRAVITY
   # Avoid an abrupt authority drop at 100 km/h. Gradually transition from

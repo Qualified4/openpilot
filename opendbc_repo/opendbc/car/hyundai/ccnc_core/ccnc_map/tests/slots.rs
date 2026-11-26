@@ -993,9 +993,9 @@ fn a_car_alongside_on_the_right_with_another_ahead_is_drawn_in_rr() {
 }
 
 #[test]
-fn an_alongside_split_returns_the_measured_distance_on_a_hard_exit_or_far_replacement() {
+fn an_alongside_split_returns_to_the_front_with_a_bounded_range_step() {
     let world = road();
-    for (distance, partner) in [(9.4, 2), (4.9, 3)] {
+    for (distance, partner, expected) in [(9.4, 2, 9.4), (4.9, 3, 1.)] {
         let mut assigner = Assigner::default();
         let split = (0..=13).map(|i| side_pair(&mut assigner, &world, f64::from(i) * 0.05, &[4.9, 35.], 1.))
             .last().unwrap();
@@ -1003,9 +1003,19 @@ fn an_alongside_split_returns_the_measured_distance_on_a_hard_exit_or_far_replac
         let cars = [beside(&world, 1, 0.7, distance, 1.), beside(&world, partner, 0.7, 47., 1.)];
         let mut slots = assigner.update(0.7, &cars, &world, None);
         assert_eq!(assigner.split_alongside(0.7, &cars, [false; 2], &mut slots), [false; 2]);
-        assert_eq!(slots[RF].map(|s| (s.vid, s.distance)), Some((1, distance as f32)));
+        assert_eq!(slots[RF].map(|s| (s.vid, s.distance)), Some((1, expected)));
         assert!(slots[RR].is_none());
     }
+    let mut assigner = Assigner::default();
+    for frame in 0..=13 {
+        side_pair(&mut assigner, &world, f64::from(frame) * 0.05, &[4.9, 35.], 1.);
+    }
+    for (now, x) in [(0.70, 6.4), (0.75, 7.8)] {
+        assert_eq!(side_pair(&mut assigner, &world, now, &[x, 35.], 1.)[RR].map(|s| s.vid), Some(1));
+    }
+    let slots = side_pair(&mut assigner, &world, 0.80, &[8.2, 35.], 1.);
+    assert_eq!(slots[RF].map(|s| (s.vid, s.distance)), Some((1, 1.)));
+    assert!(slots[RR].is_none());
 }
 
 /// Left lane: the near car at 3 m, unreported (radar coverage ends alongside) while `lost` holds, and the next at 35 m.

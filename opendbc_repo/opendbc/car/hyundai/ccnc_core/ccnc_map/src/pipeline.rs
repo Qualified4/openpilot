@@ -484,13 +484,28 @@ impl Pipeline {
         };
         self.rear.finish(&self.world, rear_input, &mut slots)?;
         let split = self.slots.split_alongside(now, cars, remembered, &mut slots);
+        let eased_front: [bool; 2] = std::array::from_fn(|side| {
+            slots[side + 1].zip(measured_slots[side + 1])
+                .is_some_and(|(shown, measured)| shown.vid == measured.vid && shown.distance != measured.distance)
+        });
         let continuous = self.rear.continue_sides(&self.world, rear_input, remembered, &measured_slots, &mut slots);
         self.radar_slots = slots;
-        let mut protected = [false, remembered[0] || split[0], remembered[1] || split[1], split[0], split[1]];
+        let mut protected = [
+            false,
+            remembered[0] || split[0] || eased_front[0],
+            remembered[1] || split[1] || eased_front[1],
+            split[0],
+            split[1],
+        ];
         for index in continuous.into_iter().flatten() {
             protected[index] = true;
         }
-        self.vision.apply(now, car.speed, self.world.pose.at(now), protected, &mut slots);
+        let current_front = std::array::from_fn(|side| {
+            slots[side + 1].is_some_and(|slot| cars.iter().any(|car| {
+                car.vid == slot.vid && car.seen_radar == now && car.radar_id.is_some()
+            }))
+        });
+        self.vision.apply(now, car.speed, self.world.pose.at(now), protected, current_front, &mut slots);
         let straight = speed >= 0.5 && !car.blinker && !self.world.ego_changing()
             && measured_yaw.is_some_and(|rate| rate.abs() <= 0.04);
         self.slots.smooth_opening_sides(now, straight, &mut slots);

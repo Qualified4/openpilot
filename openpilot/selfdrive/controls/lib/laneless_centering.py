@@ -191,6 +191,7 @@ class LanelessCentering:
     self.integral = 0.0
     self.accel = 0.0       # smoothed, rate-limited target before the blend, m/s²
     self.accel_out = 0.0   # blend * accel: what was added this step, m/s²
+    self.curvature_limits = (0.0, 0.0)
     self.block = 0
     self.last_car = None
     self.hold = 0.0
@@ -314,6 +315,8 @@ class LanelessCentering:
     left, left_reasons = _side_limit(lane, safe_offsets, rs.leadsLeft, self.bsd_left > 0.0, radar_valid, -1.0, accel_per_m)
     right, right_reasons = _side_limit(lane, safe_offsets, rs.leadsRight, self.bsd_right > 0.0, radar_valid, 1.0, accel_per_m)
     lo, hi = -left, right
+    speed_squared = max(v, MIN_SPEED) ** 2
+    self.curvature_limits = (lo / speed_squared, hi / speed_squared)
 
     limits = []
     if fails or offsets is None:
@@ -352,4 +355,4 @@ class LanelessCentering:
     if not math.isfinite(self.accel_out):
       self.reset()
       return 0.0
-    return self.accel_out / max(v, MIN_SPEED) ** 2
+    return self.accel_out / speed_squared

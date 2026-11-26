@@ -198,7 +198,7 @@ fn vision_cars_leave_two_seconds_after_the_last_result() {
     let index = 1 + scene.side as usize;
     for (now, shown) in [(arrival, true), (arrival + HOLD_S, true), (arrival + HOLD_S + 0.01, false)] {
         let mut slots = [None; 5];
-        vision.apply(now, 0., PoseAt::default(), [false; 5], &mut slots);
+        vision.apply(now, 0., PoseAt::default(), [false; 5], [false; 2], &mut slots);
         assert_eq!(slots[index].is_some(), shown, "{now}");
         if shown {
             assert_eq!(slots[index].unwrap().vision, VISION_ONLY);
@@ -208,7 +208,7 @@ fn vision_cars_leave_two_seconds_after_the_last_result() {
     // Moving off or reversing ends it at once; a standing car's slightly negative speed does not.
     for (v_ego, shown) in [(-0.0011, true), (3.01, false), (-0.3, false)] {
         let mut slots = [None; 5];
-        vision.apply(arrival, v_ego, PoseAt::default(), [false; 5], &mut slots);
+        vision.apply(arrival, v_ego, PoseAt::default(), [false; 5], [false; 2], &mut slots);
         assert_eq!(slots[index].is_some(), shown, "{v_ego}");
     }
 }
@@ -221,7 +221,7 @@ fn camera_car() -> (Vision, f64, usize, f32, f32) {
 
 fn run(vision: &mut Vision, now: f64, radar: [Option<Slot>; 5]) -> [Option<Slot>; 5] {
     let mut slots = radar;
-    vision.apply(now, 0., PoseAt::default(), [false; 5], &mut slots);
+    vision.apply(now, 0., PoseAt::default(), [false; 5], [false; 2], &mut slots);
     slots
 }
 
@@ -298,7 +298,7 @@ fn a_protected_radar_car_stays_but_does_not_take_back_a_shown_camera_car() {
         let mut slots = far;
         let mut protected = [false; 5];
         protected[index] = protect;
-        vision.apply(now, 0., PoseAt::default(), protected, &mut slots);
+        vision.apply(now, 0., PoseAt::default(), protected, [false; 2], &mut slots);
         slots[index].map(|s| (s.vid, s.vision))
     };
     // The stop memory's or a side pair's car is not taken over, however long the camera asks; the camera confirms it.
@@ -330,7 +330,7 @@ fn camera_car_follows_the_ego_motion_since_its_frame() {
     let index = 1 + scene.side as usize;
     let mut slots = [None; 5];
     // 1 m forward since the frame: the car is 1 m closer.
-    vision.apply(now, 0., PoseAt { x: 1., ..PoseAt::default() }, [false; 5], &mut slots);
+    vision.apply(now, 0., PoseAt { x: 1., ..PoseAt::default() }, [false; 5], [false; 2], &mut slots);
     assert!((f64::from(slots[index].unwrap().distance) - (x - 1.)).abs() < 1e-5);
 }
 
@@ -366,10 +366,10 @@ fn raw_frame_combines_with_side_frame_and_expires_after_raw_hold() {
     let raw = raw_frame_of(&scene, fr, raw_t);
     assert!(step_raw(&mut vision, &raw, raw_arrival, fr).unwrap().is_none());
     let mut slots = [None; 5];
-    vision.apply(arrival + HOLD_S + 0.1, 0., PoseAt::default(), [false; 5], &mut slots);
+    vision.apply(arrival + HOLD_S + 0.1, 0., PoseAt::default(), [false; 5], [false; 2], &mut slots);
     assert!(slots[index].is_some(), "intervening raw bridges a slow 3-view cycle");
     let mut expired = [None; 5];
-    vision.apply(raw_arrival + 1.55, 0., PoseAt::default(), [false; 5], &mut expired);
+    vision.apply(raw_arrival + 1.55, 0., PoseAt::default(), [false; 5], [false; 2], &mut expired);
     assert!(expired[index].is_none(), "car still leaves promptly when visiond stops after raw");
     // Raw older than RAW_HOLD_S is not combined into a later side frame.
     let mut later = frame_of(&scene, fr);
@@ -394,13 +394,13 @@ fn slow_delayed_result_within_late_s_compensates_ego_motion_and_cuts_off_above_3
 
     // Ego crept forward 2.0 m between capture and display time: the camera car moves 2.0 m closer.
     let mut slots = [None; 5];
-    vision.apply(t + 2.5, 1.0, PoseAt { t: t + 2.5, x: 12.0, y: 0.0, heading: 0.0, s: 12.0 }, [false; 5], &mut slots);
+    vision.apply(t + 2.5, 1.0, PoseAt { t: t + 2.5, x: 12.0, y: 0.0, heading: 0.0, s: 12.0 }, [false; 5], [false; 2], &mut slots);
     assert_eq!(slots[side_idx].map(|s| s.vision), Some(VISION_ONLY));
     assert!((f64::from(slots[side_idx].unwrap().distance) - (cand.x - 2.0)).abs() < 1e-4);
 
     // As soon as ego exceeds 3.0 m/s, the held slot disappears immediately even well inside HOLD_S.
     let mut fast = [None; 5];
-    vision.apply(t + 2.6, 3.05, PoseAt { t: t + 2.6, x: 12.3, y: 0.0, heading: 0.0, s: 12.3 }, [false; 5], &mut fast);
+    vision.apply(t + 2.6, 3.05, PoseAt { t: t + 2.6, x: 12.3, y: 0.0, heading: 0.0, s: 12.3 }, [false; 5], [false; 2], &mut fast);
     assert!(fast[side_idx].is_none());
 }
 
@@ -419,7 +419,7 @@ fn starved_vision_over_1_5s_clears_camera_slot_and_keeps_radar_slots() {
 
     // Initially the camera fills its side slot without disturbing radar slots FF or the opposite side.
     let mut slots = radar_only;
-    vision.apply(last_fresh_arrival, 0., PoseAt::default(), [false; 5], &mut slots);
+    vision.apply(last_fresh_arrival, 0., PoseAt::default(), [false; 5], [false; 2], &mut slots);
     assert_eq!(slots[side_idx].map(|s| s.vision), Some(VISION_ONLY));
     assert_eq!(slots[0], radar_only[0]);
     assert_eq!(slots[other_idx], radar_only[other_idx]);
@@ -434,7 +434,7 @@ fn starved_vision_over_1_5s_clears_camera_slot_and_keeps_radar_slots() {
 
     // Once HOLD_S has passed since the last fresh arrival, the camera slot vanishes silently while radar stays exact.
     let mut after_starve = radar_only;
-    vision.apply(last_fresh_arrival + HOLD_S + 0.05, 0., PoseAt::default(), [false; 5], &mut after_starve);
+    vision.apply(last_fresh_arrival + HOLD_S + 0.05, 0., PoseAt::default(), [false; 5], [false; 2], &mut after_starve);
     assert!(after_starve[side_idx].is_none(), "starved camera slot must disappear silently");
     assert_eq!(after_starve[0], radar_only[0]);
     assert_eq!(after_starve[other_idx], radar_only[other_idx]);

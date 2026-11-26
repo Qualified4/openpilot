@@ -15,7 +15,7 @@ from openpilot.selfdrive.car.voice_indicator import set_lane_change_blinkers
 from openpilot.selfdrive.selfdrived.vehicle_faults import inhibit_faulted_controls
 from opendbc.car.vehicle_model import VehicleModel
 from opendbc.car.interfaces import CarInterfaceBase
-from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature, get_lag_adjusted_curvature
+from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature, curvature_step_limit, get_lag_adjusted_curvature
 from openpilot.selfdrive.controls.lib.laneless_centering import LanelessCentering
 from openpilot.selfdrive.controls.lib.latcontrol import MIN_LATERAL_CONTROL_SPEED
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
@@ -35,7 +35,8 @@ def control_fixture():
   ns = {'math': math, 'np': np, 'Number': Number, 'car': car, 'DT_CTRL': DT_CTRL, 'CV': CV,
         'MIN_LATERAL_CONTROL_SPEED': MIN_LATERAL_CONTROL_SPEED, 'LaneChangeState': log.LaneChangeState,
         'LaneChangeDirection': log.LaneChangeDirection, 'ACTUATOR_FIELDS': tuple(car.CarControl.Actuators.schema.fields),
-        'clip_curvature': clip_curvature, 'get_lag_adjusted_curvature': get_lag_adjusted_curvature,
+        'clip_curvature': clip_curvature, 'curvature_step_limit': curvature_step_limit,
+        'get_lag_adjusted_curvature': get_lag_adjusted_curvature,
         'LanelessCentering': LanelessCentering,
         'resolve_vehicle_model_steer_ratio': resolve_vehicle_model_steer_ratio,
         'lateral_vehicle_parameters': lateral_vehicle_parameters,
@@ -70,7 +71,8 @@ def control_fixture():
   control = NS(CP=cp, CI=ci, sm=sm, params=params, VM=VehicleModel(cp), LaC=LatControlTorque(cp, ci),
                LoC=NS(reset=lambda: None, update=lambda *args: (0.0, 0.0, 0.0), long_control_state='off'),
                carrot_controls=NS(lat_suspend_control=lambda cs, active: active), is_vw_meb=False,
-               desired_curvature=0.0, laneless_centering=LanelessCentering(), lateral_startup=LateralStartupGate(), lateral_started=False,
+               desired_curvature=0.0, model_curvature=0.0, centering_curvature=0.0,
+               laneless_centering=LanelessCentering(), lateral_startup=LateralStartupGate(), lateral_started=False,
                steer_limited_by_safety=False)
   return control, lambda: ns['state_control'](control)
 
@@ -120,6 +122,7 @@ def test_full_control_loop_waits_only_for_first_readiness(enabled):
   assert control.LaC.pid.i > 0.7
   sm['carState'].latEnabled = True
   control.desired_curvature = 0.01
+  control.model_curvature = 0.01
   cc, _ = step()
   assert cc.latActive and control.lateral_startup.ready
   assert cc.actuators.curvature > 0.005  # no new measured-curvature reset on reengagement
