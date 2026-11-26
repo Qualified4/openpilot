@@ -457,6 +457,7 @@ impl Pipeline {
         let cars = self.tracker.vehicles();
         self.slots.set_model_lane(self.model_lane(stamp));
         let mut slots = self.slots.update_display_lead(now, cars, &self.world, display_lead, primary);
+        let measured_slots = slots;
         let remembered = if holding {
             // The map's 0.15 s freshness, not the selector's 0.3 s prediction hold, decides when memory takes over.
             let (map, frame) = (&self.radar, self.radar.frame());
@@ -473,20 +474,21 @@ impl Pipeline {
             [false; 2]
         };
         let ego = self.world.u_ego();
-        self.rear.finish(
-            &self.world,
-            WorldInput {
-                now,
-                changing: changing || car.blinker,
-                can_valid: true,
-                blind: car.blind,
-                vehicles: cars,
-            },
-            &mut slots,
-        )?;
+        let rear_input = WorldInput {
+            now,
+            changing: changing || car.blinker,
+            can_valid: true,
+            blind: car.blind,
+            vehicles: cars,
+        };
+        self.rear.finish(&self.world, rear_input, &mut slots)?;
         let split = self.slots.split_alongside(now, cars, remembered, &mut slots);
+        let continuous = self.rear.continue_sides(&self.world, rear_input, remembered, &measured_slots, &mut slots);
         self.radar_slots = slots;
-        let protected = [false, remembered[0] || split[0], remembered[1] || split[1], split[0], split[1]];
+        let mut protected = [false, remembered[0] || split[0], remembered[1] || split[1], split[0], split[1]];
+        for index in continuous.into_iter().flatten() {
+            protected[index] = true;
+        }
         self.vision.apply(now, car.speed, self.world.pose.at(now), protected, &mut slots);
         let straight = speed >= 0.5 && !car.blinker && !self.world.ego_changing()
             && measured_yaw.is_some_and(|rate| rate.abs() <= 0.04);

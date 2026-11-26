@@ -33,6 +33,15 @@ impl LinkGates {
         dt <= Self::BODY.gap + TIME_EPS && dx.abs() <= 6. && dy.abs() <= 1.5 && dv.abs() <= 2.5
     }
 
+    pub(super) fn same_side_id(dt: f64, error: (f64, f64, f64), step: (f64, f64), ego: f64) -> bool {
+        dt <= Self::BODY.gap + TIME_EPS
+            && if dt <= 0.15 + TIME_EPS {
+                (step.0 - ego * dt).abs() <= 1. && step.1.abs() <= 0.7
+            } else {
+                error.0.abs() <= 1. && error.1.abs() <= 0.7
+            }
+    }
+
     fn score(self, (dx, dy, dv): (f64, f64, f64)) -> Option<f64> {
         let (x, y, v) = (dx.abs(), dy.abs(), dv.abs());
         (x <= self.lon && y <= 1. && v <= self.speed).then(|| x / self.lon + y + v / self.speed)

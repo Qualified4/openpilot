@@ -1,5 +1,6 @@
 //! Rear handover and continuous side drawings for the legacy CCNC map.
 
+mod continuity;
 pub mod side_flow;
 
 use std::collections::{HashMap, VecDeque};
@@ -405,6 +406,7 @@ pub fn finish_map(
     rear.update(k, input, selected, proven, slots)
 }
 
+#[derive(Clone, Copy)]
 pub struct WorldInput<'a> {
     pub now: f64,
     pub changing: bool,
@@ -422,6 +424,7 @@ pub struct WorldRear {
     /// Confirmed kinds by vid. The tracker forgets a car 2 s after its last radar update; the rear handover keeps
     /// drawing it for up to 10 s, with this kind.
     kinds: Vec<(u32, Kind)>,
+    alongside: [Option<continuity::Alongside>; 2],
 }
 
 impl WorldRear {
@@ -441,6 +444,7 @@ impl WorldRear {
         let lateral = bsd_laterals(width, width);
         if context_changed {
             self.kinds.clear();
+            self.alongside = [None; 2];
         }
         for car in input.vehicles {
             if let Some(kind) = car
@@ -599,6 +603,26 @@ impl WorldRear {
         });
         Ok(())
     }
+    pub(crate) fn continue_sides(
+        &mut self,
+        world: &World,
+        input: WorldInput<'_>,
+        remembered: [bool; 2],
+        selected: &[Option<WorldSlot>; 5],
+        slots: &mut [Option<WorldSlot>; 5],
+    ) -> [Option<usize>; 2] {
+        if !world.accepts_radar() || !input.can_valid || world.ego_changing() || input.changing {
+            self.alongside = [None; 2];
+            return [None; 2];
+        }
+        std::array::from_fn(|side| {
+            continuity::Alongside::update(
+                &mut self.alongside[side], side, input.now, world.pose.speed(), input.blind[side],
+                remembered[side], selected, input.vehicles, slots,
+            )
+        })
+    }
+
 }
 
 impl RearState {

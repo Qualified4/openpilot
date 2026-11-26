@@ -22,19 +22,13 @@ const MEMORY_MAX_X: f64 = 15.;
 const ALONGSIDE_ENTER_M: f64 = 5.0;
 /// ... and back in the front slot beyond this.
 const ALONGSIDE_EXIT_M: f64 = 6.0;
-/// A split side stays split this long after its next car drops out ...
-const ALONGSIDE_HOLD_S: f64 = 1.0;
-/// ... and this long after its near car does: the radar barely sees within 5 m, and the tracker keeps a car 2 s.
-const ALONGSIDE_NEAR_HOLD_S: f64 = 2.0;
-/// The near car is alongside only moving with ego, within this speed of it (m/s). A car ego passes, or one passing
-/// ego, goes on from the front slot to the rear one: 0000047f 6 0-18.7 s, ego at 24-42 km/h past a queue creeping in
-/// the right lane at 2-4.5 m/s, RR held each passed car at 0 m in 288 of 331 frames and jumped 0 -> 0.4-4 m -> 0 at
-/// each of 12 vid changes. Measured over 47f and 47d (REPORT_RAIL_RR_KO): rear slots at 0 m while passing 62.1 -> 3.5 s
-/// and 50.4 -> 0.4 s.
-const ALONGSIDE_SPEED: f32 = 2.0;
-/// ... and a split side stays split while its near car is within this speed of ego: 00000454 18, a car alongside at
-/// -2.6 to -1.8 m/s split and joined 20 times in 4 s around an ego lane change.
-const ALONGSIDE_SPEED_EXIT: f32 = 3.0;
+/// The next car and the near car must be observed together before splitting.
+const ALONGSIDE_CONFIRM_S: f64 = 0.3;
+const ALONGSIDE_MIN_S: f64 = 1.;
+const ALONGSIDE_RELOCK_S: f64 = 2.;
+const ALONGSIDE_OPENING_MPS: f64 = 1.;
+const FF_OUTSIDE_S: f64 = 1.;
+const SIDE_OUTSIDE_S: f64 = 0.25;
 /// A vid that once moved at this ground speed (m/s) or faster is a moving car: `EDGE_ROOM_M` does not apply to it.
 const MOVED: f64 = 3.0;
 /// A car's center sits about half its width or more inside the road edge. A side object that never moved at `MOVED`
@@ -199,6 +193,7 @@ struct Drawing {
     into_ff: bool,
     ff_change_since: Option<f64>,
     lane_entry_since: Option<f64>,
+    outside_since: Option<f64>,
     /// The vid once moved at `MOVED` or faster.
     fast: bool,
 }
@@ -215,6 +210,7 @@ impl Drawing {
             into_ff: false,
             ff_change_since: None,
             lane_entry_since: None,
+            outside_since: None,
             fast: false,
         }
     }
@@ -261,6 +257,16 @@ fn slot_index(x: f64, lane: i8) -> Option<usize> {
     }
 }
 
+#[derive(Default)]
+struct SideOccupancy {
+    pair: Option<(u32, u32, f64)>,
+    split: Option<(Slot, f64)>,
+    rejoin: Option<(u32, f64)>,
+    next_seen: Option<f64>,
+    positions: std::collections::VecDeque<(f64, f64)>,
+    near: Option<u32>,
+}
+
 pub struct Assigner {
     generation: u32,
     drawings: Vec<Drawing>,
@@ -273,14 +279,9 @@ pub struct Assigner {
     side_last: [Option<(Slot, (f64, f64))>; 2],
     /// The second nearest radar car for LF and RF at the last update.
     runner_up: [Option<Slot>; 2],
-    /// The car `split_alongside` last drew alongside in LR and RR.
-    alongside: [Option<Slot>; 2],
-    /// When a split side lost its next car or its near car, while it stays split without it.
-    alongside_alone: [Option<f64>; 2],
-    /// The car the front slot drew 0-5 m ahead without splitting the side, too fast for it (`ALONGSIDE_SPEED`).
-    passing: [Option<Slot>; 2],
-    /// A passed car already in the radar gap can remain there while the next front car closes in.
-    passing_hold: [Option<Slot>; 2],
+    side_occupancy: [SideOccupancy; 2],
+    occupants: [Option<Slot>; 3],
+    ff_seen: Option<f64>,
     /// Where (world) and when the edge rule last hid a side object.
     edge_hidden: Vec<(f64, f64, f64)>,
     /// `set_model_lane`.
@@ -300,10 +301,9 @@ impl Default for Assigner {
             measured_lead_since: None,
             side_last: [None; 2],
             runner_up: [None; 2],
-            alongside: [None; 2],
-            alongside_alone: [None; 2],
-            passing: [None; 2],
-            passing_hold: [None; 2],
+            side_occupancy: Default::default(),
+            occupants: [None; 3],
+            ff_seen: None,
             edge_hidden: Vec::new(),
             model_lane: None,
             side_lateral: [None; 2],
@@ -376,6 +376,8 @@ impl Assigner {
             self.generation = world.generation();
             self.drawings.clear();
             self.previous_ff = None;
+            self.occupants = [None; 3];
+            self.ff_seen = None;
             self.ff_lead = None;
             self.ff_lead_pending = None;
             self.measured_lead_since = None;
@@ -389,6 +391,9 @@ impl Assigner {
             self.ff_lead_pending = None;
             self.measured_lead_since = None;
             self.clear_split();
+            self.previous_ff = None;
+            self.occupants = [None; 3];
+            self.ff_seen = None;
             return [None; 5];
         }
         self.drawings.retain(|d| now - d.seen <= 2.);
@@ -412,6 +417,9 @@ impl Assigner {
         let mut followed: Option<Followed> = None;
         let mut confirmed_lead = None;
         let mut previous = None;
+        let mut occupied_ff = None;
+        let mut held_challenger_side = None;
+        let mut ff_missing_geometry = false;
         let mut best: [Option<Slot>; 5] = [None; 5];
         let mut second: [Option<Slot>; 2] = [None; 2];
         let changing = world.ego_changing();
@@ -420,6 +428,7 @@ impl Assigner {
                 continue;
             }
             let Some(Observation { x, r, r_slot, speed }) = Observation::from_car(car, world, radar) else {
+                ff_missing_geometry |= self.previous_ff == Some(car.vid) && !car.flags.structure && !car.oncoming;
                 continue;
             };
             let i = match self.drawings.binary_search_by_key(&car.vid, |d| d.vid) {
@@ -435,6 +444,7 @@ impl Assigner {
                 drawing.into_ff = false;
                 drawing.ff_change_since = None;
                 drawing.lane_entry_since = None;
+                drawing.outside_since = None;
             }
             drawing.seen = now;
             let original_lane = drawing.lane;
@@ -460,6 +470,32 @@ impl Assigner {
                 }
             } else {
                 drawing.lane_entry_since = None;
+            }
+            let previous_side = (1..=2).find(|&i| self.occupants[i].is_some_and(|s| s.vid == car.vid));
+            let side_lane = previous_side.map(|i| if i == 1 { -1 } else { 1 });
+            let ff_owner = self.previous_ff == Some(car.vid) && measured && proven_vehicle && !car.oncoming;
+            let hold_owner = !changing && !world.lane_held() && measured && proven_vehicle;
+            let mut hold_ff = false;
+            let mut side_lane_hold = None;
+            if hold_owner && ff_owner && drawing.lane != 0 {
+                let width = 0.10 + 0.10 * ((x - 10.) / 40.).clamp(0., 1.);
+                let lead_still_matches = stable_radar_lead.is_some() && matching_track;
+                if lead_still_matches {
+                    drawing.outside_since = None;
+                }
+                let outward_speed = (sin * f64::from(car.vx) - cos * f64::from(car.vy)) * r_slot.signum();
+                hold_ff = r_slot.abs() <= 0.5 + width && outward_speed < 0.7
+                    && now - *drawing.outside_since.get_or_insert(now) < FF_OUTSIDE_S;
+            } else if let Some(side_lane) = side_lane.filter(|_| hold_owner && x <= 15. && world.pose.speed().abs() >= FF_BOUNDARY_MAX_EGO_SPEED) {
+                if drawing.lane != side_lane && (r_slot - f64::from(side_lane)).abs() <= 0.60 {
+                    if now - *drawing.outside_since.get_or_insert(now) < SIDE_OUTSIDE_S {
+                        side_lane_hold = Some(side_lane);
+                    }
+                } else {
+                    drawing.outside_since = None;
+                }
+            } else {
+                drawing.outside_since = None;
             }
             drawing.fast |= speed.abs() >= MOVED;
             let still = now - car.born >= SETTLED_S && !drawing.fast;
@@ -501,7 +537,7 @@ impl Assigner {
                 play_distance,
                 -lateral_target / LANE_WIDTH,
             );
-            let Some(slot) = (if drawing.into_ff { Some(0) } else { slot_index(x, drawing.lane) }) else {
+            let Some(slot) = (if drawing.into_ff || hold_ff { Some(0) } else { slot_index(x, side_lane_hold.unwrap_or(drawing.lane)) }) else {
                 continue;
             };
             if car.flags.structure || (slot != 0 && !proven_vehicle) {
@@ -554,6 +590,13 @@ impl Assigner {
                 vision: VISION_NONE,
             };
             if slot == 0 {
+                if hold_ff {
+                    occupied_ff = Some(candidate);
+                } else if let Some(side) = previous_side.filter(|_| proven_vehicle) {
+                    if held_challenger_side.is_none_or(|(_, old): (usize, Slot)| candidate.distance < old.distance) {
+                        held_challenger_side = Some((side, candidate));
+                    }
+                }
                 let held_lead = self.ff_lead.is_some_and(|(vid, _)| vid == car.vid);
                 let primary_match = lead_one.filter(|(one, _)| {
                     let (dx, dy, dv) = one.motion;
@@ -668,8 +711,33 @@ impl Assigner {
                 best[0] = Some(pref);
             }
         }
+        if let Some(owner) = occupied_ff {
+            let challenger = best[0].filter(|s| s.vid != owner.vid);
+            let strong = challenger.is_some_and(|s| {
+                s.distance < owner.distance && s.lane_coord_rel.abs() <= 0.35 && lead_one.is_some_and(|(lead, _)| {
+                    lead.measured_track.is_some() && vehicles.iter().any(|car| car.vid == s.vid && car.radar_id == lead.measured_track)
+                })
+            });
+            if !strong {
+                best[0] = Some(owner);
+                if let Some((side, s)) = held_challenger_side.filter(|(_, s)| challenger.is_some_and(|c| c.vid == s.vid)) {
+                    if best[side].is_none_or(|old| s.distance < old.distance) {
+                        second[side - 1] = best[side];
+                        best[side] = Some(s);
+                    }
+                }
+            }
+        }
+        if best[0].is_none() && ff_missing_geometry && !changing
+            && self.ff_seen.is_some_and(|seen| now - seen <= OBSERVATION_MAX_AGE)
+        {
+            best[0] = self.occupants[0];
+        } else {
+            self.ff_seen = best[0].map(|_| now);
+        }
         self.runner_up = second;
         self.previous_ff = best[0].map(|s| s.vid);
+        self.occupants.copy_from_slice(&best[..3]);
         let ego = world.pose.at(now);
         for side in 0..2 {
             if let Some(s) = best[side + 1].filter(|s| f64::from(s.distance) <= MEMORY_MAX_X) {
@@ -679,17 +747,8 @@ impl Assigner {
         best
     }
 
-    /// Two radar cars in one side lane, the nearer 0-5 m ahead (until 6 m) at ego's speed (`ALONGSIDE_SPEED`): draw the
-    /// nearer one alongside, at 0 m in
-    /// that side's rear slot, and the next one in the front slot. It replaces any rear handover drawing there: the car
-    /// alongside is nearer and measured. With one car the front slot keeps it until it falls behind and the handover
-    /// takes it. Kind, camera mark, v_rel and lateral go with the vid. A split side stays split while one of its cars
-    /// drops out: without the next car for up to 1 s, with the front slot empty, and the next car is drawn as soon as
-    /// one is back; without a current report of the near car (radar coverage ends alongside) for up to 2 s, drawn at
-    /// 0 m while the tracker keeps it and no other slot draws it, until the rear slot draws it itself. Both count from
-    /// when the side first lost a car. A car passing 0-5 m ahead in the front slot, too fast to split the side, is drawn
-    /// in the rear slot at 0 m the same way once the radar stops reporting it alongside, keeping the front slot: the
-    /// rear handover takes it 0.25-0.7 s later (00000454 18, 28, 34). Returns the sides split.
+    /// A confirmed pair draws the close car alongside and the next car in front. Only radar positions can start
+    /// or release a split. The rear handover owns any car that disappears into the radar gap.
     pub fn split_alongside(
         &mut self,
         now: f64,
@@ -699,57 +758,84 @@ impl Assigner {
     ) -> [bool; 2] {
         let mut split = [false; 2];
         for side in 0..2 {
+            let state = &mut self.side_occupancy[side];
             let (front, rear) = (side + 1, side + 3);
             if protected[side] || slots[rear].is_some_and(|slot| slot.vid == 0) {
-                self.alongside[side] = None;
-                self.alongside_alone[side] = None;
-                self.passing[side] = None;
-                self.passing_hold[side] = None;
+                *state = SideOccupancy::default();
                 continue;
             }
-            let kept = self.alongside[side];
-            let held = slots[front].filter(|near| kept.is_some_and(|kept| kept.vid == near.vid));
-            let (limit, speed) = if held.is_some() {
-                (ALONGSIDE_EXIT_M, ALONGSIDE_SPEED_EXIT)
-            } else {
-                (ALONGSIDE_ENTER_M, ALONGSIDE_SPEED)
-            };
-            let close = slots[front].filter(|near| (0. ..=limit).contains(&f64::from(near.distance)));
-            let near = close.filter(|near| near.v_rel.abs() <= speed);
-            let next = self.runner_up[side].filter(|next| near.is_some_and(|near| near.vid != next.vid));
-            let hold = |alone: &mut Option<f64>, limit: f64| now - *alone.get_or_insert(now) <= limit;
-            let mut bridge = false;
-            let shown = match (near, next) {
-                (Some(near), Some(next)) => {
-                    self.alongside_alone[side] = None;
-                    Some((near, Some(next)))
+            if let Some((kept, _)) = state.split {
+                let carried = vehicles.iter().find(|car| car.vid == kept.vid);
+                let lost = carried.is_some_and(|car| {
+                    car.radar_id.is_some() && !car.flags.structure && !car.oncoming
+                        && car.seen_radar < now && now - car.seen_radar <= 2.
+                        && !vehicles.iter().any(|new| new.vid != car.vid && new.seen_radar == now && new.radar_id == car.radar_id)
+                });
+                if lost && slots.iter().all(|s| s.is_none_or(|s| s.vid != kept.vid)) {
+                    let last = state.positions.back().map_or(now, |(t, _)| *t);
+                    if now - last <= 2. {
+                        slots[rear] = Some(Slot { distance: 0., ..kept });
+                        split[side] = true;
+                        continue;
+                    }
                 }
-                (Some(near), None) if held.is_some() => hold(&mut self.alongside_alone[side], ALONGSIDE_HOLD_S).then_some((near, None)),
-                _ => {
-                    let droppable = |kept: &Slot| {
-                        held.is_none()
-                            && vehicles.iter().any(|car| car.vid == kept.vid)
-                            && slots.iter().all(|slot| slot.is_none_or(|slot| slot.vid != kept.vid))
-                    };
-                    let split_near = kept.filter(droppable);
-                    let lost = split_near
-                        .or_else(|| self.passing_hold[side].filter(droppable))
-                        .or_else(|| self.passing[side].filter(droppable));
-                    bridge = split_near.is_none() && lost.is_some();
-                    lost.filter(|_| hold(&mut self.alongside_alone[side], ALONGSIDE_NEAR_HOLD_S))
-                        .map(|lost| (lost, slots[front]))
-                }
-            };
-            self.alongside[side] = shown.filter(|_| !bridge).map(|(near, _)| near);
-            self.passing_hold[side] = shown.filter(|_| bridge).map(|(near, _)| near);
-            self.passing[side] = close.filter(|s| s.v_rel < -speed);
-            if shown.is_none() {
-                self.alongside_alone[side] = None;
             }
-            if let Some((near, next)) = shown {
+            let Some(near) = slots[front].filter(|slot| vehicles.iter().any(|car| {
+                car.vid == slot.vid && car.radar_id.is_some() && car.seen_radar == now
+            })) else {
+                state.pair = None;
+                continue;
+            };
+            let x = f64::from(near.distance);
+            if state.near != Some(near.vid)
+                || state.positions.back().is_some_and(|(t, _)| now - t > OBSERVATION_MAX_AGE)
+            {
+                state.positions.clear();
+                state.near = Some(near.vid);
+            }
+            state.positions.retain(|(t, _)| now - t <= 0.55);
+            if state.positions.back().is_none_or(|(t, _)| *t < now) {
+                if state.positions.len() == 12 {
+                    state.positions.pop_front();
+                }
+                state.positions.push_back((now, x));
+            }
+            let next = self.runner_up[side].filter(|s| s.vid != near.vid);
+            state.pair = next.map(|next| match state.pair {
+                Some((a, b, since)) if (a, b) == (near.vid, next.vid) => (a, b, since),
+                _ => (near.vid, next.vid, now),
+            });
+            if let Some((_, since)) = state.split.filter(|(slot, _)| slot.vid == near.vid) {
+                let outside = state.positions.iter().rev().take(3).filter(|(_, x)| *x > ALONGSIDE_EXIT_M).count() >= 2;
+                if next.is_some() {
+                    state.next_seen = Some(now);
+                }
+                let next_lost = state.next_seen.is_none_or(|t| now - t > ALONGSIDE_MIN_S + EPS);
+                if outside || x > ALONGSIDE_EXIT_M + 2. || (now - since >= ALONGSIDE_MIN_S && next_lost) {
+                    state.rejoin = Some((near.vid, now));
+                    state.split = None;
+                } else {
+                    state.split = Some((near, since));
+                    split[side] = true;
+                }
+            } else {
+                state.split = None;
+                let relocked = state.rejoin.is_some_and(|(vid, t)| vid == near.vid
+                    && now - t < ALONGSIDE_RELOCK_S && x >= 3.);
+                let opening = state.positions.front().is_some_and(|(t, start)| {
+                    now - t >= ALONGSIDE_CONFIRM_S && x - start > ALONGSIDE_OPENING_MPS * (now - t)
+                });
+                if !relocked && !opening && (0. ..=ALONGSIDE_ENTER_M).contains(&x)
+                    && state.pair.is_some_and(|(_, _, t)| now - t + EPS >= ALONGSIDE_CONFIRM_S)
+                {
+                    state.split = Some((near, now));
+                    state.next_seen = Some(now);
+                    split[side] = true;
+                }
+            }
+            if split[side] {
                 slots[rear] = Some(Slot { distance: 0., ..near });
                 slots[front] = next;
-                split[side] = true;
             }
         }
         split
@@ -780,10 +866,7 @@ impl Assigner {
 
     fn clear_split(&mut self) {
         self.runner_up = [None; 2];
-        self.alongside = [None; 2];
-        self.alongside_alone = [None; 2];
-        self.passing = [None; 2];
-        self.passing_hold = [None; 2];
+        self.side_occupancy = Default::default();
     }
 
     /// The vids `hold_stopped` may draw, for the tracker to keep while ego holds.

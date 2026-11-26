@@ -144,3 +144,15 @@ fn vehicle_flags_follow_the_current_map_report() {
     assert_eq!(cars[0].vid, vid);
     assert!(!cars[0].flags.admitted && !cars[0].flags.proven);
 }
+
+#[test]
+fn close_side_radar_id_survives_doppler_jump_but_splits_on_position_jump() {
+    let mut tracker = Tracker::default();
+    let world = World::default();
+    tracker.update(1., &[(54, 4., -3.5, -4.)], &world);
+    let vid = tracker.vid_at(1., 54).unwrap();
+    tracker.update(1.05, &[(54, 3.8, -3.5, 4.)], &world);
+    assert_eq!(tracker.vid_at(1.05, 54), Some(vid));
+    tracker.update(1.10, &[(54, 1., -2.3, -4.)], &world);
+    assert_ne!(tracker.vid_at(1.10, 54), Some(vid));
+}

@@ -330,7 +330,18 @@ impl Tracker {
                 if dt == 0. {
                     continue;
                 }
-                if LinkGates::same_id(dt, axes.error(car, sample, dt)) {
+                let error = axes.error(car, sample, dt);
+                let (x, y) = pose.to_ego(sample.wx, sample.wy);
+                let (step_x, step_y) = pose.to_ego(
+                    pose.x + sample.wx - f64::from(car.wx),
+                    pose.y + sample.wy - f64::from(car.wy),
+                );
+                // Next to ego, Doppler can jump between reflections from the same car.
+                // Require a continuous position and keep the normal gates for other returns.
+                let near_side = (-2. ..=6.).contains(&x) && (2. ..=5.5).contains(&y.abs());
+                let position_link = near_side && !car.oncoming && !car.flags.structure
+                    && LinkGates::same_side_id(dt, error, (step_x, step_y), world.pose.speed());
+                if LinkGates::same_id(dt, error) || position_link {
                     car.observe(now, sample, axes, world, self.record_history);
                 } else {
                     split_ids[index] = car.radar_id;
