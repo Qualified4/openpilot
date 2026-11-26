@@ -372,6 +372,23 @@ fn a_matched_lead_supplies_ff_evidence_but_cannot_create_a_ghost() {
 }
 
 #[test]
+fn current_radar_agreement_outweighs_a_closer_road_frame_candidate() {
+    let mut engine = MapEngine::default();
+    let points = [radar(40, 7., 0., 0.), radar(41, 12., 3.5, 0.)];
+    assert_eq!(confirm(&mut engine, &points).slots[0].unwrap().last_track_id, Some(40));
+
+    let mut entry = input(8, &points);
+    entry.lead = Some((entry.time, DisplayLead {
+        motion: (12., -3.5, 0.),
+        measured_track: Some(41),
+        model_prob: 0.95,
+    }));
+    let out = engine.step(entry);
+    assert_eq!(out.slots[0].unwrap().last_track_id, Some(41));
+    assert!(out.slots[2].is_none());
+}
+
+#[test]
 fn vision_birth_requires_repeated_nearfield_detections_and_carries_kind() {
     let mut engine = MapEngine::default();
     for tick in 0..10 {
@@ -410,8 +427,8 @@ fn delayed_camera_confirms_a_stopped_side_vehicle_only_with_current_radar() {
     let mut reflector = radar(55, 12., 3.5, 0.);
     reflector.motion_state = 1;
     let points = [reflector];
-    for tick in 0..208 {
-        let mut entry = input(tick, if tick == 64 { &[] } else { &points });
+    for tick in 0..250 {
+        let mut entry = input(tick, if matches!(tick, 64 | 220) { &[] } else { &points });
         let time = match tick {
             30 | 40 => Some(0.6), // A repeat of the same capture is one vote.
             60 => Some(2.),
@@ -429,6 +446,77 @@ fn delayed_camera_confirms_a_stopped_side_vehicle_only_with_current_radar() {
         let out = engine.step(entry);
         let expected = (60..=200).contains(&tick) && tick != 64;
         assert_eq!(out.slots[2].is_some(), expected, "tick {tick}");
+    }
+}
+
+#[test]
+fn confirmed_stopped_vehicle_outlives_camera_window_only_with_unbroken_radar() {
+    for invalid_frame in [false, true] {
+        let mut engine = MapEngine::default();
+        let mut stopped = radar(55, 12., 3.5, 0.);
+        stopped.motion_state = 1;
+        let points = [stopped];
+        for tick in 0..260 {
+            if tick == 220 && invalid_frame {
+                engine.break_radar_continuity();
+                continue;
+            }
+            let mut entry = input(tick, if tick == 220 { &[] } else { &points });
+            let observations = match tick {
+                30 => Some(0.6),
+                60 => Some(2.),
+                _ => None,
+            }
+            .map(|time| VisionObservation {
+                time,
+                x: 12.,
+                y: 3.5,
+                kind: VehicleKind::Car,
+                confidence: 0.9,
+                position: true,
+            });
+            entry.vision = observations.as_slice();
+            let out = engine.step(entry);
+            assert_eq!(out.slots[2].is_some(), (60..220).contains(&tick), "tick {tick}");
+        }
+    }
+}
+
+#[test]
+fn a_delayed_box_beyond_the_outer_line_does_not_promote_a_stationary_echo() {
+    use crate::input::model_v2::Line;
+
+    for (edge, expected) in [(-4., false), (-5., true)] {
+        let mut engine = MapEngine::default();
+        let mut reflector = radar(40, 18., -4.5, 0.);
+        reflector.motion_state = 1;
+        let points = [reflector];
+        for tick in 0..29 {
+            engine.step(input(tick, &points));
+        }
+        let obs = [VisionObservation {
+            time: 0.8,
+            x: 18.,
+            y: -4.5,
+            kind: VehicleKind::Car,
+            confidence: 0.9,
+            position: true,
+        }];
+        engine.tracker.objects[0].front_box_t = Some(obs[0].time);
+        let model = Model {
+            lane_lines: vec![Line { x: vec![0., 30.], y: vec![edge; 2] }],
+            lane_line_probs: vec![0.9],
+            road_edges: Vec::new(),
+        };
+        let mut entry = input(29, &points);
+        entry.road = Some(RoadObservation {
+            time: entry.time,
+            path: &[],
+            lines: Some(&model),
+            changing_lanes: false,
+        });
+        entry.vision = &obs;
+        assert_eq!(engine.step(entry).slots[1].is_some(), expected);
     }
 }
 

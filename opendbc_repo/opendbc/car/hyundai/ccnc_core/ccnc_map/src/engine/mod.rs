@@ -86,7 +86,7 @@ pub struct MapEngine {
     pose: Pose,
     behind: VecDeque<PoseAt>,
     previous: Option<RoadFrame>,
-    occupied: [Option<u64>; 5],
+    displayed: [Option<EngineSlot>; 5],
     last_lane_change: Option<f64>,
     time: Option<f64>,
 }
@@ -94,6 +94,12 @@ pub struct MapEngine {
 impl MapEngine {
     pub fn objects(&self) -> &[TrackedObject] {
         &self.tracker.objects
+    }
+
+    pub(crate) fn break_radar_continuity(&mut self) {
+        for object in &mut self.tracker.objects {
+            object.stationary_radar_continuous = false;
+        }
     }
 
     pub(crate) fn kind_frame(&mut self, time_ns: u64) {
@@ -132,7 +138,7 @@ impl MapEngine {
             self.pose = Pose::default();
             self.behind.clear();
             self.previous = None;
-            self.occupied = [None; 5];
+            self.displayed = [None; 5];
             self.last_lane_change = None;
         }
         let previous_pose = self.pose.current();
@@ -155,10 +161,11 @@ impl MapEngine {
         if road.is_some_and(|r| r.changing_lanes) {
             self.last_lane_change = Some(now);
         }
+        let model_pose = road.map_or(ego, |r| self.pose.at(r.time));
         let frame = RoadFrame::new(
             road.map_or(&[], |r| r.path),
             road.and_then(|r| r.lines),
-            road.map_or(ego, |r| self.pose.at(r.time)),
+            model_pose,
             ego,
             self.behind.iter().copied(),
             road.is_some_and(|r| r.changing_lanes),
@@ -168,7 +175,7 @@ impl MapEngine {
                 .predict(dt, speed, previous, &frame, previous_pose, ego);
         }
         let visible = self.tracker.radar(now, speed, &frame, ego, input.radar);
-        self.tracker.lead(now, input.lead, &frame);
+        let primary = self.tracker.lead(now, input.lead, &frame);
         for &observation in input.vision {
             let age = now - observation.time;
             if !(0. ..=1.5).contains(&age)
@@ -183,20 +190,35 @@ impl MapEngine {
             }
             let (wx, wy) = capture.to_world(observation.x, -observation.y);
             let (x, y) = ego.to_ego(wx, wy);
-            self.tracker.vision(now, speed, &frame, observation, x, -y);
+            self.tracker.vision(now, speed, &frame, observation, x, -y, |lane, rx, ry| {
+                road.is_none_or(|r| road_frame::inside_outer_line(r, model_pose, ego, lane, rx, ry))
+            });
         }
         self.tracker
-            .lifecycle(now, dt.min(0.25), &frame, &visible, input.blind);
+            .lifecycle(now, dt.min(0.25), speed, &frame, &visible, input.blind);
         let changing = self.last_lane_change.is_some_and(|t| now - t <= 0.32);
-        let slots = selector::select(
+        let mut slots = selector::select(
             now,
             speed,
             changing,
             &frame,
             &mut self.tracker.objects,
-            self.occupied,
+            self.displayed.map(|slot| slot.map(|o| o.obj_id)),
+            primary,
         );
-        self.occupied = slots.map(|slot| slot.map(|o| o.obj_id));
+        for (index, slot) in slots.iter_mut().enumerate() {
+            let Some(slot) = slot else { continue };
+            if let Some(old) = self.displayed.iter().flatten().find(|old| old.obj_id == slot.obj_id) {
+                // A refreshed path can move the Cartesian projection even while radar range is
+                // steady. Allow the measured relative speed plus a bounded position innovation.
+                let predicted = old.x + old.v_s * dt;
+                slot.x = predicted + (slot.x - predicted).clamp(-1.25, 1.25);
+                if matches!(index, 1 | 2) {
+                    slot.x = slot.x.min(50.);
+                }
+            }
+        }
+        self.displayed = slots;
         self.previous = Some(frame);
         self.time = Some(now);
         EngineOutput {

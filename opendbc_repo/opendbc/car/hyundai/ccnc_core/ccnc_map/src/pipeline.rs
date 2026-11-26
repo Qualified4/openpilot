@@ -227,6 +227,9 @@ impl Pipeline {
                 } else {
                     self.empty()
                 };
+                if !map.valid {
+                    self.engine.break_radar_continuity();
+                }
                 self.vision.clear();
                 return Ok(Some(map));
             }

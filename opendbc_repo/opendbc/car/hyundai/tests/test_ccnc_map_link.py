@@ -7,6 +7,7 @@ import pytest
 from openpilot.cereal import log, messaging
 from openpilot.common.params import Params
 from opendbc.can import CANPacker
+from opendbc.can.parser import get_raw_value
 from opendbc.car.hyundai import ccnc_core_loader, hyundaicanfd as canfd
 from opendbc.car.hyundai.tests.test_ccnc_extended_display import templates
 from opendbc.car.hyundai.tests.test_ccnc_extension import display  # noqa: F401
@@ -37,6 +38,26 @@ def test_fresh_message_uses_process():
   values = {}
   core.apply_cmap(values, packet(NS))
   assert (values["FF_DETECT"], values["FF_DISTANCE"], values["FF_LATERAL"]) == (4, 16., -1.25)
+
+
+@pytest.mark.parametrize(("lateral", "expected"), ((6.4, 6.3), (-6.51, -6.4), (-9.85, -6.4)))
+def test_ff_lateral_saturates_before_can_packing(display, monkeypatch, lateral, expected):  # noqa: F811
+  params, cs, send = display
+  params["CcncExtendedDisplay"] = True
+  templates(cs)
+  monkeypatch.setattr(canfd, "time", SimpleNamespace(monotonic_ns=lambda: NS, monotonic=lambda: 1.))
+  with log.Event.from_bytes(packet(NS)) as reader:
+    event = reader.as_builder()
+  event.customReserved3.slots[0].lateral = -lateral
+  cs.ccnc_map_bytes = event.to_bytes(), NS
+  packer = CANPacker("hyundai_canfd_generated")
+  name = "CCNC_0x162"
+  values = dict(send())[name]
+  assert canfd.ccnc_extension.state.ccnc_map_process
+  assert values["FF_LATERAL"] == expected
+  _, data, _ = packer.make_can_msg(name, 0, values)
+  raw = get_raw_value(data, packer.dbc.name_to_msg[name].sigs["FF_LATERAL"])
+  assert (raw - 128 if raw >= 64 else raw) / 10 == expected
 
 
 def test_cmap_bsd_box_yields_to_a_confirmed_rear_vehicle():

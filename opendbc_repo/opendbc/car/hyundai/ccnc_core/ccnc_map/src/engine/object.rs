@@ -50,6 +50,8 @@ pub struct TrackedObject {
     pub(super) front_box_t: Option<f64>,
     pub(super) stationary_vision_t: Option<f64>,
     pub(super) stationary_vision_confirmed: bool,
+    /// Radar has measured the same stationary return on every tick since confirmation.
+    pub(super) stationary_radar_continuous: bool,
     pub(super) last_lead_sample: Option<f64>,
     pub(super) rear: bool,
     pub(super) split_until: f64,

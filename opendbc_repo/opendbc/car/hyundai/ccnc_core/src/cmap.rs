@@ -155,6 +155,23 @@ fn detect_code(slot: &Slot) -> u8 {
     }
 }
 
+fn slot_position(index: usize, slot: &Slot) -> (f64, f64) {
+    // Display A supplies lateral position. The OEM reads FF as signed even though the DBC does not.
+    let y = f64::from(slot.lateral);
+    let lateral = match index {
+        0 => (-y).clamp(-6.4, 6.3),
+        1 | 3 => y.clamp(0., 12.7),
+        _ => (-y).clamp(0., 12.7),
+    };
+    let x = f64::from(slot.distance);
+    let distance = if index < 3 {
+        (0.8 * x).clamp(0., 204.7)
+    } else {
+        (0.8 * x.abs()).min(25.5)
+    };
+    (distance, lateral)
+}
+
 /// Every slot is rewritten from the message, so a new generation leaves nothing of the old one behind.
 pub(crate) fn apply_slots(values: &Bound<'_, PyDict>, map: &MapOut) -> PyResult<()> {
     for (index, ([distance, lateral, detect], slot)) in FRONT_FIELDS
@@ -164,20 +181,8 @@ pub(crate) fn apply_slots(values: &Bound<'_, PyDict>, map: &MapOut) -> PyResult<
         .enumerate()
     {
         let (x, y, code) = if let Some(slot) = slot {
-            // The map has already computed Display A's lateral position.
-            let signed_y = f64::from(slot.lateral);
-            let y = match index {
-                0 => -signed_y,
-                1 | 3 => signed_y.clamp(0., 12.7),
-                _ => (-signed_y).clamp(0., 12.7),
-            };
-            let (x, max) = if index < 3 {
-                (f64::from(slot.distance), 204.7)
-            } else {
-                (f64::from(slot.distance).abs(), 25.5)
-            };
-            let code = detect_code(&slot);
-            ((0.8 * x).clamp(0., max), y, code)
+            let (x, y) = slot_position(index, &slot);
+            (x, y, detect_code(&slot))
         } else {
             // The existing rear warning is an 8 m white box. Keep it separate from tracked vehicle IDs.
             let warning = match index {
@@ -214,6 +219,24 @@ mod tests {
     }
 
     const TICK: u64 = 50_000_000;
+
+    #[test]
+    fn map_positions_saturate_at_can_field_limits() {
+        let mut cell = slot(2, KIND_CAR, true);
+        cell.distance = 300.;
+        for (value, expected) in [(6.4, 6.3), (-6.51, -6.4), (-9.85, -6.4)] {
+            cell.lateral = -value;
+            assert_eq!(slot_position(0, &cell), (204.7, expected));
+        }
+        cell.lateral = 15.;
+        assert_eq!(slot_position(1, &cell), (204.7, 12.7));
+        assert_eq!(slot_position(2, &cell), (204.7, 0.));
+        assert_eq!(slot_position(3, &cell), (25.5, 12.7));
+        cell.lateral = -15.;
+        cell.distance = -300.;
+        assert_eq!(slot_position(2, &cell), (0., 12.7));
+        assert_eq!(slot_position(4, &cell), (25.5, 12.7));
+    }
 
     fn message(stamp: u64, valid: bool) -> Vec<u8> {
         let slots = [Some(slot(2, KIND_CAR, true)), None, None, None, None];

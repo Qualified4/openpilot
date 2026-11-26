@@ -44,6 +44,7 @@ pub(super) fn select(
     frame: &RoadFrame,
     objects: &mut [TrackedObject],
     occupied: [Option<u64>; 5],
+    primary: Option<u64>,
 ) -> [Option<EngineSlot>; 5] {
     for o in objects.iter_mut() {
         update_lane(o);
@@ -54,6 +55,16 @@ pub(super) fn select(
     let mut close: [Vec<&TrackedObject>; 2] = [Vec::new(), Vec::new()];
     let mut camera_queue: [Vec<&TrackedObject>; 2] = [Vec::new(), Vec::new()];
     for o in objects.iter() {
+        if primary == Some(o.obj_id) {
+            let mut lead = slot(frame, o, now);
+            let [x, y, _] = o.last_radar_motion;
+            if (lead.x - x).abs() > 2.5 || (lead.y - y).abs() > 1.8 {
+                lead.x = x;
+                lead.y = y;
+            }
+            slots[0] = Some(lead);
+            continue;
+        }
         let incumbent = occupied.contains(&Some(o.obj_id));
         if o.radar_hits < 3 && o.vision_hits < 3 {
             continue;
@@ -88,8 +99,8 @@ pub(super) fn select(
         let stationary = speed > 5. && (o.v_s + speed).abs() < 1.5;
         let confirmed_stopped = speed <= 3.
             && o.stationary_vision_confirmed
-            && o.stationary_vision_t
-                .is_some_and(|t| now - t <= STATIONARY_VISION_WINDOW)
+            && (o.stationary_radar_continuous
+                || o.stationary_vision_t.is_some_and(|t| now - t <= STATIONARY_VISION_WINDOW))
             && o.supports_stationary_vision(now, speed);
         let measured_vehicle = vision(now, o)
             || confirmed_stopped
@@ -124,19 +135,20 @@ pub(super) fn select(
             sides[side].push(o);
         }
     }
-    slots[0] = front
-        .into_iter()
-        .min_by(|a, b| {
-            let lead_time = |o: &TrackedObject| {
-                o.last_lead_sample
-                    .filter(|_| lead(now, o))
-                    .unwrap_or(f64::NEG_INFINITY)
-            };
-            lead_time(b).total_cmp(&lead_time(a)).then_with(|| {
-                cost(now, a, a.s, occupied[0]).total_cmp(&cost(now, b, b.s, occupied[0]))
+    slots[0] = slots[0].or_else(|| {
+        front.into_iter()
+            .min_by(|a, b| {
+                let lead_time = |o: &TrackedObject| {
+                    o.last_lead_sample
+                        .filter(|_| lead(now, o))
+                        .unwrap_or(f64::NEG_INFINITY)
+                };
+                lead_time(b).total_cmp(&lead_time(a)).then_with(|| {
+                    cost(now, a, a.s, occupied[0]).total_cmp(&cost(now, b, b.s, occupied[0]))
+                })
             })
-        })
-        .map(|o| slot(frame, o, now));
+            .map(|o| slot(frame, o, now))
+    });
     let front_within_range = |o: &TrackedObject| {
         o.s <= SIDE_FRONT_LIMIT && frame.cartesian(o.s, o.d).0 <= SIDE_FRONT_LIMIT
     };

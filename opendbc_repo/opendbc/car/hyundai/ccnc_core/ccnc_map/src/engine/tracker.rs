@@ -70,6 +70,7 @@ impl Tracker {
             front_box_t: None,
             stationary_vision_t: None,
             stationary_vision_confirmed: false,
+            stationary_radar_continuous: false,
             last_lead_sample: None,
             rear: s < 0.,
             split_until: f64::NEG_INFINITY,
@@ -283,12 +284,15 @@ impl Tracker {
         }
     }
 
-    pub fn lead(&mut self, now: f64, lead: Option<(f64, DisplayLead)>, frame: &RoadFrame) {
-        let Some((stamp, lead)) = lead.filter(|(t, l)| {
+    pub fn lead(
+        &mut self,
+        now: f64,
+        lead: Option<(f64, DisplayLead)>,
+        frame: &RoadFrame,
+    ) -> Option<u64> {
+        let (stamp, lead) = lead.filter(|(t, l)| {
             (0. ..=0.18).contains(&(now - *t)) && (0.65..=1.).contains(&l.model_prob)
-        }) else {
-            return;
-        };
+        })?;
         let (x, y, v) = lead.motion;
         let (s, d) = frame.project(x, -y);
         let ids_match = |o: &TrackedObject| {
@@ -296,29 +300,45 @@ impl Tracker {
                 .map(u64::from)
                 .is_some_and(|id| o.evidence.last_track_id == Some(id))
         };
-        if let Some(o) = self
-            .objects
-            .iter_mut()
-            .filter(|o| {
-                o.s > 0.
-                    && frame.lane_u(o.s, o.d).abs() < if ids_match(o) { 0.82 } else { 0.7 }
-                    && (o.s - s).abs() <= if ids_match(o) { 4. } else { 2.0 }
-                    && (o.d - d).abs() <= 1.8
-                    && (o.v_s - v).abs() <= 3.
-            })
-            .min_by(|a, b| {
-                let cost = |o: &TrackedObject| {
-                    (o.s - s).abs() + (o.d - d).abs() - 2. * f64::from(ids_match(o))
-                };
-                cost(a).total_cmp(&cost(b))
-            })
-        {
+        // Compare independent sensors in ego coordinates before consulting the model path.
+        let strong = self.objects.iter().position(|o| {
+            let [rx, ry, rv] = o.last_radar_motion;
+            lead.model_prob >= 0.75
+                && ids_match(o)
+                && o.evidence.last_radar_t == Some(now)
+                && (0. ..=100.).contains(&rx)
+                && (rx - x).abs() <= 2.5
+                && (ry + y).abs() <= 1.8
+                && (rv - v).abs() <= 3.
+        });
+        let matched = strong.or_else(|| {
+            self.objects
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| {
+                    o.s > 0.
+                        && frame.lane_u(o.s, o.d).abs() < if ids_match(o) { 0.82 } else { 0.7 }
+                        && (o.s - s).abs() <= if ids_match(o) { 4. } else { 2.0 }
+                        && (o.d - d).abs() <= 1.8
+                        && (o.v_s - v).abs() <= 3.
+                })
+                .min_by(|(_, a), (_, b)| {
+                    let cost = |o: &TrackedObject| {
+                        (o.s - s).abs() + (o.d - d).abs() - 2. * f64::from(ids_match(o))
+                    };
+                    cost(a).total_cmp(&cost(b))
+                })
+                .map(|(i, _)| i)
+        });
+        if let Some(i) = matched {
+            let o = &mut self.objects[i];
             if o.last_lead_sample != Some(stamp) {
                 o.support(0.65 * lead.model_prob);
                 o.evidence.last_lead_t = Some(now);
                 o.last_lead_sample = Some(stamp);
             }
         }
+        strong.map(|i| self.objects[i].obj_id)
     }
 
     pub fn vision(
@@ -329,6 +349,7 @@ impl Tracker {
         obs: VisionObservation,
         x: f64,
         y: f64,
+        inside_outer_line: impl Fn(f64, f64, f64) -> bool,
     ) {
         if !(0.3..=1.).contains(&obs.confidence) {
             return;
@@ -366,7 +387,17 @@ impl Tracker {
                     .stationary_vision_t
                     .map_or(f64::INFINITY, |t| obs.time - t);
                 if gap >= 0.25 {
-                    o.stationary_vision_confirmed = gap <= STATIONARY_VISION_WINDOW;
+                    // A mature radar return can be confirmed immediately when the same
+                    // high-confidence frame agrees by both box geometry and ground contact.
+                    let [rx, ry, _] = o.last_radar_motion;
+                    let adjacent = inside_outer_line(o.lane_u, rx, ry);
+                    let box_match = adjacent && obs.confidence >= f64::from(0.65_f32)
+                        && o.front_box_t == Some(obs.time)
+                        && o.same_track_streak >= 6
+                        && o.range_consistent;
+                    o.stationary_vision_confirmed =
+                        o.stationary_radar_continuous || box_match || gap <= STATIONARY_VISION_WINDOW;
+                    o.stationary_radar_continuous = o.stationary_vision_confirmed && adjacent;
                     o.stationary_vision_t = Some(obs.time);
                 }
             }
@@ -425,6 +456,7 @@ impl Tracker {
         &mut self,
         now: f64,
         dt: f64,
+        speed: f64,
         frame: &RoadFrame,
         radar: &[(f64, f64)],
         blind: [bool; 2],
@@ -432,6 +464,7 @@ impl Tracker {
         for o in &mut self.objects {
             let (x, y) = frame.cartesian(o.s, o.d);
             o.lane_u = frame.lane_u(o.s, o.d);
+            o.stationary_radar_continuous &= speed <= 3. && o.supports_stationary_vision(now, speed);
             let observed = o.evidence.last_radar_t == Some(now)
                 || o.evidence.last_lead_t == Some(now)
                 || o.evidence.last_vision_t.is_some_and(|t| now - t <= 0.12);
@@ -536,7 +569,6 @@ fn update_radar(o: &mut TrackedObject, m: Measurement, now: f64, ego: PoseAt, sp
     let prior = o.evidence.last_radar_t;
     if o.radar_age(now) > 0.2 {
         o.radar_streak = 0;
-        o.front_box_t = None;
     }
     o.radar_streak += 1;
     if o.radar_streak == 1 || o.evidence.last_track_id != Some(m.id) {
@@ -576,11 +608,16 @@ fn update_motion(o: &mut TrackedObject, m: Measurement, now: f64, ego: PoseAt, s
         world_x,
         world_y,
     };
-    if o.radar_age(now) > 0.20 {
-        o.radar_sample = Some(sample);
-        o.motion_time = 0.;
+    let interrupted = o.radar_age(now) > 0.20;
+    if interrupted || o.evidence.last_track_id != Some(m.id) {
         o.stationary_vision_t = None;
         o.stationary_vision_confirmed = false;
+        o.stationary_radar_continuous = false;
+        o.front_box_t = None;
+    }
+    if interrupted {
+        o.radar_sample = Some(sample);
+        o.motion_time = 0.;
         return;
     }
     let Some(previous) = o.radar_sample else {

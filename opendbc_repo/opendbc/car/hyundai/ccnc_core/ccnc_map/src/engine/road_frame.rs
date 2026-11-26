@@ -1,5 +1,6 @@
 //! Local Frenet frame in the model's right-positive convention.
 
+use super::RoadObservation;
 use crate::input::model_v2::{Line, Model};
 use crate::world::PoseAt;
 
@@ -178,4 +179,24 @@ fn line_y(line: &Line, x: f64) -> Option<f64> {
         return None;
     }
     Some(f64::from(left) + (x - f64::from(lo)) / f64::from(hi - lo) * f64::from(right - left))
+}
+
+/// A delayed detection beyond a trusted outer lane line can be passing oncoming traffic.
+pub(super) fn inside_outer_line(
+    road: RoadObservation<'_>,
+    model_pose: PoseAt,
+    ego: PoseAt,
+    lane: f64,
+    x: f64,
+    y: f64,
+) -> bool {
+    let index = if lane < 0. { 0 } else { 3 };
+    let Some(line) = road.lines.filter(|model| {
+        !road.changing_lanes && model.lane_line_probs.get(index).is_some_and(|&p| p >= 0.75)
+    }).and_then(|model| model.lane_lines.get(index)) else {
+        return true;
+    };
+    let (wx, wy) = ego.to_world(x, -y);
+    let (mx, my) = model_pose.to_ego(wx, wy);
+    line_y(line, mx).is_none_or(|edge| lane.signum() * (-my - edge) <= 0.25)
 }
