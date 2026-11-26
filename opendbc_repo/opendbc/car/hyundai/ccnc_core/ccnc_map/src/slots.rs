@@ -748,7 +748,7 @@ impl Assigner {
                 if ry.abs() > FF_MAX_LATERAL_M && lateral.abs() > FF_MAX_LATERAL_M {
                     // On a bend, a current forward car can be far from the
                     // radar axis. Both the map and the path must keep it inside.
-                    let Some(path_y) = (rx > CROSSING_ROW_MID_M && ff_owner && r_slot.abs() <= 0.5)
+                    let Some(path_y) = (rx > CROSSING_ROW_MID_M && ff_owner && r.abs() <= 0.5)
                         .then(|| world.path_lateral(now, car.wx, car.wy)).flatten()
                         .filter(|y| y.abs() <= 0.45 * LANE_WIDTH)
                     else { continue };

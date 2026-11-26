@@ -438,9 +438,11 @@ impl WorldRear {
         input: WorldInput<'_>,
         slots: &mut [Option<WorldSlot>; 5],
     ) -> Result<()> {
+        const MEASURED_HANDOFF_M: f64 = 6.;
         let context_changed = self.generation != world.generation();
         self.generation = world.generation();
         let now = input.now;
+        let radar_pose = world.radar_pose(now);
         let ego = world.pose.at(now);
         let width = world.lanes.width_at(ego.s);
         let lateral = bsd_laterals(width, width);
@@ -478,7 +480,7 @@ impl WorldRear {
                     .take(MAX_VEHICLES)
                 {
                     if let Some(Observation { x, r, speed, .. }) =
-                        Observation::from_car(car, world, world.radar_pose(now))
+                        Observation::from_car(car, world, radar_pose)
                     {
                         // Convert r to the existing policy's metre gates with a fixed lane width.
                         samples[count] = (
@@ -533,10 +535,10 @@ impl WorldRear {
             proven,
             &mut sides,
             // The flow uses scaled display units for the measured handoff zone.
-            Some(6. * self.constants.scale),
+            Some(MEASURED_HANDOFF_M * self.constants.scale),
         )?;
 
-        for (i, side) in self.state.sides.iter().enumerate() {
+        for (i, side) in self.state.sides.iter_mut().enumerate() {
             // A selected rear car takes precedence over a disappearing drawing.
             if slots[i + 3].is_some() {
                 continue;
@@ -554,6 +556,15 @@ impl WorldRear {
                 _ => 0,
             };
             if vid != 0 {
+                // Losing the selected front slot can start a legacy exit even
+                // when the radar still measures that car well ahead of ego.
+                if to_car(vid).is_some_and(|car| {
+                    car.radar_id.is_some() && car.seen_radar == now
+                        && radar_pose.to_ego(f64::from(car.wx), f64::from(car.wy)).0 > MEASURED_HANDOFF_M
+                }) {
+                    side.flow.rear = None;
+                    continue;
+                }
                 if slots.iter().enumerate().any(|(index, s)| {
                     index != i + 1 && index != i + 3 && s.is_some_and(|s| s.vid == vid)
                 }) {
