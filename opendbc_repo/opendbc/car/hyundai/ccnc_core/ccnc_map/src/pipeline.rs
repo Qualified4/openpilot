@@ -1,7 +1,6 @@
 //! One stream of cereal inputs for the world map, shared by the daemon and replay.
 
 use crate::cmap::MapOut;
-use crate::display::ModelPath;
 use crate::input::{
     live_tracks::{self, EVENT_LIVE_TRACKS},
     map_events::{CarState, DisplayLead, Event, CAR_STATE, LIVE_POSE, RADAR_STATE},
@@ -17,7 +16,7 @@ use crate::radar::{
     Frame, MapState, Range, Result,
 };
 use crate::rear::{WorldInput, WorldRear};
-use crate::slots::{Assigner, RadarDraw, Slot, FF_CONFIRM_S, LEAD_SPEED_MATCH, OBSERVATION_MAX_AGE};
+use crate::slots::{Assigner, Slot, FF_CONFIRM_S, LEAD_SPEED_MATCH, OBSERVATION_MAX_AGE};
 use crate::vehicles::{Tracker, Vehicle, MAX_VEHICLES};
 use crate::vision::{self, Vision};
 use crate::world::{World, RADAR_LAG, STATUS_FROZEN};
@@ -100,7 +99,6 @@ pub struct Pipeline {
     tracks_valid: bool,
     car: Option<(u64, CarState)>,
     model_stamp: Option<u64>,
-    model_path: Option<ModelPath>,
     /// radarState at its time: leadOne position for the radar map, preferred and primary display leads for FF.
     lead: Option<(u64, Option<(f64, f64)>, Option<DisplayLead>, Option<DisplayLead>)>,
     /// Consecutive liveTracks observations matching the measured leadOne: ID, start and latest radar time.
@@ -133,7 +131,6 @@ impl Pipeline {
             tracks_valid: false,
             car: None,
             model_stamp: None,
-            model_path: None,
             lead: None,
             lead_one_match: None,
             vision: Vision::default(),
@@ -178,7 +175,6 @@ impl Pipeline {
             self.radar_generation = self.world.generation();
             self.radar = MapState::for_observation();
             self.model_stamp = None;
-            self.model_path = None;
             self.lead_one_match = None;
             self.vision.reset_positions();
         }
@@ -270,7 +266,6 @@ impl Pipeline {
                         (RADAR.min_x, RADAR.far_x),
                         self.world.status() & STATUS_FROZEN != 0,
                     );
-                    self.model_path = model_v2::parse_display_path(bytes);
                     self.model_stamp = Some(stamp);
                 }
             }
@@ -461,12 +456,7 @@ impl Pipeline {
         self.kinds.apply(now, self.world.radar_pose(now).heading, self.tracker.vehicles_mut());
         let cars = self.tracker.vehicles();
         self.slots.set_model_lane(self.model_lane(stamp));
-        let path = self.model_path.as_ref().filter(|_| {
-            !car.blinker && !changing && !self.world.ego_changing() && self.model_stamp.is_some_and(|t| current(stamp, t))
-        });
-        let bend = path.zip(measured_yaw).and_then(|(path, yaw)| path.bend(yaw));
-        let radar_draw = RadarDraw { bend, measured: &measured };
-        let mut slots = self.slots.update_display_lead(now, cars, &self.world, display_lead, primary, radar_draw);
+        let mut slots = self.slots.update_display_lead(now, cars, &self.world, display_lead, primary);
         let remembered = if holding {
             // The map's 0.15 s freshness, not the selector's 0.3 s prediction hold, decides when memory takes over.
             let (map, frame) = (&self.radar, self.radar.frame());
@@ -495,17 +485,12 @@ impl Pipeline {
             &mut slots,
         )?;
         let split = self.slots.split_alongside(now, cars, remembered, &mut slots);
-        self.slots.observe_radar_rear(now, &slots);
         self.radar_slots = slots;
         let protected = [false, remembered[0] || split[0], remembered[1] || split[1], split[0], split[1]];
         self.vision.apply(now, car.speed, self.world.pose.at(now), protected, &mut slots);
-        self.slots.reselect_radar_front(now, protected, &mut slots);
         let straight = speed >= 0.5 && !car.blinker && !self.world.ego_changing()
             && measured_yaw.is_some_and(|rate| rate.abs() <= 0.04);
         self.slots.smooth_opening_sides(now, straight, &mut slots);
-        self.slots.apply_bend(now, &mut slots);
-        let steady = speed >= 0.5 && path.zip(measured_yaw).is_some_and(|(path, yaw)| path.straight(yaw));
-        self.slots.smooth_straight_front(now, steady, &mut slots);
         let asking = self.vision_seen.is_some_and(|seen| stamp.saturating_sub(seen) <= VISION_ALIVE_NS);
         for slot in slots[..3].iter_mut().flatten() {
             slot.kind_wanted = asking

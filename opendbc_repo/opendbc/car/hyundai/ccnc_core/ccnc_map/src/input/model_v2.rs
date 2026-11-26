@@ -11,8 +11,6 @@ pub const EVENT_MODEL_V2: u16 = 73;
 pub const EVENT_MODEL_V2_POINTER: usize = 0;
 /// `ModelDataV2` pointer indices.
 pub const POSITION_POINTER: usize = 0; // XYZTData
-const META_POINTER: usize = 8; // MetaData
-const LANE_CHANGE_STATE_OFFSET: usize = 9 * 2; // LaneChangeState enum (UInt16)
 pub const LANE_LINES_POINTER: usize = 4; // List(XYZTData)
 pub const LANE_LINE_PROBS_POINTER: usize = 5; // List(Float32)
 pub const ROAD_EDGES_POINTER: usize = 6; // List(XYZTData)
@@ -82,22 +80,4 @@ pub fn parse_path(bytes: &[u8]) -> Option<((Vec<f64>, Vec<f64>), Vec<f64>)> {
         (read(XYZT_X_POINTER)?, read(XYZT_Y_POINTER)?),
         read(XYZT_Y_STD_POINTER)?,
     ))
-}
-
-/// The path and lane-change status used for the map's lateral display.
-pub(crate) fn parse_display_path(bytes: &[u8]) -> Option<crate::display::ModelPath> {
-    let message = Message::new(bytes)?;
-    let model = model_root(&message)?;
-    let meta = message.struct_pointer(&model, META_POINTER)?;
-    if u16::from_le_bytes(data_bytes(meta.data, LANE_CHANGE_STATE_OFFSET)) != 0 {
-        return None;
-    }
-    let position = message.struct_pointer(&model, POSITION_POINTER)?;
-    let xs = message.f32_list(&position, XYZT_X_POINTER)?;
-    let mut ys = message.f32_list(&position, XYZT_Y_POINTER)?;
-    // modelV2 uses right-positive lateral. The radar pose and display use left-positive lateral.
-    for y in &mut ys {
-        *y = -*y;
-    }
-    crate::display::ModelPath::new(xs, ys)
 }
