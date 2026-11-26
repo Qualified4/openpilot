@@ -401,7 +401,7 @@ impl RoadAhead {
         Some(observed_u + weight * (path_u - observed_u))
     }
 
-    pub(super) fn radar_lateral(&self, x: f64, y: f64, yaw: f64, lane: i8) -> Option<f64> {
+    pub(super) fn radar_lateral(&self, x: f64, y: f64, yaw: f64) -> Option<f64> {
         let bend = self.path.bend_weight(yaw);
         if bend == 0. {
             return None;
@@ -411,7 +411,7 @@ impl RoadAhead {
         let (near, _) = self.path.project_lateral(0., 0., self.width)?;
         let (far, confidence) = self.path.project_lateral(x, y, self.width)?;
         let projected = far - near;
-        let lane_offset = (projected / self.width + f64::from(lane)).abs();
+        let lane_offset = (projected / self.width).abs();
         // Paths past a junction can bend away while the tracked car is still
         // in the current lane. Fade the projection as the two disagree.
         let agreement = ((0.55 - lane_offset) / 0.20).clamp(0., 1.);

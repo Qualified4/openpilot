@@ -43,10 +43,14 @@ impl ModelPath {
     }
 
     pub(crate) fn bend_weight(&self, yaw: f64) -> f64 {
-        if self.curvature.abs() <= 0.002 || yaw * self.curvature <= 0. {
+        if yaw * self.curvature <= 0. {
             return 0.;
         }
-        ((yaw.abs() - 0.020) / 0.020).clamp(0., 1.)
+        // A single model frame crossing the curvature threshold must not
+        // apply the full projection in one radar tick.
+        let path_bend = ((self.curvature.abs() - 0.002) / 0.001).clamp(0., 1.);
+        let measured_bend = ((yaw.abs() - 0.020) / 0.020).clamp(0., 1.);
+        path_bend * measured_bend
     }
 
     pub(crate) fn project_lateral(&self, x: f64, y: f64, width: f64) -> Option<(f64, f64)> {

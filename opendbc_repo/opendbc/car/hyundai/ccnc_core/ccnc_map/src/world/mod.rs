@@ -228,15 +228,15 @@ impl World {
     }
 
     pub(crate) fn radar_lateral(&self, t: f64, x: f64, y: f64, lane: i8) -> f64 {
-        // At low speed, a turn into an intersection or a parking space can
-        // bend the ego path away from the vehicles currently being shown.
-        if self.blinker || self.lane_change.frozen() || self.pose.speed() <= 5. {
+        // Ego's path describes its own lane. Keep observed adjacent
+        // geometry at splits, even when the predicted ego bend is strong.
+        if lane != 0 || self.blinker || self.lane_change.frozen() || self.pose.speed() <= 5. {
             return y;
         }
         self.road_ahead.as_ref()
             .filter(|road| !road.changing && (t - road.stamp).abs() <= INPUT_GAP)
             .zip(self.yaw_at(t))
-            .and_then(|(road, yaw)| road.radar_lateral(x, y, yaw, lane))
+            .and_then(|(road, yaw)| road.radar_lateral(x, y, yaw))
             .unwrap_or(y)
     }
 
