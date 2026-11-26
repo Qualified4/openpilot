@@ -1,11 +1,15 @@
 use std::collections::VecDeque;
 
-use crate::input::model_v2::{Line, Model};
+use crate::{display::ModelPath, input::model_v2::{Line, Model}};
 
 use super::{Pose, PoseAt};
 
 pub const MODEL_GRID: [f32; 10] = [0., 5., 10., 15., 20., 30., 40., 50., 60., 80.];
 const LANE_WIDTH: f64 = 3.5;
+// In replay, line and path error are similar through 35–40 m. The line's
+// p95 error rises abruptly by 50 m, including high-probability lines.
+const PATH_BLEND_START: f64 = 35.;
+const PATH_BLEND_END: f64 = 50.;
 const BIN_M: f64 = 2.;
 const BIN_COUNT: usize = 70;
 const BOUNDARY_COUNT: usize = 8;
@@ -293,6 +297,123 @@ pub(super) struct CameraLanes {
     pub(super) stamp: f64,
     pose: PoseAt,
     points: [[f32; MODEL_GRID.len()]; 4],
+}
+
+pub(super) struct RoadAhead {
+    pub(super) stamp: f64,
+    pub(super) path: ModelPath,
+    pub(super) changing: bool,
+    pub(super) pose: PoseAt,
+    weak_lines: bool,
+    width: f64,
+    reference_u: Option<f64>,
+    sides: [[SideGeometry; MODEL_GRID.len()]; 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SideGeometry {
+    Unknown,
+    Lane,
+    Edge,
+}
+
+impl RoadAhead {
+    pub(super) fn new(
+        model: &Model, pose: PoseAt, stamp: f64, path: ModelPath, changing: bool,
+        edge_stds: [f32; 2], width: Option<(f64, f64)>,
+    ) -> Self {
+        let width = width.filter(|(t, _)| stamp - t <= 5.).map_or(LANE_WIDTH, |(_, w)| w);
+        let weak_lines = (1..=2).all(|i| !model.lane_line_probs.get(i).is_some_and(|&p| p >= 0.4));
+        let sides = std::array::from_fn(|side| {
+            let outward = if side == 0 { 1. } else { -1. };
+            let outer = usable_lane(model, side * 3);
+            MODEL_GRID.map(|x| {
+                let x = f64::from(x);
+                let Some(inner) = model.lane_lines.get(1 + side).and_then(|line| line_at(line, x)) else {
+                    return SideGeometry::Unknown;
+                };
+                let beyond_inner = |line| line_at(line, x).map(|y| outward * (y - inner));
+                let marked = outer.and_then(beyond_inner).is_some_and(|room| (1.8..=5.5).contains(&room));
+                let edge = model.road_edges.get(side).and_then(beyond_inner)
+                    .filter(|_| edge_stds[side] <= 1.);
+                if edge.is_some_and(|room| (0. ..=0.50 * width).contains(&room)) {
+                    SideGeometry::Edge
+                } else if marked || edge.is_some_and(|room| room >= 0.70 * width) {
+                    SideGeometry::Lane
+                } else {
+                    SideGeometry::Unknown
+                }
+            })
+        });
+        Self { stamp, path, changing, pose, weak_lines, width, reference_u: None, sides }
+    }
+
+    pub(super) fn align(&mut self, map: &LaneMap, ego_u: f64) {
+        // Preserve the nearby lane's lateral origin while following the shape
+        // of position farther out. Samples in another lane cannot set it.
+        const ANCHOR_X: f64 = 20.;
+        let Some((y, _, _)) = self.path.road_sample(ANCHOR_X, self.width).filter(|_| !self.weak_lines) else {
+            return;
+        };
+        self.reference_u = map.coord(self.pose.s + ANCHOR_X, self.pose.to_world(ANCHOR_X, y))
+            .filter(|&u| (u - ego_u).abs() <= 0.30);
+    }
+
+    pub(super) fn coord(&self, point: Point, ego_u: f64, mapped: Option<f64>, crossing: bool) -> Option<f64> {
+        let (x, y) = self.pose.to_ego(point.0, point.1);
+        if !ego_u.is_finite() || x <= PATH_BLEND_START || x > 80. || crossing {
+            return mapped;
+        }
+        let fade = ((x - PATH_BLEND_START) / (PATH_BLEND_END - PATH_BLEND_START)).clamp(0., 1.);
+        let Some((center, slope, confidence)) = self.path.road_sample(x, self.width) else {
+            return mapped;
+        };
+        let weight = confidence * fade * fade * (3. - 2. * fade);
+        let baseline = self.reference_u.unwrap_or(ego_u);
+        let path_u = baseline + (center - y) / (self.width * slope.hypot(1.));
+        let relative = path_u - ego_u;
+        let blended = mapped.map_or(path_u, |u| u + weight * (path_u - u));
+        let blended_relative = blended - ego_u;
+        let side = usize::from(blended_relative > 0.);
+        let side_geometry = self.side_geometry(point, side);
+        if blended_relative.abs() >= 0.5 && side_geometry != SideGeometry::Lane {
+            // A predicted centreline alone cannot create a new adjacent lane.
+            // Trust an existing assignment unless both reliable edge samples
+            // put the return outside a corridor even along the predicted bend.
+            if x >= PATH_BLEND_END && confidence >= 0.5 && relative.abs() >= 0.7
+                && relative.signum() == blended_relative.signum()
+                && side_geometry == SideGeometry::Edge
+                && self.side_geometry(self.pose.to_world(20., 0.), side) == SideGeometry::Edge
+                && mapped.is_some_and(|u| (u - ego_u).abs() >= 0.5)
+            {
+                return None;
+            }
+            return mapped;
+        }
+        mapped.or_else(|| (weight >= 0.5).then_some(blended)).map(|_| blended)
+    }
+
+    pub(super) fn side_geometry(&self, point: Point, side: usize) -> SideGeometry {
+        let (x, _) = self.pose.to_ego(point.0, point.1);
+        let x = x.clamp(0., 80.);
+        let i = MODEL_GRID.partition_point(|&d| f64::from(d) < x);
+        let end = self.sides[side][i];
+        if f64::from(MODEL_GRID[i]) == x || end == self.sides[side][i - 1] {
+            end
+        } else {
+            SideGeometry::Unknown
+        }
+    }
+}
+
+pub(super) fn observed_width(model: &Model) -> Option<f64> {
+    let probs = model.lane_line_probs.get(1..3)?;
+    if !probs.iter().all(|&p| p >= 0.4) {
+        return None;
+    }
+    let (left, right) = (model.lane_lines.get(1)?, model.lane_lines.get(2)?);
+    let width = line_at(left, 10.)? - line_at(right, 10.)?;
+    (1.8..=5.5).contains(&width).then_some(width)
 }
 
 impl CameraLanes {
@@ -609,13 +730,8 @@ impl LaneMap {
         if !p.0.is_finite() || !p.1.is_finite() || !(-40. ..=80.).contains(&(s - self.s)) {
             return None;
         }
-        for (i, edge) in self.edges.iter().enumerate() {
-            if edge
-                .lateral(s, p)
-                .is_some_and(|y| if i == 0 { y > 0. } else { y < 0. })
-            {
-                return None;
-            }
+        if self.outside_road(s, p) {
+            return None;
         }
         let mut distances = [(0, 0.); BOUNDARY_COUNT];
         let mut n = 0;
@@ -648,6 +764,12 @@ impl LaneMap {
             prior = next;
         }
         (count >= 2).then(|| f64::from(prior.0) - prior.1 / LANE_WIDTH)
+    }
+
+    pub(super) fn outside_road(&self, s: f64, point: Point) -> bool {
+        self.edges.iter().enumerate().any(|(side, edge)| {
+            edge.lateral(s, point).is_some_and(|y| if side == 0 { y > 0. } else { y < 0. })
+        })
     }
 
     pub fn width_at(&self, s: f64) -> f64 {
@@ -725,6 +847,25 @@ fn wall_at(wall: &[Point], x: f64) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn future_path_replaces_far_lane_geometry_and_requires_room_beyond_the_edge() {
+        let xs = vec![0., 20., 40., 60., 80.];
+        let line = |y| Line { x: xs.clone(), y: vec![y; xs.len()] };
+        let model = Model {
+            lane_lines: vec![line(-5.25), line(-1.75), line(1.75), line(5.25)],
+            lane_line_probs: vec![0.9, 0.9, 0.9, 0.01],
+            road_edges: vec![line(-5.6), line(2.4)],
+        };
+        let path = ModelPath::new(xs.clone(), vec![0., 0., -1., -3., -5.]).unwrap()
+            .with_deviations(vec![0.3, 0.3, 0.3, 0.3, 3.5]);
+        let road = RoadAhead::new(&model, PoseAt::default(), 0., path, false, [0.5, 0.5], Some((0., 3.5)));
+        assert_eq!(road.coord((20., -3.), 1.5, Some(2.4), false), Some(2.4));
+        assert_eq!(road.coord((60., -3.), 1.5, Some(2.4), false), Some(1.5));
+        assert_eq!(road.coord((80., -5.), 1.5, Some(2.4), false), Some(2.4));
+        assert_eq!(road.side_geometry((60., 3.), 0), SideGeometry::Lane);
+        assert_eq!(road.side_geometry((60., -3.), 1), SideGeometry::Edge);
+    }
 
     #[test]
     fn a_line_carried_behind_its_first_point_follows_its_slope_over_the_first_metres() {
