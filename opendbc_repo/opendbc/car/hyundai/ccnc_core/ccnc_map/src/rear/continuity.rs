@@ -19,6 +19,8 @@ pub(super) struct Alongside {
     v_rel: f64,
     ego: f64,
     rejoining: bool,
+    rear: bool,
+    crossing_since: Option<f64>,
 }
 
 impl Alongside {
@@ -33,6 +35,8 @@ impl Alongside {
             v_rel: f64::from(measured.v_rel),
             ego,
             rejoining: false,
+            rear: measured.distance < 0.,
+            crossing_since: None,
         }
     }
 
@@ -72,16 +76,27 @@ impl Alongside {
         };
         let observation = measured.clone().find(|(s, _)| s.vid == motion.measured.vid);
         let vid = motion.measured.vid;
-        // A slot elsewhere, an ineligible current radar return, or an ID reused by another car ends the coast.
+        let live = cars
+            .iter()
+            .find(|car| car.vid == vid && car.seen_radar == now);
+        // A new approaching front measurement needs its own bridge even if another car is already retreating.
+        if motion.rear && observation.is_none() {
+            if let Some((s, car)) = nearest.filter(|(s, _)| s.distance >= 0. && s.v_rel < -0.5) {
+                *state = Some(Self::new(now, ego, s, car));
+                return None;
+            }
+        }
+        // Leave the handoff to another slot when the same vid is selected elsewhere,
+        // and retire it if the tracker reused its radar id or it is now known to be an obstacle.
         if slots
             .iter()
             .enumerate()
             .any(|(i, slot)| i != front && i != rear && slot.is_some_and(|s| s.vid == vid))
+            || live.is_some_and(|car| car.flags.structure || car.oncoming)
             || observation.is_none()
+                && motion.radar_id.is_some()
                 && cars.iter().any(|car| {
-                    car.seen_radar == now
-                        && (car.vid == vid
-                            || motion.radar_id.is_some() && car.radar_id == motion.radar_id)
+                    car.vid != vid && car.seen_radar == now && car.radar_id == motion.radar_id
                 })
         {
             *state = nearest.map(|(s, car)| Self::new(now, ego, s, car));
@@ -90,7 +105,7 @@ impl Alongside {
 
         let dt = now - motion.time;
         let measured_age = now - motion.seen;
-        let v_rel = (motion.v_rel + motion.ego - ego).clamp(-18., 12.);
+        let v_rel = (motion.v_rel + motion.ego - ego).clamp(-35., 25.);
         let predicted = motion.x + v_rel * dt;
         motion.time = now;
         if let Some((s, car)) = observation {
@@ -101,8 +116,8 @@ impl Alongside {
             if motion.rejoining {
                 // On reacquisition, decay the displacement from the prediction over several radar ticks.
                 let weight = (dt / REJOIN_TIME).clamp(0., 1.);
-                motion.x = predicted + weight * (x - predicted);
-                motion.y += weight * (y - motion.y);
+                motion.x = predicted + (weight * (x - predicted)).clamp(-4. * dt, 4. * dt);
+                motion.y += (weight * (y - motion.y)).clamp(-2.5 * dt, 2.5 * dt);
                 if (x - motion.x).abs() < 0.10 && (y - motion.y).abs() < 0.10 {
                     motion.rejoining = false;
                 }
@@ -111,7 +126,7 @@ impl Alongside {
                 motion.y = y;
             }
             let slope = (x - f64::from(motion.measured.distance)) / measured_age.max(0.025);
-            if measured_age <= MAX_STEP_TIME && slope.abs() <= 18. {
+            if measured_age <= MAX_STEP_TIME && slope.abs() <= 35. {
                 motion.v_rel = 0.65 * v_rel + 0.35 * slope;
             } else {
                 motion.v_rel = f64::from(s.v_rel);
@@ -128,7 +143,7 @@ impl Alongside {
             if measured_age > age_limit
                 || !(-20. ..=8.).contains(&predicted)
                 || !(approaching || rear_supported || blind)
-                || (motion.measured.distance > 4. && !rear_supported && !blind)
+                || (motion.measured.distance > 5. && !rear_supported && !blind)
             {
                 *state = nearest.map(|(s, car)| Self::new(now, ego, s, car));
                 return None;
@@ -140,19 +155,37 @@ impl Alongside {
             *state = nearest.map(|(s, car)| Self::new(now, ego, s, car));
             return None;
         }
+        if (motion.x < 0.) != motion.rear {
+            let since = *motion.crossing_since.get_or_insert(now);
+            if motion.x.abs() >= 0.25 || v_rel.abs() >= 0.8 || now - since >= 0.20 {
+                motion.rear = motion.x < 0.;
+                motion.crossing_since = None;
+            }
+        } else {
+            motion.crossing_since = None;
+        }
         *state = Some(motion);
 
-        let split = observation.is_some()
-            && motion.measured.distance >= 0.
+        if observation.is_some()
+            && !motion.rejoining
+            && slots.iter().any(|s| s.is_some_and(|s| s.vid == vid))
+        {
+            return None;
+        }
+        let split = motion.measured.distance >= 0.
             && slots[rear].is_some_and(|s| s.vid == vid && s.distance == 0.)
             && slots[front].is_none_or(|s| s.vid != vid);
-        let owner = if motion.x < 0. || split { rear } else { front };
+        let owner = if motion.rear || split { rear } else { front };
         // A different measured rear car and a remembered stopped front car keep their own slots.
         if remembered && owner == front
             || slots[owner].is_some_and(|s| {
                 s.vid != vid
                     && ((owner == front && (observation.is_some() || measured_age > 0.35))
-                        || selected[rear].is_some_and(|measured| measured.vid == s.vid))
+                        || selected[rear].is_some_and(|measured| measured.vid == s.vid)
+                        || (owner == rear
+                            && observation.is_none()
+                            && s.vid != 0
+                            && (s.distance > -7. || v_rel > -4.)))
             })
         {
             return None;
@@ -197,7 +230,7 @@ mod tests {
     #[test]
     fn measured_vehicle_crosses_zero_once_in_each_direction_through_bsd() {
         for direction in [-1., 1.] {
-            let world = World::default();
+            let mut world = World::default();
             let mut tracker = Tracker::default();
             let mut state = None;
             let mut last_x = -direction * 0.6;
@@ -206,6 +239,7 @@ mod tests {
                 let now = 1. + f64::from(i) * 0.05;
                 let x = direction * (f64::from(i) * 0.1 - 0.6);
                 let observing = i < 3 || i >= 8;
+                world.car_state(now, 10., false);
                 let point = (54, x, 3.5, direction * 2.);
                 tracker.update(now, observing.then_some(point).as_slice(), &world);
                 let car = &tracker.vehicles()[0];
@@ -238,7 +272,7 @@ mod tests {
                     &mut state,
                     0,
                     now,
-                    0.,
+                    10.,
                     !observing || i == 8,
                     false,
                     &measured,

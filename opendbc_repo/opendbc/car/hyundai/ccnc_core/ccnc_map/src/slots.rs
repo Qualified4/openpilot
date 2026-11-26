@@ -27,6 +27,8 @@ const ALONGSIDE_CONFIRM_S: f64 = 0.3;
 const ALONGSIDE_MIN_S: f64 = 1.;
 const ALONGSIDE_RELOCK_S: f64 = 2.;
 const ALONGSIDE_OPENING_MPS: f64 = 1.;
+const ALONGSIDE_CLOSING_MPS: f64 = -2.5;
+const ALONGSIDE_EASE_S: f64 = 0.35;
 const FF_OUTSIDE_S: f64 = 1.;
 const SIDE_OUTSIDE_S: f64 = 0.25;
 /// A vid that once moved at this ground speed (m/s) or faster is a moving car: `EDGE_ROOM_M` does not apply to it.
@@ -486,7 +488,10 @@ impl Assigner {
                 let outward_speed = (sin * f64::from(car.vx) - cos * f64::from(car.vy)) * r_slot.signum();
                 hold_ff = r_slot.abs() <= 0.5 + width && outward_speed < 0.7
                     && now - *drawing.outside_since.get_or_insert(now) < FF_OUTSIDE_S;
-            } else if let Some(side_lane) = side_lane.filter(|_| hold_owner && x <= 15. && world.pose.speed().abs() >= FF_BOUNDARY_MAX_EGO_SPEED) {
+            } else if let Some(side_lane) = side_lane.filter(|_| hold_owner && x <= 15.
+                && !(confirmed_position && r_slot.abs() <= 0.45)
+                && world.pose.speed().abs() >= FF_BOUNDARY_MAX_EGO_SPEED)
+            {
                 if drawing.lane != side_lane && (r_slot - f64::from(side_lane)).abs() <= 0.60 {
                     if now - *drawing.outside_since.get_or_insert(now) < SIDE_OUTSIDE_S {
                         side_lane_hold = Some(side_lane);
@@ -654,7 +659,11 @@ impl Assigner {
                     previous = Some(candidate);
                 }
             }
-            let rank = |s: Slot| (s.distance.abs(), s.vid);
+            let rank = |s: Slot| {
+                let kept = (1..=2).contains(&slot) && !changing
+                    && self.occupants[slot].is_some_and(|old| s.vid == old.vid);
+                (s.distance.abs() - if kept { 0.5 } else { 0. }, s.vid)
+            };
             if best[slot].is_none_or(|old| rank(candidate) < rank(old)) {
                 if slot == 1 || slot == 2 {
                     second[slot - 1] = best[slot];
@@ -771,7 +780,10 @@ impl Assigner {
                         && car.seen_radar < now && now - car.seen_radar <= 2.
                         && !vehicles.iter().any(|new| new.vid != car.vid && new.seen_radar == now && new.radar_id == car.radar_id)
                 });
-                if lost && slots.iter().all(|s| s.is_none_or(|s| s.vid != kept.vid)) {
+                if lost && slots.iter().all(|s| s.is_none_or(|s| s.vid != kept.vid))
+                    && state.split.is_some_and(|(_, t)| now - t + EPS >= ALONGSIDE_EASE_S)
+                    && slots[rear].is_none_or(|s| !vehicles.iter().any(|car| car.vid == s.vid && car.seen_radar == now))
+                {
                     let last = state.positions.back().map_or(now, |(t, _)| *t);
                     if now - last <= 2. {
                         slots[rear] = Some(Slot { distance: 0., ..kept });
@@ -822,10 +834,11 @@ impl Assigner {
                 state.split = None;
                 let relocked = state.rejoin.is_some_and(|(vid, t)| vid == near.vid
                     && now - t < ALONGSIDE_RELOCK_S && x >= 3.);
-                let opening = state.positions.front().is_some_and(|(t, start)| {
-                    now - t >= ALONGSIDE_CONFIRM_S && x - start > ALONGSIDE_OPENING_MPS * (now - t)
+                let alongside = state.positions.front().is_some_and(|(t, start)| {
+                    now - t + EPS >= ALONGSIDE_CONFIRM_S
+                        && (ALONGSIDE_CLOSING_MPS..=ALONGSIDE_OPENING_MPS).contains(&((x - start) / (now - t)))
                 });
-                if !relocked && !opening && (0. ..=ALONGSIDE_ENTER_M).contains(&x)
+                if !relocked && alongside && (0. ..=ALONGSIDE_ENTER_M).contains(&x)
                     && state.pair.is_some_and(|(_, _, t)| now - t + EPS >= ALONGSIDE_CONFIRM_S)
                 {
                     state.split = Some((near, now));
@@ -833,9 +846,22 @@ impl Assigner {
                     split[side] = true;
                 }
             }
-            if split[side] {
-                slots[rear] = Some(Slot { distance: 0., ..near });
-                slots[front] = next;
+            let eased = |at: f64| {
+                let progress = ((now - at) / ALONGSIDE_EASE_S).clamp(0., 1.);
+                (progress * progress * (3. - 2. * progress)) as f32
+            };
+            if let Some((_, started)) = state.split.filter(|_| split[side]) {
+                if now - started + EPS < ALONGSIDE_EASE_S {
+                    split[side] = false;
+                    slots[front] = Some(Slot { distance: near.distance * (1. - eased(started)), ..near });
+                } else {
+                    slots[rear] = Some(Slot { distance: 0., ..near });
+                    slots[front] = next;
+                }
+            } else if let Some((vid, released)) = state.rejoin {
+                if vid == near.vid && now - released < ALONGSIDE_EASE_S {
+                    slots[front] = Some(Slot { distance: near.distance * eased(released), ..near });
+                }
             }
         }
         split
