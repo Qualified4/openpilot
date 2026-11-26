@@ -224,7 +224,7 @@ impl World {
         // The predicted path can already be in the destination lane during a
         // crossing. Keep the observed lane as the reference until ego settles.
         let crossing = self.blinker || road.changing || self.ego_changing();
-        road.coord(point, self.u_ego(), mapped, crossing)
+        road.coord(point, self.u_ego(), mapped, crossing, self.yaw_at(t).unwrap_or(0.))
     }
 
     pub(crate) fn radar_lateral(&self, t: f64, x: f64, y: f64, lane: i8) -> f64 {

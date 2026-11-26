@@ -359,7 +359,7 @@ impl RoadAhead {
             .filter(|&u| (u - ego_u).abs() <= 0.30);
     }
 
-    pub(super) fn coord(&self, point: Point, ego_u: f64, mapped: Option<f64>, crossing: bool) -> Option<f64> {
+    pub(super) fn coord(&self, point: Point, ego_u: f64, mapped: Option<f64>, crossing: bool, yaw: f64) -> Option<f64> {
         let observed_u = mapped?;
         let (x, y) = self.pose.to_ego(point.0, point.1);
         if !ego_u.is_finite() || x <= PATH_BLEND_START || x > 80. {
@@ -384,7 +384,9 @@ impl RoadAhead {
         {
             return None;
         }
-        if crossing {
+        // Straight-road lateral jitter is already constrained by the
+        // observed map. Correct its distant fit only with a measured bend.
+        if crossing || self.path.bend_weight(yaw) == 0. {
             return mapped;
         }
 
@@ -752,8 +754,13 @@ impl LaneMap {
         if !p.0.is_finite() || !p.1.is_finite() || !(-40. ..=80.).contains(&(s - self.s)) {
             return None;
         }
-        if self.outside_road(s, p) {
-            return None;
+        for (i, edge) in self.edges.iter().enumerate() {
+            if edge
+                .lateral(s, p)
+                .is_some_and(|y| if i == 0 { y > 0. } else { y < 0. })
+            {
+                return None;
+            }
         }
         let mut distances = [(0, 0.); BOUNDARY_COUNT];
         let mut n = 0;
@@ -786,12 +793,6 @@ impl LaneMap {
             prior = next;
         }
         (count >= 2).then(|| f64::from(prior.0) - prior.1 / LANE_WIDTH)
-    }
-
-    fn outside_road(&self, s: f64, point: Point) -> bool {
-        self.edges.iter().enumerate().any(|(side, edge)| {
-            edge.lateral(s, point).is_some_and(|y| if side == 0 { y > 0. } else { y < 0. })
-        })
     }
 
     pub fn width_at(&self, s: f64) -> f64 {
@@ -882,12 +883,12 @@ mod tests {
         let path = ModelPath::new(xs.clone(), vec![0., 0., -1., -3., -5.]).unwrap()
             .with_deviations(vec![0.3, 0.3, 0.3, 0.3, 3.5]);
         let road = RoadAhead::new(&model, PoseAt::default(), 0., path, false, [0.5, 0.5], Some((0., 3.5)));
-        assert_eq!(road.coord((20., -3.), 1.5, Some(2.4), false), Some(2.4));
-        assert_eq!(road.coord((60., -3.), 1.5, Some(1.7), false), Some(1.5));
-        assert_eq!(road.coord((60., -3.), 1.5, Some(2.4), false), Some(2.4));
-        assert_eq!(road.coord((60., -3.), 1.5, Some(1.7), true), Some(1.7));
-        assert_eq!(road.coord((60., -3.), 1.5, None, false), None);
-        assert_eq!(road.coord((80., -5.), 1.5, Some(2.4), false), Some(2.4));
+        assert_eq!(road.coord((20., -3.), 1.5, Some(2.4), false, -0.04), Some(2.4));
+        assert_eq!(road.coord((60., -3.), 1.5, Some(1.7), false, -0.04), Some(1.5));
+        assert_eq!(road.coord((60., -3.), 1.5, Some(2.4), false, -0.04), Some(2.4));
+        assert_eq!(road.coord((60., -3.), 1.5, Some(1.7), true, -0.04), Some(1.7));
+        assert_eq!(road.coord((60., -3.), 1.5, None, false, -0.04), None);
+        assert_eq!(road.coord((80., -5.), 1.5, Some(2.4), false, -0.04), Some(2.4));
         assert_eq!(road.side_geometry(60., 0), SideGeometry::Lane);
         assert_eq!(road.side_geometry(60., 1), SideGeometry::Edge);
     }
