@@ -59,6 +59,7 @@ def control_fixture():
           get_pid_accel_limits=lambda *args: (-3.0, 2.0))
   sm = Messages()
   sm.update(longitudinalPlan=NS(), radarState=NS(leadsLeft=[], leadsRight=[]), carrotMan=NS(vTurnSpeed=100, atcType=''), liveDelay=NS(lateralDelay=0.1))
+  sm.seen['radarState'] = False
   sm.frame = 1
   sm.recv_frame = {'longitudinalPlan': 1}
   sm['carState'].gearShifter = 'drive'

@@ -32,10 +32,10 @@ wide at 5 m, radius 80 m or 50 m with lines at 0.6, offset limits, a 0.7 m
 lane-centre jump holds it off 1 s) it keeps the safety conditions of the
 corner centering it replaces:
 
-* nothing is pushed toward a side with a BSD warning (held 0.5 s) or a moving
-  radar vehicle in the adjacent lane level with the car or just ahead (-5..10 m,
-  faster than 2 m/s). Only that direction is cut: a correction away from the
-  traffic goes on, and one already pushing toward it backs off within 0.5 s;
+* with traffic beside the car, return toward the lane centre only when radar
+  shows enough clearance there and the adjacent vehicles are not approaching
+  laterally. A BSD warning (held 0.5 s) without nearby radar geometry still
+  blocks that direction. The traffic limit also applies after smoothing;
 * none during a lane change, turn desire, automatic turn or turn signal and
   for 1 s after; none while the driver steers and for 0.5 s after;
 * the lane-line standard deviation fades it out over 0.2..0.4 m;
@@ -84,6 +84,8 @@ DRIVER_REST_S = 0.5
 BSD_HOLD_S = 0.5
 SIDE_DREL = (-5.0, 10.0)  # m: level with the car or just ahead
 SIDE_MIN_VLEAD = 2.0
+SIDE_CLEARANCE_M = 2.60  # 1.00 m ego + 1.25 m target half-widths, plus 0.35 m
+BSD_MAX_DREL = 7.0      # CarState's forward corner-radar BSD range
 TURN_DESIRE_MIN = 0.2       # desireState turn/lane-change probabilities, summed
 LANE_CHANGE_DESIRE_MIN = 0.1
 LANE_CHANGE_LEFT, LANE_CHANGE_RIGHT = 3, 4  # log.Desire
@@ -123,9 +125,50 @@ def _normal_width(lx, ly, rx, ry, x):
   return (r - l) * math.cos(yaw)
 
 
-def side_traffic(leads):
-  """A moving radar vehicle in the adjacent lane level with the car or just ahead."""
-  return any(SIDE_DREL[0] <= x.dRel <= SIDE_DREL[1] and x.vLead > SIDE_MIN_VLEAD for x in leads)
+def _lane_center(lane, x):
+  lx, ly, rx, ry = lane[:4]
+  left, right = _at(lx, ly, x), _at(rx, ry, x)
+  return (left + right) / 2 if left is not None and right is not None else None
+
+
+def _side_clearance(lane, lead, side):
+  """Signed, lane-normal distance from the lane centre to a radar return."""
+  # Radar yRel/vLat point left, whereas model y points right. dPath is
+  # relative to the model path and is used by radard to classify the side.
+  if not (lead.status and lead.radar and math.isfinite(lead.yRel) and lead.yRel != 0.0):
+    return None
+  x = max(lead.dRel, 0.0)
+  center, ahead = _lane_center(lane, x), _lane_center(lane, x + 1.0)
+  if center is None or ahead is None:
+    return None
+  slope = ahead - center
+  # Behind the car, extend the lane tangent and allow for unobserved bend.
+  rear = min(lead.dRel, 0.0)
+  distance = side * (-lead.yRel - center - rear * slope) / math.hypot(1.0, slope)
+  return distance - 0.5 * CURVATURE_MAX_CONFIDENT * rear ** 2
+
+
+def _side_limit(lane, offsets, leads, bsd, radar_valid, side, accel_per_m):
+  traffic = [lead for lead in leads if SIDE_DREL[0] <= lead.dRel <= SIDE_DREL[1] and lead.vLead > SIDE_MIN_VLEAD]
+  reasons = (['side'] if traffic else []) + (['bsd'] if bsd else [])
+  if not reasons:
+    return math.inf, reasons
+  if offsets is None or not radar_valid or not traffic or (bsd and not any(lead.dRel <= BSD_MAX_DREL for lead in traffic)):
+    return 0.0, reasons
+  for lead in traffic:
+    # Zero lateral velocity is a parallel track. Any inward motion or
+    # unavailable velocity keeps the direction blocked.
+    if not (math.isfinite(lead.vLat) and -side * lead.vLat >= 0.0):
+      return 0.0, reasons
+    clearance = _side_clearance(lane, lead, side)
+    if clearance is None or clearance < SIDE_CLEARANCE_M:
+      return 0.0, reasons
+  center = _lane_center(lane, 0.0)
+  if center is None:
+    return 0.0, reasons
+  # The car now, the 5 m bend-corrected car position, and the lookahead
+  # model path must all have room before the centre in the pushed direction.
+  return max(0.0, min(side * center, side * offsets[0], side * offsets[1])) * accel_per_m, reasons
 
 
 def atc_active(atc_type):
@@ -158,7 +201,6 @@ class LanelessCentering:
     self.frame_id = None
     self.w_filtered = None
     self.merge = False
-    self.out_step = None
 
   def _lane(self, md):
     """Ego lane lines and path as arrays, or None when modelV2 lacks them."""
@@ -222,7 +264,7 @@ class LanelessCentering:
       fails.append('offset')
     return car, path
 
-  def update(self, md, cs, rs, atc_type, v_ego):
+  def update(self, md, cs, rs, atc_type, v_ego, *, radar_valid=True):
     """One controlsd step in the laneless branch. Returns the curvature to add, 1/m (+ = right)."""
     v = float(v_ego)
     kappa = float(md.action.desiredCurvature)
@@ -267,48 +309,40 @@ class LanelessCentering:
         fails.append('std')
     self.hold = max(self.hold - DT, 0.0)
 
-    # traffic beside the car: BSD (held 0.5 s) or a moving radar vehicle level with it or just ahead
-    blocked = {-1.0: [r for r, on in (('bsd', self.bsd_left > 0.0), ('side', side_traffic(rs.leadsLeft))) if on],
-               1.0: [r for r, on in (('bsd', self.bsd_right > 0.0), ('side', side_traffic(rs.leadsRight))) if on]}
+    accel_per_m = 2.0 * v * v / lookahead(v) ** 2
+    safe_offsets = offsets if not fails else None
+    left, left_reasons = _side_limit(lane, safe_offsets, rs.leadsLeft, self.bsd_left > 0.0, radar_valid, -1.0, accel_per_m)
+    right, right_reasons = _side_limit(lane, safe_offsets, rs.leadsRight, self.bsd_right > 0.0, radar_valid, 1.0, accel_per_m)
+    lo, hi = -left, right
 
     limits = []
-    target = 0.0
     if fails or offsets is None:
       self.blend = max(self.blend - DT / RAMP_OUT_S, 0.0)
       self.integral = self.integral * math.exp(-DT / INTEGRAL_LEAK_S) if scale > 0.0 else 0.0
     else:
       car, path = offsets
-      # never push toward traffic: only the direction toward it is cut, the correction away from it stays
-      lo = 0.0 if blocked[-1.0] else -math.inf
-      hi = 0.0 if blocked[1.0] else math.inf
       i_max = INTEGRAL_MAX * scale
       self.integral = float(np.clip(np.clip(self.integral + INTEGRAL_GAIN * scale * car * DT, -i_max, i_max), lo, hi))
       cap = (ACCEL_MAX + CURVE_CAP_GAIN * min(abs(kappa) * v * v, CURVE_ACCEL_MAX)) * scale
-      pursuit = 2.0 * path * v * v / lookahead(v) ** 2
-      wanted = float(np.clip(scale * pursuit + self.integral, -cap, cap)) * std_w
+      wanted = float(np.clip(scale * accel_per_m * path + self.integral, -cap, cap)) * std_w
       target = float(np.clip(wanted, lo, hi))
-      for sgn in (-1.0, 1.0):
-        if blocked[sgn] and (wanted * sgn > 0.0 or self.accel * sgn > 0.0):
-          limits += blocked[sgn]
+      if wanted < lo:
+        limits += left_reasons
+      if wanted > hi:
+        limits += right_reasons
       self.blend = min(self.blend + DT / RAMP_IN_S, 1.0)
+      # The 0.5 s filter and rate limit keep small model-frame changes from
+      # shaking the wheel (2–3 Hz on the Rust branch before them).
+      step = ACCEL_RATE_MAX * scale * DT
+      self.accel += float(np.clip((target - self.accel) * DT / ACCEL_TAU_S, -step, step))
 
-    if self.accel != 0.0 and blocked[math.copysign(1.0, self.accel)]:
-      # already pushing toward traffic that just appeared: back off linearly within RAMP_OUT_S of its
-      # appearance, whether or not other conditions hold the correction off meanwhile
-      if self.out_step is None:
-        self.out_step = abs(self.accel) * DT / RAMP_OUT_S * (1.0 + 1e-9)
-      step = max(ACCEL_RATE_MAX * scale * DT, self.out_step)
-      moved = self.accel + float(np.clip(target - self.accel, -step, step))
-      self.accel = 0.0 if moved * self.accel <= 0.0 and target == 0.0 else moved
-    else:
-      self.out_step = None
-      if not (fails or offsets is None):
-        # the lane centre and the path move a little from one model frame to the next; the 0.5 s filter
-        # and the rate limit keep that from shaking the wheel (2-3 Hz on the Rust branch before them)
-        filtered = self.accel + (target - self.accel) * DT / ACCEL_TAU_S
-        step = ACCEL_RATE_MAX * scale * DT
-        self.accel += float(np.clip(filtered - self.accel, -step, step))
-
+    # A new car or a shrinking centre envelope must also limit the
+    # previously smoothed acceleration, including during other fades.
+    if self.accel < lo:
+      limits += left_reasons
+    if self.accel > hi:
+      limits += right_reasons
+    self.accel = min(max(self.accel, lo), hi)
     self.block = 0
     for name in fails + limits:
       self.block |= BLOCK_BITS[name]

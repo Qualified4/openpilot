@@ -228,8 +228,11 @@ class Controls:
         curvature = get_lag_adjusted_curvature(self.CP, CS.vEgo, lat_plan.psis, lat_plan.curvatures, steer_actuator_delay + lat_smooth_seconds, lat_plan.distances)
         new_desired_curvature = smooth_value(curvature, self.desired_curvature, lat_smooth_seconds)
     else:
+      radar = 'radarState'
+      # Only radar received within 0.2 s at 100 Hz may relax a side block.
+      radar_fresh = self.sm.seen[radar] and self.sm.valid[radar] and self.sm.frame - self.sm.recv_frame[radar] <= 20
       model_curvature = model_v2.action.desiredCurvature + self.laneless_centering.update(
-        model_v2, CS, self.sm['radarState'], self.sm['carrotMan'].atcType, CS.vEgo)
+        model_v2, CS, self.sm[radar], self.sm['carrotMan'].atcType, CS.vEgo, radar_valid=radar_fresh)
       # 모델 목표 곡률 1차 평활 τ 0.05 s(0.1이면 코너 진입 지연·탈출 과회전이 커진다, 항목 106)
       new_desired_curvature = smooth_value(model_curvature, self.desired_curvature, 0.05)
 

@@ -38,18 +38,21 @@ def radar(left=(), right=()):
   rs = log.RadarState.new_message()
   for name, leads in (('leadsLeft', left), ('leadsRight', right)):
     out = rs.init(name, len(leads))
-    for o, (d, v) in zip(out, leads, strict=True):
+    for o, (d, v, *lateral) in zip(out, leads, strict=True):
       o.dRel, o.vLead = d, v
+      if lateral:
+        o.yRel, o.vLat = lateral
+        o.status = o.radar = True
   return rs
 
 
-def run(c, md, steps, v=70 / 3.6, cs=None, rs=None, atc=''):
+def run(c, md, steps, v=70 / 3.6, cs=None, rs=None, atc='', radar_valid=True):
   cs = cs or state()
   rs = rs or radar()
   k = 0.0
   for i in range(steps):
     md.frameId = md.frameId + (1 if i % 5 == 0 else 0)
-    k = c.update(md, cs, rs, atc, v)
+    k = c.update(md, cs, rs, atc, v, radar_valid=radar_valid)
   return k
 
 
@@ -122,10 +125,58 @@ def test_never_pushes_toward_traffic_in_the_adjacent_lane(side):
   assert ('bsd' if side == 'bsd' else 'side') in block_names(c.block)
   c = LanelessCentering()
   assert run(c, model(centre=-0.19), 300, **right) < 0.0
-  # acting already: traffic appearing on the pushed side ramps it out within 0.5 s
+  # The new limit applies immediately to an already-smoothed correction.
   c = LanelessCentering()
   run(c, model(centre=-0.19), 300)
-  assert run(c, model(centre=-0.19), 50, **left) == 0.0
+  assert run(c, model(centre=-0.19), 1, **left) == 0.0
+
+
+@pytest.mark.parametrize('side', [-1, 1])
+def test_only_returns_to_the_center_with_room_on_both_sides(side):
+  v = 70 / 3.6
+  c = LanelessCentering(strength=2.0)
+  md = model(centre=side * 0.25, path=-side * 0.20)
+  rs = radar(left=[(0.0, 20.0, 3.5, 0.0)], right=[(0.0, 20.0, -3.5, 0.0)])
+  k = run(c, md, 350, v=v, rs=rs)
+  assert 0.0 < side * k * lc.lookahead(v) ** 2 / 2 <= 0.25
+  # Once the car gets closer, the output drops to the newly available room on the first step.
+  k = run(c, model(centre=side * 0.05, path=-side * 0.4), 1, v=v, rs=rs)
+  assert 0.0 < side * k * lc.lookahead(v) ** 2 / 2 <= 0.050001
+  k = run(c, model(centre=0.0, path=-side * 0.4), 1, v=v, rs=rs)
+  assert k == 0.0
+
+
+def test_a_far_right_car_allows_a_left_offset_to_return_even_with_bsd():
+  md = model(centre=0.2)
+  rs = radar(right=[(0.0, 20.0, -3.5, 0.0)])
+  for bsd in (False, True):
+    assert run(LanelessCentering(), md, 150, cs=state(rightBlindspot=bsd), rs=rs) > 0.0
+
+
+@pytest.mark.parametrize('right,bsd,radar_valid', [
+  ([(0.0, 20.0, -2.7, 0.0)], False, True),  # 2.5 m from the centre, inside the clearance limit
+  ([(0.0, 20.0, -3.5, 0.01)], False, True),  # approaching from the right
+  ([(0.0, 20.0, -3.5, float('nan'))], False, True),
+  ([(0.0, 20.0, -3.5, 0.0), (1.0, 20.0)], False, True),  # a second car lacks lateral data
+  ([], True, True),  # BSD alone
+  ([(9.0, 20.0, -3.5, 0.0)], True, True),  # radar track too far ahead to explain BSD
+  ([(0.0, 20.0, -3.5, 0.0)], True, False),  # untrusted radar cannot override BSD
+])
+def test_near_approaching_or_unknown_traffic_blocks_a_return(right, bsd, radar_valid):
+  c = LanelessCentering()
+  md = model(centre=0.2)
+  run(c, md, 150)
+  assert run(c, md, 1, cs=state(rightBlindspot=bsd), rs=radar(right=right), radar_valid=radar_valid) == 0.0
+  assert {'bsd', 'side'} & set(block_names(c.block))
+
+
+def test_does_not_push_a_model_path_past_the_center_toward_traffic():
+  c = LanelessCentering(strength=2.0)
+  v = 70 / 3.6
+  md = model(centre=0.4, path=0.38)
+  rs = radar(right=[(0.0, 20.0, -3.5, 0.0)])
+  k = run(c, md, 350, v=v, rs=rs)
+  assert 0.0 < k * lc.lookahead(v) ** 2 / 2 <= 0.020001
 
 
 def test_a_slow_or_far_radar_vehicle_does_not_count():

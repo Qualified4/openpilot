@@ -1,0 +1,18 @@
+--- a/KO-레인리스-차선중앙-보정-(0).md
++++ b/KO-레인리스-차선중앙-보정-(0).md
+@@ -31,0 +32,6 @@
++
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++값을 높이면 차로 중앙을 향한 보정이 커집니다. 옆 차가 있을 때는 레이더로 충분한 가로 간격이 확인되고 옆 차가 다가오지 않을 때 중앙까지만 복귀합니다. 간격이 부족하거나 BSD 경고에 대응하는 레이더 거리 정보가 없으면 그 방향의 보정을 즉시 멈춥니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+--- a/EN-Laneless-lane-centring-(0).md
++++ b/EN-Laneless-lane-centring-(0).md
+@@ -31,0 +32,6 @@
++
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++Higher values increase the correction toward the lane centre. With adjacent traffic, the correction can bring the car as far as the lane centre when radar shows enough lateral clearance and the adjacent vehicles are not moving inward. Insufficient clearance or a BSD warning without nearby radar distance immediately blocks correction toward that side.
++<!-- CARROT:SECTION:END BEHAVIOR -->
