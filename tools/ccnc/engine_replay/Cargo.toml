@@ -1,0 +1,10 @@
+[package]
+name = "engine_replay"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+ccnc_map = { path = "../../../opendbc_repo/opendbc/car/hyundai/ccnc_core/ccnc_map" }
+det_rules = { path = "../../../opendbc_repo/opendbc/car/hyundai/ccnc_core/det_rules" }
+ccnc_vision_msg = { path = "../../../openpilot/selfdrive/carrot/ccnc_visiond/msg" }
