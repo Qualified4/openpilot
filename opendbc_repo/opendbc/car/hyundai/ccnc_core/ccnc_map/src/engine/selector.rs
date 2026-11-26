@@ -51,6 +51,8 @@ pub(super) fn select(
     let mut slots = [None; 5];
     let mut front = Vec::new();
     let mut sides: [Vec<&TrackedObject>; 2] = [Vec::new(), Vec::new()];
+    let mut close: [Vec<&TrackedObject>; 2] = [Vec::new(), Vec::new()];
+    let mut camera_queue: [Vec<&TrackedObject>; 2] = [Vec::new(), Vec::new()];
     for o in objects.iter() {
         let incumbent = occupied.contains(&Some(o.obj_id));
         if o.radar_hits < 3 && o.vision_hits < 3 {
@@ -96,11 +98,30 @@ pub(super) fn select(
                 && (!stationary || o.verified_travel >= 3.)
             || speed <= 5. && o.motion_hits >= 3;
         let threshold = if incumbent { HOLD } else { SIDE_CONFIRM };
+        let side = usize::from(o.lane > 0);
+        if o.evidence.last_radar_t == Some(now)
+            && speed <= 3.
+            && o.radar_streak >= 5
+            && (0.55..=1.35).contains(&o.lane_u.abs())
+            && (-0.6..=3.).contains(&(o.v_s + speed))
+        {
+            // Sparse evidence at a stop can only be used as part of a two-car pair.
+            if !o.rear && near && o.s >= 1.5 && (o.range_consistent || speed <= 1. && o.v_s >= 0.) {
+                close[side].push(o);
+            }
+            if !o.rear
+                && o.range_consistent
+                && o.front_box_t
+                    .is_some_and(|t| (0. ..=1.5).contains(&(now - t)))
+            {
+                camera_queue[side].push(o);
+            }
+        }
         if measured_vehicle
             && o.existence_log_odds >= threshold
             && (observed || incumbent && (handoff || !o.rear && o.radar_age(now) <= hold_age))
         {
-            sides[usize::from(o.lane > 0)].push(o);
+            sides[side].push(o);
         }
     }
     slots[0] = front
@@ -126,41 +147,69 @@ pub(super) fn select(
         let behind = cars.iter().copied().filter(|o| o.rear).min_by(|a, b| {
             cost(now, a, a.s.abs(), rear_slot).total_cmp(&cost(now, b, b.s.abs(), rear_slot))
         });
-        let alongside = cars
-            .iter()
-            .copied()
+        let front_cost = |o: &TrackedObject| cost(now, o, o.s, front_slot);
+        let front_candidates = || {
+            cars.iter()
+                .copied()
+                .filter(|o| !o.rear && front_within_range(o))
+        };
+        let front_default =
+            front_candidates().min_by(|a, b| front_cost(a).total_cmp(&front_cost(b)));
+        let alongside = front_candidates()
+            .chain(close[side].iter().copied())
             .filter(|o| {
-                // Treat the alongside threshold as an interval: a car whose range uncertainty still
-                // overlaps it can leave room for a separate measured car farther ahead.
-                !o.rear && o.s >= SPLIT_REAR_MIN && o.s - o.var_s.sqrt().min(0.7) <= SPLIT_REAR_MAX
+                o.s >= SPLIT_REAR_MIN
+                    && o.s - o.var_s.sqrt().min(0.7) <= SPLIT_REAR_MAX
+                    && front_default.is_none_or(|front| !seen(now, front) || o.s <= front.s)
             })
             .min_by(|a, b| {
                 cost(now, a, a.s.abs(), rear_slot).total_cmp(&cost(now, b, b.s.abs(), rear_slot))
             });
-        let split = alongside.filter(|near| {
-            // An observed two-car pair can replace a predicted rear picture.
-            // Ensure the farther return lies comfortably inside the same lane.
-            cars.iter().any(|far| {
-                far.s >= near.s + TWO_CAR_GAP
-                    && far.s > 0.
-                    && front_within_range(far)
-                    && seen(now, far)
-                    && (behind.is_none() || seen(now, near) && far.lane_u.abs() <= 1.35)
-            })
+        let split = alongside.and_then(|near| {
+            let established_near = cars.iter().any(|o| o.obj_id == near.obj_id);
+            let queue_pair = |far: &TrackedObject| {
+                near.evidence.last_radar_t == Some(now)
+                    && far.evidence.last_radar_t == Some(now)
+                    && (far.lane_u - near.lane_u).abs() <= 0.45
+                    && (far.v_s - near.v_s).abs() <= 2.5
+                    && far.s - near.s <= 12.
+            };
+            let ordered_far = |far: &TrackedObject| far.s >= near.s + TWO_CAR_GAP && far.s > 0.;
+            let far = front_candidates()
+                .filter(|far| {
+                    ordered_far(far)
+                        && seen(now, far)
+                        && (established_near || queue_pair(far))
+                        && behind.is_none_or(|old| {
+                            !seen(now, old) && seen(now, near) && far.lane_u.abs() <= 1.35
+                        })
+                })
+                .chain(camera_queue[side].iter().copied().filter(|far| {
+                    behind.is_none()
+                        && ordered_far(far)
+                        && front_within_range(far)
+                        && queue_pair(far)
+                        && camera_queue[side].iter().any(|o| o.obj_id == near.obj_id)
+                }))
+                .min_by(|a, b| front_cost(a).total_cmp(&front_cost(b)))?;
+            Some((near, far))
         });
-        splits[side] = split.map(|near| near.obj_id);
-        let split =
-            split.or_else(|| alongside.filter(|near| behind.is_none() && now <= near.split_until));
-        let front = cars
-            .iter()
-            .copied()
-            .filter(|o| {
-                !o.rear
-                    && front_within_range(o)
-                    && split.is_none_or(|near| o.s >= near.s + TWO_CAR_GAP)
-            })
-            .min_by(|a, b| cost(now, a, a.s, front_slot).total_cmp(&cost(now, b, b.s, front_slot)));
-        let rear = split.or(behind);
+        splits[side] = split.map(|(near, _)| near.obj_id);
+        let (front, rear) = if let Some((near, far)) = split {
+            (Some(far), Some(near))
+        } else if let Some(near) = alongside.filter(|near| {
+            behind.is_none()
+                && now <= near.split_until
+                && cars.iter().any(|o| o.obj_id == near.obj_id)
+        }) {
+            let front = front_candidates()
+                .filter(|o| o.s >= near.s + TWO_CAR_GAP)
+                .min_by(|a, b| front_cost(a).total_cmp(&front_cost(b)));
+            (front, Some(near))
+        } else {
+            // Promote the farther vehicle only when the same assignment places the nearer one.
+            (front_default, behind)
+        };
         slots[side + 1] = front.map(|o| slot(frame, o));
         slots[side + 3] = rear.map(|o| slot(frame, o));
     }

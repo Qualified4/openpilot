@@ -36,6 +36,9 @@ pub struct TrackedObject {
     pub(super) lane: i8,
     pub(super) lane_filtered: f64,
     pub(super) radar_hits: u32,
+    pub(super) radar_streak: u32,
+    pub(super) same_track_streak: u32,
+    pub(super) last_radar_motion: [f64; 3],
     pub(super) motion_hits: u8,
     pub(super) radar_sample: Option<RadarSample>,
     pub(super) motion_time: f64,
@@ -44,12 +47,15 @@ pub struct TrackedObject {
     pub(super) range_consistent: bool,
     pub(super) handoff_until: f64,
     pub(super) vision_hits: u32,
+    pub(super) front_box_t: Option<f64>,
     pub(super) stationary_vision_t: Option<f64>,
     pub(super) stationary_vision_confirmed: bool,
     pub(super) last_lead_sample: Option<f64>,
     pub(super) rear: bool,
     pub(super) split_until: f64,
+    pub(super) detector_kind: VehicleKind,
     pub(super) kind_vote: f64,
+    pub(super) car_streak: u8,
 }
 
 impl TrackedObject {
@@ -76,6 +82,11 @@ impl TrackedObject {
     }
 
     pub(super) fn vote(&mut self, kind: VehicleKind, confidence: f64) {
+        self.car_streak = if kind == VehicleKind::Car && confidence >= 0.6 {
+            self.car_streak.saturating_add(1)
+        } else {
+            0
+        };
         self.kind_vote = match kind {
             VehicleKind::Unknown => return,
             VehicleKind::Car => self.kind_vote - confidence,
@@ -83,9 +94,12 @@ impl TrackedObject {
         }
         .clamp(-4., 4.);
         if self.kind_vote >= 1.25 {
-            self.kind = VehicleKind::Heavy;
-        } else if self.kind_vote <= -1.25 {
-            self.kind = VehicleKind::Car;
+            self.detector_kind = VehicleKind::Heavy;
+        } else if self.kind_vote <= -1.25
+            && (self.detector_kind != VehicleKind::Heavy
+                || u32::from(self.car_streak) >= crate::vision::kind::N_FLIP)
+        {
+            self.detector_kind = VehicleKind::Car;
         }
     }
 }

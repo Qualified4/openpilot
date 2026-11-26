@@ -2,12 +2,19 @@ use super::object::{Evidence, RadarSample, TrackedObject, STATIONARY_VISION_WIND
 use super::road_frame::{RoadFrame, LANE_WIDTH};
 use super::{VehicleKind, VisionObservation};
 use crate::input::{live_tracks::RawPoint, map_events::DisplayLead};
+use crate::vision::kind::{
+    front_gate, front_height, FrontCam, KindResult, Kinds, KIND_CAR, MAX_TALL_M,
+};
 use crate::world::PoseAt;
-use det_rules::CAM2B;
+use det_rules::{Track, CAM2B};
+use std::collections::VecDeque;
 
 pub(super) const CONFIRM: f64 = 0.85;
 const DROP: f64 = -1.8;
 const MAX_OBJECTS: usize = 80;
+// Keep the capture-time radar history for asynchronous visiond classifier answers.
+const CAMERA_HISTORY_NS: u64 = 4_000_000_000;
+const CAMERA_MATCH_NS: u64 = 150_000_000;
 
 #[derive(Clone, Copy)]
 struct Measurement {
@@ -24,6 +31,8 @@ struct Measurement {
 pub(super) struct Tracker {
     pub objects: Vec<TrackedObject>,
     last_id: u64,
+    camera_history: VecDeque<(u64, Vec<Track>)>,
+    kinds: Kinds,
 }
 
 impl Tracker {
@@ -47,6 +56,9 @@ impl Tracker {
             lane: lane_u.round().clamp(-3., 3.) as i8,
             lane_filtered: lane_u,
             radar_hits: 0,
+            radar_streak: 0,
+            same_track_streak: 0,
+            last_radar_motion: [0.; 3],
             motion_hits: 0,
             radar_sample: None,
             motion_time: 0.,
@@ -55,14 +67,59 @@ impl Tracker {
             range_consistent: false,
             handoff_until: f64::NEG_INFINITY,
             vision_hits: 0,
+            front_box_t: None,
             stationary_vision_t: None,
             stationary_vision_confirmed: false,
             last_lead_sample: None,
             rear: s < 0.,
             split_until: f64::NEG_INFINITY,
+            detector_kind: VehicleKind::Unknown,
             kind_vote: 0.,
+            car_streak: 0,
         });
         self.objects.last_mut()
+    }
+
+    pub fn reset(&mut self) {
+        self.objects.clear();
+        self.camera_history.clear();
+        self.kinds = Kinds::default();
+    }
+
+    pub fn front_kinds(&mut self, published: u64, camera: &FrontCam, results: &[KindResult]) {
+        let results: Vec<_> = results
+            .iter()
+            .copied()
+            .filter(|result| {
+                published >= result.time_ns && published - result.time_ns <= CAMERA_HISTORY_NS
+            })
+            .collect();
+        let history = &self.camera_history;
+        // A box votes for its best capture-time object. A nearby shadow object may
+        // be a separate passenger car even when it fits within one bus length.
+        self.kinds.observe_front_matches(&results, camera, |t| {
+            camera_tracks(history, t).map(|(stamp, tracks)| (*stamp, tracks.clone()))
+        });
+    }
+
+    pub fn front_boxes(&mut self, capture: u64, camera: &FrontCam, boxes: &[[f64; 4]]) {
+        let Some((_, tracks)) = camera_tracks(&self.camera_history, capture) else {
+            return;
+        };
+        let t = capture as f64 * 1e-9;
+        for bbox in boxes {
+            let id = tracks
+                .iter()
+                .filter(|track| (1. ..=MAX_TALL_M).contains(&front_height(track, bbox)))
+                .filter_map(|track| front_gate(camera, track, bbox).map(|cost| (track.id, cost)))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(id, _)| id as u64);
+            if let Some(o) = self.objects.iter_mut().find(|o| Some(o.obj_id) == id) {
+                if o.front_box_t.is_none_or(|last| t > last) {
+                    o.front_box_t = Some(t);
+                }
+            }
+        }
     }
 
     pub fn predict(
@@ -155,23 +212,75 @@ impl Tracker {
         pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut seen_point = vec![false; measurements.len()];
         let mut seen_object = vec![false; self.objects.len()];
+        let mut camera = Vec::with_capacity(measurements.len());
         for (_, mi, oi) in pairs {
             if seen_point[mi] || seen_object[oi] {
                 continue;
             }
             seen_point[mi] = true;
             seen_object[oi] = true;
-            update_radar(&mut self.objects[oi], measurements[mi], now, ego, speed);
+            let o = &mut self.objects[oi];
+            let m = measurements[mi];
+            if let Some(old) = o.evidence.last_track_id.filter(|&old| old != m.id) {
+                // A different, still measured return now owns that raw track. An inherited
+                // classification without a supporting answer cannot follow this reassignment.
+                if measurements.iter().any(|point| point.id == old) {
+                    if let Ok(id) = u32::try_from(o.obj_id) {
+                        self.kinds.discard_unverified_inheritance(id);
+                    }
+                }
+            }
+            update_radar(o, m, now, ego, speed);
+            camera.push(camera_track(o, m));
         }
         for (i, &m) in measurements.iter().enumerate() {
             if !seen_point[i] {
                 let u = frame.lane_u(m.s, m.d);
                 if let Some(o) = self.create(m.s, m.d, m.speed, u) {
                     update_radar(o, m, now, ego, speed);
+                    camera.push(camera_track(o, m));
                 }
             }
         }
+        self.handoff_kind(now);
+        let stamp = (now * 1e9).round() as u64;
+        self.camera_history
+            .retain(|(t, _)| stamp.saturating_sub(*t) <= CAMERA_HISTORY_NS);
+        self.camera_history.push_back((stamp, camera));
         measurements.iter().map(|m| (m.x, m.y)).collect()
+    }
+
+    fn handoff_kind(&mut self, now: f64) {
+        for o in self
+            .objects
+            .iter()
+            .filter(|o| o.evidence.last_radar_t == Some(now) && o.same_track_streak >= 3)
+        {
+            let Ok(to) = u32::try_from(o.obj_id) else {
+                continue;
+            };
+            if self.kinds.confirmed_kind(to).is_some() {
+                continue;
+            }
+            let mut donors = self.objects.iter().filter(|old| {
+                let dt = old.radar_age(now);
+                let [x, y, v] = o.last_radar_motion;
+                let [old_x, old_y, old_v] = old.last_radar_motion;
+                dt > 0.
+                    && dt <= 0.25
+                    && old.evidence.last_track_id == o.evidence.last_track_id
+                    && (x - old_x - old_v * dt).abs() <= 1.
+                    && (y - old_y).abs() <= 0.85
+                    && (v - old_v).abs() <= 2.
+            });
+            // The raw radar return stayed continuous across a change of shadow object.
+            // Use raw motion here because refreshed lane coordinates can diverge at range.
+            if let Some(old) = donors.next().filter(|_| donors.next().is_none()) {
+                if let Ok(from) = u32::try_from(old.obj_id) {
+                    self.kinds.inherit_confirmed(from, to);
+                }
+            }
+        }
     }
 
     pub fn lead(&mut self, now: f64, lead: Option<(f64, DisplayLead)>, frame: &RoadFrame) {
@@ -371,6 +480,42 @@ impl Tracker {
                 && (-23. ..=155.).contains(&o.s)
                 && o.d.abs() <= 10.
         });
+        self.kinds
+            .retain(|vid| self.objects.iter().any(|o| o.obj_id == u64::from(vid)));
+        for o in &mut self.objects {
+            o.kind = match u32::try_from(o.obj_id)
+                .ok()
+                .and_then(|id| self.kinds.confirmed_kind(id))
+            {
+                Some(KIND_CAR) => VehicleKind::Car,
+                Some(_) => VehicleKind::Heavy,
+                None => o.detector_kind,
+            };
+        }
+    }
+}
+
+fn camera_tracks(
+    history: &VecDeque<(u64, Vec<Track>)>,
+    capture: u64,
+) -> Option<&(u64, Vec<Track>)> {
+    let i = history.partition_point(|(stamp, _)| *stamp <= capture);
+    [
+        i.checked_sub(1).and_then(|j| history.get(j)),
+        history.get(i),
+    ]
+    .into_iter()
+    .flatten()
+    .min_by_key(|(stamp, _)| stamp.abs_diff(capture))
+    .filter(|(stamp, _)| stamp.abs_diff(capture) <= CAMERA_MATCH_NS)
+}
+
+fn camera_track(o: &TrackedObject, m: Measurement) -> Track {
+    Track {
+        id: o.obj_id as i64,
+        d_rel: m.x,
+        y_rel: -m.y,
+        v_rel: m.speed,
     }
 }
 
@@ -389,6 +534,16 @@ fn update_radar(o: &mut TrackedObject, m: Measurement, now: f64, ego: PoseAt, sp
     o.var_s *= 1. - gain_s * (0.4 / ds.abs()).min(1.);
     o.var_d *= 1. - gain_d * (0.62 / dd.abs()).min(1.);
     let prior = o.evidence.last_radar_t;
+    if o.radar_age(now) > 0.2 {
+        o.radar_streak = 0;
+        o.front_box_t = None;
+    }
+    o.radar_streak += 1;
+    if o.radar_streak == 1 || o.evidence.last_track_id != Some(m.id) {
+        o.same_track_streak = 0;
+    }
+    o.same_track_streak += 1;
+    o.last_radar_motion = [m.x, m.y, m.speed];
     o.evidence.last_radar_t = Some(now);
     o.evidence.last_track_id = Some(m.id);
     o.radar_hits += 1;

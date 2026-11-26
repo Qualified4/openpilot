@@ -434,3 +434,143 @@ fn delayed_camera_confirms_a_stopped_side_vehicle_only_with_current_radar() {
         assert_eq!(out.slots[2].is_some(), expected, "tick {tick}");
     }
 }
+
+#[test]
+fn a_confirmed_near_car_stays_in_front_when_it_cannot_take_the_rear_slot() {
+    let mut engine = MapEngine::default();
+    let out = confirm(
+        &mut engine,
+        &[radar(1, 7.5, -3.5, 0.), radar(2, 17., -3.5, 0.)],
+    );
+    assert_eq!(out.slots[1].unwrap().last_track_id, Some(1));
+    assert!(out.slots[3].is_none());
+}
+
+#[test]
+fn steady_near_return_at_a_stop_can_split_only_with_a_distinct_confirmed_car() {
+    let mut engine = MapEngine::default();
+    let mut near = radar(1, 4.5, 3.5, 0.);
+    near.motion_state = 0;
+    let out = confirm(&mut engine, std::slice::from_ref(&near));
+    assert!(out.slots[2].is_none() && out.slots[4].is_none());
+    let points = [near, radar(2, 12., 3.5, 0.)];
+    for tick in 8..15 {
+        let out = engine.step(input(tick, &points));
+        if tick >= 11 {
+            assert_eq!(out.slots[2].unwrap().last_track_id, Some(2));
+            assert_eq!(out.slots[4].unwrap().last_track_id, Some(1));
+        }
+    }
+}
+
+fn front_kind(
+    cam: &FrontCam,
+    captured: u32,
+    range: f64,
+    lateral: f64,
+    kind: u8,
+    height: f64,
+) -> KindResult {
+    use crate::vision::kind::KindView;
+
+    let (u, v) = cam.radar_ground(range, -lateral).unwrap();
+    let scale = 1141.5 / (range + det_rules::CAM2B);
+    KindResult {
+        time_ns: u64::from(captured) * 50_000_000,
+        view: KindView::Front,
+        xyxy: [u - scale, v - height * scale, u + scale, v],
+        kind,
+        prob: 0.98,
+    }
+}
+
+#[test]
+fn delayed_tall_classifier_answer_follows_capture_object_into_rear() {
+    use crate::vision::kind::KIND_BUS;
+
+    let mut engine = MapEngine::default();
+    let cam = FrontCam::new([0.; 3], 1.22).unwrap();
+    let mut identity = None;
+    for tick in 0..120 {
+        let x = 31. - 6. * STEP * f64::from(tick);
+        if tick == 58 {
+            let capture = 20;
+            let answer = front_kind(&cam, capture, 25., 3.5, KIND_BUS, 3.);
+            // The answer arrives 1.9 seconds later, by which time the range has changed by 11.4 m.
+            engine.observe_front_kinds(u64::from(tick) * 50_000_000, &cam, &[answer]);
+        }
+        let points = if x > 0.1 {
+            [
+                Some(radar(1, x as f32, 3.5, -6.)),
+                Some(radar(2, 16., -3.5, 0.)),
+            ]
+        } else {
+            [None, Some(radar(2, 16., -3.5, 0.))]
+        };
+        let points: Vec<_> = points.into_iter().flatten().collect();
+        let mut entry = input(tick, &points);
+        entry.speed = 10.;
+        entry.blind[1] = x <= 0.1;
+        let out = engine.step(entry);
+        if tick == 57 {
+            let rf = out.slots[2].unwrap();
+            identity = Some(rf.obj_id);
+            assert_eq!(rf.kind, VehicleKind::Unknown);
+        }
+        if tick == 58 || (106..110).contains(&tick) {
+            let slot = out.slots[if tick == 58 { 2 } else { 4 }].unwrap();
+            assert_eq!(Some(slot.obj_id), identity);
+            assert_eq!(slot.kind, VehicleKind::Heavy);
+            assert_ne!(out.slots[1].unwrap().kind, VehicleKind::Heavy);
+        }
+    }
+}
+
+#[test]
+fn heavy_ignores_single_car_vote_then_returns_after_four_agreeing_answers() {
+    use crate::vision::kind::{KIND_BUS, KIND_CAR};
+
+    let mut engine = MapEngine::default();
+    let cam = FrontCam::new([0.; 3], 1.22).unwrap();
+    let points = [radar(1, 20., 3.5, 0.)];
+    for tick in 0..125 {
+        let answer = match tick {
+            10 | 50 => Some((KIND_BUS, 3.)),
+            30 | 70 | 87 | 104 | 121 => Some((KIND_CAR, 1.5)),
+            _ => None,
+        };
+        if let Some((kind, height)) = answer {
+            let answer = front_kind(&cam, tick - 1, 20., 3.5, kind, height);
+            engine.observe_front_kinds(u64::from(tick) * 50_000_000, &cam, &[answer]);
+        }
+        let out = engine.step(input(tick, &points));
+        let expected = match tick {
+            10..=120 => Some(VehicleKind::Heavy),
+            121.. => Some(VehicleKind::Car),
+            _ => None,
+        };
+        if let Some(kind) = expected {
+            assert_eq!(out.slots[2].unwrap().kind, kind, "tick {tick}");
+        }
+    }
+}
+
+#[test]
+fn a_tall_box_does_not_classify_a_second_track_within_truck_length() {
+    use crate::vision::kind::KIND_BUS;
+
+    let mut engine = MapEngine::default();
+    let cam = FrontCam::new([0.; 3], 1.22).unwrap();
+    let points = [radar(1, 20., 3.5, 0.), radar(2, 30., 3.5, 0.)];
+    confirm(&mut engine, &points);
+    let answer = front_kind(&cam, 7, 20., 3.5, KIND_BUS, 3.);
+    engine.observe_front_kinds(400_000_000, &cam, &[answer]);
+    let out = engine.step(input(8, &points));
+    assert_eq!(out.slots[2].unwrap().kind, VehicleKind::Heavy);
+    let farther = out
+        .objects
+        .iter()
+        .find(|o| o.evidence.last_track_id == Some(2))
+        .unwrap();
+    assert_eq!(farther.kind, VehicleKind::Unknown);
+}

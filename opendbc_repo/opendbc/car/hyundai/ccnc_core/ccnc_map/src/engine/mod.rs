@@ -8,6 +8,7 @@ mod tracker;
 pub use object::{Evidence, TrackedObject, VehicleKind};
 
 use crate::input::{live_tracks::RawPoint, map_events::DisplayLead, model_v2::Model};
+use crate::vision::kind::{FrontCam, KindResult};
 use crate::world::{Pose, PoseAt};
 use road_frame::RoadFrame;
 use std::collections::VecDeque;
@@ -89,6 +90,21 @@ pub struct MapEngine {
 }
 
 impl MapEngine {
+    /// Associate classifier answers with the radar objects at their capture time.
+    pub fn observe_front_kinds(
+        &mut self,
+        published: u64,
+        camera: &FrontCam,
+        results: &[KindResult],
+    ) {
+        self.tracker.front_kinds(published, camera, results);
+    }
+
+    /// Body detections support a pair of currently measured slow side vehicles.
+    pub fn observe_front_boxes(&mut self, capture: u64, camera: &FrontCam, boxes: &[[f64; 4]]) {
+        self.tracker.front_boxes(capture, camera, boxes);
+    }
+
     pub fn step(&mut self, input: EngineInput<'_>) -> EngineOutput {
         let now = input.time;
         let speed = input.speed.max(0.);
@@ -98,7 +114,7 @@ impl MapEngine {
         // A radar outage breaks prediction. Identity numbers still advance within this engine.
         let dt = self.time.map_or(0., |t| now - t);
         if dt > 0.25 {
-            self.tracker.objects.clear();
+            self.tracker.reset();
             self.pose = Pose::default();
             self.behind.clear();
             self.previous = None;

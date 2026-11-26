@@ -198,7 +198,7 @@ pub fn front_gate(cam: &FrontCam, track: &Track, bbox: &[f64; 4]) -> Option<f64>
 }
 
 /// How tall a road camera box is at the distance of `track`, m.
-fn front_height(track: &Track, bbox: &[f64; 4]) -> f64 {
+pub(crate) fn front_height(track: &Track, bbox: &[f64; 4]) -> f64 {
     (bbox[3] - bbox[1]) * (track.d_rel + CAM2B) / FOCAL
 }
 
@@ -329,6 +329,10 @@ impl Vote {
         true
     }
 
+    fn inherited(self) -> Self {
+        Self { streak: (0, 0), streak_from: f64::NEG_INFINITY, inherited: true, relay: false, ..self }
+    }
+
     fn kind(&self) -> Kind {
         Kind {
             class: self.shown,
@@ -450,6 +454,31 @@ impl Kinds {
         side_cands: impl Fn(u64, Side) -> Option<Vec<Cand>>,
         vid_at: impl Fn(u64, i64) -> Option<u32>,
     ) {
+        self.observe_impl(results, cam, tracks_near, side_cands, vid_at, true);
+    }
+
+    pub(crate) fn observe_front_matches(
+        &mut self,
+        results: &[KindResult],
+        camera: &FrontCam,
+        tracks_near: impl Fn(u64) -> Option<(u64, Vec<Track>)>,
+    ) {
+        self.observe_impl(
+            results, Some(camera), tracks_near, |_, _| None,
+            // Shadow tracks are recorded under their object ID at capture time.
+            |_, id| u32::try_from(id).ok(), false,
+        );
+    }
+
+    fn observe_impl(
+        &mut self,
+        results: &[KindResult],
+        cam: Option<&FrontCam>,
+        tracks_near: impl Fn(u64) -> Option<(u64, Vec<Track>)>,
+        side_cands: impl Fn(u64, Side) -> Option<Vec<Cand>>,
+        vid_at: impl Fn(u64, i64) -> Option<u32>,
+        include_secondary_tracks: bool,
+    ) {
         // Per frame and track the best placed box only: the box whose best track it is first, then the closest one.
         let mut best: HashMap<(u64, i64), ((bool, f64), u64, &KindResult, f64)> = HashMap::new();
         for result in results {
@@ -479,7 +508,9 @@ impl Kinds {
             let truck = is_truck(result.kind)
                 || vid_at(stamp, lead.id).and_then(|vid| self.votes.get(&vid)).is_some_and(|v| v.confirmed() && is_truck(v.shown));
             let lon = if truck { SAME_TRUCK_LON_M } else { SAME_CAR_LON_M };
-            for &(q, track) in placed.iter().filter(|(_, t)| same_car(t, lead, lon)) {
+            for &(q, track) in placed.iter().filter(|(_, t)| {
+                if include_secondary_tracks { same_car(t, lead, lon) } else { t.id == lead.id }
+            }) {
                 let rank = (track.id != lead.id, q);
                 let entry = best.entry((result.time_ns, track.id)).or_insert((rank, stamp, result, height));
                 if rank < entry.0 {
@@ -516,6 +547,29 @@ impl Kinds {
             // A confirmed car: the other shape asks for more until it flips or the confirmed shape comes back.
             ask.flipping = shape(kind) != before.2 && vote.confirmed_at == before.1 && ask.flip_asked_s < FLIP_ASK_S;
         }
+    }
+
+    pub(crate) fn confirmed_kind(&self, vid: u32) -> Option<u8> {
+        self.votes.get(&vid).filter(|vote| vote.confirmed()).map(|vote| vote.shown)
+    }
+
+    pub(crate) fn inherit_confirmed(&mut self, from: u32, to: u32) {
+        if self.confirmed_kind(to).is_none() {
+            if let Some(vote) = self.votes.get(&from).filter(|v| v.confirmed() && v.relay) {
+                self.votes.insert(to, vote.inherited());
+            }
+        }
+    }
+
+    pub(crate) fn discard_unverified_inheritance(&mut self, vid: u32) {
+        if self.votes.get(&vid).is_some_and(|v| v.inherited && !v.relay) {
+            self.votes.remove(&vid);
+        }
+    }
+
+    pub(crate) fn retain(&mut self, mut tracked: impl FnMut(u32) -> bool) {
+        self.votes.retain(|vid, _| tracked(*vid));
+        self.asks.retain(|vid, _| tracked(*vid));
     }
 
     /// A road camera frame (its frame time) reached the map: it serves the recheck under way.
@@ -616,7 +670,7 @@ impl Kinds {
                     && !pending.is_some_and(|(d, pending_truck, _)| d < distance && pending_truck != truck)
             });
             if let Some((_, _, vote)) = confirmed {
-                self.votes.insert(car.vid, Vote { streak: (0, 0), streak_from: f64::NEG_INFINITY, inherited: true, relay: false, ..vote });
+                self.votes.insert(car.vid, vote.inherited());
             } else if found[0].is_none() || !(shapes[0][0] && shapes[0][1]) {
                 if let Some((_, _, vote)) = pending {
                     // A pending kind stays unconfirmed and is shown only on a sure link.

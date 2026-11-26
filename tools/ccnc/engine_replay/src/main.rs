@@ -15,7 +15,7 @@ use ccnc_map::input::{
     map_events::{CarState, DisplayLead, Event, CAR_STATE, LIVE_POSE, RADAR_STATE},
     model_v2::{self, Model, EVENT_MODEL_V2},
 };
-use ccnc_map::vision::kind::FrontCam;
+use ccnc_map::vision::kind::{FrontCam, KindResult, KindView};
 use ccnc_vision_msg::{Calibration, Status, View, VisionOut, EVENT_CCNC_VISION};
 use det_rules::{Calib, WideDet, WideGeometry, CAM2B};
 
@@ -32,50 +32,52 @@ struct Camera {
 }
 
 impl Camera {
-    fn observations(&mut self, message: VisionOut, out: &mut Vec<VisionObservation>) {
+    fn observations(
+        &mut self,
+        published: u64,
+        message: VisionOut,
+        engine: &mut MapEngine,
+        out: &mut Vec<VisionObservation>,
+    ) -> usize {
         let calibration = message.calibration;
         let rpy = calibration.rpy_calib.map(f64::from);
         let height = f64::from(calibration.height);
         if !(0.5..=3.).contains(&height) {
-            return;
+            return 0;
         }
         let front = FrontCam::new(rpy, height);
-        for k in message.kinds.iter().filter(|k| k.prob >= 0.65) {
-            let kind = match k.kind {
-                1 => VehicleKind::Car,
-                2 | 3 => VehicleKind::Heavy,
-                _ => continue,
-            };
-            let xyxy = k.xyxy.map(f64::from);
-            let confidence = f64::from(k.prob);
-            let ground = if let Some(view) = wide_view(k.view) {
-                let class = if kind == VehicleKind::Car { 2 } else { 7 };
-                let det = WideDet {
-                    view,
-                    bbox: xyxy,
-                    score: confidence,
-                    class,
-                };
-                self.project_wide(calibration, &[det])
-                    .into_iter()
-                    .next()
-                    .map(|c| (c.x, c.yc))
-            } else {
-                front_ground(front.as_ref(), xyxy)
-            };
-            if let Some((x, y)) = ground {
-                out.push(VisionObservation {
-                    time: secs(k.frame_mono_time),
-                    x,
-                    y,
-                    kind,
-                    confidence,
-                    position: false,
-                });
+        let mut kind_count = 0;
+        if let Some(front) = &front {
+            let kinds: Vec<_> = message
+                .kinds
+                .iter()
+                .filter(|k| k.view == View::CropFront)
+                .map(|k| KindResult {
+                    time_ns: k.frame_mono_time,
+                    view: KindView::Front,
+                    xyxy: k.xyxy.map(f64::from),
+                    kind: k.kind,
+                    prob: f64::from(k.prob),
+                })
+                .collect();
+            kind_count = kinds.len();
+            if !kinds.is_empty() {
+                engine.observe_front_kinds(published, front, &kinds);
+            }
+            if message.status == Status::Frame && message.view == View::CropFront {
+                let boxes: Vec<_> = message
+                    .boxes
+                    .iter()
+                    .filter(|b| {
+                        b.confidence >= 0.55 && det_rules::VEH.contains(&i32::from(b.class_id))
+                    })
+                    .map(|b| b.xyxy.map(f64::from))
+                    .collect();
+                engine.observe_front_boxes(message.frame_mono_time, front, &boxes);
             }
         }
         if message.status != Status::Frame {
-            return;
+            return kind_count;
         }
         let time = secs(message.frame_mono_time);
         if let Some(view) = wide_view(message.view) {
@@ -122,6 +124,7 @@ impl Camera {
                 }
             }
         }
+        kind_count
     }
 
     fn project_wide(&mut self, cal: Calibration, detections: &[WideDet]) -> Vec<det_rules::Cand> {
@@ -234,7 +237,7 @@ fn replay(path: &Path, out: &mut impl Write) -> io::Result<()> {
     ) = (None, None, None);
     let mut road = None;
     let mut vision = Vec::new();
-    let mut camera_inputs = [0_u32; 2];
+    let mut camera_inputs = [0; 2];
     let mut reader = BufReader::new(File::open(path)?);
     let mut bytes = Vec::new();
     writeln!(
@@ -278,7 +281,8 @@ fn replay(path: &Path, out: &mut impl Write) -> io::Result<()> {
             }
             EVENT_CCNC_VISION if event.valid => {
                 if let Some((_, message)) = ccnc_vision_msg::decode(&bytes) {
-                    camera.observations(message, &mut vision);
+                    camera_inputs[1] +=
+                        camera.observations(stamp, message, &mut engine, &mut vision);
                 }
             }
             EVENT_LIVE_TRACKS => {
@@ -292,9 +296,7 @@ fn replay(path: &Path, out: &mut impl Write) -> io::Result<()> {
                     vision.clear();
                     continue;
                 };
-                for obs in &vision {
-                    camera_inputs[usize::from(!obs.position)] += 1;
-                }
+                camera_inputs[0] += vision.len();
                 let result = engine.step(EngineInput {
                     time: secs(stamp),
                     speed: car.speed,
@@ -319,7 +321,7 @@ fn replay(path: &Path, out: &mut impl Write) -> io::Result<()> {
         }
     }
     eprintln!(
-        "{}: {} projected camera positions, {} projected kind answers",
+        "{}: {} projected camera positions, {} front kind answers",
         path.file_stem().unwrap_or_default().to_string_lossy(),
         camera_inputs[0],
         camera_inputs[1]
