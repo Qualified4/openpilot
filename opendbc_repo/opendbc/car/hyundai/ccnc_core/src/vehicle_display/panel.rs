@@ -280,6 +280,17 @@ struct Traffic {
     stopped: bool,
 }
 
+fn ff_is_stopped(speed: f64, ff: Option<(f64, f64)>) -> bool {
+    ff.is_some_and(|(distance, relative_speed)| {
+        distance.is_finite()
+            && speed.is_finite()
+            && relative_speed.is_finite()
+            && distance > 0.
+            && distance <= 60.
+            && (speed + relative_speed).abs() <= 0.8
+    })
+}
+
 impl Traffic {
     fn read(owner: &Bound<'_, PyAny>) -> PyResult<Self> {
         Ok(Self {
@@ -298,7 +309,7 @@ impl Traffic {
         Ok(())
     }
 
-    fn update(&mut self, frame: i64, stopping: bool, standstill: bool, speed: f64) -> i64 {
+    fn update(&mut self, frame: i64, stopping: bool, standstill: bool, speed: f64) -> Option<i64> {
         let want = stopping || standstill;
         self.want_since = want.then(|| self.want_since.unwrap_or(frame));
         self.clear_since = (!want).then(|| self.clear_since.unwrap_or(frame));
@@ -324,7 +335,100 @@ impl Traffic {
             self.shown_at = Some(frame);
             self.stopped = false;
         }
-        self.shown
+        match self.shown {
+            1 => Some(5),
+            2 => Some(8),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod traffic_tests {
+    use super::{ff_is_stopped, Traffic};
+
+    fn update(traffic: &mut Traffic, frame: i64, speed: f64, ff: (f64, f64), standstill: bool) -> i64 {
+        traffic
+            .update(frame, ff_is_stopped(speed, Some(ff)), standstill, speed)
+            .unwrap_or(1)
+    }
+
+    #[test]
+    fn stopped_ff_turns_background_red_after_half_a_second() {
+        let mut traffic = Traffic::default();
+        for frame in 0..50 {
+            assert_eq!(update(&mut traffic, frame, 10., (60., -10.), false), 1);
+        }
+        assert_eq!(update(&mut traffic, 50, 10., (60., -10.), false), 5);
+        assert!(ff_is_stopped(0., Some((60., 0.8))));
+        assert!(ff_is_stopped(0., Some((60., -0.8))));
+    }
+
+    #[test]
+    fn stopped_ff_beyond_sixty_metres_keeps_normal_background() {
+        let mut traffic = Traffic::default();
+        for frame in 0..=60 {
+            assert_eq!(update(&mut traffic, frame, 10., (60.1, -10.), false), 1);
+        }
+    }
+
+    #[test]
+    fn moving_ff_keeps_normal_background() {
+        let mut traffic = Traffic::default();
+        for frame in 0..=60 {
+            assert_eq!(update(&mut traffic, frame, 10., (20., -9.19), false), 1);
+            assert_eq!(update(&mut traffic, frame, 10., (20., -10.81), false), 1);
+        }
+    }
+
+    #[test]
+    fn ff_departure_before_ego_stops_clears_red_without_green() {
+        let mut traffic = Traffic::default();
+        for frame in 0..=50 {
+            update(&mut traffic, frame, 10., (30., -10.), false);
+        }
+        assert_eq!(update(&mut traffic, 51, 10., (30., -10.), false), 5);
+        for frame in 52..200 {
+            assert_eq!(update(&mut traffic, frame, 10., (20., 0.), false), 5);
+        }
+        for frame in 200..=300 {
+            assert_eq!(update(&mut traffic, frame, 10., (20., 0.), false), 1);
+        }
+    }
+
+    #[test]
+    fn ego_departure_after_standstill_turns_background_green() {
+        let mut traffic = Traffic::default();
+        for frame in 0..=50 {
+            update(&mut traffic, frame, 10., (30., -10.), false);
+        }
+        for frame in 51..=200 {
+            assert_eq!(update(&mut traffic, frame, 0., (10., 0.), true), 5);
+        }
+        for frame in 201..221 {
+            assert_eq!(update(&mut traffic, frame, 2., (10., 0.), false), 5);
+        }
+        for frame in 221..471 {
+            assert_eq!(update(&mut traffic, frame, 2., (10., 0.), false), 8);
+        }
+        assert_eq!(update(&mut traffic, 471, 2., (10., 0.), false), 1);
+    }
+
+    #[test]
+    fn missing_or_invalid_ff_cannot_count_as_stopped() {
+        assert!(!ff_is_stopped(0., None));
+        for ff in [
+            (0., 0.),
+            (-1., 0.),
+            (f64::NAN, 0.),
+            (f64::INFINITY, 0.),
+            (10., f64::NAN),
+            (10., f64::NEG_INFINITY),
+        ] {
+            assert!(!ff_is_stopped(0., Some(ff)));
+        }
+        assert!(!ff_is_stopped(f64::NAN, Some((10., 0.))));
+        assert!(!ff_is_stopped(f64::INFINITY, Some((10., 0.))));
     }
 }
 
@@ -371,6 +475,7 @@ impl DisplayState {
         frame: i64,
         desire: i64,
         lead: Option<&StockLead<'py>>,
+        ff: Option<(f64, f64)>,
     ) -> PyResult<StockOverlay<'py>> {
         let (cc, hud, now_ns, lane_check, hdp_use, _, paddle, traffic, _) = inputs;
         let py = cs.py();
@@ -519,16 +624,15 @@ impl DisplayState {
         let traffic = if let Some(traffic) = &mut self.traffic {
             traffic.update(
                 frame,
-                optional!(hud, "trafficState", 0_i64) == 1,
+                optional!(hud, "trafficState", 0_i64) == 1 || ff_is_stopped(speed, ff),
                 standstill,
                 speed,
             )
         } else {
-            0
+            None
         };
         let background = match traffic {
-            1 => 5,
-            2 => 8,
+            Some(color) => color,
             _ if lat && matches!(desire, 1 | 2)
                 || *paddle > 0 && optional!(cs, "paddle_button_prev", 0_i64) > 0 =>
             {

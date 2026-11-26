@@ -279,7 +279,7 @@ This category contains 39 settings, including one search-only driver-monitoring 
 | CAN FD/HDA | `CanfdHDA2`, `HyundaiCanfdClusterDirectTx`, `CanfdDebug`, `HDPuse` | HDA2 selection, cluster direct send, CAN FD diagnostics, and HDP |
 | [CCNC display](#ccnc-display) | `CcncClusterDisplay` | CCNC cluster stock-style display · Lane hiding, dashed lines, lane highlight, lead ring, popups, alert texts and HDP icon; default OFF (0) |
 | [CCNC display](#ccnc-display) | `CcncExtendedDisplay` | CCNC extended display (HDA1) · Combined setting · default off |
-| [CCNC display](#ccnc-display) | `CcncTrafficBackground` | CCNC stop/go background · Red (5) while stopping or stopped, green (8) for 2.5 s when pulling away from a stop; default ON (1). Unverified on the Sonata; turn off if not shown |
+| [CCNC display](#ccnc-display) | `CcncTrafficBackground` | CCNC stop/go background · Red (5) while stopping or stopped, or when extended display detects a stopped lead within 60 m. Green (8) for 2.5 s when your car pulls away from a stop. Default ON (1). Unverified on the Sonata, turn off if the colors do not appear |
 | Radar | `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC radar, front-track orientation, corner radar, and Carrot Radar processing and cut-in sensitivity |
 | Driver monitoring | `DriverMonitoringEnabled` (search only), `DriverMonitoringMode`, `CarrotVisionEnabled`, `MuteDoor`, `MuteSeatbelt` | Driver monitoring and selected vehicle alerts |
 | Vehicle assistance | `MaxAngleFrames`, `SpeedFromPCM` | Steering-angle frames and stock-SCC speed control |
@@ -381,9 +381,9 @@ Device compute (at standstill): median about 0.42 s per frame, about 1.65 little
 
 #### CCNC stop/go background
 
-Shows what the car is about to do as the cluster background. While openpilot owns a stop, slowing for it or holding it (`longitudinalPlan.xState` stop/stopped), and while the car is stopped, the background is **steady red** (5); when the car pulls away from a red stop, it is **steady green** (8) for **2.5 s**; otherwise the normal background (cruise/steering state, flashing red during a turn) is used. Red and green take priority over the turn background.
+The cluster shows **steady red** (5) while openpilot slows for or holds a stop (`longitudinalPlan.xState` stop/stopped) or while your car is stopped. With extended display on, it also shows red when it detects a lead within 60 m with an absolute speed of 0.8 m/s or less. When your car pulls away from a red stop, it shows **steady green** (8) for **2.5 s**. Red and green take priority over the turn background.
 
-It does not follow the model's per-frame traffic prediction, so it does not flicker. A colour changes only after its condition lasts 0.5 s, stays at least 1.5 s, and red clears 1 s after its condition ends. Green shows once, when pulling away from a stop. On by default; off keeps the normal background.
+Red appears after a stop condition lasts 0.5 s. If the lead moves away while your car is still moving, the normal background returns after red has displayed for at least 1.5 s and the stop condition has been clear for 1 s. The setting is on by default. Turning it off keeps the normal background.
 
 Values 5 and 8 were confirmed on an Ioniq 5 PE cluster and are not verified on the Sonata. Turn this off if the background does not show or looks wrong. Display only; stopping and starting behavior is unchanged.
 

@@ -658,6 +658,7 @@ struct StockLead<'py> {
     point: Bound<'py, PyAny>,
     distance: f64,
     lateral: f64,
+    relative_speed: f64,
 }
 
 impl StockLead<'_> {
@@ -704,6 +705,7 @@ fn stock_lead<'py>(cs: &Bound<'py, PyAny>) -> PyResult<Option<StockLead<'py>>> {
                 point: lead,
                 distance,
                 lateral,
+                relative_speed: relative,
             });
         }
     }
@@ -820,6 +822,16 @@ pub(crate) fn update_display<'py>(
         let values_161 = template(cs, "adrv_0x161")?;
         let values_162 = template(cs, "ccnc_0x162")?;
         let values_1ea = template(cs, "adrv_0x1ea")?;
+        let mode = if process_now_ns.is_some() || values_162.is_none() {
+            0
+        } else {
+            pos::mode(state)?
+        };
+        let ff = match &process {
+            Some(map) => map.slots[0].map(|slot| (f64::from(slot.distance), f64::from(slot.v_rel))),
+            None if mode == 0 => lead.as_ref().map(|lead| (lead.distance, lead.relative_speed)),
+            None => None,
+        };
         if let (Some(values), Some(map)) = (&values_162, &process) {
             cmap::apply_slots(values, map)?;
         }
@@ -844,6 +856,7 @@ pub(crate) fn update_display<'py>(
                 frame,
                 desire,
                 lead.as_ref(),
+                ff,
             )?);
             if !get!(cs, "trailer_connected").is_truthy()? {
                 let correction = get!(get!(state, "radar_display_tracker"), "position_correction");
@@ -870,7 +883,6 @@ pub(crate) fn update_display<'py>(
                 let (live, lanes, walls, bands) = map.ok_or_else(|| {
                     pyo3::exceptions::PyValueError::new_err("missing CCNC radar map state")
                 })?;
-                let mode = if process_now_ns.is_some() { 0 } else { pos::mode(state)? };
                 let fields = update_map_display(
                     values, cs, md, frame, &lines, &live, state, &lanes, &walls, &bands,
                     position_filter, mode,

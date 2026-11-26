@@ -1,0 +1,36 @@
+--- a/KO-CCNC-정지·출발-배경색.md
++++ b/KO-CCNC-정지·출발-배경색.md
+@@ -28,3 +28,8 @@
+ <!-- CARROT:MANUAL:BEGIN CcncTrafficBackground -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="32aa0138b69f8ff5eb303ed5b7b2157cdf15d40f4d0fe4024f0a318469a346e0" reviewed-at="2026-11-26T22:18:42Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++켜면 확장 표시에서 60 m 이내의 정지 앞차(절대속도 0.8 m/s 이하)가 0.5초 동안 감지될 때 빨강이 들어옵니다. 앞차가 먼저 출발하면 일반 배경색으로 돌아가며, 내 차가 빨강으로 정차한 뒤 출발할 때 초록이 표시됩니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CcncTrafficBackground -->
+--- a/EN-CCNC-stop-go-background.md
++++ b/EN-CCNC-stop-go-background.md
+@@ -28,3 +28,8 @@
+ <!-- CARROT:MANUAL:BEGIN CcncTrafficBackground -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="32aa0138b69f8ff5eb303ed5b7b2157cdf15d40f4d0fe4024f0a318469a346e0" reviewed-at="2026-11-26T22:18:42Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++With extended display on, the background turns red after it detects a lead within 60 m at an absolute speed of 0.8 m/s or less for 0.5 s. If the lead moves off while you are still moving, the normal background returns. Green appears when your car pulls away from a red stop.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CcncTrafficBackground -->
+--- a/ZH-CCNC-红绿灯背景色.md
++++ b/ZH-CCNC-红绿灯背景色.md
+@@ -28,3 +28,8 @@
+ <!-- CARROT:MANUAL:BEGIN CcncTrafficBackground -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="32aa0138b69f8ff5eb303ed5b7b2157cdf15d40f4d0fe4024f0a318469a346e0" reviewed-at="2026-11-26T22:18:42Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++开启扩展显示后，连续 0.5 秒检测到 60 米内绝对速度不超过 0.8 米/秒的前车时，背景变为红色。若前车起步时本车仍在行驶，背景恢复正常颜色。本车在红色背景下停稳后起步时显示绿色。
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CcncTrafficBackground -->

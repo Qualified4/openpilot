@@ -283,7 +283,7 @@ VW MEB(ID.4 포함)에도 수동 조향비와 학습 비율이 적용됩니다. 
 | CANFD·HDA | `CanfdHDA2`, `HyundaiCanfdClusterDirectTx`, `CanfdDebug`, `HDPuse` | HDA2 차량, 계기판 직접 송신과 CAN FD 디버그·HDP 기능 |
 | [CCNC 계기판 표시](#ccnc-display) | `CcncClusterDisplay` | CCNC 계기판 순정형 표시 · 차선 숨김·점선·차로 강조·앞차 링·팝업·경고 문구·HDP 아이콘, 기본 OFF(0) |
 | [CCNC 계기판 표시](#ccnc-display) | `CcncExtendedDisplay` | CCNC 확장 표시 (HDA1) · 통합 설정 · 기본 꺼짐 |
-| [CCNC 계기판 표시](#ccnc-display) | `CcncTrafficBackground` | CCNC 정지·출발 배경색 · 정지 중 빨강(5), 정차 후 출발 시 2.5초 초록(8), 기본 ON(1). 소나타 미확인, 안 보이면 끄기 |
+| [CCNC 계기판 표시](#ccnc-display) | `CcncTrafficBackground` | CCNC 정지·출발 배경색 · 정지 중 또는 확장 표시에서 60 m 이내 정지 앞차 감지 시 빨강(5), 내 차가 정차 후 출발하면 2.5초 초록(8), 기본 ON(1). 소나타 미확인, 안 보이면 끄기 |
 | 레이더 | `EnableRadarTracks`, `RadarTrackFlip`, `EnableCornerRadar`, `CarrotRadarMode`, `CarrotRadarCutInSensitivity` | SCC 레이더, 전방 트랙 좌우 보정, 코너 레이더와 당근레이더 처리·컷인 감도 |
 | 운전자 모니터링 | `DriverMonitoringEnabled`(검색 전용), `DriverMonitoringMode`, `CarrotVisionEnabled`, `MuteDoor`, `MuteSeatbelt` | 운전자 모니터링과 일부 차량 경고음 처리 |
 | 차량 보조 | `MaxAngleFrames`, `SpeedFromPCM` | 최대 조향각 관련 프레임과 순정 SCC 속도 제어 방식 |
@@ -373,9 +373,9 @@ Bosch MRRevo14F 수신을 지원하는 버전에서 Bosch MRRevo14F 후보 차�
 
 #### CCNC 정지·출발 배경색
 
-차가 무엇을 하려는지를 계기판 배경색으로 보여 줍니다. 오픈파일럿이 정지를 맡아 감속하거나 정지를 유지하는 동안(`longitudinalPlan.xState` 정지·정차)과 정차 중에는 **고정 빨강**(5), 빨강으로 정차했다가 출발하면 **2.5초 동안 고정 초록**(8)을 표시하고, 그 밖에는 기존 배경색(크루즈·조향 상태, 턴 중 깜빡이는 빨강)을 씁니다. 빨강·초록이 보이는 동안은 턴 표시보다 우선합니다.
+오픈파일럿이 정지를 맡아 감속하거나 정지를 유지하는 동안(`longitudinalPlan.xState` 정지·정차)과 내 차가 정차 중일 때 **고정 빨강**(5)을 표시합니다. 확장 표시가 켜져 있으면 바로 앞 60 m 이내에서 절대속도가 0.8 m/s 이하인 앞차를 감지했을 때도 빨강을 표시합니다. 내 차가 빨강으로 정차한 뒤 출발하면 **2.5초 동안 고정 초록**(8)을 표시합니다. 빨강과 초록은 턴 표시보다 우선합니다.
 
-모델의 프레임별 신호 예측을 그대로 쓰지 않아 깜빡이지 않습니다. 색은 조건이 0.5초 이상 이어져야 바뀌고, 바뀐 색은 최소 1.5초 유지되며, 빨강은 조건이 사라지고 1초 뒤에 꺼집니다. 초록은 정차에서 출발할 때 한 번만 켜집니다. 기본은 켜짐이며, 끄면 기존 배경색 그대로입니다.
+빨강은 정지 조건이 0.5초 이상 이어지면 켜집니다. 앞차가 먼저 출발하고 내 차가 계속 움직이면, 빨강의 최소 유지 시간 1.5초와 해제 대기 1초를 채운 뒤 일반 배경으로 돌아갑니다. 기본은 켜짐이며, 끄면 기존 배경색을 씁니다.
 
 값 5·8은 아이오닉 5 PE 계기판에서 확인한 값이고 소나타에서는 확인하지 않았습니다. 배경색이 보이지 않거나 이상하면 끄세요. 표시 전용이며 감속·출발 동작은 바뀌지 않습니다.
 
