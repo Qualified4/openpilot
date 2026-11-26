@@ -389,6 +389,38 @@ fn current_radar_agreement_outweighs_a_closer_road_frame_candidate() {
 }
 
 #[test]
+fn displaced_ff_moves_directly_to_the_matching_side_only_outside_the_center() {
+    for (offset, side) in [(-1.4, Some(1)), (1.4, Some(2)), (-1., None), (1., None)] {
+        let mut engine = MapEngine::default();
+        let points = [radar(40, 14., offset, 0.), radar(41, 8., 0., 0.)];
+        let old_ff = confirm(&mut engine, &points[..1]).slots[0].unwrap();
+        assert_eq!(old_ff.last_track_id, Some(40));
+        assert_eq!((0.35..0.60).contains(&old_ff.lane_u.abs()), side.is_some());
+
+        for tick in 8..15 {
+            let mut entry = input(tick, &points);
+            entry.lead = Some((
+                entry.time,
+                DisplayLead {
+                    motion: (8., 0., 0.),
+                    measured_track: Some(41),
+                    model_prob: 0.95,
+                },
+            ));
+            let out = engine.step(entry);
+            assert_eq!(out.slots[0].unwrap().last_track_id, Some(41));
+            for (index, slot) in out.slots.iter().enumerate().skip(1) {
+                assert_eq!(
+                    slot.map(|o| o.obj_id),
+                    (side == Some(index)).then_some(old_ff.obj_id),
+                    "offset {offset}, tick {tick}, slot {index}",
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn vision_birth_requires_repeated_nearfield_detections_and_carries_kind() {
     let mut engine = MapEngine::default();
     for tick in 0..10 {

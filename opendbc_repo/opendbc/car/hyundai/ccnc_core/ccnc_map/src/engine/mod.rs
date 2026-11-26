@@ -203,7 +203,7 @@ impl MapEngine {
             changing,
             &frame,
             &mut self.tracker.objects,
-            self.displayed.map(|slot| slot.map(|o| o.obj_id)),
+            self.displayed,
             primary,
         );
         for (index, slot) in slots.iter_mut().enumerate() {

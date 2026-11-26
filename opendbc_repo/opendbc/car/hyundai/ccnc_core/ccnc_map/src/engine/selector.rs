@@ -10,6 +10,7 @@ const TWO_CAR_GAP: f64 = 4.;
 const PASS_BAND: f64 = 0.65;
 const SIDE_CONFIRM: f64 = 1.35;
 const HOLD: f64 = 0.5;
+const FF_HANDOFF_OFFSET: f64 = 0.35;
 
 fn lead(now: f64, obj: &TrackedObject) -> bool {
     obj.evidence.last_lead_t.is_some_and(|t| now - t <= 0.16) && obj.lane_u.abs() <= 0.82
@@ -43,18 +44,20 @@ pub(super) fn select(
     changing_lanes: bool,
     frame: &RoadFrame,
     objects: &mut [TrackedObject],
-    occupied: [Option<u64>; 5],
+    previous: [Option<EngineSlot>; 5],
     primary: Option<u64>,
 ) -> [Option<EngineSlot>; 5] {
-    for o in objects.iter_mut() {
-        update_lane(o);
-    }
+    let occupied = previous.map(|slot| slot.map(|o| o.obj_id));
     let mut slots = [None; 5];
     let mut front = Vec::new();
+    let mut ff_handoffs = [None; 3];
     let mut sides: [Vec<&TrackedObject>; 2] = [Vec::new(), Vec::new()];
     let mut close: [Vec<&TrackedObject>; 2] = [Vec::new(), Vec::new()];
     let mut camera_queue: [Vec<&TrackedObject>; 2] = [Vec::new(), Vec::new()];
-    for o in objects.iter() {
+    for o in objects.iter_mut() {
+        let previous_lane = o.lane;
+        update_lane(o);
+        let o = &*o;
         if primary == Some(o.obj_id) {
             let mut lead = slot(frame, o, now);
             let [x, y, _] = o.last_radar_motion;
@@ -75,7 +78,8 @@ pub(super) fn select(
         let ff_lane = o.lane == 0
             || has_lead
             || (ff_incumbent && changing_lanes && o.lane_filtered.abs() <= 0.95);
-        if o.s > 0. && o.s <= 100. && ff_lane {
+        let ff_candidate = o.s > 0. && o.s <= 100. && ff_lane;
+        if ff_candidate {
             let threshold = if ff_incumbent { HOLD } else { CONFIRM };
             if o.existence_log_odds >= threshold
                 && (o.motion_hits >= 3 || o.vision_hits >= 3 || has_lead)
@@ -83,9 +87,25 @@ pub(super) fn select(
             {
                 front.push(o);
             }
-            continue;
         }
-        if o.lane.abs() != 1 || o.s > SIDE_FRONT_LIMIT {
+        let handoff_side = usize::from(o.lane_u > 0.);
+        let side_incumbent = occupied[handoff_side + 1] == Some(o.obj_id);
+        let offset = o.lane_u.abs();
+        // Enter on a fresh observation moving away from centre. A brief FF change
+        // while the old lead is returning towards centre must not flash a side slot.
+        let leaving_ff = ff_incumbent
+            && observed
+            && offset < 0.60
+            && previous[0].is_some_and(|ff| {
+                ff.lane_u.signum() == o.lane_u.signum() && ff.lane_u.abs() <= offset
+            });
+        // While lane hysteresis still says centre, keep a handoff on the same side.
+        let ff_handoff = ff_candidate
+            && !o.rear
+            && o.lane == 0
+            && (FF_HANDOFF_OFFSET..1.5).contains(&offset)
+            && (leaving_ff || previous_lane == 0 && side_incumbent);
+        if (!ff_handoff && (ff_candidate || o.lane.abs() != 1)) || o.s > SIDE_FRONT_LIMIT {
             continue;
         }
         let handoff = o.rear && (-10. ..=0.).contains(&o.s) && now <= o.handoff_until;
@@ -108,6 +128,17 @@ pub(super) fn select(
                 && (o.range_consistent || near_continuity || handoff)
                 && (!stationary || o.verified_travel >= 3.)
             || speed <= 5. && o.motion_hits >= 3;
+        if ff_handoff {
+            let threshold = if side_incumbent { HOLD } else { SIDE_CONFIRM };
+            if measured_vehicle
+                && o.existence_log_odds >= threshold
+                && (observed || o.radar_age(now) <= hold_age)
+            {
+                let previous_slot = if ff_incumbent { 0 } else { handoff_side + 1 };
+                ff_handoffs[previous_slot] = Some(o);
+            }
+            continue;
+        }
         let threshold = if incumbent { HOLD } else { SIDE_CONFIRM };
         let side = usize::from(o.lane > 0);
         if o.evidence.last_radar_t == Some(now)
@@ -222,6 +253,17 @@ pub(super) fn select(
             // Promote the farther vehicle only when the same assignment places the nearer one.
             (front_default, behind)
         };
+        let front = front.or_else(|| {
+            [ff_handoffs[0], ff_handoffs[side + 1]]
+                .into_iter()
+                .flatten()
+                .filter(|o| {
+                    usize::from(o.lane_u > 0.) == side
+                        && slots[0].is_some_and(|ff| ff.obj_id != o.obj_id)
+                        && front_within_range(o)
+                })
+                .min_by(|a, b| front_cost(a).total_cmp(&front_cost(b)))
+        });
         slots[side + 1] = front.map(|o| slot(frame, o, now));
         slots[side + 3] = rear.map(|o| slot(frame, o, now));
     }
