@@ -274,6 +274,9 @@ fn slot_index(x: f64, lane: i8) -> Option<usize> {
 
 const ROAD_LANE_HYSTERESIS: f64 = 0.06;
 const ROAD_HANDOFF_S: f64 = 0.85;
+const ROAD_APPROACH_MAX_U: f64 = 0.85;
+const ROAD_APPROACH_NEAR_M: f64 = 10.;
+const ROAD_APPROACH_FAR_M: f64 = 15.;
 
 /// Schmitt trigger around the shared integer boundaries, in units of lane width.
 fn road_lane(prior: Option<i32>, u: f64) -> Option<i32> {
@@ -526,6 +529,20 @@ impl Assigner {
         let post_commit = ego_committed.is_some()
             && commit_stamp.is_some_and(|ct| (0. ..=ROAD_HANDOFF_S).contains(&(now - ct)));
         let approaching = ego_committed.is_some() && world.approaching_boundary();
+        let release_offset = ego_committed.filter(|_| approaching)
+            .and_then(|lane| world.crossing_offset(lane))
+            .filter(|_| {
+                vehicles.iter().find(|car| Some(car.vid) == self.previous_ff)
+                    .filter(|car| car.radar_id.is_some() && current(car.seen_radar))
+                    .and_then(|car| Observation::from_car(car, world, radar))
+                    .is_some_and(|obs| {
+                        let side = 1. - INNER_RADIUS;
+                        let far = ((obs.x - ROAD_APPROACH_NEAR_M) / (ROAD_APPROACH_FAR_M - ROAD_APPROACH_NEAR_M))
+                            .clamp(0., 1.);
+                        let limit = side + far * (ROAD_APPROACH_MAX_U - side);
+                        (0. ..ROAD_APPROACH_FAR_M).contains(&obs.x) && obs.r_slot.abs() >= limit
+                    })
+            });
         if commit_stamp.is_some() && commit_stamp != self.last_commit_seen {
             self.last_commit_seen = commit_stamp;
             if use_road {
@@ -544,10 +561,12 @@ impl Assigner {
             let Some(Observation { x, r, r_slot, speed }) = Observation::from_car(car, world, radar) else {
                 continue;
             };
+            // Use the measured ego coordinate for the handoff tick after the near lead has moved aside.
+            let lane_position = r_slot + release_offset.unwrap_or(0.);
             let i = match self.drawings.binary_search_by_key(&car.vid, |d| d.vid) {
                 Ok(i) => i,
                 Err(i) if self.drawings.len() < MAX_VEHICLES => {
-                    self.drawings.insert(i, Drawing::new(car.vid, r_slot, now));
+                    self.drawings.insert(i, Drawing::new(car.vid, lane_position, now));
                     i
                 }
                 Err(_) => continue,
@@ -562,7 +581,7 @@ impl Assigner {
             }
             drawing.seen = now;
             let original_lane = drawing.lane;
-            drawing.observe_lane(r_slot);
+            drawing.observe_lane(lane_position);
             let proven_vehicle = eligible(car);
             let mut projection = None;
             if let Some(ego_lane) = ego_committed.filter(|_| car.u.is_finite()) {
@@ -581,7 +600,8 @@ impl Assigner {
                 && car_centered
                 && proj_safe_visibility
                 && (post_commit
-                    || (is_prev_ff && projection == Some(0) && r_slot.abs() <= 0.85));
+                    || (release_offset.is_none() && is_prev_ff && projection == Some(0)
+                        && r_slot.abs() <= ROAD_APPROACH_MAX_U));
             let measured = x >= 0. && car.radar_id.is_some() && current(car.seen_radar);
             let measured_since = car.radar_id.and_then(|id| {
                 if measured && radar_draw.measured.iter().any(|sample| sample.track == i128::from(id)) {

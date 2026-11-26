@@ -255,6 +255,16 @@ impl World {
         self.ego_filter.approaching()
     }
 
+    /// The offset from the published coordinate to the measured one, when both have
+    /// crossed into the same adjacent lane ahead of the committed lane change.
+    pub(crate) fn crossing_offset(&self, lane: i32) -> Option<f64> {
+        let published = self.u_ego();
+        let published_lane = published.floor();
+        let (_, measured) = self.u_ego_raw_track?;
+        (measured.floor() == published_lane && (published_lane - f64::from(lane)).abs() == 1.)
+            .then_some(published - measured)
+    }
+
     /// Ego is changing lanes: it was off its lane center within `EGO_CHANGE_HOLD_S`. This process runs with the lane
     /// change freeze off, so `STATUS_FROZEN` cannot tell. The blinker does not count: it is on in 17% of the 65
     /// replayed segments, and the cut-outs it covers kept their old slot lag.
