@@ -5,6 +5,7 @@ use crate::input::model_v2::{Line, Model};
 use crate::world::PoseAt;
 
 pub(crate) const LANE_WIDTH: f64 = 3.5;
+const END_EXTENSION: f64 = 5.;
 type Point = (f64, f64);
 
 #[derive(Clone, Copy, Debug)]
@@ -15,9 +16,11 @@ struct Segment {
     s: f64,
 }
 
+#[derive(Clone)]
 pub(super) struct RoadFrame {
     segments: Vec<Segment>,
     origin: f64,
+    forward_end: f64,
     // Distance, centre offset and width from trustworthy lane pairs.
     lanes: Vec<(f64, f64, f64)>,
 }
@@ -56,8 +59,7 @@ impl RoadFrame {
             if dx.hypot(dy) < 0.01 {
                 continue;
             }
-            // A stopping forecast can fold back on itself. Extrapolate the
-            // forward path before that fold so distant returns keep their range.
+            // A stopping forecast can fold back on itself.
             if direction.is_some_and(|(tx, ty)| dx * tx + dy * ty <= 0.) {
                 break;
             }
@@ -86,9 +88,37 @@ impl RoadFrame {
         let mut frame = Self {
             segments,
             origin: 0.,
+            forward_end: s,
             lanes: Vec::new(),
         };
+        let last = *frame.segments.last().expect("forward segment");
+        let (tx, ty) = last.tangent;
         frame.origin = frame.project(0., 0.).0;
+        let end = (last.start.0 + last.length * tx, last.start.1 + last.length * ty);
+        let earlier = frame.cartesian((s - frame.origin - END_EXTENSION).max(0.), 0.);
+        let (dx, dy) = (end.0 - earlier.0, end.1 - earlier.1);
+        // Limit how far the final model tangent influences returns past the forecast.
+        // A short stopping path can otherwise steer the entire radar range.
+        let mut tail = end;
+        let mut along = 0.;
+        if dx > 0. && dy.abs() > 1e-6 {
+            let span = dx.hypot(dy);
+            let tangent = (dx / span, dy / span);
+            along = END_EXTENSION.min(1. / tangent.1.abs());
+            tail = (end.0 + along * tangent.0, end.1 + along * tangent.1);
+            frame.segments.push(Segment {
+                start: end,
+                tangent,
+                length: along,
+                s,
+            });
+        }
+        frame.segments.push(Segment {
+            start: tail,
+            tangent: (1., 0.),
+            length: 0.,
+            s: s + along,
+        });
         if let Some(model) = model.filter(|m| {
             !changing_lanes
                 && m.lane_lines.len() >= 3
@@ -150,6 +180,41 @@ impl RoadFrame {
             seg.start.0 + along * tx - d * ty,
             seg.start.1 + along * ty + d * tx,
         )
+    }
+
+    pub(super) fn beyond_forecast(&self, s: f64) -> bool {
+        s + self.origin > self.forward_end
+    }
+
+    pub(super) fn disagrees(&self, old: &Self, past: PoseAt, ego: PoseAt) -> bool {
+        [12., 24., 36., 48.].into_iter().any(|s| {
+            if old.beyond_forecast(s) {
+                return false;
+            }
+            let (x, y) = old.cartesian(s, 0.);
+            let (wx, wy) = past.to_world(x, -y);
+            let (x, y) = ego.to_ego(wx, wy);
+            let (new_s, d) = self.project(x, -y);
+            // A distant forecast can drift more between model updates.
+            !self.beyond_forecast(new_s) && d.abs() > 1.0 + 0.035 * s
+        })
+    }
+
+    pub(super) fn advance(mut self, past: PoseAt, ego: PoseAt) -> Self {
+        let (sin, cos) = (past.heading - ego.heading).sin_cos();
+        for seg in &mut self.segments {
+            let (wx, wy) = past.to_world(seg.start.0, -seg.start.1);
+            let (ex, ey) = ego.to_ego(wx, wy);
+            seg.start = (ex, -ey);
+            let (tx, ty) = seg.tangent;
+            seg.tangent = (cos * tx + sin * ty, cos * ty - sin * tx);
+        }
+        let shift = self.project(0., 0.).0;
+        self.origin += shift;
+        for (sample, _, _) in &mut self.lanes {
+            *sample -= shift;
+        }
+        self
     }
 
     pub(super) fn lane_u(&self, s: f64, d: f64) -> f64 {

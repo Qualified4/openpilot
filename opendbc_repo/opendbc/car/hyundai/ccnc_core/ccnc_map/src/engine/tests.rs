@@ -120,6 +120,105 @@ fn stopping_path_extrapolates_from_its_last_forward_segment() {
 }
 
 #[test]
+fn refreshed_road_preserves_ego_compensated_cartesian_position() {
+    let past = PoseAt::default();
+    let ego = PoseAt {
+        x: 0.4,
+        y: 0.08,
+        heading: 0.015,
+        ..past
+    };
+    let old = RoadFrame::new(&[], None, past, past, std::iter::empty(), false);
+    let new = RoadFrame::new(
+        &[(0., 0.), (5., 0.), (10., 4.)],
+        None,
+        ego,
+        ego,
+        std::iter::empty(),
+        false,
+    );
+    let mut tracker = Tracker::default();
+    tracker.radar(0., 0., &old, past, &[radar(40, 23., -2., 0.)]);
+    tracker.predict(0.05, 0., &old, &new, past, ego);
+    let object = &tracker.objects[0];
+    let (x, y) = object.cartesian(&new);
+    let (ex, ey) = ego.to_ego(23., 2.);
+    assert!((x - ex).hypot(y + ey) < 1e-9);
+    assert!(new.beyond_forecast(object.s));
+    assert!(new.cartesian(object.s + 30., 0.).1 < 8.);
+}
+
+#[test]
+fn left_curve_draws_the_lead_relative_to_the_road() {
+    let mut engine = MapEngine::default();
+    let path = [(0., 0.), (10., -0.4), (20., -1.6), (30., -3.5), (40., -6.2)];
+    let points = [radar(42, 26.55, -3.75, 0.)];
+    let mut model = Model {
+        lane_lines: [-5.05, -1.55, 1.95, 5.45]
+            .map(|offset| crate::input::model_v2::Line {
+                x: path.iter().map(|(x, _)| *x as f32).collect(),
+                y: path.iter().map(|(_, y)| (y + offset) as f32).collect(),
+            })
+            .into(),
+        lane_line_probs: vec![0.; 4],
+        road_edges: Vec::new(),
+    };
+    for tick in 0..8 {
+        model.lane_line_probs.fill(if tick % 2 == 0 { 0.96 } else { 0.1 });
+        let mut entry = input(tick, &points);
+        entry.road = Some(RoadObservation {
+            time: entry.time,
+            path: &path,
+            lines: Some(&model),
+            changing_lanes: false,
+        });
+        let out = engine.step(entry);
+        if tick >= 3 {
+            let ff = out.slots[0].unwrap();
+            assert_eq!(ff.last_track_id, Some(42));
+            assert!((ff.y + 3.75).abs() < 1e-6);
+            assert!((ff.display_d + 1.).abs() < 0.15);
+            assert!(out.slots[1].is_none());
+        }
+    }
+}
+
+#[test]
+fn brief_forecast_jump_keeps_the_measured_side_vehicle() {
+    let mut engine = MapEngine::default();
+    let points = [radar(49, 30., -3.5, 0.)];
+    let good = [(0., 0.), (50., 0.)];
+    let jump = [(0., 0.), (12., 3.), (24., 8.), (50., 18.)];
+    let mut incumbent = None;
+    for tick in 0..11 {
+        let mut entry = input(tick, &points);
+        entry.road = Some(RoadObservation {
+            time: entry.time,
+            path: if (8..10).contains(&tick) { &jump } else { &good },
+            lines: None,
+            changing_lanes: false,
+        });
+        let out = engine.step(entry);
+        if tick >= 7 {
+            let lf = out.slots[1].unwrap();
+            assert_eq!(lf.last_track_id, Some(49));
+            assert_eq!(lf.obj_id, *incumbent.get_or_insert(lf.obj_id));
+            assert!((lf.display_d + 3.5).abs() < 0.05);
+        }
+    }
+}
+
+#[test]
+fn display_backlash_scales_with_distance_and_keeps_midrange_ff_steady() {
+    let draw = |target, x, front| selector::display_lateral(0., target, x, front, STEP);
+    assert!(draw(0.07, 10., false) > 0.);
+    assert_eq!(draw(0.07, 30., false), 0.);
+    assert!(draw(0.10, 24., false) > 0.);
+    assert_eq!(draw(0.10, 24., true), 0.);
+    assert_eq!(draw(10., 24., true), 7.5 * STEP);
+}
+
+#[test]
 fn one_tick_range_spike_and_radar_id_change_keep_the_same_object() {
     let mut engine = MapEngine::default();
     let start = confirm(&mut engine, &[radar(40, 11.4, 0., 0.)]).slots[0].unwrap();

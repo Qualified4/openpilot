@@ -177,7 +177,7 @@ Carrot Web 설정 화면에서는 다음 기능을 사용할 수 있습니다.
 | 레인모드 | `LatMpcPathCost`, `LatMpcMotionCost`, `LatMpcAccelCost`, `LatMpcJerkCost`, `LatMpcSteeringRateCost`, `LatMpcInputOffset`, `UseLaneLineSpeed`, `UseLaneLineCurveSpeed`, `AdjustLaneOffset` | 레인모드 MPC 가중치와 차선 사용 조건 |
 | 고급 토크·토크 계수 | `LateralTorqueCustom`, `LateralTorqueAccelFactor`, `LateralTorqueFriction`, `LateralTorqueKpV`, `LateralTorqueKiV`, `LateralTorqueKf`, `LateralTorqueKd` | 커스텀 토크 제어 계수 |
 | 고급 토크·검색 전용 | `NNFF` | 토크 조향의 신경망 피드포워드 옵션 |
-| 고급 토크·조향 제한 | `CustomSteerMax`, `CustomSteerDeltaUp`, `CustomSteerDeltaDown`, `CustomSteerDeltaUpLC`, `CustomSteerDeltaDownLC` | 최대 조향 토크와 토크 변화율 제한 |
+| [고급 토크·조향 제한](#steering-torque-limits) | `CustomSteerMax`, `CustomSteerDeltaUp`, `CustomSteerDeltaDown`, `CustomSteerDeltaUpLC`, `CustomSteerDeltaDownLC` | 최대 조향 토크와 토크 변화율 제한 |
 
 `ONNX 차선·BSD 인식`(`ShareData`)은 장치에서 차선 종류를 계산하는 설정입니다. 시각 BSD는 상세 화면의 별도 `OnnxBsdEnabled` 설정으로 켜야 하며 기본값은 꺼짐입니다. 켜면 모델이 추정한 차로 폭이 2m 이상인 설정된 좌우 영역을 번갈아 검사하고 속도나 차로 변경 방향은 실행 조건으로 사용하지 않습니다. BSD 모델은 사각지대 위협, 근접 차량 없음, 멀거나 뒤쪽에 있는 차량을 구분합니다. `OnnxBsdEnabled`가 꺼지면 BSD ONNX 네트워크를 언로드하지만 차선 인식은 계속됩니다. 차선 인식과 스냅샷을 위해 비전 서비스와 카메라 구독은 유지되며 차량 자체 BSD에는 영향이 없습니다. 상세 화면은 기능 토글을 맨 위에 유지하고, 바로 아래의 분리된 카드에 BSD 감지영역 편집기를 표시합니다. 좌우 선택, 영상 갱신, 점 되돌리기, 점 초기화와 영역 저장만 기본 화면에 두며, 영상 왼쪽 위의 사각형 점 목록은 `1(좌)`, `1(우)` 형식으로 표시됩니다. 선택된 점이 없을 때 빈 화면을 누르면 별도 모드 없이 점이 추가되고, 확대·화면 이동·영역 전체 이동 없이 선택된 점만 이동합니다. 4개 편집 버튼 바로 아래의 좌우 2열 버튼으로 도로·와이드 카메라 영상을 팝업에서 확인합니다. 실행 상태·좌우 신뢰도·처리 성능과 6개 상세 설정은 우측 아래의 **고급 설정 펼치기/접기** 텍스트로 봅니다. 편집기는 마지막 카메라 영상 한 장을 보관하고, 영상이 없으면 흐린 기본 주행 예시 화면을 표시합니다. 영역 저장은 현재 세션에서 실제 카메라 영상을 받은 뒤에만 가능합니다. BSD는 기본값이 꺼짐이며 저장한 설정은 서비스 재시작 후에도 유지됩니다. 필요한 OpenCV는 업데이트에 포함되어 정상 시작 시 자동 준비됩니다. ShareData가 켜져 있어도 서비스는 onroad 초기화와 모델·CAN·Panda 준비가 완료되어 주행 준비 상태가 0.5초 유지된 뒤 시작합니다. 실제 크루즈 활성화는 필요하지 않습니다. Offroad에서는 종료하고 다음 onroad에서도 다시 기다립니다. [동작 조건과 세부값](lane-change.md#sharedata--onnx-차선bsd-인식)을 참고하세요.
 
@@ -196,6 +196,16 @@ VW MEB(ID.4 포함)에도 수동 조향비와 학습 비율이 적용됩니다. 
 이전에 ID.4에서 무시되던 저장값도 이제 적용됩니다. 예를 들어 `CustomSR=0`에서 저장된 비율이 `30%`이면 학습값의 `0.3배`가 사용되므로, 학습값 그대로 사용하려면 비율을 `100%`로 설정하세요.
 
 `LateralTorqueCustom`과 `CustomSteer*` 계열은 차량의 기본 조향 튜닝과 안전 제한에 영향을 줄 수 있는 고급 항목입니다. 차종별 검증값과 복구 방법이 없으면 변경하지 마세요.
+
+<a id="steering-torque-limits"></a>
+#### 조향 토크 제한
+
+현대·기아·제네시스의 토크 조향 차량에서 사용합니다. 증가·감소 값은 10 ms 제어 주기마다 요청이 한도를 넘을 때 조향 토크 명령의 변화량을 제한합니다.
+
+- `CustomSteerMax`는 조향 토크 명령의 최대 크기입니다. `0`이면 다음 주행에서 차종 기본값으로 시작합니다. `270`, `384`, `409`는 차량의 전동식 파워스티어링(EPS)이 오류 없이 허용하는 값만 사용하세요. 이 값을 높여도 토크 증가·감소 한도는 자동으로 바뀌지 않습니다. 급커브에서 토크가 늦게 풀리면 `CustomSteerDeltaDown`도 확인하세요.
+- `CustomSteerDeltaUp`은 한 틱 동안 토크 크기가 늘어날 수 있는 최대량입니다. `0`은 차종 기본값입니다. 값을 과도하게 높이면 EPS 오류가 날 수 있습니다.
+- `CustomSteerDeltaDown`은 한 틱 동안 기존 토크를 풀 수 있는 최대량입니다. `0`은 차종 기본값입니다. 급커브를 빠져나오거나 반대 방향으로 조향할 때 현재 토크가 얼마나 빨리 풀릴 수 있는지 결정합니다. 기본 풀림 값이 `3`인 차량에서 최대 토크를 `409` 등으로 높였다면, 차량이 허용하는 범위에서 `5`를 시작점으로 한 단계씩 확인하세요.
+- `CustomSteerDeltaUpLC`와 `CustomSteerDeltaDownLC`는 제어기가 차로 변경 중이라고 판단할 때의 증가·풀림 한도입니다. 각각 `0`이면 일반 주행의 `CustomSteerDeltaUp`과 `CustomSteerDeltaDown`을 따릅니다.
 
 #### NNFF 토크 제어
 

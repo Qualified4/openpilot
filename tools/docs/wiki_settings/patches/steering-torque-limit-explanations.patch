@@ -1,0 +1,180 @@
+--- a/KO-_CustomSteerMax(0).md
++++ b/KO-_CustomSteerMax(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerMax -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="a2d6cd30308f3580e4147cc3557e92e85678a6f0a9226e7210b9ce4c4ac671ac" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++값이 높을수록 더 큰 조향 토크를 요청할 수 있습니다. `0`은 다음 주행에서 차종 기본값으로 시작하며, 증가·풀림 한도는 별도 설정을 따릅니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerMax -->
+--- a/EN-_CustomSteerMax(0).md
++++ b/EN-_CustomSteerMax(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerMax -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="a2d6cd30308f3580e4147cc3557e92e85678a6f0a9226e7210b9ce4c4ac671ac" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++A higher cap allows a larger steering torque request. Set it to `0` to start the next drive with the vehicle default. The ramp-up and release limits are set separately.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerMax -->
+--- a/ZH-自定义最大转向力矩(0).md
++++ b/ZH-自定义最大转向力矩(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerMax -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="a2d6cd30308f3580e4147cc3557e92e85678a6f0a9226e7210b9ce4c4ac671ac" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++上限越高，可请求的转向力矩越大。设为 `0` 时，下次行驶使用车型默认值。力矩增加和释放上限由各自的设置决定。
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerMax -->
+--- a/KO-_CustomSteerDeltaUp(0).md
++++ b/KO-_CustomSteerDeltaUp(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerDeltaUp -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="8e2df0e72b6046cf33179bedb71100c0e41d4bf9de467c1fce2a3e89c396c770" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++값이 높을수록 토크 크기가 한 제어 주기(10 ms)에 더 많이 늘어날 수 있습니다. 요청 증가량이 한도를 넘으면 제한되며, 너무 높이면 전동식 파워스티어링(EPS) 오류가 날 수 있습니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerDeltaUp -->
+--- a/EN-_CustomSteerDeltaUp(0).md
++++ b/EN-_CustomSteerDeltaUp(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerDeltaUp -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="8e2df0e72b6046cf33179bedb71100c0e41d4bf9de467c1fce2a3e89c396c770" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++A higher value allows torque magnitude to grow by more per 10 ms control tick when the request would exceed the limit. An excessive value can cause electric power steering (EPS) faults.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerDeltaUp -->
+--- a/ZH-自定义转向增大斜率(0).md
++++ b/ZH-自定义转向增大斜率(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerDeltaUp -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="8e2df0e72b6046cf33179bedb71100c0e41d4bf9de467c1fce2a3e89c396c770" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++请求增量超过上限时，每个 10 毫秒控制周期的力矩增量会受限。值越大，单周期允许的增量越大，设得过高可能触发电动助力转向（EPS）故障。
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerDeltaUp -->
+--- a/KO-_CustomSteerDeltaDown(0).md
++++ b/KO-_CustomSteerDeltaDown(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerDeltaDown -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="556fa1daa7eb13d8e42cdb60bcc0cf77da0c29c28ac7e37480d23114a11beda8" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++값이 높을수록 기존 토크를 한 제어 주기(10 ms)에 더 많이 풀 수 있습니다. 급커브를 빠져나오거나 반대 방향으로 조향할 때 풀림 요청이 상한을 넘으면 제한됩니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerDeltaDown -->
+--- a/EN-_CustomSteerDeltaDown(0).md
++++ b/EN-_CustomSteerDeltaDown(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerDeltaDown -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="556fa1daa7eb13d8e42cdb60bcc0cf77da0c29c28ac7e37480d23114a11beda8" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++A higher value allows more existing torque to release per 10 ms control tick. It clips requests above the limit when exiting a tight curve or reversing the steering direction.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerDeltaDown -->
+--- a/ZH-自定义转向减小斜率(0).md
++++ b/ZH-自定义转向减小斜率(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerDeltaDown -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="556fa1daa7eb13d8e42cdb60bcc0cf77da0c29c28ac7e37480d23114a11beda8" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++值越大，每个 10 毫秒控制周期允许释放的现有力矩越多。驶出急弯或反向转向时，释放请求超过上限才会受限。
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerDeltaDown -->
+--- a/KO-_CustomSteerDeltaUpLC(0).md
++++ b/KO-_CustomSteerDeltaUpLC(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerDeltaUpLC -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="60de4a714142d6771355d3b2b7bf9a18245cd8a8360c6e7a0ac31f48577d2111" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++차로 변경 중 값이 높을수록 한 제어 주기(10 ms)의 토크 증가 한도가 커집니다. `0`이면 일반 주행의 `CustomSteerDeltaUp` 한도를 따릅니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerDeltaUpLC -->
+--- a/EN-_CustomSteerDeltaUpLC(0).md
++++ b/EN-_CustomSteerDeltaUpLC(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerDeltaUpLC -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="60de4a714142d6771355d3b2b7bf9a18245cd8a8360c6e7a0ac31f48577d2111" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++During a lane change, a higher value lets torque magnitude grow by more per 10 ms control tick. At `0`, the controller uses the regular `CustomSteerDeltaUp` limit.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerDeltaUpLC -->
+--- a/ZH-变道自定义转向增大斜率(0).md
++++ b/ZH-变道自定义转向增大斜率(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerDeltaUpLC -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="60de4a714142d6771355d3b2b7bf9a18245cd8a8360c6e7a0ac31f48577d2111" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++变道时，值越大，每个 10 毫秒控制周期允许的力矩增量越大。设为 `0` 时沿用普通行驶时的 `CustomSteerDeltaUp` 上限。
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerDeltaUpLC -->
+--- a/KO-_CustomSteerDeltaDownLC(0).md
++++ b/KO-_CustomSteerDeltaDownLC(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerDeltaDownLC -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="1f4fa9f3a3c3b3bc79f538723eed806ae7a64f9cf814364e0cd70ce42c1c41bf" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++차로 변경 중 값이 높을수록 한 제어 주기(10 ms)에 기존 토크를 더 많이 풀 수 있습니다. `0`이면 일반 주행의 `CustomSteerDeltaDown` 한도를 따릅니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerDeltaDownLC -->
+--- a/EN-_CustomSteerDeltaDownLC(0).md
++++ b/EN-_CustomSteerDeltaDownLC(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerDeltaDownLC -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="1f4fa9f3a3c3b3bc79f538723eed806ae7a64f9cf814364e0cd70ce42c1c41bf" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++During a lane change, a higher value allows more existing torque to release per 10 ms control tick. At `0`, the controller uses the regular `CustomSteerDeltaDown` limit.
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerDeltaDownLC -->
+--- a/ZH-变道自定义转向减小斜率(0).md
++++ b/ZH-变道自定义转向减小斜率(0).md
+@@ -29,3 +29,8 @@
+ <!-- CARROT:MANUAL:BEGIN CustomSteerDeltaDownLC -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="1f4fa9f3a3c3b3bc79f538723eed806ae7a64f9cf814364e0cd70ce42c1c41bf" reviewed-at="2026-11-27T00:18:06Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++变道时，值越大，每个 10 毫秒控制周期允许释放的现有力矩越多。设为 `0` 时沿用普通行驶时的 `CustomSteerDeltaDown` 上限。
++<!-- CARROT:SECTION:END BEHAVIOR -->
+ <!-- CARROT:MANUAL:END CustomSteerDeltaDownLC -->

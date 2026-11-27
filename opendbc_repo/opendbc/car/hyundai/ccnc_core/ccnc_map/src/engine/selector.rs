@@ -2,6 +2,7 @@ use super::object::{TrackedObject, STATIONARY_VISION_WINDOW};
 use super::road_frame::RoadFrame;
 use super::tracker::CONFIRM;
 use super::EngineSlot;
+use crate::pos::display_a::backlash;
 
 const SIDE_FRONT_LIMIT: f64 = 50.;
 const SPLIT_REAR_MIN: f64 = -8.;
@@ -11,6 +12,24 @@ const PASS_BAND: f64 = 0.65;
 const SIDE_CONFIRM: f64 = 1.35;
 const HOLD: f64 = 0.5;
 const FF_HANDOFF_OFFSET: f64 = 0.35;
+
+pub(super) fn display_lateral(previous: f64, target: f64, x: f64, front: bool, dt: f64) -> f64 {
+    let distance = x.abs();
+    let play_distance = if front {
+        let near = ((40. - distance) / 12.).clamp(0., 1.);
+        let extra = 18. * ((x - 10.) / 8.).clamp(0., 1.) * near;
+        distance * (1. + 0.3 * near) + extra
+    } else {
+        distance
+    };
+    let mut shown = previous;
+    backlash(&mut shown, target, play_distance);
+    // A path refresh can change d without any physical lateral movement.
+    let limit = (7.5 * dt).min(0.80);
+    let delta = shown - previous;
+    let weight = (dt / 0.16 + delta.abs() / 0.75).min(1.);
+    previous + (delta * weight).clamp(-limit, limit)
+}
 
 fn lead(now: f64, obj: &TrackedObject) -> bool {
     obj.evidence.last_lead_t.is_some_and(|t| now - t <= 0.16) && obj.lane_u.abs() <= 0.82
@@ -181,7 +200,7 @@ pub(super) fn select(
             .map(|o| slot(frame, o, now))
     });
     let front_within_range = |o: &TrackedObject| {
-        o.s <= SIDE_FRONT_LIMIT && frame.cartesian(o.s, o.d).0 <= SIDE_FRONT_LIMIT
+        o.s <= SIDE_FRONT_LIMIT && o.cartesian(frame).0 <= SIDE_FRONT_LIMIT
     };
     let mut splits = [None; 2];
     for (side, cars) in sides.iter().enumerate() {
@@ -290,13 +309,14 @@ fn update_lane(o: &mut TrackedObject) {
 }
 
 fn slot(frame: &RoadFrame, o: &TrackedObject, now: f64) -> EngineSlot {
-    let (x, y) = frame.cartesian(o.s, o.d);
+    let (x, y) = o.cartesian(frame);
     EngineSlot {
         obj_id: o.obj_id,
         s: o.s,
         d: o.d,
         x,
         y,
+        display_d: o.d,
         v_s: o.v_s,
         kind: o.kind,
         existence_p: o.existence_p(),

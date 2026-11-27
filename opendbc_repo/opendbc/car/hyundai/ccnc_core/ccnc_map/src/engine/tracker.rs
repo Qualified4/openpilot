@@ -45,6 +45,7 @@ impl Tracker {
             obj_id: self.last_id,
             s,
             d,
+            projection_remainder: (0., 0.),
             v_s,
             v_d: 0.,
             var_s: 1.4,
@@ -135,14 +136,12 @@ impl Tracker {
         for o in &mut self.objects {
             let v_absolute = o.v_s + speed;
             let (x, y) = old.cartesian(o.s + v_absolute * dt, o.d + o.v_d * dt);
-            let (wx, wy) = past.to_world(x, -y);
+            let (rx, ry) = o.projection_remainder;
+            let (wx, wy) = past.to_world(x + rx, -(y + ry));
             let (ex, ey) = ego.to_ego(wx, wy);
-            let (s, d) = new.project(ex, -ey);
-            o.s += o.v_s * dt;
-            // A refreshed path can change its length and centre quickly. Carry the coordinate
-            // change across gradually so path noise cannot teleport an unobserved object.
-            o.s += 0.25 * (s - o.s).clamp(-1., 1.);
-            o.d += (d - o.d).clamp(-0.65, 0.65);
+            (o.s, o.d) = new.project(ex, -ey);
+            let (x, y) = new.cartesian(o.s, o.d);
+            o.projection_remainder = (ex - x, -ey - y);
             o.v_d *= (-dt / 0.45).exp();
             o.var_s = (o.var_s + 1.8 * dt).min(7.);
             o.var_d += 0.85 * dt;
@@ -191,11 +190,18 @@ impl Tracker {
         for (mi, m) in measurements.iter().enumerate() {
             for (oi, o) in self.objects.iter().enumerate() {
                 let same = o.evidence.last_track_id == Some(m.id);
-                let (ds, dd, dv) = (
+                let (mut ds, mut dd, dv) = (
                     (o.s - m.s).abs(),
                     (o.d - m.d).abs(),
                     (o.v_s - m.speed).abs(),
                 );
+                if frame.beyond_forecast(o.s.max(m.s))
+                    || o.projection_remainder.0.hypot(o.projection_remainder.1) > 0.25
+                {
+                    let (x, y) = o.cartesian(frame);
+                    ds = (x - m.x).abs();
+                    dd = (y - m.y).abs();
+                }
                 if o.s < -1.0 && m.s > o.s + 0.9
                     || ds > if same { 4.2 } else { 2.8 }
                     || dd > if same { 2.5 } else { 1.6 }
@@ -371,7 +377,7 @@ impl Tracker {
                 .iter_mut()
                 .filter(|o| o.supports_stationary_vision(now, speed))
                 .filter_map(|o| {
-                    let (rx, ry) = frame.cartesian(o.s, o.d);
+                    let (rx, ry) = o.cartesian(frame);
                     let radar_range = rx + CAM2B;
                     // Flat-road range inferred from a box bottom is noisy. Bearing
                     // constrains the match without letting a close box label a distant echo.
@@ -462,7 +468,7 @@ impl Tracker {
         blind: [bool; 2],
     ) {
         for o in &mut self.objects {
-            let (x, y) = frame.cartesian(o.s, o.d);
+            let (x, y) = o.cartesian(frame);
             o.lane_u = frame.lane_u(o.s, o.d);
             o.stationary_radar_continuous &= speed <= 3. && o.supports_stationary_vision(now, speed);
             let observed = o.evidence.last_radar_t == Some(now)
@@ -559,11 +565,15 @@ fn update_radar(o: &mut TrackedObject, m: Measurement, now: f64, ego: PoseAt, sp
     // Huber influence bounds the displacement from a single inconsistent reflection.
     // Measured relative speed, rather than the position residual, drives longitudinal prediction.
     let gain_s = o.var_s / (o.var_s + 0.55);
-    let gain_d = o.var_d / (o.var_d + 0.32);
+    // Suppress small stationary innovations while responding to lateral travel.
+    let near = ((15. - m.x) / 5.).clamp(0., 1.);
+    let movement = ((o.v_d.abs() - 0.22) / 0.55).clamp(0., 1.);
+    let response = ((dd.abs() - 0.20) / 0.45).clamp(0., 1.).max(near * movement);
+    let gain_d = o.var_d / (o.var_d + 0.32) * (0.40 + 0.60 * response);
     o.s += gain_s * ds.clamp(-0.40, 0.40);
     o.d += gain_d * dd.clamp(-0.62, 0.62);
     o.v_s += 0.45 * (m.speed - o.v_s).clamp(-2.6, 2.6);
-    o.v_d = (o.v_d + 0.6 * dd.clamp(-0.8, 0.8)).clamp(-2.7, 2.7);
+    o.v_d = (o.v_d + (0.3 + 0.3 * response) * dd.clamp(-0.8, 0.8)).clamp(-2.7, 2.7);
     o.var_s *= 1. - gain_s * (0.4 / ds.abs()).min(1.);
     o.var_d *= 1. - gain_d * (0.62 / dd.abs()).min(1.);
     let prior = o.evidence.last_radar_t;

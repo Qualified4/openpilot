@@ -26,6 +26,8 @@ pub struct TrackedObject {
     pub s: f64,
     pub v_s: f64,
     pub d: f64,
+    // Projection onto a polyline vertex can leave a tangential remainder.
+    pub(super) projection_remainder: (f64, f64),
     pub v_d: f64,
     pub var_s: f64,
     pub var_d: f64,
@@ -61,6 +63,11 @@ pub struct TrackedObject {
 }
 
 impl TrackedObject {
+    pub(super) fn cartesian(&self, frame: &super::road_frame::RoadFrame) -> (f64, f64) {
+        let (x, y) = frame.cartesian(self.s, self.d);
+        (x + self.projection_remainder.0, y + self.projection_remainder.1)
+    }
+
     pub(super) fn radar_age(&self, now: f64) -> f64 {
         self.evidence
             .last_radar_t

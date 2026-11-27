@@ -284,7 +284,7 @@ impl Pipeline {
             Some(Slot {
                 vid,
                 distance: s.x as f32,
-                lateral: -s.y as f32,
+                lateral: -(if index < 3 { s.display_d } else { s.y }) as f32,
                 detect: if s.v_s > 2. { 1 } else { 2 },
                 lane_coord_rel: s.lane_u as f32,
                 v_rel: s.v_s as f32,

@@ -64,6 +64,8 @@ pub struct EngineSlot {
     /// Cartesian position in ego coordinates, right positive.
     pub x: f64,
     pub y: f64,
+    /// Road-relative lateral position drawn for the front slots, right positive.
+    pub display_d: f64,
     pub v_s: f64,
     pub kind: VehicleKind,
     pub existence_p: f64,
@@ -87,6 +89,7 @@ pub struct MapEngine {
     behind: VecDeque<PoseAt>,
     previous: Option<RoadFrame>,
     displayed: [Option<EngineSlot>; 5],
+    road_disagreement: Option<f64>,
     last_lane_change: Option<f64>,
     time: Option<f64>,
 }
@@ -139,6 +142,7 @@ impl MapEngine {
             self.behind.clear();
             self.previous = None;
             self.displayed = [None; 5];
+            self.road_disagreement = None;
             self.last_lane_change = None;
         }
         let previous_pose = self.pose.current();
@@ -162,7 +166,7 @@ impl MapEngine {
             self.last_lane_change = Some(now);
         }
         let model_pose = road.map_or(ego, |r| self.pose.at(r.time));
-        let frame = RoadFrame::new(
+        let mut frame = RoadFrame::new(
             road.map_or(&[], |r| r.path),
             road.and_then(|r| r.lines),
             model_pose,
@@ -170,9 +174,18 @@ impl MapEngine {
             self.behind.iter().copied(),
             road.is_some_and(|r| r.changing_lanes),
         );
-        if let Some(previous) = &self.previous {
+        if let Some(previous) = self.previous.take() {
+            if road.is_some() && frame.disagrees(&previous, previous_pose, ego) {
+                let since = *self.road_disagreement.get_or_insert(now);
+                if now - since <= 0.20 {
+                    // Keep the last plausible road briefly while the new forecast is uncorroborated.
+                    frame = previous.clone().advance(previous_pose, ego);
+                }
+            } else {
+                self.road_disagreement = None;
+            }
             self.tracker
-                .predict(dt, speed, previous, &frame, previous_pose, ego);
+                .predict(dt, speed, &previous, &frame, previous_pose, ego);
         }
         let visible = self.tracker.radar(now, speed, &frame, ego, input.radar);
         let primary = self.tracker.lead(now, input.lead, &frame);
@@ -216,6 +229,8 @@ impl MapEngine {
                 if matches!(index, 1 | 2) {
                     slot.x = slot.x.min(50.);
                 }
+                slot.display_d =
+                    selector::display_lateral(old.display_d, slot.d, slot.x, index == 0, dt);
             }
         }
         self.displayed = slots;
