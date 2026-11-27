@@ -11,9 +11,58 @@ from openpilot.selfdrive.controls.lib.cruise_coasting import (
   CruiseCoastingControl, MAX_PLAN_AGE, coasting_relief, no_coasting_lead,
 )
 from openpilot.selfdrive.controls.lib.limousine_launch import LimousineLaunchController
-from openpilot.selfdrive.controls.lib.limousine_stop import LimousineStopController
+from openpilot.selfdrive.controls.lib.limousine_stop import (
+  EMERGENCY_DECEL_THRESHOLD,
+  V_MIN_ACTIVE,
+  LimousineStopController,
+)
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
+E2E_STOP_XSTATES = (3, 5)  # XState.e2eStop, XState.e2eStopped
+
+
+def valid_road_pitch(calibrated_pose, calib_valid: bool, live_pose_valid: bool) -> float:
+  """Return finite calibrated road pitch (rad) only when calibration and livePose are valid."""
+  if calibrated_pose is None or not calib_valid or not live_pose_valid:
+    return 0.0
+  pitch = float(calibrated_pose.orientation.xyz[1])
+  return pitch if math.isfinite(pitch) else 0.0
+
+
+def estimate_plan_stop_distance(speeds, accels=None, t_idxs=CONTROL_N_T_IDX) -> float | None:
+  """Integrate planned speed trajectory to estimate remaining distance to a solo stop line."""
+  if speeds is None or len(speeds) < 2:
+    return None
+  n = min(len(speeds), len(t_idxs))
+  dist = 0.0
+  reached_stop = False
+  for i in range(n - 1):
+    v0 = float(speeds[i])
+    v1 = float(speeds[i + 1])
+    if not (math.isfinite(v0) and math.isfinite(v1)):
+      return None
+    dt = float(t_idxs[i + 1] - t_idxs[i])
+    if v0 <= 0.05:
+      reached_stop = True
+      break
+    if v1 <= 0.05:
+      frac = max(0.0, min(1.0, (v0 - 0.05) / max(1e-6, v0 - v1)))
+      dist += 0.5 * (v0 + 0.05) * dt * frac
+      reached_stop = True
+      break
+    dist += 0.5 * (v0 + v1) * dt
+  if not reached_stop:
+    v_end = float(speeds[n - 1])
+    if not math.isfinite(v_end):
+      return None
+    if v_end <= 0.05:
+      reached_stop = True
+    elif accels is not None and len(accels) >= n:
+      a_end = float(accels[n - 1])
+      if math.isfinite(a_end) and a_end < -0.1:
+        dist += (v_end * v_end) / (2.0 * abs(a_end))
+        reached_stop = True
+  return dist if (reached_stop and math.isfinite(dist)) else None
 
 HYUNDAI_LONGITUDINAL_KP = 1.0
 HYUNDAI_LONGITUDINAL_KI = 0.0
@@ -73,6 +122,8 @@ class LongControl:
                              (CP.longitudinalTuning.kiBP, CP.longitudinalTuning.kiV),
                              k_f=CP.longitudinalTuning.kf, rate=1 / DT_CTRL)
     self.last_output_accel = 0.0
+    self._raw_stopping_accel = 0.0
+    self._was_in_stopping = False
     self.coasting = CruiseCoastingControl()
     self.limousine_stop = LimousineStopController()
     self.limousine_launch = LimousineLaunchController()
@@ -140,6 +191,8 @@ class LongControl:
     self.coasting.reset()
     self.limousine_stop.reset()
     self.limousine_launch.reset()
+    self._raw_stopping_accel = 0.0
+    self._was_in_stopping = False
 
   def update(self, active, CS, long_plan, accel_limits, t_since_plan, radarState):
 
@@ -167,20 +220,37 @@ class LongControl:
     if active and soft_hold_active:
       self.long_control_state = LongCtrlState.stopping
 
+    if self.long_control_state != LongCtrlState.stopping:
+      self._was_in_stopping = False
+
+    fcw = bool(getattr(long_plan, 'fcw', False))
+    a_target_finite = math.isfinite(a_target_ff)
+
     if self.long_control_state == LongCtrlState.off:
       self.reset()
       output_accel = 0.
 
     elif self.long_control_state == LongCtrlState.stopping:
-      output_accel = self.last_output_accel
+      if not self._was_in_stopping:
+        self._raw_stopping_accel = self.last_output_accel
+        self._was_in_stopping = True
 
       if soft_hold_active:
-        output_accel = self.CP.stopAccel
-      # Restore the original one-way ramp. Do not unwind stronger braking here;
-      # low-speed limousine relief below handles safe, brake-lamp-preserving unwinding.
-      if output_accel > self.stopping_accel:
-        output_accel = min(output_accel, 0.0)
-        output_accel -= self.CP.stoppingDecelRate * DT_CTRL
+        self._raw_stopping_accel = self.CP.stopAccel
+      # Preserve unsoftened one-way stopping ramp separately from limousine_stop output
+      # so a sudden safety override or emergency command restores full braking on tick 0.
+      elif self._raw_stopping_accel > self.stopping_accel:
+        self._raw_stopping_accel = min(self._raw_stopping_accel, 0.0) - self.CP.stoppingDecelRate * DT_CTRL
+
+      emergency_stop_req = fcw or (a_target_finite and a_target_ff < EMERGENCY_DECEL_THRESHOLD)
+      if CS.vEgo <= V_MIN_ACTIVE and not emergency_stop_req and not soft_hold_active and self.limousine_stop.active:
+        # Normal low-speed handover into standstill: avoid snapping back to pre-relief decel.
+        self._raw_stopping_accel = min(self.stopping_accel, self.last_output_accel)
+
+      output_accel = self._raw_stopping_accel
+      if emergency_stop_req and a_target_finite:
+        output_accel = min(output_accel, float(a_target_ff))
+
       self.pid.reset()
       self.coasting.reset()
       self.limousine_launch.notify_stopping()
@@ -224,6 +294,11 @@ class LongControl:
     if self.long_control_state in (LongCtrlState.pid, LongCtrlState.stopping):
       lead_one = getattr(radarState, 'leadOne', None) if radarState is not None else None
       has_lead = bool(lead_one is not None and lead_one.status)
+      is_e2e_stop = int(getattr(long_plan, 'xState', 0)) in E2E_STOP_XSTATES
+      plan_stop_dist = (
+        None if has_lead
+        else estimate_plan_stop_distance(getattr(long_plan, 'speeds', None), getattr(long_plan, 'accels', None))
+      )
       output_accel = self.limousine_stop.update(
         a_cmd=float(output_accel),
         previous_accel=float(self.last_output_accel),
@@ -233,13 +308,17 @@ class LongControl:
                  and not getattr(CS, 'gasPressed', False) and not CS.cruiseState.standstill),
         should_stop=bool(should_stop),
         in_stopping_state=(self.long_control_state == LongCtrlState.stopping),
-        fcw=bool(getattr(long_plan, 'fcw', False)),
+        fcw=fcw,
         v_target_now=float(v_target_now),
         has_lead=has_lead,
         d_rel=float(getattr(lead_one, 'dRel', 100.0)) if has_lead else 100.0,
         v_lead=float(getattr(lead_one, 'vLead', 0.0)) if has_lead else 0.0,
         pitch_rad=float(self.road_pitch),
+        is_e2e_stop=is_e2e_stop,
+        stop_dist=plan_stop_dist,
       )
+      if self.long_control_state == LongCtrlState.stopping and self.limousine_stop.safety_override and a_target_finite:
+        output_accel = min(output_accel, float(a_target_ff))
     else:
       self.limousine_stop.reset()
 
@@ -252,13 +331,17 @@ class LongControl:
         enabled=(active and not soft_hold_active and not getattr(CS, 'brakePressed', False)
                  and not getattr(CS, 'gasPressed', False)),
         should_stop=bool(should_stop),
-        fcw=bool(getattr(long_plan, 'fcw', False)),
+        fcw=fcw,
         cruise_standstill=bool(CS.cruiseState.standstill),
         in_starting_state=(self.long_control_state == LongCtrlState.starting),
         pitch_rad=float(self.road_pitch),
       )
-      if self.limousine_launch.active and self.limousine_launch.shaped_jerk is not None and j_target_now > 0.0:
-        j_target_now = min(float(j_target_now), self.limousine_launch.shaped_jerk)
+      if self.limousine_launch.active and self.limousine_launch.shaped_jerk is not None:
+        aligned_jerk = self.limousine_launch.shaped_jerk * 0.5
+        if self.limousine_launch.tracking_upstream:
+          j_target_now = aligned_jerk
+        elif j_target_now > 0.0:
+          j_target_now = min(float(j_target_now), aligned_jerk)
     elif self.long_control_state != LongCtrlState.stopping:
       self.limousine_launch.reset()
 

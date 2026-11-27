@@ -24,7 +24,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl, MIN_LATERAL_
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
-from openpilot.selfdrive.controls.lib.longcontrol import LongControl
+from openpilot.selfdrive.controls.lib.longcontrol import LongControl, valid_road_pitch
 from openpilot.selfdrive.controls.lib.steer_ratio import resolve_vehicle_model_steer_ratio
 from openpilot.selfdrive.controls.lib.lateral_readiness import LateralStartupGate, lateral_vehicle_parameters
 from openpilot.selfdrive.controls.lib.laneless_centering import LanelessCentering, strength_from_param
@@ -190,7 +190,11 @@ class Controls:
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
     t_since_plan = (self.sm.frame - self.sm.recv_frame['longitudinalPlan']) * DT_CTRL
-    self.LoC.road_pitch = float(self.calibrated_pose.orientation.xyz[1]) if self.calibrated_pose is not None else 0.0
+    self.LoC.road_pitch = valid_road_pitch(
+      self.calibrated_pose,
+      self.pose_calibrator.calib_valid,
+      bool(self.sm.valid['livePose']),
+    )
     accel, aTarget, jerk = self.LoC.update(CC.longActive, CS, long_plan, pid_accel_limits, t_since_plan, self.sm['radarState'])
     actuators.longControlState = self.LoC.long_control_state
     actuators.accel = float(accel)

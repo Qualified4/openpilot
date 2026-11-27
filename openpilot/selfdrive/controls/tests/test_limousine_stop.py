@@ -22,7 +22,13 @@ from openpilot.selfdrive.controls.lib.limousine_stop import (
   brake_lamp_hold_floor,
   limousine_decel_envelope,
 )
-from openpilot.selfdrive.controls.lib.longcontrol import LongControl, LongCtrlState
+from openpilot.selfdrive.controls.lib.longcontrol import (
+  CONTROL_N_T_IDX,
+  LongControl,
+  LongCtrlState,
+  estimate_plan_stop_distance,
+  valid_road_pitch,
+)
 
 
 def test_envelope_is_monotonic_and_bounded():
@@ -332,3 +338,148 @@ def test_uphill_slope_compensation_preserves_hydraulic_brake_floor():
     assert prev >= -1.6 - 1e-9
   assert prev == pytest.approx(expected_floor, abs=0.02)
   assert ctrl.active is True
+
+
+def test_raw_stopping_accel_preserved_for_emergency_and_safety_override():
+  CP = car.CarParams.new_message(
+    brand="hyundai",
+    openpilotLongitudinalControl=True,
+    stoppingDecelRate=0.8,
+    stopAccel=-2.0,
+    startAccel=0.0,
+    vEgoStarting=0.5,
+  )
+  loc = LongControl(CP)
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -1.4
+
+  cs = SimpleNamespace(
+    vEgo=1.5, aEgo=-1.2, brakePressed=False, gasPressed=False,
+    softHoldActive=0, cruiseState=SimpleNamespace(standstill=False),
+  )
+  plan = SimpleNamespace(
+    aTarget=-1.4, vTargetNow=0.2, jTargetNow=0.0, shouldStop=True, fcw=False,
+    longitudinalPlanSource="lead0", cruiseTarget=30.0, cruiseCoastingTarget=0.0, cruiseCoastingPercent=0,
+  )
+  radar = SimpleNamespace(
+    leadOne=SimpleNamespace(status=True, dRel=7.0, vLead=0.0),
+    leadTwo=SimpleNamespace(status=False, dRel=0.0, vLead=0.0),
+  )
+
+  # Unwind for 60 ticks: output relaxes significantly, but _raw_stopping_accel stays -1.4.
+  for _ in range(60):
+    accel, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  assert loc.limousine_stop.active is True
+  assert accel > -0.80
+  assert loc._raw_stopping_accel == pytest.approx(-1.4)
+
+  # Sudden close lead (d_rel <= 2.8m) with stronger planner demand (-2.2): 0-tick full restoration!
+  radar.leadOne.dRel = 2.6
+  plan.aTarget = -2.2
+  accel_override, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  assert loc.limousine_stop.safety_override is True
+  assert accel_override == pytest.approx(-2.2)
+
+  # Emergency FCW / < EMERGENCY_DECEL_THRESHOLD: 0-tick restoration to -3.0.
+  radar.leadOne.dRel = 6.0
+  plan.fcw = True
+  plan.aTarget = -3.0
+  accel_emg, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  assert accel_emg == pytest.approx(-3.0)
+
+  # Normal low-speed handover into V_MIN_ACTIVE without override: no snap-back to -1.4.
+  loc.reset()
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -1.4
+  plan.fcw = False
+  plan.aTarget = -1.4
+  radar.leadOne.dRel = 7.0
+  cs.vEgo = 0.75
+  for _ in range(100):
+    accel, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  assert accel > -0.50
+  cs.vEgo = 0.45
+  accel_handover, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  assert accel_handover == pytest.approx(-0.50, abs=0.05)
+
+
+def test_solo_traffic_light_stop_unified_d_stop_and_lead_stop_equivalence():
+  ctrl = LimousineStopController()
+
+  # Case 1: Solo traffic-light stop (has_lead=False, is_e2e_stop=True, should_stop=False) with stop_dist=6.0m.
+  prev = -1.4
+  for _ in range(80):
+    prev = ctrl.update(
+      a_cmd=-1.4, previous_accel=prev, v_ego=2.0, dt=DT_CTRL,
+      enabled=True, should_stop=False, in_stopping_state=False,
+      has_lead=False, is_e2e_stop=True, stop_dist=6.0,
+    )
+  assert ctrl.active is True
+  assert ctrl.safety_override is False
+  assert -1.4 < prev <= BRAKE_LAMP_HOLD_ACCEL
+
+  # Case 2: Tight stop line (v=2.5 m/s, stop_dist=1.5m -> a_req=-2.08 <= -1.8) -> immediate safety override.
+  out_tight = ctrl.update(
+    a_cmd=-1.8, previous_accel=prev, v_ego=2.5, dt=DT_CTRL,
+    enabled=True, should_stop=False, in_stopping_state=False,
+    has_lead=False, is_e2e_stop=True, stop_dist=1.5,
+  )
+  assert out_tight == pytest.approx(-1.8)
+  assert ctrl.safety_override is True
+  assert ctrl.active is False
+
+  # Case 3: Moving lead emergency stop equivalence (v_ego=3.0, v_lead=1.4, d_rel=4.5 -> d_eq=4.745, a_req=-2.00 <= -1.8).
+  out_lead_eq = ctrl.update(
+    a_cmd=-1.8, previous_accel=-1.0, v_ego=3.0, dt=DT_CTRL,
+    enabled=True, should_stop=False, in_stopping_state=False,
+    has_lead=True, d_rel=4.5, v_lead=1.4,
+  )
+  assert out_lead_eq == pytest.approx(-1.8)
+  assert ctrl.safety_override is True
+
+  # Case 4: estimate_plan_stop_distance + LongControl solo e2eStop integration.
+  t_idxs = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
+  # Constant -0.75 m/s^2 from 3.0 m/s -> exact stopping distance = 3.0^2 / (2 * 0.75) = 6.0 m.
+  speeds = [max(0.0, 3.0 - 0.75 * t) for t in t_idxs]
+  accels = [-0.75] * len(t_idxs)
+  d_est = estimate_plan_stop_distance(speeds, accels, t_idxs=t_idxs)
+  assert d_est == pytest.approx(6.0, abs=0.05)
+
+  CP = car.CarParams.new_message(
+    brand="hyundai", openpilotLongitudinalControl=True,
+    stoppingDecelRate=0.8, stopAccel=-2.0, startAccel=0.0, vEgoStarting=0.5,
+  )
+  loc = LongControl(CP)
+  loc.long_control_state = LongCtrlState.pid
+  loc.last_output_accel = -1.4
+  cs = SimpleNamespace(
+    vEgo=2.0, aEgo=-1.2, brakePressed=False, gasPressed=False,
+    softHoldActive=0, cruiseState=SimpleNamespace(standstill=False),
+  )
+  plan = SimpleNamespace(
+    aTarget=-1.4, vTargetNow=2.0, jTargetNow=0.0, shouldStop=False, fcw=False,
+    xState=3, speeds=[max(0.0, 2.0 - 0.5 * float(t)) for t in CONTROL_N_T_IDX], accels=[-0.5] * len(CONTROL_N_T_IDX),
+    longitudinalPlanSource="cruise", cruiseTarget=30.0, cruiseCoastingTarget=0.0, cruiseCoastingPercent=0,
+  )
+  radar = SimpleNamespace(
+    leadOne=SimpleNamespace(status=False, dRel=0.0, vLead=0.0),
+    leadTwo=SimpleNamespace(status=False, dRel=0.0, vLead=0.0),
+  )
+  out_e2e, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  assert loc.limousine_stop.active is True
+  assert out_e2e > -1.4
+
+
+def test_controlsd_valid_road_pitch_gate():
+  import math
+  pose_ok = SimpleNamespace(orientation=SimpleNamespace(xyz=[0.0, 0.045, 0.0]))
+  pose_nan = SimpleNamespace(orientation=SimpleNamespace(xyz=[0.0, float("nan"), 0.0]))
+  pose_inf = SimpleNamespace(orientation=SimpleNamespace(xyz=[0.0, float("inf"), 0.0]))
+
+  assert valid_road_pitch(None, True, True) == 0.0
+  assert valid_road_pitch(pose_ok, False, True) == 0.0
+  assert valid_road_pitch(pose_ok, True, False) == 0.0
+  assert valid_road_pitch(pose_nan, True, True) == 0.0
+  assert valid_road_pitch(pose_inf, True, True) == 0.0
+  assert valid_road_pitch(pose_ok, True, True) == pytest.approx(0.045)
+  assert math.isfinite(valid_road_pitch(pose_ok, True, True))

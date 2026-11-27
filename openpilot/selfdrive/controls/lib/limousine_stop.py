@@ -34,6 +34,7 @@ SAFETY_OVERRIDE_MARGIN = 0.3  # m: immediate bypass if d_rel <= MIN_SAFE_STOP_DI
 # Do not soften emergency/hard braking or fast-moving leads.
 EMERGENCY_DECEL_THRESHOLD = -2.5  # m/s^2
 LEAD_STOPPING_SPEED = 1.5  # m/s
+LEAD_EMERGENCY_DECEL = 4.0  # m/s^2: conservative lead stop decel for equivalent stop distance
 
 
 def smoothstep(x: float) -> float:
@@ -106,6 +107,8 @@ class LimousineStopController:
     v_lead: float = 0.0,
     stop_distance: float = DEFAULT_STOP_DISTANCE,
     pitch_rad: float = 0.0,
+    is_e2e_stop: bool = False,
+    stop_dist: float | None = None,
   ) -> float:
     """Return possibly-softened longitudinal acceleration command."""
     if (
@@ -133,10 +136,11 @@ class LimousineStopController:
       self._last_accel = a_cmd
       return a_cmd
 
-    # Require genuine stopping context.
+    # Require genuine stopping context (lead, planner should_stop, or solo traffic-light e2eStop).
     stopping_context = (
       should_stop
       or in_stopping_state
+      or is_e2e_stop
       or (has_lead and math.isfinite(v_lead) and v_lead <= LEAD_STOPPING_SPEED)
       or (math.isfinite(v_target_now) and v_target_now <= 0.5)
     )
@@ -147,6 +151,11 @@ class LimousineStopController:
     a_curve = limousine_decel_envelope(v_ego, pitch_rad)
     a_target = a_curve
 
+    # Unified physical stop-distance guard (d_hard, d_tol):
+    # - Lead vehicle: equivalent stop position d_rel + v_lead^2 / (2 * LEAD_EMERGENCY_DECEL).
+    # - No-lead traffic light / stop line: planner remaining stop distance stop_dist.
+    d_hard: float | None = None
+    d_tol: float | None = None
     if has_lead:
       if not math.isfinite(d_rel) or not math.isfinite(v_lead):
         self.active = False
@@ -154,34 +163,51 @@ class LimousineStopController:
         self._last_accel = a_cmd
         return a_cmd
 
-      v_closing = max(0.0, v_ego - max(0.0, v_lead))
-      d_hard = d_rel - MIN_SAFE_STOP_DISTANCE
-
       # Hard collision-safety floor: immediately yield to full upstream braking.
-      if d_rel <= MIN_SAFE_STOP_DISTANCE + SAFETY_OVERRIDE_MARGIN or d_hard <= 0.2:
+      if d_rel <= MIN_SAFE_STOP_DISTANCE + SAFETY_OVERRIDE_MARGIN:
         self.active = False
         self.safety_override = True
         self._last_accel = a_cmd
         return a_cmd
 
-      a_req_hard = -(v_closing * v_closing) / (2.0 * d_hard)
+      v_lead_pos = max(0.0, v_lead)
+      d_lead_eq = d_rel + (v_lead_pos * v_lead_pos) / (2.0 * LEAD_EMERGENCY_DECEL)
+      d_hard = d_lead_eq - MIN_SAFE_STOP_DISTANCE
+
+      # Tolerance-aware kinematic limit: allow stopping up to STOP_DISTANCE_TOLERANCE
+      # closer than nominal stop_distance, never closer than MIN_SAFE_STOP_DISTANCE.
+      nominal_stop = stop_distance if (math.isfinite(stop_distance) and stop_distance > 0.0) else DEFAULT_STOP_DISTANCE
+      tol_stop_dist = max(MIN_SAFE_STOP_DISTANCE, nominal_stop - STOP_DISTANCE_TOLERANCE)
+      d_tol = d_lead_eq - tol_stop_dist
+    elif stop_dist is not None:
+      if not math.isfinite(stop_dist) or stop_dist <= 0.2:
+        self.active = False
+        self.safety_override = True
+        self._last_accel = a_cmd
+        return a_cmd
+      d_hard = stop_dist
+      d_tol = stop_dist
+
+    if d_hard is not None:
+      if d_hard <= 0.2:
+        self.active = False
+        self.safety_override = True
+        self._last_accel = a_cmd
+        return a_cmd
+
+      a_req_hard = -(v_ego * v_ego) / (2.0 * d_hard)
       if a_req_hard <= a_cmd:
         self.active = False
         self.safety_override = True
         self._last_accel = a_cmd
         return a_cmd
 
-      # Tolerance-aware kinematic limit: allow stopping up to STOP_DISTANCE_TOLERANCE
-      # closer than nominal stop_distance, never closer than MIN_SAFE_STOP_DISTANCE.
-      nominal_stop = stop_distance if (math.isfinite(stop_distance) and stop_distance > 0.0) else DEFAULT_STOP_DISTANCE
-      tol_stop_dist = max(MIN_SAFE_STOP_DISTANCE, nominal_stop - STOP_DISTANCE_TOLERANCE)
-      d_tol = d_rel - tol_stop_dist
-      if d_tol <= 0.2:
+      if d_tol is None or d_tol <= 0.2:
         a_req_tol = a_req_hard
       else:
-        a_req_tol = -(v_closing * v_closing) / (2.0 * d_tol)
+        a_req_tol = -(v_ego * v_ego) / (2.0 * d_tol)
 
-      # Never relax weaker than what kinematics require to stop within tolerance.
+      # Never relax weaker than what kinematics require to stop within tolerance / stop line.
       a_target = min(a_curve, a_req_tol)
 
     self.safety_override = False

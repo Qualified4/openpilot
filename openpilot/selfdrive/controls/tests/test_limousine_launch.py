@@ -12,6 +12,7 @@ from openpilot.selfdrive.controls.lib.limousine_launch import (
   LAUNCH_JERK_MIN,
   LAUNCH_JERK_PEAK,
   LAUNCH_RAMP_TIME,
+  REACCEL_BRAKE_RELEASE_JERK,
   REACCEL_JERK_MIN,
   REACCEL_JERK_PEAK,
   V_BREAKAWAY,
@@ -21,6 +22,7 @@ from openpilot.selfdrive.controls.lib.limousine_launch import (
   launch_jerk_limit,
   uphill_gravity_comp,
 )
+from opendbc.car.hyundai.carcontroller import calculate_canfd_jerk_limits
 from openpilot.selfdrive.controls.lib.limousine_stop import BRAKE_LAMP_HOLD_ACCEL, GRAVITY, MAX_UPHILL_SLOPE_COMP
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl, LongCtrlState
 
@@ -280,3 +282,92 @@ def test_starting_state_start_accel_is_shaped_smoothly():
   for _ in range(50):
     accel, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
     assert accel <= BREAKAWAY_ACCEL_FLAT + 1e-9
+
+
+def test_breakaway_tracking_aligns_j_target_now_when_planner_jerk_saturates():
+  loc = LongControl(_make_cp(starting_state=False))
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -0.5
+
+  cs = SimpleNamespace(
+    vEgo=0.0, aEgo=0.0, brakePressed=False, gasPressed=False,
+    softHoldActive=0, cruiseState=SimpleNamespace(standstill=False),
+  )
+  # Planner jTargetNow saturated to 0.0 during stationary brake-hold release deadtime.
+  plan = SimpleNamespace(
+    aTarget=1.7, vTargetNow=0.6, jTargetNow=0.0, shouldStop=False, fcw=False,
+    longitudinalPlanSource="lead0", cruiseTarget=30.0, cruiseCoastingTarget=0.0, cruiseCoastingPercent=0,
+  )
+  radar = SimpleNamespace(
+    leadOne=SimpleNamespace(status=True, dRel=6.0, vLead=1.0),
+    leadTwo=SimpleNamespace(status=False, dRel=0.0, vLead=0.0),
+  )
+
+  # Phase 1: stationary hold deadtime (0.75 s) -> j_out stays 0.0 (no premature inflation).
+  for _ in range(75):
+    accel, _, j_out = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+    assert accel <= BREAKAWAY_ACCEL_FLAT + 1e-9
+    assert j_out == pytest.approx(0.0)
+
+  # Phase 2: vehicle breaks away (vEgo > V_BREAKAWAY) with planner jTargetNow still 0.0.
+  cs.vEgo = V_BREAKAWAY + 0.06
+  seen_jerk_u = []
+  for _ in range(45):
+    accel, _, j_out = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+    if loc.limousine_launch.active and loc.limousine_launch.tracking_upstream:
+      ju, _ = calculate_canfd_jerk_limits(accel, j_out, 0.0)
+      assert ju == pytest.approx(loc.limousine_launch.shaped_jerk, abs=1e-4)
+      seen_jerk_u.append(ju)
+    cs.vEgo += max(0.0, accel) * DT_CTRL
+
+  # Bottleneck at 1.0 m/s^3 is broken: jerk_u ramps smoothly from LAUNCH_JERK_MIN toward LAUNCH_JERK_PEAK.
+  assert len(seen_jerk_u) >= 20
+  assert seen_jerk_u[0] == pytest.approx(LAUNCH_JERK_MIN, abs=0.05)
+  assert max(seen_jerk_u) > 3.0
+  assert max(seen_jerk_u) <= LAUNCH_JERK_PEAK + 1e-4
+
+  # Phase 3: when planner jTargetNow is huge (e.g. 5.0), CAN-FD jerk_u still matches shaped_jerk (not 2x).
+  loc.reset()
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -0.5
+  cs.vEgo = V_BREAKAWAY + 0.06
+  plan.jTargetNow = 5.0
+  accel, _, j_out = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  ju, _ = calculate_canfd_jerk_limits(accel, j_out, 0.0)
+  assert ju == pytest.approx(loc.limousine_launch.shaped_jerk, abs=1e-4)
+
+
+def test_reaccel_zero_crossing_sync_preserves_soft_s_curve_after_brake_release():
+  ctrl = LimousineLaunchController()
+  for _ in range(10):
+    ctrl.update(a_cmd=-0.50, previous_accel=-0.50, v_ego=4.0, dt=DT_CTRL, enabled=True)
+
+  # Enter reaccel from -0.50 m/s^2: release takes 0.50 / 2.50 = 0.20 s (20 ticks).
+  prev = -0.50
+  release_ticks = 0
+  post_zero_jerks = []
+  for step in range(120):
+    out = ctrl.update(a_cmd=1.6, previous_accel=prev, v_ego=4.0, dt=DT_CTRL, enabled=True)
+    assert 0.0 <= out <= 1.6 + 1e-9
+    if out == 0.0:
+      release_ticks += 1
+      assert ctrl._ramp_t == pytest.approx(0.0)
+      assert ctrl.shaped_jerk == pytest.approx(REACCEL_BRAKE_RELEASE_JERK)
+    else:
+      post_zero_jerks.append((out - prev) / DT_CTRL)
+    prev = out
+
+  # Brake-release sync held _ramp_t at 0 for ~0.20 s, then S-curve started cleanly at REACCEL_JERK_MIN.
+  assert 18 <= release_ticks <= 21
+  assert len(post_zero_jerks) >= 20
+  assert post_zero_jerks[0] == pytest.approx(REACCEL_JERK_MIN, abs=0.05)
+  assert max(post_zero_jerks) <= REACCEL_JERK_PEAK + 1e-5
+  assert prev == pytest.approx(1.6, abs=1e-3)
+
+  # If already released to 0.0 (via decel memory), S-curve starts on tick 0 with zero holdback.
+  ctrl.reset()
+  ctrl.update(a_cmd=-0.30, previous_accel=-0.30, v_ego=4.0, dt=DT_CTRL, enabled=True)
+  ctrl.update(a_cmd=0.0, previous_accel=0.0, v_ego=4.0, dt=DT_CTRL, enabled=True)
+  out0 = ctrl.update(a_cmd=1.2, previous_accel=0.0, v_ego=4.0, dt=DT_CTRL, enabled=True)
+  assert out0 > 0.0
+  assert out0 / DT_CTRL == pytest.approx(REACCEL_JERK_MIN, abs=0.05)

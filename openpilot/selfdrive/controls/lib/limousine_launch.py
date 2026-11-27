@@ -38,6 +38,7 @@ DECEL_MEMORY_TIME = 0.60  # s: memory window after braking before crossing into 
 REACCEL_RAMP_TIME = 0.45  # s: short S-curve ramp duration for decel -> accel transition
 REACCEL_JERK_MIN = 0.85  # m/s^3: initial soft jerk right after crossing a=0
 REACCEL_JERK_PEAK = 2.40  # m/s^3: controlled peak jerk to shave initial kick with <=0.15s Δt
+REACCEL_BRAKE_RELEASE_JERK = 2.50  # m/s^3: matched brake-release rate to sync S-curve to a=0 crossing
 
 
 def uphill_gravity_comp(pitch_rad: float = 0.0) -> float:
@@ -69,7 +70,9 @@ class LimousineLaunchController:
     self.active = False
     self.mode = "idle"  # "idle" | "standstill" | "reaccel"
     self.shaped_jerk: float | None = None
+    self.tracking_upstream = False
     self._last_accel = 0.0
+    self._release_accel = 0.0
     self._stationary_t = 0.0
     self._ramp_t = 0.0
     self._broken_away = False
@@ -80,7 +83,9 @@ class LimousineLaunchController:
     self.active = False
     self.mode = "idle"
     self.shaped_jerk = None
+    self.tracking_upstream = False
     self._last_accel = 0.0
+    self._release_accel = 0.0
     self._stationary_t = 0.0
     self._ramp_t = 0.0
     self._broken_away = False
@@ -92,7 +97,9 @@ class LimousineLaunchController:
     self.active = False
     self.mode = "idle"
     self.shaped_jerk = None
+    self.tracking_upstream = False
     self._last_accel = 0.0
+    self._release_accel = 0.0
     self._stationary_t = 0.0
     self._ramp_t = 0.0
     self._broken_away = False
@@ -103,6 +110,8 @@ class LimousineLaunchController:
     self.active = False
     self.mode = "idle"
     self.shaped_jerk = None
+    self.tracking_upstream = False
+    self._release_accel = 0.0
     self._stationary_t = 0.0
     self._ramp_t = 0.0
     self._broken_away = False
@@ -166,6 +175,7 @@ class LimousineLaunchController:
         self.active = True
         self.mode = "reaccel"
         self._last_accel = max(0.0, previous_accel)
+        self._release_accel = min(0.0, previous_accel)
         self._stationary_t = 0.0
         self._ramp_t = 0.0
         self._broken_away = True
@@ -187,10 +197,25 @@ class LimousineLaunchController:
         # Never exceed upstream a_cmd; smoothly ramp from 0 to breakaway ceiling.
         a_out = min(a_cmd, a_ceil)
         self.shaped_jerk = LAUNCH_JERK_MIN + UPHILL_JERK_BONUS_GAIN * uphill_gravity_comp(pitch_rad)
+        self.tracking_upstream = False
         self._last_accel = a_out
         return a_out
 
-    # Post-breakaway standstill ramp or low-speed re-acceleration ramp.
+    # Synchronize reaccel S-curve timer to actuator zero-crossing (aReqValue ~= 0):
+    # release braking immediately (a_out = 0.0) without burning _ramp_t while
+    # the lower actuator is still unwinding negative deceleration.
+    if self.mode == "reaccel" and self._release_accel < 0.0:
+      if v_ego > V_REACCEL_MAX:
+        self._disengage()
+        self._last_accel = a_cmd
+        return a_cmd
+      self._release_accel = min(0.0, self._release_accel + REACCEL_BRAKE_RELEASE_JERK * dt)
+      self.shaped_jerk = REACCEL_BRAKE_RELEASE_JERK
+      self.tracking_upstream = False
+      self._last_accel = 0.0
+      return 0.0
+
+    # Post-breakaway standstill ramp or post-zero-crossing low-speed re-acceleration ramp.
     self._ramp_t += dt
     ramp_duration = LAUNCH_RAMP_TIME if self.mode == "standstill" else REACCEL_RAMP_TIME
     j_max = launch_jerk_limit(self._ramp_t, mode=self.mode, pitch_rad=pitch_rad)
@@ -205,5 +230,8 @@ class LimousineLaunchController:
       return a_cmd
 
     self.shaped_jerk = j_max
+    # Only lift saturated planner jTargetNow during post-breakaway standstill tracking;
+    # in rolling reaccel mode, cap upward jerk without inflating gentle planner demands.
+    self.tracking_upstream = (self.mode == "standstill") and (a_out < a_cmd - 1e-2)
     self._last_accel = a_out
     return a_out
