@@ -792,7 +792,7 @@ pub(crate) fn update_display<'py>(
 ) -> PyResult<Option<Display<'py>>> {
     guard(|| {
         let process = match process_now_ns {
-            Some(now) => cmap::from_card(cs, state, now)?,
+            Some(now) => cmap::from_card(cs, state, now, inputs.is_some())?,
             None => None,
         };
         let lead = stock_lead(cs)?;
@@ -828,12 +828,12 @@ pub(crate) fn update_display<'py>(
             pos::mode(state)?
         };
         let ff = match &process {
-            Some(map) => map.slots[0].map(|slot| (f64::from(slot.distance), f64::from(slot.v_rel))),
+            Some((map, _)) => map.slots[0].map(|slot| (f64::from(slot.distance), f64::from(slot.v_rel))),
             None if mode == 0 => lead.as_ref().map(|lead| (lead.distance, lead.relative_speed)),
             None => None,
         };
-        if let (Some(values), Some(map)) = (&values_162, &process) {
-            cmap::apply_slots(values, map)?;
+        if let (Some(values), Some((map, rear_distances))) = (&values_162, &process) {
+            cmap::apply_slots(values, map, Some(*rear_distances))?;
         }
         let panel_attr = intern!(py, "_rust_panel");
         let mut display_state = state.getattr_opt(panel_attr)?.map_or(

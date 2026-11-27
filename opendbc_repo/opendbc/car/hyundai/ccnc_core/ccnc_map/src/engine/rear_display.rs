@@ -12,7 +12,7 @@ const BSD_EXIT_X: f64 = -12.5;
 const REAR_PASS_HOLD: f64 = 3.;
 const BSD_APPROACH_TIME: f64 = 0.6;
 const BSD_APPROACH_SPEED: f64 = 6.;
-const TO_ORIGIN_SPEED: f64 = 25.;
+const TO_ORIGIN_SPEED: f64 = 20.;
 const JOIN_DURATION: f64 = 0.20;
 
 #[derive(Default)]
@@ -36,7 +36,7 @@ struct FrontJoin {
     start: f64,
     origin_at: f64,
     start_x: f64,
-    start_y: f64,
+    start_d: f64,
     from_bsd: bool,
     joined_at: Option<f64>,
 }
@@ -90,12 +90,12 @@ impl SideDisplay {
                 && self.recent_front.is_none_or(|(vid, t)| vid != candidate.obj_id || now - t > BSD_GRACE);
             if measured_rear.is_some() || from_bsd {
                 let start_x = measured_rear.map_or(BSD_START_X, |old| old.x.min(0.));
-                let start_y = measured_rear.map_or(if side == 0 { -2.8 } else { 2.8 }, |old| old.y);
+                let start_d = measured_rear.map_or(if side == 0 { -2.8 } else { 2.8 }, |old| old.display_d);
                 // The previous physical rear was drawn one tick ago. The first front tick can
                 // land directly on the origin for a measured crossing close to zero.
                 let origin_at = now - start_x / TO_ORIGIN_SPEED;
                 self.join = Some(FrontJoin {
-                    vid: candidate.obj_id, start: now, origin_at, start_x, start_y, from_bsd,
+                    vid: candidate.obj_id, start: now, origin_at, start_x, start_d, from_bsd,
                     joined_at: None,
                 });
                 self.warning_until = None;
@@ -106,7 +106,8 @@ impl SideDisplay {
         if now < join.origin_at {
             let progress = (now - join.start) / (join.origin_at - join.start);
             candidate.x = join.start_x * (1. - progress);
-            candidate.y = join.start_y + progress * (candidate.display_d - join.start_y);
+            candidate.display_d = join.start_d + progress * (candidate.display_d - join.start_d);
+            candidate.rear_animated = true;
             if join.from_bsd {
                 candidate.v_s = 0.; // Keep the BSD car white on its way to the origin.
                 candidate.kind = super::VehicleKind::Car;
@@ -137,6 +138,7 @@ impl SideDisplay {
                 && old_front.is_some_and(|old| old.obj_id == slot.obj_id && old.s >= 0.)
         }) {
             slot.x = 0.;
+            slot.rear_animated = true;
             self.pass = Some(RearPass {
                 slot, time: now, until: now + REAR_PASS_HOLD, exit_x: REAR_LIMIT,
             });
@@ -179,6 +181,7 @@ impl SideDisplay {
         }
         pass.slot.radar_seen = false;
         pass.slot.camera_seen = false;
+        pass.slot.rear_animated = true;
         *rear = Some(pass.slot);
     }
 }

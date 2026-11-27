@@ -1,6 +1,6 @@
 //! The cereal adapter for the map process and its replay.
 
-use crate::cmap::{MapOut, STATUS_BSD_LEFT, STATUS_BSD_RIGHT};
+use crate::cmap::{MapOut, STATUS_BSD_LEFT, STATUS_BSD_RIGHT, STATUS_REAR_ANIMATED};
 use crate::engine::{EngineInput, MapEngine, RoadObservation, TrackedObject, VehicleKind, VisionObservation};
 use crate::input::{
     live_tracks::{self, EVENT_LIVE_TRACKS},
@@ -289,7 +289,7 @@ impl Pipeline {
             Some(Slot {
                 vid,
                 distance: s.x as f32,
-                lateral: -(if index < 3 { s.display_d } else { s.y }) as f32,
+                lateral: -s.display_d as f32,
                 detect: if s.v_s > 2. { 1 } else { 2 },
                 lane_coord_rel: s.lane_u as f32,
                 v_rel: s.v_s as f32,
@@ -304,7 +304,9 @@ impl Pipeline {
             ego_lane_coord: if ego.is_finite() { ego as f32 } else { 0. },
             status: self.world.status()
                 | (u8::from(blind[0]) * STATUS_BSD_LEFT)
-                | (u8::from(blind[1]) * STATUS_BSD_RIGHT),
+                | (u8::from(blind[1]) * STATUS_BSD_RIGHT)
+                | (u8::from(selected[3].is_some_and(|s| s.rear_animated)) * STATUS_REAR_ANIMATED[0])
+                | (u8::from(selected[4].is_some_and(|s| s.rear_animated)) * STATUS_REAR_ANIMATED[1]),
             slots,
             valid: true,
             ..self.empty()

@@ -67,8 +67,9 @@ pub struct EngineSlot {
     /// Cartesian position in ego coordinates, right positive.
     pub x: f64,
     pub y: f64,
-    /// Road-relative lateral position drawn for the front slots, right positive.
+    /// Road-relative lateral position drawn in the cluster, right positive.
     pub display_d: f64,
+    pub(crate) rear_animated: bool,
     pub v_s: f64,
     pub kind: VehicleKind,
     pub existence_p: f64,
@@ -252,7 +253,8 @@ impl MapEngine {
         self.lateral.retain(|_, display| now - display.time <= 1.);
         for (index, slot) in slots.iter_mut().enumerate() {
             let Some(slot) = slot else { continue };
-            if let Some(old) = self.displayed.iter().flatten().find(|old| old.obj_id == slot.obj_id) {
+            let old = self.displayed.iter().flatten().find(|old| old.obj_id == slot.obj_id);
+            if let Some(old) = old {
                 // A refreshed path can move the Cartesian projection even while radar range is
                 // steady. Allow the measured relative speed plus a bounded position innovation.
                 let predicted = old.x + old.v_s * dt;
@@ -265,8 +267,18 @@ impl MapEngine {
             let center = frame.lane_center(slot.s, slot.lane_u.round());
             let display = self.lateral.entry(slot.obj_id)
                 .or_insert_with(|| LateralDisplay::new(now, slot.d, center));
-            let observed = object.evidence.last_radar_t == Some(now)
-                || object.evidence.last_vision_t == Some(now);
+            let (moving, anchor) = display.diagnostic();
+            // Close, receding side vehicles can return a radar reflection from the inner corner.
+            // Keep the settled anchor while the vehicle remains in the same adjacent lane.
+            let corner_echo = index != 0 && !changing && !moving
+                && slot.s.abs() <= 5. && slot.v_s < -selector::ALONGSIDE_SPEED
+                && old.is_some_and(|old| old.lane_u.round() == slot.lane_u.round())
+                && slot.lane_u.round().abs() == 1. && object.d * anchor > 0.
+                && object.d.abs() < anchor.abs();
+            let handoff = index >= 3
+                && self.displayed[index - 2].is_some_and(|front| front.obj_id == slot.obj_id);
+            let observed = !handoff && (object.evidence.last_vision_t == Some(now)
+                || object.evidence.last_radar_t == Some(now) && !corner_echo);
             slot.display_d = display.update(now, observed.then_some((object.d, object.v_d)), center, slot.x);
         }
         let selected = slots;

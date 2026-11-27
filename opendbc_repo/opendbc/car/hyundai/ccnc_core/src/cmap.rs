@@ -17,6 +17,9 @@ const RECOVERY_NS: u64 = 2_000_000_000;
 /// While drawing from the map, a message that is invalid, late or missing for at most this long since the last valid
 /// one keeps that one's slots instead of falling back.
 const GRACE_NS: u64 = 250_000_000;
+// Card publishes the display every 50 ms. Limit a step to 16 m/s on that clock.
+const REAR_MAX_STEP: f64 = 0.8;
+const REAR_ALPHA: f64 = 0.05 / (0.20 + 0.05);
 
 fn valid_map(bytes: &[u8]) -> Option<MapOut> {
     let map = cmap::decode(bytes)?;
@@ -40,6 +43,7 @@ pub(crate) struct MapLink {
     recovering: bool,
     /// The last valid map card drew from, and its message time.
     held: Option<(u64, MapOut)>,
+    rear_distance: [Option<f64>; 2],
     #[pyo3(get)]
     using_process: bool,
 }
@@ -85,6 +89,7 @@ impl MapLink {
             self.healthy_since = None;
             self.recovering = true;
             self.using_process = false;
+            self.rear_distance = [None; 2];
             return None;
         };
 
@@ -104,7 +109,24 @@ impl MapLink {
         }
         self.using_process = !self.recovering;
         self.held = self.using_process.then_some((stamp, map));
+        if !self.using_process {
+            self.rear_distance = [None; 2];
+        }
         self.using_process.then_some(map)
+    }
+
+    fn draw_rear_distances(&mut self, map: &MapOut) -> [f64; 2] {
+        std::array::from_fn(|side| {
+            let (target, _, code) = slot_values(map, side + 3);
+            let animated = map.status & cmap::STATUS_REAR_ANIMATED[side] != 0;
+            let shown = self.rear_distance[side].map_or(target, |previous| {
+                // Mapd has already interpolated an origin crossing or a confirmed rear pass.
+                let alpha = if animated { 1. } else { REAR_ALPHA };
+                previous + (alpha * (target - previous)).clamp(-REAR_MAX_STEP, REAR_MAX_STEP)
+            });
+            self.rear_distance[side] = (code != 0).then_some(shown);
+            if code == 0 { 0. } else { shown }
+        })
     }
 }
 
@@ -112,7 +134,8 @@ pub(crate) fn from_card(
     cs: &Bound<'_, PyAny>,
     state: &Bound<'_, PyAny>,
     now: u64,
-) -> PyResult<Option<MapOut>> {
+    draw: bool,
+) -> PyResult<Option<(MapOut, [f64; 2])>> {
     let py = cs.py();
     let attr = intern!(py, "_rust_map_link");
     let holder = match state.getattr_opt(attr)? {
@@ -141,7 +164,10 @@ pub(crate) fn from_card(
             .getattr(intern!(py, "carlog"))?
             .call_method1(intern!(py, "info"), (message,))?;
     }
-    Ok(output)
+    Ok(output.map(|map| {
+        let distances = if draw { link.draw_rear_distances(&map) } else { [0.; 2] };
+        (map, distances)
+    }))
 }
 
 /// DETECT for a slot: the map's 1 (moving away) / 2 (closing or slow) become the grey / white car (3 / 4), or the
@@ -172,26 +198,26 @@ fn slot_position(index: usize, slot: &Slot) -> (f64, f64) {
     (distance, lateral)
 }
 
-/// Every slot is rewritten from the message, so a new generation leaves nothing of the old one behind.
-pub(crate) fn apply_slots(values: &Bound<'_, PyDict>, map: &MapOut) -> PyResult<()> {
-    for (index, ([distance, lateral, detect], slot)) in FRONT_FIELDS
-        .into_iter()
-        .chain(REAR_FIELDS)
-        .zip(map.slots)
-        .enumerate()
-    {
-        let (x, y, code) = if let Some(slot) = slot {
-            let (x, y) = slot_position(index, &slot);
-            (x, y, detect_code(&slot))
-        } else {
-            // The 8 m BSD warning uses the white passenger car shape.
-            let warning = match index {
-                3 => map.status & cmap::STATUS_BSD_LEFT != 0,
-                4 => map.status & cmap::STATUS_BSD_RIGHT != 0,
-                _ => false,
-            };
-            if warning { (8., 2.8, 4) } else { (0., 0., 0) }
-        };
+fn slot_values(map: &MapOut, index: usize) -> (f64, f64, u8) {
+    if let Some(slot) = map.slots[index] {
+        let (x, y) = slot_position(index, &slot);
+        return (x, y, detect_code(&slot));
+    }
+    let warning = match index {
+        3 => map.status & cmap::STATUS_BSD_LEFT != 0,
+        4 => map.status & cmap::STATUS_BSD_RIGHT != 0,
+        _ => false,
+    };
+    // The 8 m BSD warning uses the white passenger car shape.
+    if warning { (8., 2.8, 4) } else { (0., 0., 0) }
+}
+
+pub(crate) fn apply_slots(
+    values: &Bound<'_, PyDict>, map: &MapOut, rear_distances: Option<[f64; 2]>,
+) -> PyResult<()> {
+    for (index, [distance, lateral, detect]) in FRONT_FIELDS.into_iter().chain(REAR_FIELDS).enumerate() {
+        let (x, y, code) = slot_values(map, index);
+        let x = rear_distances.and_then(|rear| index.checked_sub(3).map(|side| rear[side])).unwrap_or(x);
         values.set_item(distance, x)?;
         values.set_item(lateral, y)?;
         values.set_item(detect, code)?;
@@ -203,7 +229,7 @@ pub(crate) fn apply_slots(values: &Bound<'_, PyDict>, map: &MapOut) -> PyResult<
 pub(crate) fn apply_cmap(values_162: &Bound<'_, PyDict>, msg: &[u8]) -> PyResult<()> {
     guard(|| {
         if let Some(map) = valid_map(msg) {
-            apply_slots(values_162, &map)?;
+            apply_slots(values_162, &map, None)?;
         }
         Ok(())
     })
@@ -246,6 +272,34 @@ mod tests {
             for index in [3, 4] {
                 assert_eq!(slot_position(index, &cell).0, expected);
             }
+        }
+    }
+
+    #[test]
+    fn rear_distance_converges_between_bsd_and_a_split_car_on_both_sides() {
+        for (side, warning) in [cmap::STATUS_BSD_LEFT, cmap::STATUS_BSD_RIGHT].into_iter().enumerate() {
+            let mut link = MapLink::new();
+            let mut map = MapOut { status: warning, ..valid_map(&message(TICK, true)).unwrap() };
+            assert_eq!(link.draw_rear_distances(&map)[side], 8.);
+
+            let mut car = slot(2, KIND_CAR, true);
+            car.distance = 4.; // The nearer vehicle of a pair displays at 0 m.
+            map.slots[side + 3] = Some(car);
+            let mut previous = 8.;
+            for _ in 0..40 {
+                let x = link.draw_rear_distances(&map)[side];
+                assert!(x < previous && previous - x <= REAR_MAX_STEP + 1e-9);
+                previous = x;
+            }
+            assert!(previous < 0.01);
+
+            map.slots[side + 3] = None;
+            let rising = link.draw_rear_distances(&map)[side];
+            assert!(rising > previous && rising - previous <= REAR_MAX_STEP + 1e-9);
+            map.status = 0;
+            assert_eq!(link.draw_rear_distances(&map)[side], 0.);
+            map.status = warning;
+            assert_eq!(link.draw_rear_distances(&map)[side], 8.);
         }
     }
 

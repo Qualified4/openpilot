@@ -437,6 +437,7 @@ fn slot(frame: &RoadFrame, o: &TrackedObject, now: f64) -> EngineSlot {
         x,
         y,
         display_d: o.d,
+        rear_animated: false,
         v_s: o.v_s,
         kind: o.kind,
         existence_p: o.existence_p(),

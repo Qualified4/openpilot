@@ -448,6 +448,38 @@ fn fast_pass_crosses_the_origin_before_the_next_car_appears() {
 }
 
 #[test]
+fn adjacent_pass_keeps_its_settled_lateral_anchor_through_rear_coasting() {
+    for (rear, center) in [(3, -3.5_f32), (4, 3.5)] {
+        let front = rear - 2;
+        let mut engine = MapEngine::default();
+        let mut seen_front = None;
+        let mut rear_ticks = 0;
+        let mut last_x = 0.;
+        for tick in 0..125 {
+            let x = 12. - tick as f32 * 0.175;
+            let y = if x >= 4.7 { center } else { 2.1 * center.signum() };
+            let point = [radar(40, x, y, -3.5)];
+            let mut frame = input(tick, if x >= 1.2 { &point } else { &[] });
+            frame.speed = 12.;
+            let out = engine.step(frame);
+            if let Some(slot) = out.slots[front] {
+                assert_eq!(slot.display_d, f64::from(center));
+                seen_front = Some(slot.obj_id);
+            }
+            if let Some(slot) = out.slots[rear] {
+                assert_eq!(Some(slot.obj_id), seen_front);
+                assert_eq!(slot.display_d, f64::from(center));
+                assert!((slot.y - f64::from(center)).abs() > 0.5);
+                assert!(!slot.radar_seen && slot.x <= last_x);
+                last_x = slot.x;
+                rear_ticks += 1;
+            }
+        }
+        assert!(rear_ticks > 45 && last_x < -8.);
+    }
+}
+
+#[test]
 fn alongside_pair_splits_at_six_metres() {
     let mut engine = MapEngine::default();
     for tick in 0..40 {
