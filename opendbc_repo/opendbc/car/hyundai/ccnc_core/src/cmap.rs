@@ -184,13 +184,13 @@ pub(crate) fn apply_slots(values: &Bound<'_, PyDict>, map: &MapOut) -> PyResult<
             let (x, y) = slot_position(index, &slot);
             (x, y, detect_code(&slot))
         } else {
-            // The existing rear warning is an 8 m white box. Keep it separate from tracked vehicle IDs.
+            // The 8 m BSD warning uses the white passenger car shape.
             let warning = match index {
                 3 => map.status & cmap::STATUS_BSD_LEFT != 0,
                 4 => map.status & cmap::STATUS_BSD_RIGHT != 0,
                 _ => false,
             };
-            if warning { (8., 2.8, 2) } else { (0., 0., 0) }
+            if warning { (8., 2.8, 4) } else { (0., 0., 0) }
         };
         values.set_item(distance, x)?;
         values.set_item(lateral, y)?;

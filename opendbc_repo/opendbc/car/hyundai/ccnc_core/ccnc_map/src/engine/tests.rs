@@ -327,7 +327,7 @@ fn established_vehicle_can_stop_but_a_stationary_oblique_echo_cannot_promote() {
 #[test]
 fn observed_pass_holds_rear_when_a_front_echo_is_at_the_lane_edge() {
     let mut engine = MapEngine::default();
-    for tick in 0..62 {
+    for tick in 0..82 {
         let x = 13. - 6. * STEP as f32 * tick as f32;
         let mut points = vec![];
         if x > 1. {
@@ -339,11 +339,11 @@ fn observed_pass_holds_rear_when_a_front_echo_is_at_the_lane_edge() {
         let mut entry = input(tick, &points);
         entry.speed = 10.;
         let out = engine.step(entry);
-        if (56..61).contains(&tick) {
+        if (56..=71).contains(&tick) {
             let rear = out.slots[4].unwrap();
-            assert!(rear.s < 0.);
+            assert!((-10. ..0.).contains(&rear.s));
             assert_eq!(rear.last_track_id, Some(40));
-        } else if tick == 61 {
+        } else if tick == 77 {
             assert_eq!(out.slots[4].unwrap().last_track_id, Some(41));
         }
     }
@@ -400,6 +400,105 @@ fn front_to_rear_passes_through_zero_with_one_id_and_no_teleport() {
         }
     }
     assert!(front && rear);
+}
+
+#[test]
+fn confirmed_rear_coast_survives_ego_speed_crossing_the_low_speed_threshold() {
+    let mut engine = MapEngine::default();
+    confirm(&mut engine, &[radar(40, 4., 3.5, 0.)]);
+    let mut rear = engine.displayed[2].unwrap();
+    rear.s = -5.;
+    let previous = [None, None, None, None, Some(rear)];
+    let frame = engine.previous.as_ref().unwrap();
+    let object = &mut engine.tracker.objects[0];
+    object.s = -5.2;
+    object.v_s = -4.3;
+    object.moved = false; // Confirmed by the low-speed motion evidence.
+    object.handoff_until = 1.5;
+
+    let slots = selector::select(1.65, 5.2, false, frame, &mut engine.tracker.objects,
+                                 previous, [false; 2], None, |_, _| false);
+    assert_eq!(slots[4].unwrap().obj_id, rear.obj_id);
+    let expired = selector::select(2.01, 5.2, false, frame, &mut engine.tracker.objects,
+                                   slots, [false; 2], None, |_, _| false);
+    assert!(expired[4].is_none());
+}
+
+#[test]
+fn bsd_overtake_draws_one_real_vid_from_rear_through_origin_to_front() {
+    let mut engine = MapEngine::default();
+    let mut samples = Vec::new();
+    for tick in 0_u32..26 {
+        let x = 3.5 + tick.saturating_sub(4) as f32 * 0.1;
+        let points = [radar(40, x, 3.5, 2.)];
+        let mut entry = input(tick, if tick >= 4 { &points } else { &[] });
+        entry.speed = 8.;
+        entry.blind = [false, true];
+        let out = engine.step(entry);
+        assert!(out.blind[1]);
+        assert!(out.slots[2].is_none() || out.slots[4].is_none());
+        if let Some(slot) = out.slots[2].or(out.slots[4]) {
+            let object = out.objects.iter().find(|o| o.obj_id == slot.obj_id).unwrap();
+            assert_eq!(slot.last_track_id, Some(40));
+            assert!(object.s >= 3.4 && (slot.s - object.s).abs() < 1e-9);
+            samples.push((slot.obj_id, slot.x));
+        }
+    }
+    assert_eq!(samples.first().unwrap().1, -10.);
+    assert!(samples.iter().any(|s| s.1 == 0.));
+    assert!(samples.last().unwrap().1 > 5.);
+    assert!(samples.windows(2).all(|pair| pair[0].0 == pair[1].0 && pair[0].1 <= pair[1].1));
+}
+
+#[test]
+fn prior_front_vehicle_does_not_consume_bsd_warning_on_return() {
+    let mut engine = MapEngine::default();
+    confirm(&mut engine, &[radar(40, 4., 3.5, 0.)]);
+    let old = engine.displayed[2].unwrap();
+    let mut display = rear_display::SideDisplay::default();
+    let front = [None, None, Some(old), None, None];
+    let mut shown = front;
+    display.update(1., 1, true, front, &mut shown);
+    let rear = [None, None, None, None, Some(EngineSlot { s: -0.8, x: -0.8, ..old })];
+    shown = rear;
+    display.update(1.1, 1, true, front, &mut shown);
+    display.update(1.2, 1, true, rear, &mut [None; 5]);
+    let mut returned = [None, None, Some(EngineSlot { v_s: 2., ..old }), None, None];
+    display.update(1.3, 1, true, [None; 5], &mut returned);
+    assert_eq!(returned[2].unwrap().x, old.x);
+    assert!(returned[4].is_none());
+}
+
+#[test]
+fn remaining_measured_rear_vid_joins_front_at_exact_origin() {
+    let mut engine = MapEngine::default();
+    confirm(&mut engine, &[radar(40, 4., 3.5, 0.)]);
+    let old = engine.displayed[2].unwrap();
+    let rear = [None, None, None, None, Some(EngineSlot { s: -0.2, x: -0.2, ..old })];
+    let selected = [None, None, Some(EngineSlot { s: 0.8, x: 0.8, v_s: 5., ..old }), None, None];
+    let mut display = rear_display::SideDisplay::default();
+    for (now, previous, expect_front) in [(1., rear, None), (1.05, selected, Some(0.)),
+                                           (1.30, selected, Some(0.8))] {
+        let mut slots = selected;
+        display.update(now, 1, false, previous, &mut slots);
+        assert_eq!(slots[2].map(|slot| slot.x), expect_front);
+        assert_eq!(slots[2].or(slots[4]).unwrap().obj_id, old.obj_id);
+    }
+}
+
+#[test]
+fn distant_new_vehicle_without_bsd_appears_directly_in_front() {
+    let mut engine = MapEngine::default();
+    for tick in 0..8 {
+        let points = [radar(40, 15. + tick as f32 * 0.1, 3.5, 2.)];
+        let mut entry = input(tick, &points);
+        entry.speed = 8.;
+        let out = engine.step(entry);
+        assert!(out.slots[4].is_none());
+        if tick >= 6 {
+            assert!(out.slots[2].unwrap().x >= 15.);
+        }
+    }
 }
 
 #[test]
@@ -568,7 +667,7 @@ fn side_range_grace_requires_an_established_and_continuously_measured_car() {
         let now = f64::from(tick) * STEP;
         objects[0].range_consistent = false;
         objects[0].evidence.last_radar_t = Some(now);
-        slots = selector::select(now, 12., false, frame, objects, slots, None, |_, _| false);
+        slots = selector::select(now, 12., false, frame, objects, slots, [false; 2], None, |_, _| false);
         assert_eq!(slots[2].map(|o| o.obj_id), (tick < 46).then_some(vid));
     }
 
@@ -577,13 +676,13 @@ fn side_range_grace_requires_an_established_and_continuously_measured_car() {
         let now = 30. * STEP;
         objects[0].evidence.last_radar_t = new_track_id.map(|_| now);
         objects[0].evidence.last_track_id = new_track_id.or(Some(40));
-        let slots = selector::select(now, 12., false, frame, objects, engine.displayed, None, |_, _| false);
+        let slots = selector::select(now, 12., false, frame, objects, engine.displayed, [false; 2], None, |_, _| false);
         assert!(slots[2].is_none());
     }
     objects[0].evidence.last_radar_t = Some(30. * STEP);
     objects[0].evidence.last_track_id = Some(40);
     objects[0].moved = false;
-    let slots = selector::select(30. * STEP, 12., false, frame, objects, [None; 5], None, |_, _| false);
+    let slots = selector::select(30. * STEP, 12., false, frame, objects, [None; 5], [false; 2], None, |_, _| false);
     assert!(slots[2].is_none());
 }
 

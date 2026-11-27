@@ -1,0 +1,60 @@
+--- a/KO-LatSmoothSec(13)x0.01.md
++++ b/KO-LatSmoothSec(13)x0.01.md
+@@ -29,3 +29,16 @@
+ <!-- CARROT:MANUAL:BEGIN LatSmoothSec -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="af1dd0636af5a085df95c7f4dc559d315a0976c29cce99d433437359f1a61dcc" reviewed-at="2026-11-27T03:18:40Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 동작
++
++모델 목표 곡률을 부드럽게 만들고 조향을 계산할 때의 선행 예측 시점을 보정합니다. 커브 등에서 1초 앞 횡방향 경로의 불확실성이 커지면 평활 시간이 설정값의 최대 3배까지 늘어나며, 0.60초가 상한입니다.
++
++- 값이 크면 조향이 부드럽지만 급커브 진입이 늦거나 탈출할 때 조향이 과해질 수 있습니다.
++- `1~2`에서는 순간 곡률 피크가 거의 그대로 반영되어 조향이 거칠거나 코너 토크가 과하게 쌓일 수 있습니다.
++<!-- CARROT:SECTION:END BEHAVIOR -->
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### 사용
++
++한 단위는 0.01초입니다. 커브 반응이 둔하면 `5~8`(0.05~0.08초) 부근부터 비교하세요.
++<!-- CARROT:SECTION:END USAGE -->
+ <!-- CARROT:MANUAL:END LatSmoothSec -->
+--- a/EN-LatSmoothSec(13).md
++++ b/EN-LatSmoothSec(13).md
+@@ -29,3 +29,16 @@
+ <!-- CARROT:MANUAL:BEGIN LatSmoothSec -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="af1dd0636af5a085df95c7f4dc559d315a0976c29cce99d433437359f1a61dcc" reviewed-at="2026-11-27T03:18:40Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### Behavior
++
++Smooths the model's target curvature and adjusts how far ahead it looks when computing steering. When uncertainty about the lateral path a second ahead rises, including in curves, the smoothing time can triple up to 0.60 s.
++
++- Higher values smooth steering but may delay sharp curve entry or cause overshoot on exit.
++- At `1–2`, brief curvature spikes can cause rough steering or excessive torque buildup in a bend.
++<!-- CARROT:SECTION:END BEHAVIOR -->
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### Usage
++
++Each step is 0.01 s. If curve response feels slow, start by comparing `5–8` (0.05–0.08 s).
++<!-- CARROT:SECTION:END USAGE -->
+ <!-- CARROT:MANUAL:END LatSmoothSec -->
+--- a/ZH-转向平滑时间(30).md
++++ b/ZH-转向平滑时间(30).md
+@@ -29,3 +29,16 @@
+ <!-- CARROT:MANUAL:BEGIN LatSmoothSec -->
+-<!-- CARROT:REVIEW reviewed-for="" -->
++<!-- CARROT:REVIEW reviewed-for="af1dd0636af5a085df95c7f4dc559d315a0976c29cce99d433437359f1a61dcc" reviewed-at="2026-11-27T03:18:40Z" -->
++<!-- CARROT:SECTION:BEGIN BEHAVIOR -->
++### 行为
++
++平滑模型的目标曲率，并调整计算转向时的前瞻时间。在弯道等场景中，如果模型对一秒后横向路径的不确定性升高，平滑时间可增至设定值的 3 倍，上限为 0.60 秒。
++
++- 值越大转向越平稳，但急弯入弯可能偏晚，出弯时可能转向过多。
++- 设为 `1–2` 时，瞬时曲率峰值可能造成转向生硬或弯中力矩累积过大。
++<!-- CARROT:SECTION:END BEHAVIOR -->
++<!-- CARROT:SECTION:BEGIN USAGE -->
++### 使用
++
++每格为 0.01 秒。弯道反应迟缓时，可先对比 `5–8`（0.05–0.08 秒）。
++<!-- CARROT:SECTION:END USAGE -->
+ <!-- CARROT:MANUAL:END LatSmoothSec -->

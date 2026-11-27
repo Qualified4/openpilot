@@ -482,6 +482,7 @@ impl Tracker {
         frame: &RoadFrame,
         radar: &[(f64, f64)],
         blind: [bool; 2],
+        previous_rear: [Option<u64>; 2],
     ) {
         for o in &mut self.objects {
             let (x, y) = o.cartesian(frame);
@@ -513,6 +514,11 @@ impl Tracker {
                 30.
             } else if visible {
                 22.
+            } else if side && o.rear_coast(
+                now, previous_rear[usize::from(o.lane_u > 0.)] == Some(o.obj_id),
+                blind[usize::from(o.lane_u > 0.)],
+            ) {
+                1.5
             } else if bsd {
                 o.evidence.last_bsd_t = Some(now);
                 if now <= o.handoff_until {

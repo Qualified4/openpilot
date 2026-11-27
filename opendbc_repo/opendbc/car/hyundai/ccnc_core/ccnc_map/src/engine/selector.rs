@@ -1,4 +1,4 @@
-use super::object::{TrackedObject, STATIONARY_VISION_WINDOW};
+use super::object::{TrackedObject, REAR_LIMIT, STATIONARY_VISION_WINDOW};
 use super::road_frame::RoadFrame;
 use super::tracker::CONFIRM;
 use super::EngineSlot;
@@ -6,8 +6,9 @@ use super::EngineSlot;
 const SIDE_FRONT_LIMIT: f64 = 50.;
 const SPLIT_REAR_MIN: f64 = -8.;
 const SPLIT_REAR_MAX: f64 = 6.;
+const SPLIT_RELEASE: f64 = 7.5;
 const TWO_CAR_GAP: f64 = 4.;
-const PASS_BAND: f64 = 0.65;
+pub(super) const PASS_BAND: f64 = 0.65;
 const SIDE_CONFIRM: f64 = 1.35;
 const HOLD: f64 = 0.5;
 const FF_HANDOFF_OFFSET: f64 = 0.35;
@@ -77,6 +78,7 @@ pub(super) fn select(
     frame: &RoadFrame,
     objects: &mut [TrackedObject],
     previous: [Option<EngineSlot>; 5],
+    blind: [bool; 2],
     primary: Option<u64>,
     same_lane_ahead: impl Fn(EngineSlot, &TrackedObject) -> bool,
 ) -> [Option<EngineSlot>; 5] {
@@ -161,7 +163,9 @@ pub(super) fn select(
         if (!ff_handoff && (ff_candidate || o.lane.abs() != 1)) || o.s > SIDE_FRONT_LIMIT {
             continue;
         }
-        let handoff = o.rear && (-10. ..=0.).contains(&o.s) && now <= o.handoff_until;
+        let side = usize::from(o.lane > 0);
+        let coasting_rear = o.rear_coast(now, occupied[side + 3] == Some(o.obj_id), blind[side]);
+        let handoff = o.rear && (REAR_LIMIT..=0.).contains(&o.s) && now <= o.handoff_until;
         let near = o.s <= SPLIT_REAR_MAX + o.var_s.sqrt().min(0.7);
         let near_continuity = near && (observed || incumbent && now <= o.handoff_until);
         let hold_age = if near_continuity && o.v_s < 0. {
@@ -175,11 +179,13 @@ pub(super) fn select(
             && (o.stationary_radar_continuous
                 || o.stationary_vision_t.is_some_and(|t| now - t <= STATIONARY_VISION_WINDOW))
             && o.supports_stationary_vision(now, speed);
-        let side = usize::from(o.lane > 0);
         let side_range = (o.lane.abs() == 1 && !o.rear)
             .then(|| side_range_hold(now, o, previous[side + 1])).flatten();
         let measured_vehicle = vision(now, o)
             || confirmed_stopped
+            // Near handoff was confirmed when measured. Current ego speed cannot
+            // reclassify a rear coast that has no new relative-speed measurement.
+            || coasting_rear
             || o.moved
                 && (o.range_consistent
                     || o.same_track_streak >= SIDE_RANGE_MIN_STREAK
@@ -217,9 +223,9 @@ pub(super) fn select(
                 camera_queue[side].push(o);
             }
         }
-        if measured_vehicle
+        if o.s >= REAR_LIMIT && measured_vehicle
             && o.existence_log_odds >= threshold
-            && (observed || incumbent && (handoff || !o.rear && o.radar_age(now) <= hold_age))
+            && (observed || incumbent && (handoff || coasting_rear || !o.rear && o.radar_age(now) <= hold_age))
         {
             sides[side].push(o);
         }
@@ -247,14 +253,19 @@ pub(super) fn select(
     for (side, cars) in sides.iter().enumerate() {
         let front_slot = occupied[side + 1];
         let rear_slot = occupied[side + 3];
-        let behind = cars.iter().copied().filter(|o| o.rear).min_by(|a, b| {
-            cost(now, a, a.s.abs(), rear_slot).total_cmp(&cost(now, b, b.s.abs(), rear_slot))
-        });
+        let behind = cars.iter().copied().filter(|o| o.rear
+            || o.s <= 0. && o.rear_coast(now, rear_slot == Some(o.obj_id), blind[side]))
+            .min_by(|a, b| {
+                seen(now, b).cmp(&seen(now, a)).then_with(|| {
+                    cost(now, a, a.s.abs(), rear_slot).total_cmp(&cost(now, b, b.s.abs(), rear_slot))
+                })
+            });
         let front_cost = |o: &TrackedObject| cost(now, o, o.s, front_slot);
         let front_candidates = || {
             cars.iter()
                 .copied()
-                .filter(|o| !o.rear && front_within_range(o))
+                .filter(|o| !o.rear && behind.is_none_or(|rear| rear.obj_id != o.obj_id)
+                    && front_within_range(o))
         };
         let established_side = front_candidates().any(|o| {
             side_range_hold(now, o, previous[side + 1])
@@ -272,8 +283,13 @@ pub(super) fn select(
         let alongside = front_candidates()
             .chain(close[side].iter().copied())
             .filter(|o| {
+                let release = if rear_slot == Some(o.obj_id) && now <= o.split_until {
+                    SPLIT_RELEASE
+                } else {
+                    SPLIT_REAR_MAX
+                };
                 o.s >= SPLIT_REAR_MIN
-                    && o.s - o.var_s.sqrt().min(0.7) <= SPLIT_REAR_MAX
+                    && o.s - o.var_s.sqrt().min(0.7) <= release
                     && front_default.is_none_or(|front| !seen(now, front) || o.s <= front.s)
             })
             .min_by(|a, b| {
@@ -356,6 +372,10 @@ pub(super) fn select(
                 selected
             })
         };
+        let rear = rear.or_else(|| cars.iter().copied().find(|o| {
+            !seen(now, o) && o.rear_coast(now, rear_slot == Some(o.obj_id), blind[side])
+                && slots[side + 1].is_none_or(|chosen| chosen.obj_id != o.obj_id)
+        }));
         slots[side + 3] = rear.map(|o| slot(frame, o, now));
     }
     for o in objects

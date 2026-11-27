@@ -19,6 +19,7 @@ pub struct Evidence {
 
 // Sparse front detections may be several seconds apart at a stop.
 pub(super) const STATIONARY_VISION_WINDOW: f64 = 8.;
+pub(super) const REAR_LIMIT: f64 = -10.;
 
 #[derive(Clone, Debug)]
 pub struct TrackedObject {
@@ -73,6 +74,15 @@ impl TrackedObject {
         self.evidence
             .last_radar_t
             .map_or(f64::INFINITY, |t| now - t)
+    }
+
+    /// Extend a confirmed near handoff only while its rear slot stays occupied.
+    pub(super) fn rear_coast(&self, now: f64, was_rear: bool, blind: bool) -> bool {
+        was_rear
+            && self.handoff_until.is_finite()
+            && ((REAR_LIMIT..0.).contains(&self.s) && self.radar_age(now) <= 1.65
+                || blind && (0. ..=0.65).contains(&self.s) && self.v_s <= 0.
+                    && self.radar_age(now) <= 0.55)
     }
 
     pub(super) fn supports_stationary_vision(&self, now: f64, speed: f64) -> bool {

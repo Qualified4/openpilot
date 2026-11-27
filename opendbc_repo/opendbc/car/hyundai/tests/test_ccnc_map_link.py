@@ -69,7 +69,7 @@ def test_cmap_bsd_box_yields_to_a_confirmed_rear_vehicle():
   slot.detect, slot.kind, slot.kindConfirmed = 2, 2, True
   values = {}
   core.apply_cmap(values, event.to_bytes())
-  assert (values["LR_DETECT"], values["LR_DETECT_DISTANCE"], values["LR_DETECT_LATERAL"]) == (2, 8., 2.8)
+  assert (values["LR_DETECT"], values["LR_DETECT_DISTANCE"], values["LR_DETECT_LATERAL"]) == (4, 8., 2.8)
   assert (values["RR_DETECT"], values["RR_DETECT_DISTANCE"], values["RR_DETECT_LATERAL"]) == (6, 4., 3.)
 
 

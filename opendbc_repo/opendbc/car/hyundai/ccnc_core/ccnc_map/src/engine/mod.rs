@@ -2,6 +2,7 @@
 
 mod display;
 mod object;
+mod rear_display;
 mod road_frame;
 mod selector;
 mod tracker;
@@ -94,6 +95,7 @@ pub struct MapEngine {
     behind: VecDeque<PoseAt>,
     previous: Option<RoadFrame>,
     displayed: [Option<EngineSlot>; 5],
+    rear_display: [rear_display::SideDisplay; 2],
     lateral: HashMap<u64, LateralDisplay>,
     road_disagreement: Option<f64>,
     last_lane_change: Option<f64>,
@@ -152,6 +154,7 @@ impl MapEngine {
             self.behind.clear();
             self.previous = None;
             self.displayed = [None; 5];
+            self.rear_display = Default::default();
             self.lateral.clear();
             self.road_disagreement = None;
             self.last_lane_change = None;
@@ -218,8 +221,8 @@ impl MapEngine {
                 road.is_none_or(|r| road_frame::inside_outer_line(r, model_pose, ego, lane, rx, ry))
             });
         }
-        self.tracker
-            .lifecycle(now, dt.min(0.25), speed, &frame, &visible, input.blind);
+        let previous_rear = [3, 4].map(|i| self.displayed[i].map(|slot| slot.obj_id));
+        self.tracker.lifecycle(now, dt.min(0.25), speed, &frame, &visible, input.blind, previous_rear);
         let changing = self.last_lane_change.is_some_and(|t| now - t <= 0.32);
         let corner = input.yaw.filter(|yaw| !changing && speed >= 3. && yaw.abs() >= 0.065)
             .and_then(|yaw| road.map(|road| CornerLane { road, model_pose, ego, curvature: -yaw / speed }));
@@ -230,6 +233,7 @@ impl MapEngine {
             &frame,
             &mut self.tracker.objects,
             self.displayed,
+            input.blind,
             primary,
             |ff, o| {
                 let Some(corner) = &corner else { return false };
@@ -265,7 +269,11 @@ impl MapEngine {
                 || object.evidence.last_vision_t == Some(now);
             slot.display_d = display.update(now, observed.then_some((object.d, object.v_d)), center, slot.x);
         }
-        self.displayed = slots;
+        let selected = slots;
+        for (side, display) in self.rear_display.iter_mut().enumerate() {
+            display.update(now, side, input.blind[side], self.displayed, &mut slots);
+        }
+        self.displayed = selected;
         self.previous = Some(frame);
         self.time = Some(now);
         EngineOutput {
