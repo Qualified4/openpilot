@@ -4,6 +4,10 @@ use super::tracker::CONFIRM;
 use super::EngineSlot;
 
 const SIDE_FRONT_LIMIT: f64 = 50.;
+const SIDE_MAX_LANE_U: f64 = 1.32;
+const SIDE_HOLD_LANE_U: f64 = 1.38;
+const SIDE_MAX_D: f64 = 4.70;
+const SIDE_HOLD_D: f64 = 4.85;
 const SPLIT_REAR_MIN: f64 = -8.;
 const SPLIT_REAR_MAX: f64 = 6.;
 const SPLIT_RELEASE: f64 = 7.5;
@@ -168,6 +172,18 @@ pub(super) fn select(
             continue;
         }
         let side = usize::from(o.lane > 0);
+        let front_side_incumbent = occupied[side + 1] == Some(o.obj_id);
+        let far_slack = (o.s - 18.).max(0.);
+        let max_u = (if front_side_incumbent { SIDE_HOLD_LANE_U } else { SIDE_MAX_LANE_U }
+            + 0.02 * far_slack)
+            .min(1.48);
+        let max_d = (if front_side_incumbent { SIDE_HOLD_D } else { SIDE_MAX_D }
+            + 0.07 * far_slack)
+            .min(5.25);
+        let side_bound_ok = o.rear || (o.lane_u.abs() <= max_u && o.d.abs() <= max_d);
+        if !ff_handoff && !side_bound_ok {
+            continue;
+        }
         let near = o.s <= SPLIT_REAR_MAX + o.var_s.sqrt().min(0.7);
         // A confirmed front vehicle can finish a short, unobserved pass at the origin.
         let side_pass = previous[side + 1].is_some_and(|old| old.obj_id == o.obj_id && old.s >= 0.)
@@ -289,22 +305,31 @@ pub(super) fn select(
         });
         let front_default = front_candidates()
             .filter(|o| {
-                // A recovering range check must persist before it can displace a
-                // continuously measured incumbent. Retain normal admission to an empty slot.
+                // A recovering range check or brand-new challenger must persist before it can
+                // displace a continuously measured incumbent. Retain normal admission to an empty slot.
                 !established_side || front_slot == Some(o.obj_id) || vision(now, o)
                     || previous[side + 3].is_some_and(|old| old.obj_id == o.obj_id && same_radar(now, o, old))
-                    || o.range_recovered_t.is_none_or(|t| now - t >= SIDE_RANGE_RECOVERY)
+                    || o.same_track_streak >= 6
+                        && o.range_recovered_t.is_none_or(|t| now - t >= SIDE_RANGE_RECOVERY)
             })
             .min_by(|a, b| front_cost(a).total_cmp(&front_cost(b)));
         let alongside = front_candidates()
             .chain(close[side].iter().copied())
             .filter(|o| {
-                let (range, speed) = if rear_slot == Some(o.obj_id) && now <= o.split_until {
+                let in_split = rear_slot == Some(o.obj_id) && now <= o.split_until;
+                let (range, speed) = if in_split {
                     (SPLIT_RELEASE, SPLIT_RELEASE_SPEED)
                 } else {
                     (SPLIT_REAR_MAX, ALONGSIDE_SPEED)
                 };
+                // Do not demote an established front-side vehicle that is already pulling ahead
+                // into a transient rear split; it would immediately cross SPLIT_REAR_MAX and jump back.
+                let pulling_away_front = !in_split
+                    && front_slot == Some(o.obj_id)
+                    && o.s > 3.0
+                    && o.v_s > 0.4;
                 pass.is_none()
+                    && !pulling_away_front
                     && o.v_s.abs() <= speed
                     && o.s >= SPLIT_REAR_MIN
                     && o.s - o.var_s.sqrt().min(0.7) <= range

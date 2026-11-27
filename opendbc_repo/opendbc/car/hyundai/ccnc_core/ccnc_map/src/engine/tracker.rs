@@ -675,13 +675,16 @@ fn update_motion(o: &mut TrackedObject, m: Measurement, now: f64, ego: PoseAt, s
     o.range_consistent = consistent;
     let (previous_x, _) = ego.to_ego(previous.world_x, previous.world_y);
     let ground_speed = (m.x - previous_x) / interval;
+    let min_ground_speed = if speed <= 1.0 { 0.45 } else { 1.5 };
     if o.range_consistent
-        && ground_speed > 1.5
-        && (m.x >= 6. || m.speed.abs() < 0.5 * speed || o.moved)
+        && ground_speed > min_ground_speed
+        && (m.x >= 6. || m.speed.abs() < 0.5 * speed || o.moved || speed <= 1.0)
     {
         o.motion_time += interval;
         o.verified_travel = (o.verified_travel + ground_speed * interval).min(10.);
-        o.moved |= o.motion_time >= if ground_speed >= 4. { 0.24 } else { 0.48 };
+        let need_time = if ground_speed >= 4. { 0.24 } else { 0.48 };
+        let need_travel = if speed <= 1.0 && ground_speed <= 1.5 { 0.45 } else { 0. };
+        o.moved |= o.motion_time >= need_time && o.verified_travel >= need_travel;
     } else {
         o.motion_time = 0.;
     }

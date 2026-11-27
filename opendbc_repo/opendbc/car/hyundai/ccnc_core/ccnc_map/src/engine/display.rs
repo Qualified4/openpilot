@@ -4,6 +4,9 @@ const STOP_SPEED: f64 = 0.28;
 const SETTLE_TIME: f64 = 0.70;
 const OFF_CENTER_SETTLE_TIME: f64 = 0.95;
 const CENTER_TOLERANCE: f64 = 0.35;
+const ADJACENT_INNER_MIN_D: f64 = 2.0;
+const LOW_SPEED_HOLD: f64 = 1.2;
+const TRAFFIC_STOP_EGO_SPEED: f64 = 1.5;
 
 #[derive(Clone, Copy, Debug)]
 enum Motion {
@@ -42,8 +45,17 @@ fn anchor(d: f64, lane_center: f64) -> f64 {
 }
 
 impl LateralDisplay {
-    pub(super) fn new(now: f64, d: f64, lane_center: f64) -> Self {
-        let anchor = anchor(d, lane_center);
+    pub(super) fn new(now: f64, d: f64, lane_center: f64, adjacent_inner_snap: bool) -> Self {
+        let anchor = if adjacent_inner_snap
+            && lane_center.abs() >= ADJACENT_INNER_MIN_D
+            && d * lane_center > 0.
+            && d.abs() >= ADJACENT_INNER_MIN_D
+            && d.abs() <= lane_center.abs() + CENTER_TOLERANCE
+        {
+            lane_center
+        } else {
+            anchor(d, lane_center)
+        };
         Self {
             motion: Motion::Settled {
                 anchor,
@@ -66,6 +78,9 @@ impl LateralDisplay {
         observation: Option<(f64, f64)>,
         lane_center: f64,
         range: f64,
+        ego_speed: f64,
+        target_speed: f64,
+        is_adjacent: bool,
     ) -> f64 {
         let dt = now - self.time;
         self.time = now;
@@ -99,15 +114,32 @@ impl LateralDisplay {
 
         match &mut self.motion {
             Motion::Settled { anchor, reference, centered } => {
-                let departure = if *centered { 0.43 } else { 0.29 };
-                let departure = departure + 0.004 * range.abs().min(100.);
+                let both_stopped = ego_speed < LOW_SPEED_HOLD && target_speed < LOW_SPEED_HOLD;
+                let adjacent_in_lane_at_stop = is_adjacent
+                    && *centered
+                    && ego_speed < TRAFFIC_STOP_EGO_SPEED
+                    && lane_center.abs() >= ADJACENT_INNER_MIN_D
+                    && self.observed_d * lane_center > 0.
+                    && self.observed_d.abs() >= ADJACENT_INNER_MIN_D
+                    && self.observed_d.abs() <= lane_center.abs() + 1.2;
+                let base_departure = if *centered { 0.43 } else { 0.29 };
+                let mut departure = base_departure + 0.004 * range.abs().min(100.);
+                if both_stopped {
+                    departure = (departure * 3.0).max(1.35);
+                } else if adjacent_in_lane_at_stop {
+                    departure = departure.max(1.35);
+                }
                 let displacement = (self.observed_d - *anchor) * direction;
                 let travel = (self.observed_d - *reference) * direction;
                 let sustained = self.direction_time >= 0.15 && displacement >= departure;
                 let large = self.direction_time >= 0.10 && displacement >= 2.5 * departure;
                 let early = 0.27 + 0.0006 * range.abs().min(100.);
-                let progressive = self.direction_time >= 0.20 && displacement >= early
-                    && travel >= early && v_d * direction >= 0.15;
+                let progressive = !both_stopped
+                    && !adjacent_in_lane_at_stop
+                    && self.direction_time >= 0.20
+                    && displacement >= early
+                    && travel >= early
+                    && v_d * direction >= 0.15;
                 if progressive || (sustained || large) && travel >= departure {
                     self.motion = Motion::Moving {
                         direction,
@@ -208,7 +240,7 @@ mod tests {
         fn new(d: f64) -> Self {
             Self {
                 frame: 0,
-                display: LateralDisplay::new(0., d, 0.),
+                display: LateralDisplay::new(0., d, 0., false),
             }
         }
 
@@ -219,6 +251,9 @@ mod tests {
                 Some((d, velocity)),
                 (d / 3.5).round() * 3.5,
                 x,
+                15.,
+                15.,
+                false,
             );
             let (moving, anchor) = self.display.diagnostic();
             if std::env::var_os("CCNC_STAGE7_TEST_TRACE").is_some() {
@@ -345,5 +380,30 @@ mod tests {
             previous = shown;
         }
         assert!(reversed);
+    }
+
+    #[test]
+    fn adjacent_inner_corner_start_anchors_at_lane_center() {
+        let mut display = LateralDisplay::new(0., -2.1, -3.5, true);
+        assert_eq!(display.diagnostic(), (false, -3.5));
+        for tick in 1..=30 {
+            let d = -2.1 - f64::from(tick) * 0.04;
+            let shown = display.update(f64::from(tick) * 0.05, Some((d, -0.4)), -3.5, 8., 0., 2., true);
+            assert_eq!(shown, -3.5);
+        }
+        // A line-straddling vehicle (< 2.0 m) is not snapped to lane center.
+        let straddle = LateralDisplay::new(0., -1.7, -3.5, true);
+        assert_eq!(straddle.diagnostic(), (false, -1.7));
+    }
+
+    #[test]
+    fn stopped_vehicle_ignores_radar_reflection_drift() {
+        let mut display = LateralDisplay::new(0., -2.7, -3.5, true);
+        for tick in 1..=40 {
+            let d = -2.4 - 0.55 * (f64::from(tick) * 0.15).sin().abs();
+            let shown = display.update(f64::from(tick) * 0.05, Some((d, -0.5)), -3.5, 11., 0.1, 0.1, true);
+            assert_eq!(shown, -3.5);
+            assert!(!display.diagnostic().0);
+        }
     }
 }

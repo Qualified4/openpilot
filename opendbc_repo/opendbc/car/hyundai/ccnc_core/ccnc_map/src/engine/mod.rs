@@ -265,8 +265,14 @@ impl MapEngine {
             }
             let object = self.tracker.objects.iter().find(|o| o.obj_id == slot.obj_id).unwrap();
             let center = frame.lane_center(slot.s, slot.lane_u.round());
+            let is_adjacent = matches!(index, 1 | 2);
+            let adjacent_inner_snap = is_adjacent
+                && old.is_none()
+                && slot.ff_handoff_until.is_none()
+                && slot.lane_u.round().abs() == 1.
+                && object.v_d.abs() < 0.6;
             let display = self.lateral.entry(slot.obj_id)
-                .or_insert_with(|| LateralDisplay::new(now, slot.d, center));
+                .or_insert_with(|| LateralDisplay::new(now, slot.d, center, adjacent_inner_snap));
             let (moving, anchor) = display.diagnostic();
             // Close, receding side vehicles can return a radar reflection from the inner corner.
             // Keep the settled anchor while the vehicle remains in the same adjacent lane.
@@ -279,7 +285,16 @@ impl MapEngine {
                 && self.displayed[index - 2].is_some_and(|front| front.obj_id == slot.obj_id);
             let observed = !handoff && (object.evidence.last_vision_t == Some(now)
                 || object.evidence.last_radar_t == Some(now) && !corner_echo);
-            slot.display_d = display.update(now, observed.then_some((object.d, object.v_d)), center, slot.x);
+            let target_speed = (speed + object.v_s).abs();
+            slot.display_d = display.update(
+                now,
+                observed.then_some((object.d, object.v_d)),
+                center,
+                slot.x,
+                speed,
+                target_speed,
+                is_adjacent,
+            );
         }
         let selected = slots;
         for (side, display) in self.rear_display.iter_mut().enumerate() {

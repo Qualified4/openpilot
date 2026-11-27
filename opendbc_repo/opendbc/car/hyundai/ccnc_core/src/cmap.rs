@@ -43,7 +43,7 @@ pub(crate) struct MapLink {
     recovering: bool,
     /// The last valid map card drew from, and its message time.
     held: Option<(u64, MapOut)>,
-    rear_distance: [Option<f64>; 2],
+    rear_distance: [Option<(f64, u32)>; 2],
     #[pyo3(get)]
     using_process: bool,
 }
@@ -118,13 +118,19 @@ impl MapLink {
     fn draw_rear_distances(&mut self, map: &MapOut) -> [f64; 2] {
         std::array::from_fn(|side| {
             let (target, _, code) = slot_values(map, side + 3);
+            let vid = map.slots[side + 3].map_or(0, |s| s.vid);
             let animated = map.status & cmap::STATUS_REAR_ANIMATED[side] != 0;
-            let shown = self.rear_distance[side].map_or(target, |previous| {
+            let shown = self.rear_distance[side].map_or(target, |(previous, prev_vid)| {
+                // When a different real vehicle is handed off near the origin, start at its
+                // position instead of pulling it forward from the previous rear vehicle.
+                if prev_vid != 0 && vid != 0 && prev_vid != vid && target <= 1.0 && previous > target + 1.0 {
+                    return target;
+                }
                 // Mapd has already interpolated an origin crossing or a confirmed rear pass.
                 let alpha = if animated { 1. } else { REAR_ALPHA };
                 previous + (alpha * (target - previous)).clamp(-REAR_MAX_STEP, REAR_MAX_STEP)
             });
-            self.rear_distance[side] = (code != 0).then_some(shown);
+            self.rear_distance[side] = (code != 0).then_some((shown, vid));
             if code == 0 { 0. } else { shown }
         })
     }
@@ -300,6 +306,26 @@ mod tests {
             assert_eq!(link.draw_rear_distances(&map)[side], 0.);
             map.status = warning;
             assert_eq!(link.draw_rear_distances(&map)[side], 8.);
+        }
+    }
+
+    #[test]
+    fn rear_different_vid_origin_handoff_does_not_pull_forward() {
+        for side in 0..2 {
+            let mut link = MapLink::new();
+            let mut map = valid_map(&message(TICK, true)).unwrap();
+            let mut old_car = slot(2, KIND_CAR, true);
+            old_car.vid = 3461;
+            old_car.distance = -10.; // 8.0 m behind
+            map.slots[side + 3] = Some(old_car);
+            assert_eq!(link.draw_rear_distances(&map)[side], 8.);
+
+            // A different real vehicle is handed off at the origin (0 m): must start at 0 m, not 7.2 m.
+            let mut new_car = slot(2, KIND_CAR, true);
+            new_car.vid = 3459;
+            new_car.distance = 0.;
+            map.slots[side + 3] = Some(new_car);
+            assert_eq!(link.draw_rear_distances(&map)[side], 0.);
         }
     }
 
