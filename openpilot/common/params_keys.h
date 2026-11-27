@@ -355,10 +355,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SoundLanguageSetting", {PERSISTENT, STRING, "auto"}},
 
     {"CruiseGapLevels", {PERSISTENT, INT, "4"}},
-    {"TFollowGap1", {PERSISTENT, INT, "110"}},
-    {"TFollowGap2", {PERSISTENT, INT, "120"}},
-    {"TFollowGap3", {PERSISTENT, INT, "140"}},
-    {"TFollowGap4", {PERSISTENT, INT, "160"}},
+    {"LeadDecelGap1", {PERSISTENT, INT, "425"}},
+    {"LeadDecelGap2", {PERSISTENT, INT, "500"}},
+    {"LeadDecelGap3", {PERSISTENT, INT, "650"}},
+    {"LeadDecelGap4", {PERSISTENT, INT, "800"}},
 
     {"LeadAccelResponse", {PERSISTENT, INT, "0"}},
     {"LeadAccelResponseTF1", {PERSISTENT, INT, "-1"}},
@@ -367,7 +367,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LeadAccelResponseTF4", {PERSISTENT, INT, "-1"}},
     {"DynamicTFollowLC", {PERSISTENT, INT, "100"}},
     {"TFollowDecelBoost", {PERSISTENT, INT, "0"}},
-    {"SpeedTFFactor", {PERSISTENT, INT, "10"}},
     {"AChangeCostStarting", {PERSISTENT, INT, "10"}},
     {"TrafficStopDistanceAdjust", {PERSISTENT, INT, "-150"}},
 

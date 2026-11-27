@@ -15,6 +15,7 @@ from openpilot.selfdrive.carrot.t_follow import (
 from openpilot.selfdrive.carrot.radar_motion.lane_change_gap import LaneChangeGapPlan, LaneChangeGapTracker
 from openpilot.selfdrive.carrot.driving_mode import DrivingMode, DrivingModeDetector, get_mode_lead_response
 from openpilot.selfdrive.carrot.traffic_stop import TrafficStopModelLeadMatcher, is_traffic_stop_entry_allowed
+from openpilot.selfdrive.controls.lib.longitudinal_gap_safe import LEAD_DECELS, clamp_lead_decel
 from openpilot.selfdrive.controls.radar_constants import RADAR_TO_CAMERA
 from openpilot.selfdrive.selfdrived.events import Events
 
@@ -141,10 +142,12 @@ class CarrotPlanner:
     self.mySafeFactor = 1.0
     self.myTFollowFactor = 1.0
 
+    # Internal TF fallback constants (used for cruise, traffic-stop, and non-gap_safe fallback paths)
     self.tFollowGap1 = 1.1
     self.tFollowGap2 = 1.3
     self.tFollowGap3 = 1.45
     self.tFollowGap4 = 1.6
+    self.leadDecelGap = list(LEAD_DECELS)
 
     self.leadAccelResponse = 0
     self.leadAccelResponseBase = 0
@@ -209,14 +212,13 @@ class CarrotPlanner:
       self.myHighModeFactor = 1.2 #float(self.params.get_int("MyHighModeFactor")) / 100.
       self.trafficLightDetectMode = self.params.get_int("TrafficLightDetectMode") # 0: None, 1:Stop, 2:Stop&Go
     elif self.params_count == 20:
-      self.tFollowGap1 = self.params.get_float("TFollowGap1") / 100.
-      self.tFollowGap2 = self.params.get_float("TFollowGap2") / 100.
-      self.tFollowGap3 = self.params.get_float("TFollowGap3") / 100.
-      self.tFollowGap4 = self.params.get_float("TFollowGap4") / 100.
+      self.leadDecelGap = [
+        clamp_lead_decel(self.params.get_float(f"LeadDecelGap{i}") / 100., LEAD_DECELS[i - 1])
+        for i in range(1, 5)
+      ]
       self.leadAccelResponseBase = int(np.clip(self.params.get_int("LeadAccelResponse"), 0, 5))
       self.leadAccelResponseTF = [int(np.clip(self.params.get_int(f"LeadAccelResponseTF{i}"), -1, 5)) for i in range(1, 5)]
       self.dynamicTFollowLC = self.params.get_float("DynamicTFollowLC") / 100.
-      self.speedTFFactor = int(np.clip(self.params.get_int("SpeedTFFactor"), 10, 30))
       self.tFollowDecelBoost = self.params.get_float("TFollowDecelBoost") / 100.
     elif self.params_count == 30:
       self.cruiseMaxVals0 = self.params.get_float("CruiseMaxVals0") / 100.
@@ -240,6 +242,11 @@ class CarrotPlanner:
     cruiseMaxVals = [self.cruiseMaxVals0, self.cruiseMaxVals1, self.cruiseMaxVals2, self.cruiseMaxVals3, self.cruiseMaxVals4, self.cruiseMaxVals5, self.cruiseMaxVals6]
     factor = self.myHighModeFactor if self.myDrivingMode == DrivingMode.High else self.mySafeFactor
     return np.interp(v_ego, A_CRUISE_MAX_BP_CARROT, cruiseMaxVals) * factor
+
+  def get_lead_decel(self, gap_level):
+    if 0 <= gap_level < len(self.leadDecelGap):
+      return clamp_lead_decel(self.leadDecelGap[gap_level], LEAD_DECELS[gap_level])
+    return 0.0
 
   def _get_base_t_follow(self, personality, v_ego):
     if personality == log.LongitudinalPersonality.moreRelaxed:

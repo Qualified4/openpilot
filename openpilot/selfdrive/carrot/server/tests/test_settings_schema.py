@@ -24,7 +24,7 @@ SETTINGS_PATH = Path(__file__).resolve().parents[3] / "carrot_settings.json"
 PARAMS_KEYS_PATH = Path(__file__).resolve().parents[4] / "common" / "params_keys.h"
 
 # Mirrors SETTING_DISPLAY_UNIT_TYPES / SETTING_CONTROL_KINDS in setting.js.
-KNOWN_DISPLAY_UNITS = {"raw", "speedKph", "distanceCm", "timeSec", "timeMs", "timeMin", "percent", "degree"}
+KNOWN_DISPLAY_UNITS = {"raw", "speedKph", "distanceCm", "timeSec", "timeMs", "timeMin", "percent", "degree", "decelMps2"}
 KNOWN_CONTROL_KINDS = {"toggle", "segmented", "select", "slider"}
 KNOWN_RISK_LEVELS = {"high", "medium"}
 CCNC_HDA1_ONLY = {"CcncExtendedDisplay"}
@@ -221,8 +221,42 @@ def test_gap_cycle_setting_is_registered_and_in_gap_menu(settings):
   groups, by_name, _ = group_index(settings)
   categories = build_menu_categories(settings, by_name)
   section = next(section for category in categories for group in category["groups"] for section in group["sections"]
-                 if "TFollowGap1" in section["items"])
-  assert section["items"].index("CruiseGapLevels") < section["items"].index("TFollowGap1")
+                 if "LeadDecelGap1" in section["items"])
+  assert section["items"].index("CruiseGapLevels") < section["items"].index("LeadDecelGap1")
+
+
+def test_lead_decel_gap_settings_replace_unused_tf_options(settings, params):
+  removed = {"TFollowGap1", "TFollowGap2", "TFollowGap3", "TFollowGap4", "SpeedTFFactor"}
+  by_name = {p["name"]: p for p in params}
+  assert removed.isdisjoint(by_name)
+  assert all(
+    removed.isdisjoint(group.get("params", []))
+    for category in settings["menu"]
+    for section in category.get("groups", [])
+    for group in section.get("groups", [])
+  )
+  params_keys = PARAMS_KEYS_PATH.read_text(encoding="utf-8")
+  assert all(f'"{name}"' not in params_keys for name in removed)
+
+  expected = [
+    ("LeadDecelGap1", 425),
+    ("LeadDecelGap2", 500),
+    ("LeadDecelGap3", 650),
+    ("LeadDecelGap4", 800),
+  ]
+  driving = next(category for category in settings["menu"] if category["id"] == "DRIVING")
+  cruise = next(group for group in driving["groups"] if group["id"] == "CRUISE")
+  gap = next(group for group in cruise["groups"] if group["id"] == "CRUISE_GAP")
+  assert gap["params"][:5] == ["CruiseGapLevels", *(name for name, _ in expected)]
+  for i in range(1, 5):
+    assert f"LeadAccelResponseTF{i}" in by_name
+    assert f"LeadAccelResponseTF{i}" in gap["params"]
+  for name, default in expected:
+    item = by_name[name]
+    assert (item["min"], item["max"], item["default"], item["unit"]) == (300, 1000, default, 25)
+    assert item["display_unit"] == "decelMps2"
+    assert "4.25 / 5.0 / 6.5 / 8.0" in item["descr"]
+    assert f'{{"{name}", {{PERSISTENT, INT, "{default}"}}}}' in params_keys
 
 
 def test_rear_camera_hold_uses_meter_values_and_persistent_default(settings, params):

@@ -80,6 +80,7 @@ DISPLAY_UNITS = {
   "timeMin": "min",
   "percent": "%",
   "degree": "deg",
+  "decelMps2": "m/s²",
 }
 LOCALE_FIELDS = {
   "ko": ("title", "descr", "ko"),

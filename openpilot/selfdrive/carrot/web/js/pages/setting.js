@@ -822,6 +822,7 @@ const SETTING_DISPLAY_UNIT_TYPES = Object.freeze({
   timeMin: "min",
   percent: "%",
   degree: "deg",
+  decelMps2: "m/s²",
 });
 
 
@@ -876,8 +877,13 @@ function formatSettingDisplayValue(p, value) {
   }
   const declaredOptionLabel = getDeclaredSettingOptionLabel(p?.name, value);
   if (declaredOptionLabel !== null) return declaredOptionLabel;
-  const text = String(value);
+  const unitType = p?.display_unit || (typeof getSettingDisplayType === "function" ? getSettingDisplayType(p?.name) : "raw");
   const unit = getSettingDisplayUnit(p?.name);
+  if (unitType === "decelMps2" && Number.isFinite(Number(value))) {
+    const scaled = (Number(value) / 100).toFixed(2);
+    return unit ? `${scaled} ${unit}` : scaled;
+  }
+  const text = String(value);
   return unit ? `${text}${unit}` : text;
 }
 

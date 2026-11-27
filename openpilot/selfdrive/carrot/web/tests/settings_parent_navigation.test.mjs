@@ -174,3 +174,18 @@ test("geometry zero label shows vehicle default without a misleading percent suf
   assert.equal(context.formatSettingDisplayValue(p, 0), "0 · 차량 기본");
   assert.equal(context.formatSettingDisplayValue(p, 60), "60%");
 });
+
+test("lead decel gap settings format x100 values as m/s²", () => {
+  const context = vm.createContext({
+    LANG: "ko",
+    getDeclaredSettingOptionLabel: () => null,
+    getSettingDisplayType: () => "decelMps2",
+    getSettingDisplayUnit: () => "m/s²",
+  });
+  vm.runInContext(functionSource(settings, "formatSettingDisplayValue"), context);
+  const p = { name: "LeadDecelGap1", display_unit: "decelMps2" };
+  assert.equal(context.formatSettingDisplayValue(p, 425), "4.25 m/s²");
+  assert.equal(context.formatSettingDisplayValue(p, 500), "5.00 m/s²");
+  assert.equal(context.formatSettingDisplayValue(p, 650), "6.50 m/s²");
+  assert.equal(context.formatSettingDisplayValue(p, 800), "8.00 m/s²");
+});

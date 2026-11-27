@@ -24,6 +24,7 @@ def ct(v, g):
 
 def test_owner_constants():
   assert gs.LEAD_DECELS == (4.25, 5.0, 6.5, 8.0) and gs.REACTION == 0.6 and gs.GAP_LEVELS == 4
+  assert gs.LEAD_DECEL_MIN == 3.0 and gs.LEAD_DECEL_MAX == 10.0
   assert gs.COMFORT_TIMES == (0.05, 0.20, 0.30, 0.35)
 
 
@@ -39,7 +40,7 @@ def test_steady_gap_per_level_and_speed(kph, gaps):
 
 def test_level_ramp_blends_the_comfort_time():
   assert gs.level_comfort_time(1 / 4.25) == pytest.approx(0.05) and gs.level_comfort_time(1 / 8.0) == pytest.approx(0.35)
-  # halfway in lead decel from level 3 to level 4, and outside the table clamped
+  # halfway in lead decel from level 3 (6.5) to level 4 (8.0), and outside the table clamped
   assert gs.level_comfort_time(1 / 7.25) == pytest.approx(0.325)
   assert gs.level_comfort_time(1 / 3.0) == pytest.approx(0.05) and gs.level_comfort_time(1 / 9.0) == pytest.approx(0.35)
   assert full_gap(lead_decel=5.0, v_ego=10.0).comfort_time == full_gap(lead_decel=5.0, v_ego=30.0).comfort_time == pytest.approx(0.20)
@@ -393,3 +394,98 @@ def test_comfort_binding_only_takes_over_from_cruise(native):
   preferred = targets.copy()
   preferred[:, :2] -= margins
   np.testing.assert_array_equal(native.bind_obstacles(targets, preferred), [0, 3, 1, 2])
+
+
+def test_custom_lead_decel_updates_mpc_desired_distance_clamps_and_ramps(native):
+  """LeadDecelGap changes propagate into MPC desired_distance, clamp to [3.0, 10.0], and ramp when lengthening."""
+  n = native.N + 1
+  radar = radar_state(40.0, V80)
+
+  def run_step(mpc, lead_decel, *, reset=False, personality=log.LongitudinalPersonality.standard):
+    c = carrot(get_lead_decel=lambda lvl: lead_decel)
+    mpc.set_accel_limits(-3.5, 1.6)
+    mpc.set_cur_state(V80, 0.)
+    mpc.update(c, reset, radar, V80 + 3.0, np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n), personality=personality)
+    assert mpc.solution_status == 0
+    return mpc
+
+  # Lower lead_decel -> shorter desired_distance; higher lead_decel -> wider desired_distance
+  low = run_step(native.LongitudinalMpc(), 4.0, reset=True)
+  high = run_step(native.LongitudinalMpc(), 8.0, reset=True)
+  assert high.base_desired_distances[0] > low.base_desired_distances[0]
+  assert low.gap_safe_state.inv_lead_decel == pytest.approx(1 / 4.0)
+  assert high.gap_safe_state.inv_lead_decel == pytest.approx(1 / 8.0)
+
+  # Out-of-range values clamp to [3.0, 10.0], non-finite falls back to level default
+  clamped_lo = run_step(native.LongitudinalMpc(), 1.2, reset=True)
+  clamped_hi = run_step(native.LongitudinalMpc(), 15.0, reset=True)
+  fallback_nan = run_step(native.LongitudinalMpc(), float("nan"), reset=True)
+  assert clamped_lo.gap_safe_state.inv_lead_decel == pytest.approx(1 / gs.LEAD_DECEL_MIN)
+  assert clamped_hi.gap_safe_state.inv_lead_decel == pytest.approx(1 / gs.LEAD_DECEL_MAX)
+  assert fallback_nan.gap_safe_state.inv_lead_decel == pytest.approx(1 / gs.LEAD_DECELS[1])
+
+  # Live increase while driving ramps smoothly via LEAD_DECEL_INV_RATE; decrease applies at once
+  mpc = run_step(native.LongitudinalMpc(), 4.5, reset=True)
+  before_dist = float(mpc.base_desired_distances[0])
+  run_step(mpc, 8.0, reset=False)
+  assert mpc.gap_safe_state.inv_lead_decel == pytest.approx(1 / 4.5 - gs.LEAD_DECEL_INV_RATE * DT)
+  assert before_dist < mpc.base_desired_distances[0] < high.base_desired_distances[0]
+  run_step(mpc, 4.5, reset=False)
+  assert mpc.gap_safe_state.inv_lead_decel == pytest.approx(1 / 4.5)
+
+
+def test_carrot_planner_reads_lead_decel_gap_and_preserves_tf_fallbacks():
+  """CarrotPlanner._params_update reads LeadDecelGap1~4 with clamping and no longer reads TFollowGap1~4 or SpeedTFFactor."""
+  from openpilot.selfdrive.carrot.carrot_functions import CarrotPlanner, DrivingMode, DrivingModeDetector
+
+  requested_keys = []
+  float_values = {
+    "LeadDecelGap1": 250.0,   # below 3.0 -> clamp to 3.0
+    "LeadDecelGap2": 525.0,   # 5.25
+    "LeadDecelGap3": 650.0,   # 6.50
+    "LeadDecelGap4": 1200.0,  # above 10.0 -> clamp to 10.0
+    "DynamicTFollowLC": 100.0,
+    "TFollowDecelBoost": 0.0,
+  }
+  int_values = {
+    "MyDrivingMode": DrivingMode.Normal.value,
+    "MyDrivingModeAuto": 0,
+    "LeadAccelResponse": 2,
+    "LeadAccelResponseTF1": -1,
+    "LeadAccelResponseTF2": 3,
+    "LeadAccelResponseTF3": -1,
+    "LeadAccelResponseTF4": 1,
+  }
+
+  class FakeParams:
+    def get_float(self, key):
+      requested_keys.append(key)
+      return float_values[key]
+    def get_int(self, key):
+      requested_keys.append(key)
+      return int_values[key]
+
+  planner = CarrotPlanner.__new__(CarrotPlanner)
+  planner.params = FakeParams()
+  planner.frame = 19
+  planner.params_count = 19
+  planner.myDrivingMode = planner.myDrivingMode_last = DrivingMode.Normal
+  planner.myDrivingModeAuto = 0
+  planner.myDrivingMode_disable_auto = False
+  planner.drivingModeDetector = DrivingModeDetector()
+  planner.tFollowGap1, planner.tFollowGap2, planner.tFollowGap3, planner.tFollowGap4 = 1.1, 1.3, 1.45, 1.6
+  planner.speedTFFactor = 10
+  planner.leadDecelGap = list(gs.LEAD_DECELS)
+
+  planner._params_update()
+
+  assert planner.leadDecelGap == pytest.approx([3.0, 5.25, 6.5, 10.0])
+  assert [planner.get_lead_decel(i) for i in range(4)] == pytest.approx([3.0, 5.25, 6.5, 10.0])
+  assert planner.get_lead_decel(99) == 0.0
+  # Removed params must not be read; internal fallback constants stay intact
+  assert not any(k in requested_keys for k in ("TFollowGap1", "TFollowGap2", "TFollowGap3", "TFollowGap4", "SpeedTFFactor"))
+  assert (planner.tFollowGap1, planner.tFollowGap2, planner.tFollowGap3, planner.tFollowGap4) == (1.1, 1.3, 1.45, 1.6)
+  assert planner.speedTFFactor == 10
+  # LeadAccelResponseTF1~4 remain intact
+  assert planner.leadAccelResponseBase == 2
+  assert planner.leadAccelResponseTF == [-1, 3, -1, 1]

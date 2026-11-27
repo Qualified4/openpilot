@@ -508,9 +508,15 @@ class LongitudinalMpc:
     # Gap level index as in CarrotPlanner._get_base_t_follow: aggressive (0) = level 1 ... moreRelaxed (3) = level 4.
     gap_level = int(getattr(personality, 'raw', personality))
     gap_safe_on = 0 <= gap_level < gap_safe.GAP_LEVELS
+    if gap_safe_on:
+      get_lead_decel = getattr(carrot, 'get_lead_decel', None)
+      lead_decel = get_lead_decel(gap_level) if callable(get_lead_decel) else gap_safe.LEAD_DECELS[gap_level]
+      lead_decel = gap_safe.clamp_lead_decel(lead_decel, gap_safe.LEAD_DECELS[gap_level])
+    else:
+      lead_decel = 0.0
     self.gap_safe_state.update(
       enabled=gap_safe_on, snap=reset_state, dt=self.dt,
-      lead_decel=gap_safe.LEAD_DECELS[gap_level] if gap_safe_on else 0.0,
+      lead_decel=lead_decel,
     )
     # ACC and blended lead nodes use the safety-distance gap. Only an unknown gap level keeps the TF
     # computation for leads.

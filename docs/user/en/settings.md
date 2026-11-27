@@ -107,7 +107,7 @@ A catalog default is not a recommended tune for every vehicle. Vehicle tuning, e
 
 | Display example | Stored value | Effective value |
 |---|---:|---:|
-| `TFollowGap1 x0.01s` | `110` | 1.10 seconds |
+| `LeadDecelGap1` (`m/s²`) | `425` | 4.25 m/s² |
 | `SteerActuatorDelay` | `30` | 0.30 seconds |
 | `LateralTorqueAccelFactor x0.001` | `2500` | 2.500 |
 | `StopDistanceCarrot` | `600` | 6.00 m (600 cm) base value |
@@ -117,18 +117,18 @@ Ignoring `x0.01`, `x0.001`, `cm`, `km/h`, or `%` can make a value appear one hun
 
 ## Settings map
 
-The current `carrot_settings.json` contains **229 parameters** (distinct names in its `params` list). The driver-monitoring exception and `NNFF` are search only. Counts below include detail and search-only parameters in each catalog category:
+The current `carrot_settings.json` contains **228 parameters** (distinct names in its `params` list). The driver-monitoring exception and `NNFF` are search only. Counts below include detail and search-only parameters in each catalog category:
 
 | Category | Count | Groups |
 |---|---:|---|
-| Driving control | 143 | Startup and auto, Tesla, buttons and presets, steering, speed and deceleration, cruise and following gap |
+| Driving control | 142 | Startup and auto, Tesla, buttons and presets, steering, speed and deceleration, cruise and following gap |
 | Vehicle and hardware | 43 | Hyundai/Kia, indicator control, CAN FD/HDA, radar, driver monitoring, vehicle assistance, device hardware |
 | Display | 34 | Information, path, brightness/on-road view, external HUD |
 | System | 9 | Recording/power, network/map, sound, software |
 
 ## Driving control
 
-These 143 settings can affect driving behavior. Change one item at a time.
+These 142 settings can affect driving behavior. Change one item at a time.
 
 <a id="start-auto"></a>
 ### Startup and auto — 9 settings; Tesla — 6 settings
@@ -249,7 +249,7 @@ While external navigation is connected, deceleration, countdowns, and navigation
 
 `TrafficLightDetectMode` is `0` off, `1` stop detection, or `2` stop and go detection. This is model-based assistance; the driver must always verify the signal.
 
-### Cruise and following gap — 30 settings overall, 27 on Hyundai/Kia/Genesis
+### Cruise and following gap — 29 settings overall, 26 on Hyundai/Kia/Genesis
 
 | Section | Parameters | Purpose |
 |---|---|---|
@@ -257,7 +257,7 @@ While external navigation is connected, deceleration, countdowns, and navigation
 | [Speed-based acceleration](cruise-gap.md#acceleration-table) | `CruiseMaxVals0` through `CruiseMaxVals6` | Maximum acceleration tendency by speed band |
 | [Stopping and restarting](cruise-gap.md#stop-resume) | `StopDistanceCarrot`, `StoppingAccel`, `VEgoStopping`, `AChangeCostStarting` | Stop position, stop entry, and restart behavior |
 | [Longitudinal tuning](cruise-gap.md#longitudinal-tuning) | `LongTuningKpV`, `LongTuningKiV`, `LongTuningKf`, `LongActuatorDelay` | Ray EV Comma Pedal applies saved gains; other Hyundai/Kia/Genesis fix/hide `100/0/100`; Toyota/Lexus fix/hide `0/0/100`; VW MEB, including ID.4, applies saved gains |
-| [Following gap](cruise-gap.md#following-gap) | `TFollowGap1` through `TFollowGap4`, `DynamicTFollowLC`, `SpeedTFFactor`, `TFollowDecelBoost` | Safety-distance lead-following levels (no setting, ACC and blended), per-level cruise and traffic-stop times, lane-change relief using selected leads, and a cruise deceleration margin (default 0%, not added to the lead-following gap) |
+| [Following gap](cruise-gap.md#following-gap) | `CruiseGapLevels`, `LeadDecelGap1` through `LeadDecelGap4`, `DynamicTFollowLC`, `TFollowDecelBoost` | Safety-distance lead-following assumed deceleration per level (defaults 4.25/5.0/6.5/8.0 m/s², ACC and blended), lane-change relief using selected leads, and a cruise deceleration margin (default 0%, not added to the lead-following gap) |
 | [Following responsiveness](cruise-gap.md#lead-response) | `LeadAccelResponse`, `LeadAccelResponseTF1`–`LeadAccelResponseTF4` | Lead-start, acceleration and approach response at every following-distance level |
 | [Carrot cruise](cruise-gap.md#carrot-cruise) | `CruiseEcoControl`, `CruiseCoastingPercent`, `CarrotCruiseDecel`, `CarrotCruiseAtcDecel` | Economy control, coasting margin with a fixed entry reference (default 0%: existing control), and cruise deceleration limits |
 
@@ -265,13 +265,13 @@ While external navigation is connected, deceleration, countdowns, and navigation
 
 Eco caps lead response at 2 and Safe at 3; Normal and High retain the selected value. Caps follow common/gap-specific selection and never raise lower choices or 0. Eco ×1.1 and Safe ×1.2 TF multipliers remain, with gradual release of mode allowance. Automatic selection uses Safe for stopping approaches and sustained slow following. Outside a stopping approach, lead acceleration above 1.0 m/s² for about 0.5 seconds restores Normal/Eco; otherwise, it requires three seconds of flow recovery or four seconds with no lead at 15 km/h or above.
 
-`CruiseGapLevels` (Gap cycle levels) limits button cycling to 2 through the vehicle-supported maximum, which is the default. 2 uses TF1 and TF2; 3 uses TF1 through TF3. It applies on the next gap-button press and preserves unused TF and following responsiveness values. Applies with openpilot longitudinal control.
+`CruiseGapLevels` (Gap cycle levels) limits button cycling to 2 through the vehicle-supported maximum, which is the default. 2 uses levels 1 and 2; 3 uses levels 1 through 3. It applies on the next gap-button press and preserves unused level deceleration and following responsiveness values. Applies with openpilot longitudinal control.
 
-`TFollowGap1` through `TFollowGap4` are stored in hundredths of a second and set the cruise and traffic-stop targets and blended mode. The gap to a lead is set by the same level's safety-distance gap instead (assumed lead braking 4.25/5/6.5/8 m/s², see [Following gap](cruise-gap.md#following-gap)). Use `LeadAccelResponse` for acceleration response: levels 1–3 are gradual, 4 is quick, and 5 retains maximum response. Braking-onset distance is not separately remembered to enlarge the gap.
+`LeadDecelGap1` through `LeadDecelGap4` are stored in hundredths of a m/s² (range `300–1000` / `3.00–10.00 m/s²`, step `25` / `0.25 m/s²`, defaults `425 / 500 / 650 / 800` → `4.25 / 5.0 / 6.5 / 8.0 m/s²`, see [Following gap](cruise-gap.md#following-gap)). Higher values assume harder lead braking and widen the following gap; lower values shorten it, and increases ramp smoothly while driving. The former `TFollowGap1`–`TFollowGap4` and `SpeedTFFactor` settings have been removed; cruise, traffic-stop, and non-`gap_safe` fallback paths retain internal defaults. Use `LeadAccelResponse` for acceleration response: levels 1–3 are gradual, 4 is quick, and 5 retains maximum response. Braking-onset distance is not separately remembered to enlarge the gap.
 
 `LeadAccelResponse`: Adjusts how the car follows a lead vehicle as it starts or speeds up. Lower levels close the gap more gradually; higher levels follow more quickly. Level 0 turns off the acceleration boost, and level 5 is the most responsive test setting. See [Following responsiveness](cruise-gap.md#lead-response) for details. Extra-headroom hold conditions apply up to 1.2 times TF distance (speed × TF + stopping distance), ease progressively from 1.2 to 1.5 times, and no longer pause recovery at or above 1.5 times regardless of lead speed.
 
-`SpeedTFFactor` applies a linear speed multiplier to the selected base TF: 10 is unchanged; 20 doubles it at 100 km/h. `LeadAccelResponseTF1`–`TF4` use the common response at -1 and a gap-specific response at 0–5. Levels 4–5 retain speed TF. The driving-screen bar shows the dynamically adjusted following target in metres.
+`LeadAccelResponseTF1`–`TF4` use the common response at -1 and a gap-specific response at 0–5. The driving-screen bar shows the dynamically adjusted following target in metres.
 
 
 Deceleration preview operates independently of the response level. During active control, remaining correction releases progressively when relative acceleration eases or the lead switches between radar and vision or disappears. Accelerator or brake intervention and longitudinal control exit clear it immediately.

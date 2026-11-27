@@ -57,9 +57,22 @@ EGO_MAX_DECEL = -ACCEL_MIN
 COMFORT_TIMES = (0.05, 0.20, 0.30, 0.35)
 DANGER_FACTOR = 1.0        # d_min is already the minimum, so no 0.8 shrink
 LEAD_DECEL_INV_RATE = 0.025  # 1/(m/s^2) per s: a level change that lengthens the gap (4.25 -> 8) takes 4.4 s
-LEAD_DECELS = (4.25, 5.0, 6.5, 8.0)  # m/s^2 assumed lead braking for gap levels 1-4
+LEAD_DECEL_MIN = 3.0         # m/s^2 minimum configurable assumed lead braking
+LEAD_DECEL_MAX = 10.0        # m/s^2 maximum configurable assumed lead braking
+LEAD_DECELS = (4.25, 5.0, 6.5, 8.0)  # m/s^2 default assumed lead braking for gap levels 1-4
 REACTION = 0.6             # s from the lead's braking until ego's braking starts
 GAP_LEVELS = len(LEAD_DECELS)
+
+
+def clamp_lead_decel(value, default):
+  """Clamp a configured assumed lead deceleration to [LEAD_DECEL_MIN, LEAD_DECEL_MAX]."""
+  try:
+    v = float(value)
+  except (TypeError, ValueError):
+    return float(default)
+  if not math.isfinite(v):
+    return float(default)
+  return float(np.clip(v, LEAD_DECEL_MIN, LEAD_DECEL_MAX))
 CLOSING_TIME = 1.0         # s x closing speed (v - v_lead)+ added to the comfort target
 CUTIN_RECOVER_RATE = 1.5   # m/s the cut-in credit shrinks by
 CUTIN_CLOSING_MAX = 1.5    # m/s: only a cut-in at about ego speed (or faster) gets the credit

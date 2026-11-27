@@ -185,18 +185,18 @@ On vehicles with adjustable gains, tune delay first only if acceleration and bra
 <a id="following-gap"></a>
 ## 5. Following gap
 
-The gap to a lead is set by the safety-distance levels below (ACC and blended mode). `TFollowGap1`–`TFollowGap4` set the base time gap for the cruise target and traffic stops.
+The gap to a lead is set by the safety-distance levels below (`LeadDecelGap1`–`LeadDecelGap4`, ACC and blended mode). Cruise targets, traffic stops, and non-`gap_safe` fallback paths retain internal base time-gap constants.
 
-### Following a lead: safety-distance gap levels
+### Following a lead: safety-distance gap levels (`LeadDecelGap1`–`LeadDecelGap4`)
 
-When following a lead, gap levels 1–4 no longer pick a time gap but how hard the lead may brake at most. This is always on, with no setting (openpilot longitudinal control, ACC and blended mode).
+When following a lead, gap levels 1–4 pick how hard the lead may brake at most (openpilot longitudinal control, ACC and blended mode). Each level's assumed deceleration is configurable via `LeadDecelGap1`–`LeadDecelGap4` (stored value ×0.01 m/s², range `300–1000` / `3.00–10.00 m/s²`, step `25` / `0.25 m/s²`). Higher values assume harder lead braking and widen the following gap; lower values shorten it, and increases ramp smoothly while driving.
 
-| Level | Assumed lead maximum braking | Same-speed following gap at 10 / 30 / 50 / 80 / 100 km/h (stop distance 3.7 m) |
-|---|---:|---|
-| 1 | 4.25 m/s² | 5.5 / 9.6 / 14.1 / 21.8 / 27.4m |
-| 2 | 5.0 m/s² | 6.1 / 12.1 / 19.6 / 33.8 / 45.2m |
-| 3 | 6.5 m/s² | 6.5 / 14.5 / 25.5 / 47.4 / 65.8m |
-| 4 | 8.0 m/s² | 6.7 / 16.0 / 29.0 / 55.7 / 78.3m |
+| Level | Setting | Default (assumed lead max braking) | Same-speed following gap at 10 / 30 / 50 / 80 / 100 km/h (stop distance 3.7 m) |
+|---|---|---:|---|
+| 1 | `LeadDecelGap1` | `425` (4.25 m/s²) | 5.5 / 9.6 / 14.1 / 21.8 / 27.4m |
+| 2 | `LeadDecelGap2` | `500` (5.00 m/s²) | 6.1 / 12.1 / 19.6 / 33.8 / 45.2m |
+| 3 | `LeadDecelGap3` | `650` (6.50 m/s²) | 6.5 / 14.5 / 25.5 / 47.4 / 65.8m |
+| 4 | `LeadDecelGap4` | `800` (8.00 m/s²) | 6.7 / 16.0 / 29.0 / 55.7 / 78.3m |
 
 - Minimum gap `d_min = 0.6 s × ego speed + ego speed²/(2 × 4.0) − lead speed²/(2 × assumed braking) + StopDistanceCarrot`: from this gap ego, braking at up to 4.0 m/s² after 0.6 s, still stops at the stop distance behind a lead braking that hard. Inside it is treated as the danger zone.
 - The comfort target is `d_min + comfort time × ego speed`. The comfort time is 0.05 / 0.20 / 0.30 / 0.35 s for levels 1–4, the same at every speed. While closing on a slower lead, it adds 1.0 m per m/s of speed difference plus the distance needed to shed that difference at `ComfortBrake`, so braking starts earlier. At equal speed nothing is added. From 3.0 m/s (about 11 km/h) down to 0.5 m/s ego speed this whole comfort margin fades to 0, so behind a stopped lead the car stops at the `StopDistanceCarrot` distance. While ego brakes hard (less fade from −1.5 m/s², none at −2.0 m/s² or below) the margin is kept.
@@ -206,7 +206,7 @@ When following a lead, gap levels 1–4 no longer pick a time gap but how hard t
 - In ACC mode, while the followed lead moves aside (more than 0.5 m off the path center and moving off by more than 0.2 m/s over 0.5 s), a radar object beyond it in ego's path (within 1.0 m of the path center), more than 3 m/s slower than the lead and at most 22 km/h, is planned for as a second lead, so ego starts slowing early (not while the accelerator is pressed). The same object must meet this for more than 1 s, and a stopped object never seen moving faster than 2 m/s (roadside clutter) is never used. A radar track number that jumps (range more than 3 m off its prediction or sideways more than 1.5 m) or was unseen for 0.5 s counts as a new object whose movement history starts again, because the radar reuses track numbers. The radar's lead selection (leadOne/leadTwo) is unchanged; only the longitudinal plan uses it.
 - Without a lead, and for a lead faster than the set speed, the set speed is the limit as before: obstacles are compared by their own target distance.
 - In blended (e2e) mode the lead constrains at the equal-speed comfort target (`d_min + comfort time × ego speed`), so a mode change keeps the same-speed gap. The closing distance is left out from about 25 km/h ego speed and fully added below about 14 km/h (no hard first braking for a stopped lead seen far ahead, while the stop gap is kept). A cut-in lead is also recovered gradually as in ACC, never looser than the previous time-gap target.
-- `TFollowGap1`–`TFollowGap4` and `SpeedTFFactor` set the cruise target, traffic-stop and Tesla-stop calculations and the floor of the cut-in easing (the previous time-gap danger zone); they do not set the lead-following gap. Drive-mode scaling and the `TFollowDecelBoost` addition are not added to the lead-following gap either. The level number still selects `LeadAccelResponseTF1`–`LeadAccelResponseTF4`.
+- The former `TFollowGap1`–`TFollowGap4` and `SpeedTFFactor` settings have been removed because they do not set the lead-following gap; internal fallback constants (`1.1 / 1.3 / 1.45 / 1.6 s`) remain for cruise targets, traffic-stop/Tesla-stop calculations, and the cut-in easing floor. Drive-mode scaling and the `TFollowDecelBoost` addition are not added to the lead-following gap either. The level number still selects `LeadAccelResponseTF1`–`LeadAccelResponseTF4`.
 - Level 1 is about the old time-gap level 1 (same-speed 9.6 / 14.1 / 21.8 / 27.4 m at 30 / 50 / 80 / 100 km/h, within ±0.8 m of it). Higher levels are longer, and level 4 is longer than before (78 m at 100 km/h, previously 57 m). In synthetic hard stops with a lead braking harder than assumed, level 1 keeps less gap than the previous safety-distance level 1 (5.0 m/s², 0.35 s) (lead at −6 m/s² from 50 km/h: 1.5 → −3.9 m), but 0.45–0.85 m more than the old time-gap level 1 in all nine. At level 4, when a lead brakes at −3, releases and then stops at −6, the stop gap was 0.02–0.06 m shorter than before. Checked only by log replay; not validated on a vehicle.
 
 ### Gap cycle levels
@@ -219,37 +219,15 @@ When following a lead, gap levels 1–4 no longer pick a time gap but how hard t
 
 Changes apply on the next gap-button press. If the current level is outside the new range, the first press selects the configured maximum. Unused TF and gap-specific following responsiveness values are preserved. Holding the gap button still changes driving mode. This applies with openpilot longitudinal control; stock ACC retains its own levels.
 
-### Four base time gaps
+### Base time gaps (internal fallback constants)
 
-Multiply stored values by 0.01 seconds. All four range from 40 to 300 in steps of 5.
-
-| Longitudinal personality | Setting | Catalog default | Time |
-|---|---|---:|---:|
-| aggressive | `TFollowGap1` | 110 | 1.10 s |
-| standard | `TFollowGap2` | 120 | 1.20 s |
-| relaxed | `TFollowGap3` | 140 | 1.40 s |
-| moreRelaxed | `TFollowGap4` | 160 | 1.60 s |
-
-Hyundai/Kia configurations can expose all four personalities. Other vehicles can be limited to three. A time gap is not a fixed distance: at 100 km/h, 1.20 seconds is about 33 m before braking-distance and fixed-distance terms are included.
+The former `TFollowGap1`–`TFollowGap4` and `SpeedTFFactor` settings were removed because they no longer affect lead-following under `gap_safe`. Cruise targets, traffic stops, and non-`gap_safe` fallback paths retain internal defaults (`1.1 / 1.3 / 1.45 / 1.6 s`, speed multiplier `1.0×`).
 
 ### Actual application order
 
-1. Use the base TF of the cruise-gap level selected with the button.
-2. Apply the speed TF multiplier and driving-mode adjustment. Lead response levels 4–5 use the same calculation.
-3. Hold baseline TF against reduction during braking, then add `TFollowDecelBoost` once.
-4. Apply TF increases gradually. Release extra deceleration margin at 0.10 seconds per second.
-
-### `SpeedTFFactor` · Speed TF multiplier
-
-Increases the selected base TF linearly with speed. Range `10–30`, default `10`, step `1`. The screen shows `1.0×–3.0×`.
-
-- `10`: no speed adjustment.
-- `20`: 1.0× when stopped, 1.5× at 50 km/h, 2.0× at 100 km/h and 3.0× at 200 km/h.
-- Higher values give a longer TF at the same speed. Following responsiveness is unchanged.
-
-With base TF 0.50 seconds and setting 20, TF is 0.50/0.75/1.00 seconds at 0/50/100 km/h. Driving-mode and deceleration adjustments follow. The speed-adjusted result is not clipped to the largest TF1–4 setting or the former two-second cap.
-
-The former `EnableSpeedTF` setting is removed; its value is not converted to the new multiplier. The new setting starts with no speed adjustment. Existing base TF and common following responsiveness values are retained.
+1. Use the `LeadDecelGap1`–`LeadDecelGap4` value (clamped to `3.00–10.00 m/s²`) for the selected cruise-gap level in the safety-distance formula.
+2. Increasing assumed lead deceleration (or raising the gap level) ramps smoothly via `LEAD_DECEL_INV_RATE`; lowering it applies immediately.
+3. Cruise, traffic-stop, and non-`gap_safe` fallback paths continue using internal base TF constants with driving-mode and `TFollowDecelBoost` adjustments.
 
 ### Target following-distance marker
 
