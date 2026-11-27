@@ -146,18 +146,26 @@ impl RoadFrame {
     }
 
     pub(super) fn project(&self, x: f64, y: f64) -> (f64, f64) {
+        self.project_in(x, y, f64::NEG_INFINITY, f64::INFINITY)
+    }
+
+    pub(super) fn project_near(&self, x: f64, y: f64, s: f64, radius: f64) -> (f64, f64) {
+        self.project_in(x, y, s - radius, s + radius)
+    }
+
+    fn project_in(&self, x: f64, y: f64, min_s: f64, max_s: f64) -> (f64, f64) {
         let (mut best, mut road) = (f64::INFINITY, (x, y));
         for (i, seg) in self.segments.iter().enumerate() {
             let (tx, ty) = seg.tangent;
             let (dx, dy) = (x - seg.start.0, y - seg.start.1);
-            let along = (dx * tx + dy * ty).clamp(
-                if i == 0 { f64::NEG_INFINITY } else { 0. },
-                if i + 1 == self.segments.len() {
-                    f64::INFINITY
-                } else {
-                    seg.length
-                },
-            );
+            let start = seg.s - self.origin;
+            let lo = if i == 0 { min_s - start } else { (min_s - start).max(0.) };
+            let end = if i + 1 == self.segments.len() { f64::INFINITY } else { seg.length };
+            let hi = (max_s - start).min(end);
+            if lo > hi {
+                continue;
+            }
+            let along = (dx * tx + dy * ty).clamp(lo, hi);
             let error = (dx - along * tx).powi(2) + (dy - along * ty).powi(2);
             if error < best {
                 best = error;
@@ -254,6 +262,68 @@ fn line_y(line: &Line, x: f64) -> Option<f64> {
         return None;
     }
     Some(f64::from(left) + (x - f64::from(lo)) / f64::from(hi - lo) * f64::from(right - left))
+}
+
+pub(super) struct CornerLane<'a> {
+    pub road: RoadObservation<'a>,
+    pub model_pose: PoseAt,
+    pub ego: PoseAt,
+    /// Right-positive curvature from live ego rotation.
+    pub curvature: f64,
+}
+
+impl CornerLane<'_> {
+    fn in_model_frame(&self, (x, y): Point) -> Point {
+        let (wx, wy) = self.ego.to_world(x, -y);
+        let (x, y) = self.model_pose.to_ego(wx, wy);
+        (x, -y)
+    }
+
+    fn boundary(&self, index: usize, x: f64, confidence: f32) -> Option<f64> {
+        let model = self.road.lines?;
+        if *model.lane_line_probs.get(index)? < confidence {
+            return None;
+        }
+        line_y(model.lane_lines.get(index)?, x)
+    }
+
+    fn model_lane_u(&self, (x, y): Point) -> Option<f64> {
+        let (x, y) = self.in_model_frame((x, y));
+        let left = self.boundary(1, x, 0.75)?;
+        let right = self.boundary(2, x, 0.75)?;
+        let width = right - left;
+        (2.8..=4.5).contains(&width).then(|| (y - (left + right) / 2.) / width)
+    }
+
+    pub fn same_lane_ahead(&self, lead: Point, far: Point, lead_u: f64, side_u: f64) -> bool {
+        let (lx, ly) = lead;
+        let (x, y) = far;
+        if !(4. ..=32.).contains(&(x - lx)) || !(0.16..=0.85).contains(&(self.curvature * x).abs()) {
+            return false;
+        }
+        // Compare the radar returns to the measured lane at their own ranges. A trusted
+        // line pair also takes precedence when it places the farther return in a side lane.
+        if let Some(u) = self.model_lane_u(far) {
+            return u.abs() <= 0.34 && self.model_lane_u(lead).is_some_and(|u| u.abs() <= 0.40);
+        }
+        let (mx, my) = self.in_model_frame(far);
+        let boundary = if side_u < 0. { 1 } else { 2 };
+        if self.boundary(boundary, mx, 0.55).is_some_and(|edge| (my - edge) * side_u.signum() > 0.45) {
+            return false;
+        }
+
+        // When the lines cannot constrain the far point, check the arc through the near
+        // lead against the ego's turn. The circular residual is a distance in metres.
+        let k = 2. * ly / (lx * lx + ly * ly);
+        if !(10. ..=35.).contains(&lx) || lead_u.abs() > 0.30 || k * side_u <= 0.
+            || (k - self.curvature).abs() > 0.55 * self.curvature.abs()
+            || (k * x).abs() > 0.85
+        {
+            return false;
+        }
+        let residual = (2. * y - k * (x * x + y * y)) / (1. + (1. - k * y).hypot(k * x));
+        residual.abs() <= 0.85
+    }
 }
 
 /// A delayed detection beyond a trusted outer lane line can be passing oncoming traffic.

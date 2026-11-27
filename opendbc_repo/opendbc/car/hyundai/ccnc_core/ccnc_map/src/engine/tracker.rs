@@ -134,13 +134,28 @@ impl Tracker {
         past: PoseAt,
         ego: PoseAt,
     ) {
+        let turning = (ego.heading - past.heading).abs() > 0.085 * dt;
         for o in &mut self.objects {
             let v_absolute = o.v_s + speed;
-            let (x, y) = old.cartesian(o.s + v_absolute * dt, o.d + o.v_d * dt);
+            let predicted_d = o.d + o.v_d * dt;
+            let (x, y) = old.cartesian(o.s + v_absolute * dt, predicted_d);
             let (rx, ry) = o.projection_remainder;
             let (wx, wy) = past.to_world(x + rx, -(y + ry));
             let (ex, ey) = ego.to_ego(wx, wy);
-            (o.s, o.d) = new.project(ex, -ey);
+            let (mut s, mut d) = new.project(ex, -ey);
+            let chart_jump = (d - predicted_d).abs();
+            if chart_jump > 0.95 || turning && chart_jump > 0.55 {
+                let predicted_s = o.s + v_absolute * dt - (ego.s - past.s);
+                if (s - predicted_s).abs() > 4.2 {
+                    (s, d) = new.project_near(ex, -ey, predicted_s, 4.2);
+                }
+                // A refreshed forecast (including its tail) can move the road frame
+                // several metres in one tick. Adopt it gradually while preserving the
+                // Cartesian prediction for radar association via the remainder below.
+                let step = (6. * dt).min(0.40);
+                d = predicted_d + (d - predicted_d).clamp(-step, step);
+            }
+            (o.s, o.d) = (s, d);
             let (x, y) = new.cartesian(o.s, o.d);
             o.projection_remainder = (ex - x, -ey - y);
             o.v_d *= (-dt / 0.45).exp();

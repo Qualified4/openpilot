@@ -12,7 +12,7 @@ use crate::input::{live_tracks::RawPoint, map_events::DisplayLead, model_v2::Mod
 use crate::vision::kind::{FrontCam, KindResult};
 use crate::world::{Pose, PoseAt};
 use display::LateralDisplay;
-use road_frame::RoadFrame;
+use road_frame::{CornerLane, RoadFrame};
 use std::collections::{HashMap, VecDeque};
 use tracker::Tracker;
 
@@ -221,6 +221,8 @@ impl MapEngine {
         self.tracker
             .lifecycle(now, dt.min(0.25), speed, &frame, &visible, input.blind);
         let changing = self.last_lane_change.is_some_and(|t| now - t <= 0.32);
+        let corner = input.yaw.filter(|yaw| !changing && speed >= 3. && yaw.abs() >= 0.065)
+            .and_then(|yaw| road.map(|road| CornerLane { road, model_pose, ego, curvature: -yaw / speed }));
         let mut slots = selector::select(
             now,
             speed,
@@ -229,6 +231,19 @@ impl MapEngine {
             &mut self.tracker.objects,
             self.displayed,
             primary,
+            |ff, o| {
+                let Some(corner) = &corner else { return false };
+                if !ff.radar_seen || o.s <= ff.s || o.evidence.last_radar_t != Some(now)
+                    || o.same_track_streak < 4
+                {
+                    return false;
+                }
+                let Some(lead) = input.radar.iter().find(|p| Some(p.track_id) == ff.last_track_id
+                    && p.source == 0 && p.measured && p.track_state >= 2) else { return false };
+                let [x, y, _] = o.last_radar_motion;
+                corner.same_lane_ahead((f64::from(lead.d_rel), -f64::from(lead.y_rel)),
+                                       (x, y), ff.lane_u, o.lane_u)
+            },
         );
         self.lateral.retain(|_, display| now - display.time <= 1.);
         for (index, slot) in slots.iter_mut().enumerate() {

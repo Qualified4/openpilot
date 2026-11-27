@@ -78,6 +78,7 @@ pub(super) fn select(
     objects: &mut [TrackedObject],
     previous: [Option<EngineSlot>; 5],
     primary: Option<u64>,
+    same_lane_ahead: impl Fn(EngineSlot, &TrackedObject) -> bool,
 ) -> [Option<EngineSlot>; 5] {
     let occupied = previous.map(|slot| slot.map(|o| o.obj_id));
     let mut slots = [None; 5];
@@ -139,10 +140,11 @@ pub(super) fn select(
             }) {
                 Some(now + FF_HANDOFF_TIME)
             } else if offset >= 0.23 && side_incumbent {
+                // Keep a measured handoff at the marking while the filtered lane catches up.
                 previous[handoff_side + 1]
                     .filter(|old| same_radar(now, o, *old))
                     .and_then(|old| old.ff_handoff_until)
-                    .filter(|until| now <= *until)
+                    .filter(|until| now <= *until || offset >= 0.48)
             } else {
                 None
             }
@@ -236,8 +238,10 @@ pub(super) fn select(
             })
             .map(|o| slot(frame, o, now))
     });
+    let ff = slots[0];
     let front_within_range = |o: &TrackedObject| {
         o.s <= SIDE_FRONT_LIMIT && o.cartesian(frame).0 <= SIDE_FRONT_LIMIT
+            && !ff.is_some_and(|lead| same_lane_ahead(lead, o))
     };
     let mut splits = [None; 2];
     for (side, cars) in sides.iter().enumerate() {
@@ -253,13 +257,15 @@ pub(super) fn select(
                 .filter(|o| !o.rear && front_within_range(o))
         };
         let established_side = front_candidates().any(|o| {
-            side_range_hold(now, o, previous[side + 1]).is_some()
+            side_range_hold(now, o, previous[side + 1])
+                .is_some_and(|proof| proof.time - proof.since >= SIDE_RANGE_ESTABLISHED)
         });
         let front_default = front_candidates()
             .filter(|o| {
                 // A recovering range check must persist before it can displace a
                 // continuously measured incumbent. Retain normal admission to an empty slot.
                 !established_side || front_slot == Some(o.obj_id) || vision(now, o)
+                    || previous[side + 3].is_some_and(|old| old.obj_id == o.obj_id && same_radar(now, o, old))
                     || o.range_recovered_t.is_none_or(|t| now - t >= SIDE_RANGE_RECOVERY)
             })
             .min_by(|a, b| front_cost(a).total_cmp(&front_cost(b)));

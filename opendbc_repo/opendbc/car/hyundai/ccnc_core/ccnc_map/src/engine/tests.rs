@@ -144,8 +144,49 @@ fn refreshed_road_preserves_ego_compensated_cartesian_position() {
     let (x, y) = object.cartesian(&new);
     let (ex, ey) = ego.to_ego(23., 2.);
     assert!((x - ex).hypot(y + ey) < 1e-9);
+    assert!((object.d + 2.).abs() <= 0.40);
     assert!(new.beyond_forecast(object.s));
     assert!(new.cartesian(object.s + 30., 0.).1 < 8.);
+}
+
+#[test]
+fn corner_rejects_same_lane_far_car_and_preserves_a_real_side_car() {
+    let path = [(0., 0.), (15., 1.131), (35., 1.131)];
+    let curve_y = (1. - (1. - (0.01_f64 * 28.).powi(2)).sqrt()) / 0.01;
+    let model = Model {
+        lane_lines: [-5., -2., 2.8]
+            .map(|y| crate::input::model_v2::Line { x: vec![0., 50.], y: vec![y; 2] })
+            .into(),
+        lane_line_probs: vec![0., 0., 0.62],
+        road_edges: Vec::new(),
+    };
+    for (yaw, offset, lines, expected_side) in [
+        (-0.12, 0., None, None),
+        (-0.12, 2.3, None, Some(41)),
+        (0., 0., None, Some(41)),
+        (-0.12, 0., Some(&model), Some(41)),
+    ] {
+        let mut engine = MapEngine::default();
+        let points = [radar(40, 15., 1.131, 0.), radar(41, 28., (curve_y + offset) as f32, 0.)];
+        for tick in 0..24 {
+            let mut entry = input(tick, &points);
+            entry.yaw = Some(yaw);
+            entry.speed = 12.;
+            entry.road = Some(RoadObservation {
+                time: entry.time,
+                path: &path,
+                lines,
+                changing_lanes: false,
+            });
+            let out = engine.step(entry);
+            if tick >= 8 {
+                let far = out.objects.iter().find(|o| o.evidence.last_track_id == Some(41)).unwrap();
+                assert!(far.lane_u > 0.59);
+                assert_eq!(out.slots[0].unwrap().last_track_id, Some(40));
+                assert_eq!(out.slots[2].and_then(|slot| slot.last_track_id), expected_side);
+            }
+        }
+    }
 }
 
 #[test]
@@ -527,7 +568,7 @@ fn side_range_grace_requires_an_established_and_continuously_measured_car() {
         let now = f64::from(tick) * STEP;
         objects[0].range_consistent = false;
         objects[0].evidence.last_radar_t = Some(now);
-        slots = selector::select(now, 12., false, frame, objects, slots, None);
+        slots = selector::select(now, 12., false, frame, objects, slots, None, |_, _| false);
         assert_eq!(slots[2].map(|o| o.obj_id), (tick < 46).then_some(vid));
     }
 
@@ -536,13 +577,13 @@ fn side_range_grace_requires_an_established_and_continuously_measured_car() {
         let now = 30. * STEP;
         objects[0].evidence.last_radar_t = new_track_id.map(|_| now);
         objects[0].evidence.last_track_id = new_track_id.or(Some(40));
-        let slots = selector::select(now, 12., false, frame, objects, engine.displayed, None);
+        let slots = selector::select(now, 12., false, frame, objects, engine.displayed, None, |_, _| false);
         assert!(slots[2].is_none());
     }
     objects[0].evidence.last_radar_t = Some(30. * STEP);
     objects[0].evidence.last_track_id = Some(40);
     objects[0].moved = false;
-    let slots = selector::select(30. * STEP, 12., false, frame, objects, [None; 5], None);
+    let slots = selector::select(30. * STEP, 12., false, frame, objects, [None; 5], None, |_, _| false);
     assert!(slots[2].is_none());
 }
 

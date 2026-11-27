@@ -13,6 +13,8 @@ enum Motion {
     },
     Moving {
         direction: f64,
+        reverse_time: f64,
+        last_advance: f64,
         quiet_d: f64,
         quiet_time: f64,
     },
@@ -22,6 +24,7 @@ pub(super) struct LateralDisplay {
     motion: Motion,
     d: f64,
     observed_d: f64,
+    last_d: f64,
     velocity: f64,
     direction: f64,
     direction_time: f64,
@@ -46,6 +49,7 @@ impl LateralDisplay {
             },
             d: anchor,
             observed_d: d,
+            last_d: d,
             velocity: 0.,
             direction: 0.,
             direction_time: 0.,
@@ -67,11 +71,14 @@ impl LateralDisplay {
         }
         let Some((d, v_d)) = observation else {
             self.direction_time = 0.;
-            if let Motion::Moving { quiet_time, .. } = &mut self.motion {
+            if let Motion::Moving { quiet_time, reverse_time, .. } = &mut self.motion {
                 *quiet_time = 0.;
+                *reverse_time = 0.;
             }
             return self.d;
         };
+        let raw_step = d - self.last_d;
+        self.last_d = d;
         // Limit the influence of a path refresh on the velocity estimate.
         let delta = (d - self.observed_d) * (1. - (-dt / 0.10).exp());
         self.observed_d += delta;
@@ -94,9 +101,14 @@ impl LateralDisplay {
                 let travel = (self.observed_d - *reference) * direction;
                 let sustained = self.direction_time >= 0.15 && displacement >= departure;
                 let large = self.direction_time >= 0.10 && displacement >= 2.5 * departure;
-                if (sustained || large) && travel >= departure {
+                let early = 0.27 + 0.0006 * range.abs().min(100.);
+                let progressive = self.direction_time >= 0.20 && displacement >= early
+                    && travel >= early && v_d * direction >= 0.15;
+                if progressive || (sustained || large) && travel >= departure {
                     self.motion = Motion::Moving {
                         direction,
+                        reverse_time: 0.,
+                        last_advance: now,
                         quiet_d: self.observed_d,
                         quiet_time: 0.,
                     };
@@ -104,9 +116,16 @@ impl LateralDisplay {
             }
             Motion::Moving {
                 direction: moving,
+                reverse_time,
+                last_advance,
                 quiet_d,
                 quiet_time,
             } => {
+                *reverse_time = if dt <= 0.10 && raw_step * *moving < -0.025 {
+                    *reverse_time + dt
+                } else {
+                    0.
+                };
                 let quiet = 0.10 + 0.001 * range.abs().min(100.);
                 if dt <= 0.10
                     && self.velocity.abs() < STOP_SPEED
@@ -129,23 +148,29 @@ impl LateralDisplay {
                 } else {
                     *quiet_time = 0.;
                     *quiet_d = self.observed_d;
-                    // Allow deliberate reversals while suppressing small corrections mid-manoeuvre.
-                    if direction != *moving
-                        && self.direction_time >= 0.18
-                        && (self.observed_d - self.d) * direction > 0.24
+                    // A sustained opposing observation can resume a stalled animation
+                    // before the filtered velocity, which still includes the old motion.
+                    if *reverse_time >= 0.16 && now - *last_advance > 0.151
+                        && (self.observed_d - self.d) * *moving < -0.18
                     {
-                        *moving = direction;
+                        *moving = -*moving;
+                        *reverse_time = 0.;
                     }
                 }
             }
         }
-        self.d += match self.motion {
+        self.d += match &mut self.motion {
             Motion::Settled { anchor, .. } => {
-                (anchor - self.d).clamp(-dt.min(0.075), dt.min(0.075))
+                (*anchor - self.d).clamp(-dt.min(0.075), dt.min(0.075))
             }
-            Motion::Moving { direction, .. } => {
-                let target = self.observed_d + 0.07 * self.velocity;
-                let step = ((target - self.d) * direction).max(0.) * (1. - (-dt / 0.10).exp());
+            Motion::Moving { direction, last_advance, .. } => {
+                let direction = *direction;
+                let lead = 0.07 + 0.04 * (self.velocity.abs() - 0.45).clamp(0., 1.);
+                let target = self.observed_d + lead * (self.velocity * direction).max(0.) * direction;
+                let step = ((target - self.d) * direction).max(0.) * (1. - (-dt / 0.06).exp());
+                if step > 0. {
+                    *last_advance = now;
+                }
                 direction * step.min(7.5 * dt).min(0.37)
             }
         };
@@ -275,5 +300,22 @@ mod tests {
             started |= moving;
         }
         assert!(started && previous > 3.1);
+    }
+
+    #[test]
+    fn moving_follows_a_sustained_reversal_without_waiting_for_a_stop() {
+        let mut trace = Trace::new(0.);
+        for tick in 1..=20 {
+            trace.step(f64::from(tick) * 0.12, 2.4, 20.);
+        }
+        let mut previous = trace.display.d;
+        let mut reversed = false;
+        for tick in 1..=9 {
+            let (moving, shown) = trace.step(2.4 - f64::from(tick) * 0.15, -3., 20.);
+            assert!(moving);
+            reversed |= shown < previous;
+            previous = shown;
+        }
+        assert!(reversed);
     }
 }
