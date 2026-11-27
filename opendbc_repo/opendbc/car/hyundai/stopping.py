@@ -12,7 +12,7 @@ ENTRY_SPEED = 0.7  # m/s; retain approach braking above the low-speed stop regio
 STOP_SPEED = 0.05
 MOVING_SPEED = 0.10
 STOP_CONFIRM_TIME = 0.2
-APPROACH_ACCEL = -0.5
+APPROACH_ACCEL = -0.42  # matches empirically-verified 0x412 brake-lamp hold floor (-0.42 m/s^2)
 STOP_LOWER_BAND = 0.20  # fixed during active ACC, including before StopReq; never copied from stock
 
 

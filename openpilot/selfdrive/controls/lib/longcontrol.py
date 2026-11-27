@@ -10,6 +10,7 @@ from opendbc.car.hyundai.values import is_ray_pedal_control
 from openpilot.selfdrive.controls.lib.cruise_coasting import (
   CruiseCoastingControl, MAX_PLAN_AGE, coasting_relief, no_coasting_lead,
 )
+from openpilot.selfdrive.controls.lib.limousine_stop import LimousineStopController
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
@@ -72,6 +73,7 @@ class LongControl:
                              k_f=CP.longitudinalTuning.kf, rate=1 / DT_CTRL)
     self.last_output_accel = 0.0
     self.coasting = CruiseCoastingControl()
+    self.limousine_stop = LimousineStopController()
 
 
     self.params = Params()
@@ -133,6 +135,7 @@ class LongControl:
   def reset(self):
     self.pid.reset()
     self.coasting.reset()
+    self.limousine_stop.reset()
 
   def update(self, active, CS, long_plan, accel_limits, t_since_plan, radarState):
 
@@ -169,11 +172,13 @@ class LongControl:
 
       if soft_hold_active:
         output_accel = self.CP.stopAccel
-      # Restore the original one-way ramp. Do not unwind stronger braking.
+      # Restore the original one-way ramp. Do not unwind stronger braking here;
+      # low-speed limousine relief below handles safe, brake-lamp-preserving unwinding.
       if output_accel > self.stopping_accel:
         output_accel = min(output_accel, 0.0)
         output_accel -= self.CP.stoppingDecelRate * DT_CTRL
-      self.reset()
+      self.pid.reset()
+      self.coasting.reset()
 
     elif self.long_control_state == LongCtrlState.starting:
       output_accel = self.CP.startAccel
@@ -208,6 +213,27 @@ class LongControl:
         output_accel = self.coasting.apply(output_accel, relief, DT_CTRL)
       else:
         self.coasting.reset()
+
+    if self.long_control_state in (LongCtrlState.pid, LongCtrlState.stopping):
+      lead_one = getattr(radarState, 'leadOne', None) if radarState is not None else None
+      has_lead = bool(lead_one is not None and lead_one.status)
+      output_accel = self.limousine_stop.update(
+        a_cmd=float(output_accel),
+        previous_accel=float(self.last_output_accel),
+        v_ego=float(CS.vEgo),
+        dt=DT_CTRL,
+        enabled=(active and not soft_hold_active and not getattr(CS, 'brakePressed', False)
+                 and not getattr(CS, 'gasPressed', False) and not CS.cruiseState.standstill),
+        should_stop=bool(should_stop),
+        in_stopping_state=(self.long_control_state == LongCtrlState.stopping),
+        fcw=bool(getattr(long_plan, 'fcw', False)),
+        v_target_now=float(v_target_now),
+        has_lead=has_lead,
+        d_rel=float(getattr(lead_one, 'dRel', 100.0)) if has_lead else 100.0,
+        v_lead=float(getattr(lead_one, 'vLead', 0.0)) if has_lead else 0.0,
+      )
+    else:
+      self.limousine_stop.reset()
 
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel, a_target_ff, j_target_now
