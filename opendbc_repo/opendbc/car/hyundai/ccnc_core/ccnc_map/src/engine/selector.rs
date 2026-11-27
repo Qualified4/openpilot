@@ -7,6 +7,9 @@ const SIDE_FRONT_LIMIT: f64 = 50.;
 const SPLIT_REAR_MIN: f64 = -8.;
 const SPLIT_REAR_MAX: f64 = 6.;
 const SPLIT_RELEASE: f64 = 7.5;
+pub(super) const ALONGSIDE_SPEED: f64 = 2.;
+const SPLIT_RELEASE_SPEED: f64 = 2.75;
+const FRONT_PASS_RADAR_GAP: f64 = 0.50;
 const TWO_CAR_GAP: f64 = 4.;
 pub(super) const PASS_BAND: f64 = 0.65;
 const SIDE_CONFIRM: f64 = 1.35;
@@ -89,6 +92,7 @@ pub(super) fn select(
     let mut sides: [Vec<&TrackedObject>; 2] = [Vec::new(), Vec::new()];
     let mut close: [Vec<&TrackedObject>; 2] = [Vec::new(), Vec::new()];
     let mut camera_queue: [Vec<&TrackedObject>; 2] = [Vec::new(), Vec::new()];
+    let mut passing = [None; 2];
     for o in objects.iter_mut() {
         let previous_lane = o.lane;
         update_lane(o);
@@ -164,9 +168,17 @@ pub(super) fn select(
             continue;
         }
         let side = usize::from(o.lane > 0);
+        let near = o.s <= SPLIT_REAR_MAX + o.var_s.sqrt().min(0.7);
+        // A confirmed front vehicle can finish a short, unobserved pass at the origin.
+        let side_pass = previous[side + 1].is_some_and(|old| old.obj_id == o.obj_id && old.s >= 0.)
+            && near && o.s >= -PASS_BAND && o.v_s < -ALONGSIDE_SPEED
+            && now <= o.handoff_until
+            && (observed || o.radar_age(now) + o.s.max(0.) / -o.v_s <= FRONT_PASS_RADAR_GAP);
+        if side_pass && o.existence_log_odds >= HOLD {
+            passing[side] = Some(o);
+        }
         let coasting_rear = o.rear_coast(now, occupied[side + 3] == Some(o.obj_id), blind[side]);
         let handoff = o.rear && (REAR_LIMIT..=0.).contains(&o.s) && now <= o.handoff_until;
-        let near = o.s <= SPLIT_REAR_MAX + o.var_s.sqrt().min(0.7);
         let near_continuity = near && (observed || incumbent && now <= o.handoff_until);
         let hold_age = if near_continuity && o.v_s < 0. {
             0.34
@@ -250,11 +262,15 @@ pub(super) fn select(
             && !ff.is_some_and(|lead| same_lane_ahead(lead, o))
     };
     let mut splits = [None; 2];
+    let mut crossed = [None; 2];
     for (side, cars) in sides.iter().enumerate() {
         let front_slot = occupied[side + 1];
         let rear_slot = occupied[side + 3];
+        let pass = passing[side].filter(|o| front_within_range(o));
+        let crossing = pass.filter(|o| o.s <= 0.);
         let behind = cars.iter().copied().filter(|o| o.rear
             || (o.s <= 0. || !seen(now, o)) && o.rear_coast(now, rear_slot == Some(o.obj_id), blind[side]))
+            .chain(crossing)
             .min_by(|a, b| {
                 seen(now, b).cmp(&seen(now, a)).then_with(|| {
                     cost(now, a, a.s.abs(), rear_slot).total_cmp(&cost(now, b, b.s.abs(), rear_slot))
@@ -283,13 +299,15 @@ pub(super) fn select(
         let alongside = front_candidates()
             .chain(close[side].iter().copied())
             .filter(|o| {
-                let release = if rear_slot == Some(o.obj_id) && now <= o.split_until {
-                    SPLIT_RELEASE
+                let (range, speed) = if rear_slot == Some(o.obj_id) && now <= o.split_until {
+                    (SPLIT_RELEASE, SPLIT_RELEASE_SPEED)
                 } else {
-                    SPLIT_REAR_MAX
+                    (SPLIT_REAR_MAX, ALONGSIDE_SPEED)
                 };
-                o.s >= SPLIT_REAR_MIN
-                    && o.s - o.var_s.sqrt().min(0.7) <= release
+                pass.is_none()
+                    && o.v_s.abs() <= speed
+                    && o.s >= SPLIT_REAR_MIN
+                    && o.s - o.var_s.sqrt().min(0.7) <= range
                     && front_default.is_none_or(|front| !seen(now, front) || o.s <= front.s)
             })
             .min_by(|a, b| {
@@ -305,6 +323,9 @@ pub(super) fn select(
                     && far.s - near.s <= 12.
             };
             let ordered_far = |far: &TrackedObject| far.s >= near.s + TWO_CAR_GAP && far.s > 0.;
+            // Choose the closest measured front when the pair first forms. Apply
+            // incumbent preference once both slots belong to the same ongoing split.
+            let far_incumbent = front_slot.filter(|_| rear_slot == Some(near.obj_id));
             let far = front_candidates()
                 .filter(|far| {
                     ordered_far(far)
@@ -321,7 +342,9 @@ pub(super) fn select(
                         && queue_pair(far)
                         && camera_queue[side].iter().any(|o| o.obj_id == near.obj_id)
                 }))
-                .min_by(|a, b| front_cost(a).total_cmp(&front_cost(b)))?;
+                .min_by(|a, b| {
+                    cost(now, a, a.s, far_incumbent).total_cmp(&cost(now, b, b.s, far_incumbent))
+                })?;
             Some((near, far))
         });
         splits[side] = split.map(|(near, _)| near.obj_id);
@@ -338,13 +361,13 @@ pub(super) fn select(
             (front, Some(near))
         } else {
             // Promote the farther vehicle only when the same assignment places the nearer one.
-            (front_default, behind)
+            (pass.or(front_default).filter(|_| crossing.is_none()), behind)
         };
         let handoff = [ff_handoffs[0], ff_handoffs[side + 1]]
             .into_iter()
             .flatten()
             .filter(|(o, until)| {
-                usize::from(o.lane_u > 0.) == side
+                pass.is_none() && usize::from(o.lane_u > 0.) == side
                     && slots[0].is_some_and(|ff| ff.obj_id != o.obj_id)
                     && front_within_range(o)
                     && (front.is_none() || until.is_some() && rear.is_none()
@@ -377,12 +400,17 @@ pub(super) fn select(
                 && slots[side + 1].is_none_or(|chosen| chosen.obj_id != o.obj_id)
         }));
         slots[side + 3] = rear.map(|o| slot(frame, o, now));
+        crossed[side] = crossing
+            .filter(|o| rear.is_some_and(|r| r.obj_id == o.obj_id))
+            .map(|o| o.obj_id);
     }
-    for o in objects
-        .iter_mut()
-        .filter(|o| splits.contains(&Some(o.obj_id)))
-    {
-        o.split_until = now + 0.18;
+    for o in objects {
+        if splits.contains(&Some(o.obj_id)) {
+            o.split_until = now + 0.18;
+        }
+        if crossed.contains(&Some(o.obj_id)) {
+            o.rear = true;
+        }
     }
     slots
 }

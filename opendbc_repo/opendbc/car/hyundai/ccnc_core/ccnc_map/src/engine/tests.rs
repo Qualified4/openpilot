@@ -403,37 +403,96 @@ fn front_to_rear_passes_through_zero_with_one_id_and_no_teleport() {
 }
 
 #[test]
-fn split_pass_keeps_the_same_rear_vehicle_across_the_radar_gap_without_bsd() {
+fn fast_pass_crosses_the_origin_before_the_next_car_appears() {
     for (rear, y) in [(3, -3.5), (4, 3.5)] {
         let mut engine = MapEngine::default();
-        let mut previous: Option<EngineSlot> = None;
-        for tick in 0..80 {
-            let x = 12. - tick as f32 * 0.3;
+        let front = rear - 2;
+        let mut last_front = None;
+        let mut crossing = None;
+        let mut last_rear = 0.;
+        for tick in 0..130 {
+            let x = 12. - tick as f32 * 0.175;
             let mut points = vec![radar(41, 20., y, 0.)];
-            if tick <= 35 {
-                points.push(radar(40, x, y, -6.));
+            if x >= 1.2 {
+                points.push(radar(40, x, y, -3.5));
             }
             let mut frame = input(tick, &points);
             frame.speed = 12.;
             let out = engine.step(frame);
-            if (35..=63).contains(&tick) {
-                let slot = out.slots[rear].unwrap_or_else(|| panic!("missing rear at tick {tick}"));
-                assert_eq!(slot.last_track_id, Some(40));
-                assert_eq!(out.slots[rear - 2].unwrap().last_track_id, Some(41));
-                if let Some(old) = previous {
-                    assert_eq!(slot.obj_id, old.obj_id);
-                    assert!(slot.x < old.x);
+            if let Some(first) = crossing {
+                assert_eq!(out.slots[front].unwrap().last_track_id, Some(41));
+                if let Some(slot) = out.slots[rear] {
+                    assert_eq!(slot.last_track_id, Some(40));
+                    assert!((slot.x - last_rear).abs() <= 0.25);
+                    assert!(slot.x <= last_rear);
+                    last_rear = slot.x;
                 } else {
-                    assert!(slot.x > 0.);
+                    assert!(tick > first + 50);
                 }
-                previous = Some(slot);
-            }
-            if tick == 70 {
-                assert!(out.slots[rear].is_none());
+            } else if let Some(slot) = out.slots[rear] {
+                let previous: EngineSlot = last_front.unwrap();
+                assert!(previous.x <= 0.25);
+                assert!(slot.s <= 0.);
+                assert_eq!(slot.x, 0.);
+                assert_eq!(slot.obj_id, previous.obj_id);
+                assert!(out.slots[front].is_none());
+                crossing = Some(tick);
+            } else if x <= 6. {
+                let slot = out.slots[front].unwrap();
+                assert_eq!(slot.last_track_id, Some(40));
+                last_front = Some(slot);
             }
         }
-        assert!(previous.unwrap().x < -6.);
+        assert!(crossing.is_some() && last_rear == -10.);
     }
+}
+
+#[test]
+fn alongside_pair_splits_at_six_metres() {
+    let mut engine = MapEngine::default();
+    for tick in 0..40 {
+        let x = 6.5 - tick as f32 * 0.025;
+        let points = [radar(40, x, -3.5, -0.5), radar(41, 20., -3.5, 0.)];
+        let mut frame = input(tick, &points);
+        frame.speed = 12.;
+        let out = engine.step(frame);
+        if x <= 6. {
+            let rear = out.slots[3].unwrap();
+            assert_eq!(rear.last_track_id, Some(40));
+            assert_eq!((-rear.x).max(0.), 0.);
+            assert_eq!(out.slots[1].unwrap().last_track_id, Some(41));
+        }
+    }
+}
+
+#[test]
+fn rear_pass_converges_to_bsd_and_drifts_away_when_it_clears() {
+    let mut engine = MapEngine::default();
+    let mut last_x = 0.;
+    let mut vid = None;
+    for tick in 0..170 {
+        let x = 12. - tick as f32 * 0.175;
+        let points = [radar(40, x, 3.5, -3.5)];
+        let mut frame = input(tick, if x >= 1.2 { &points } else { &[] });
+        frame.speed = 12.;
+        frame.blind[1] = (82..155).contains(&tick);
+        let out = engine.step(frame);
+        if (70..=169).contains(&tick) {
+            let rear = out.slots[4].unwrap();
+            assert_eq!(rear.obj_id, *vid.get_or_insert(rear.obj_id));
+            assert!((-0.31..=0.).contains(&(rear.x - last_x)));
+            if tick == 154 {
+                assert_eq!(rear.x, -10.);
+            }
+            if tick == 169 {
+                assert_eq!(rear.x, -12.5);
+            }
+            last_x = rear.x;
+        }
+    }
+    let mut frame = input(170, &[]);
+    frame.speed = 12.;
+    assert!(engine.step(frame).slots[4].is_none());
 }
 
 #[test]
