@@ -209,16 +209,6 @@ fn brief_forecast_jump_keeps_the_measured_side_vehicle() {
 }
 
 #[test]
-fn display_backlash_scales_with_distance_and_keeps_midrange_ff_steady() {
-    let draw = |target, x, front| selector::display_lateral(0., target, x, front, STEP);
-    assert!(draw(0.07, 10., false) > 0.);
-    assert_eq!(draw(0.07, 30., false), 0.);
-    assert!(draw(0.10, 24., false) > 0.);
-    assert_eq!(draw(0.10, 24., true), 0.);
-    assert_eq!(draw(10., 24., true), 7.5 * STEP);
-}
-
-#[test]
 fn one_tick_range_spike_and_radar_id_change_keep_the_same_object() {
     let mut engine = MapEngine::default();
     let start = confirm(&mut engine, &[radar(40, 11.4, 0., 0.)]).slots[0].unwrap();
@@ -517,6 +507,77 @@ fn displaced_ff_moves_directly_to_the_matching_side_only_outside_the_center() {
             }
         }
     }
+}
+
+#[test]
+fn side_range_grace_requires_an_established_and_continuously_measured_car() {
+    let mut engine = MapEngine::default();
+    let point = [radar(40, 22., 3.5, 0.)];
+    for tick in 0..30 {
+        let mut entry = input(tick, &point);
+        entry.speed = 12.;
+        engine.step(entry);
+    }
+    let frame = engine.previous.as_ref().unwrap();
+    let mut slots = engine.displayed;
+    let vid = slots[2].unwrap().obj_id;
+    let objects = &mut engine.tracker.objects;
+    assert!(objects[0].moved && objects[0].range_consistent);
+    for tick in 30..47 {
+        let now = f64::from(tick) * STEP;
+        objects[0].range_consistent = false;
+        objects[0].evidence.last_radar_t = Some(now);
+        slots = selector::select(now, 12., false, frame, objects, slots, None);
+        assert_eq!(slots[2].map(|o| o.obj_id), (tick < 46).then_some(vid));
+    }
+
+    // A missing measurement or an ID change cannot qualify for a range waiver.
+    for new_track_id in [None, Some(41)] {
+        let now = 30. * STEP;
+        objects[0].evidence.last_radar_t = new_track_id.map(|_| now);
+        objects[0].evidence.last_track_id = new_track_id.or(Some(40));
+        let slots = selector::select(now, 12., false, frame, objects, engine.displayed, None);
+        assert!(slots[2].is_none());
+    }
+    objects[0].evidence.last_radar_t = Some(30. * STEP);
+    objects[0].evidence.last_track_id = Some(40);
+    objects[0].moved = false;
+    let slots = selector::select(30. * STEP, 12., false, frame, objects, [None; 5], None);
+    assert!(slots[2].is_none());
+}
+
+#[test]
+fn the_displaced_ff_can_replace_a_farther_side_car_without_double_display() {
+    let mut engine = MapEngine::default();
+    let points = [radar(40, 14., 1.70, 0.), radar(41, 32., 3.5, 0.)];
+    for tick in 0..23 {
+        let mut entry = input(tick, &points);
+        entry.speed = 12.;
+        engine.step(entry);
+    }
+    let old = engine.displayed[0].unwrap();
+    assert_eq!(old.last_track_id, Some(40));
+    assert_eq!(engine.displayed[2].unwrap().last_track_id, Some(41));
+    let [old_lead, side_car] = points;
+    let next = [old_lead, side_car, radar(42, 24., 0., 0.)];
+    for tick in 23..33 {
+        let mut entry = input(tick, &next);
+        entry.speed = 12.;
+        entry.lead = Some((entry.time, DisplayLead {
+            motion: (24., 0., 0.),
+            measured_track: Some(42),
+            model_prob: 0.95,
+        }));
+        let out = engine.step(entry);
+        if out.slots[0].is_some_and(|o| o.last_track_id == Some(42)) {
+            let side = out.slots[2].unwrap();
+            assert_eq!(side.obj_id, old.obj_id);
+            assert_eq!(side.display_d, old.display_d);
+            assert_eq!(out.slots.iter().flatten().filter(|o| o.obj_id == old.obj_id).count(), 1);
+        }
+    }
+    assert_eq!(engine.displayed[0].unwrap().last_track_id, Some(42));
+    assert_eq!(engine.displayed[2].unwrap().obj_id, old.obj_id);
 }
 
 #[test]

@@ -47,6 +47,7 @@ pub struct TrackedObject {
     pub(super) verified_travel: f64,
     pub(super) moved: bool,
     pub(super) range_consistent: bool,
+    pub(super) range_recovered_t: Option<f64>,
     pub(super) handoff_until: f64,
     pub(super) vision_hits: u32,
     pub(super) front_box_t: Option<f64>,

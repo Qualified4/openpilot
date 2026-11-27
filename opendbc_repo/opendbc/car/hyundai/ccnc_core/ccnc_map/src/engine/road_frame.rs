@@ -217,7 +217,7 @@ impl RoadFrame {
         self
     }
 
-    pub(super) fn lane_u(&self, s: f64, d: f64) -> f64 {
+    fn lane_geometry(&self, s: f64) -> (f64, f64) {
         // Blend out local corrections outside the measured range. Weak or inconsistent boundaries
         // cannot steer the centreline away from position.
         let mut weights = 0.;
@@ -229,7 +229,17 @@ impl RoadFrame {
             weights += weight;
         }
         let norm = weights.max(1.);
-        (d - offset / norm) / (LANE_WIDTH + width_delta / norm)
+        (offset / norm, LANE_WIDTH + width_delta / norm)
+    }
+
+    pub(super) fn lane_u(&self, s: f64, d: f64) -> f64 {
+        let (offset, width) = self.lane_geometry(s);
+        (d - offset) / width
+    }
+
+    pub(super) fn lane_center(&self, s: f64, lane: f64) -> f64 {
+        let (offset, width) = self.lane_geometry(s);
+        offset + lane * width
     }
 }
 

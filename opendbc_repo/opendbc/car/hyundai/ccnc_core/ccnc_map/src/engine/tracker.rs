@@ -66,6 +66,7 @@ impl Tracker {
             verified_travel: 0.,
             moved: false,
             range_consistent: false,
+            range_recovered_t: None,
             handoff_until: f64::NEG_INFINITY,
             vision_hits: 0,
             front_box_t: None,
@@ -624,6 +625,7 @@ fn update_motion(o: &mut TrackedObject, m: Measurement, now: f64, ego: PoseAt, s
         o.stationary_vision_confirmed = false;
         o.stationary_radar_continuous = false;
         o.front_box_t = None;
+        o.range_recovered_t = None;
     }
     if interrupted {
         o.radar_sample = Some(sample);
@@ -645,7 +647,11 @@ fn update_motion(o: &mut TrackedObject, m: Measurement, now: f64, ego: PoseAt, s
     // positive vRel + vEgo because the radar observes it at an oblique angle.
     let doppler = (sample.relative_speed + previous.relative_speed) * 0.5;
     let range_error = (sample.range - previous.range - doppler * interval).abs();
-    o.range_consistent = range_error <= 0.65 + 2.0 * interval;
+    let consistent = range_error <= 0.65 + 2.0 * interval;
+    if o.moved && consistent && !o.range_consistent {
+        o.range_recovered_t = Some(now);
+    }
+    o.range_consistent = consistent;
     let (previous_x, _) = ego.to_ego(previous.world_x, previous.world_y);
     let ground_speed = (m.x - previous_x) / interval;
     if o.range_consistent

@@ -1,13 +1,13 @@
 use sha2::{Digest, Sha256};
 use std::{fs, io, path::Path};
 
-fn collect_sources(dir: &Path, paths: &mut Vec<String>) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
+fn collect_sources(root: &Path, dir: &Path, paths: &mut Vec<String>) -> io::Result<()> {
+    for entry in fs::read_dir(root.join(dir))? {
         let entry = entry?;
-        let path = entry.path();
+        let path = dir.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            collect_sources(&path, paths)?;
-        } else if path.is_file() {
+            collect_sources(root, &path, paths)?;
+        } else if entry.path().is_file() {
             paths.push(
                 path.to_str()
                     .expect("source paths must be UTF-8")
@@ -18,7 +18,7 @@ fn collect_sources(dir: &Path, paths: &mut Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
-fn main() -> io::Result<()> {
+pub fn emit_source_hash(root: &Path) -> io::Result<()> {
     let mut paths = vec![
         "Cargo.toml".into(),
         "Cargo.lock".into(),
@@ -27,17 +27,17 @@ fn main() -> io::Result<()> {
         "det_rules/Cargo.toml".into(),
     ];
     for watched in paths.iter().map(String::as_str).chain(["src", "ccnc_map/src", "det_rules/src"]) {
-        println!("cargo:rerun-if-changed={watched}");
+        println!("cargo:rerun-if-changed={}", root.join(watched).display());
     }
-    collect_sources(Path::new("src"), &mut paths)?;
-    collect_sources(Path::new("ccnc_map/src"), &mut paths)?;
-    collect_sources(Path::new("det_rules/src"), &mut paths)?;
+    collect_sources(root, Path::new("src"), &mut paths)?;
+    collect_sources(root, Path::new("ccnc_map/src"), &mut paths)?;
+    collect_sources(root, Path::new("det_rules/src"), &mut paths)?;
     paths.sort_unstable();
 
     // Keep in sync with _source_hash in ccnc_core_loader.py.
     let mut hash = Sha256::new();
     for path in paths {
-        let contents = fs::read(&path)?;
+        let contents = fs::read(root.join(&path))?;
         for field in [path.as_bytes(), contents.as_slice()] {
             hash.update((field.len() as u64).to_be_bytes());
             hash.update(field);
@@ -45,4 +45,8 @@ fn main() -> io::Result<()> {
     }
     println!("cargo:rustc-env=CCNC_CORE_SOURCE_HASH={:x}", hash.finalize());
     Ok(())
+}
+
+fn main() -> io::Result<()> {
+    emit_source_hash(Path::new("."))
 }

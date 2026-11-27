@@ -10,6 +10,9 @@ ccnc_vision_msg = { path = "../ccnc_visiond/msg" }
 libc = "0.2"
 stripnet = { path = "../lane_type/rust", default-features = false, features = ["ipc"] }
 
+[build-dependencies]
+sha2 = "0.10"
+
 [profile.release]
 lto = "thin"
 strip = "debuginfo"

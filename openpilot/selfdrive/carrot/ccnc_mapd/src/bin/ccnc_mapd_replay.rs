@@ -41,18 +41,30 @@ fn thread_cpu_ns() -> u128 {
     time.tv_sec as u128 * 1_000_000_000 + time.tv_nsec as u128
 }
 
-fn write_evidence(out: &mut impl Write, stamp: u64, cpu_ns: u128, pipeline: &Pipeline) -> io::Result<()> {
+fn write_evidence(
+    out: &mut impl Write,
+    stamp: u64,
+    cpu_ns: u128,
+    pipeline: &Pipeline,
+    trace_motion: bool,
+) -> io::Result<()> {
     let now = stamp as f64 * 1e-9;
     write!(out, "{stamp}\t{cpu_ns}\t")?;
     for o in pipeline.objects() {
         write!(
             out,
-            "{},{},{:.5},{:.5},{:.5},{:.5},{:.5},{},{},{};",
+            "{},{},{:.5},{:.5},{:.5},{:.5},{:.5},{},{},{}",
             o.obj_id, o.evidence.last_track_id.unwrap_or(0), o.s, o.d, o.lane_u, o.v_s, o.existence_p(),
             u8::from(o.evidence.last_radar_t == Some(now)),
             u8::from(o.evidence.last_vision_t.is_some_and(|t| now - t <= 0.14)),
             u8::from(o.evidence.last_lead_t.is_some_and(|t| now - t <= 0.16))
         )?;
+        if trace_motion {
+            let (motion, position) = pipeline.display_motion(o.obj_id)
+                .map_or(("-", 0.), |(moving, d)| (if moving { "M" } else { "S" }, d));
+            write!(out, ",{motion},{position:.5}")?;
+        }
+        write!(out, ";")?;
     }
     writeln!(out)
 }
@@ -61,7 +73,9 @@ fn main() -> io::Result<()> {
     let mut paths = std::env::args_os().skip(1).peekable();
     let bench = paths.next_if(|arg| arg == "--bench").is_some();
     let chain = paths.next_if(|arg| arg == "--chain").is_some();
-    let mut trace = if paths.next_if(|arg| arg == "--trace").is_some() {
+    let trace_flag = paths.next_if(|arg| arg == "--trace" || arg == "--trace-motion");
+    let trace_motion = trace_flag.as_ref().is_some_and(|arg| arg == "--trace-motion");
+    let mut trace = if trace_flag.is_some() {
         let path = paths.next().ok_or_else(|| io::Error::other("--trace requires a path"))?;
         Some(BufWriter::new(File::create(path)?))
     } else {
@@ -69,7 +83,7 @@ fn main() -> io::Result<()> {
     };
     if paths.peek().is_none() {
         return Err(io::Error::other(
-            "usage: ccnc_mapd_replay [--bench] [--chain] [--trace FILE] CACHE.capnp ...",
+            "usage: ccnc_mapd_replay [--bench] [--chain] [--trace FILE | --trace-motion FILE] CACHE.capnp ...",
         ));
     }
 
@@ -130,7 +144,7 @@ fn main() -> io::Result<()> {
                     out.write_all(&bytes)?;
                 }
                 if let Some(trace) = &mut trace {
-                    write_evidence(trace, map.radar_log_mono_time, cpu_ns, pipeline)?;
+                    write_evidence(trace, map.radar_log_mono_time, cpu_ns, pipeline, trace_motion)?;
                 }
             }
             if bench {

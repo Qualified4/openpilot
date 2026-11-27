@@ -41,6 +41,7 @@ dependencies = [
  "ccnc_map",
  "ccnc_vision_msg",
  "libc",
+ "sha2",
  "stripnet",
 ]
 

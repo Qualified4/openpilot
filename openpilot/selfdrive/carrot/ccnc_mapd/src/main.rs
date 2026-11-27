@@ -132,6 +132,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> std::process::ExitCode {
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "--version") {
+        println!("ccnc_mapd {} {}", env!("CARGO_PKG_VERSION"), env!("CCNC_CORE_SOURCE_HASH"));
+        return std::process::ExitCode::SUCCESS;
+    }
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {

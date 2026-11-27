@@ -167,6 +167,11 @@ impl Pipeline {
     }
 
     /// Tracking evidence for replay diagnostics, keyed by the IDs present in the emitted MapOut.
+    /// Current lateral animation for replay diagnostics (moving, settled anchor or displayed position).
+    pub fn display_motion(&self, vid: u64) -> Option<(bool, f64)> {
+        self.engine.display_motion(vid)
+    }
+
     pub fn objects(&self) -> &[TrackedObject] {
         self.engine.objects()
     }

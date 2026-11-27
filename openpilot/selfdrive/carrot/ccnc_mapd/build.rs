@@ -1,4 +1,8 @@
-use std::{fs, io};
+use std::{fs, io, path::Path};
+
+#[allow(dead_code)]
+#[path = "../../../../opendbc_repo/opendbc/car/hyundai/ccnc_core/build.rs"]
+mod core_build;
 
 fn main() -> io::Result<()> {
     // One SCHED_FIFO step below plannerd and radard (Priority.CTRL_LOW) on their core 4: the display-only map
@@ -13,5 +17,5 @@ fn main() -> io::Result<()> {
         .and_then(|value| value.parse::<i32>().ok())
         .ok_or_else(|| io::Error::other("Priority.CTRL_LOW missing from realtime.py"))?;
     println!("cargo:rustc-env=MAPD_RT_PRIORITY={}", priority - 1);
-    Ok(())
+    core_build::emit_source_hash(Path::new("../../../../opendbc_repo/opendbc/car/hyundai/ccnc_core"))
 }

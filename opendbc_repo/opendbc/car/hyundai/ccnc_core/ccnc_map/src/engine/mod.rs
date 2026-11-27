@@ -1,5 +1,6 @@
 //! Display-only object tracking and slot selection.
 
+mod display;
 mod object;
 mod road_frame;
 mod selector;
@@ -10,8 +11,9 @@ pub use object::{Evidence, TrackedObject, VehicleKind};
 use crate::input::{live_tracks::RawPoint, map_events::DisplayLead, model_v2::Model};
 use crate::vision::kind::{FrontCam, KindResult};
 use crate::world::{Pose, PoseAt};
+use display::LateralDisplay;
 use road_frame::RoadFrame;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use tracker::Tracker;
 
 #[derive(Clone, Copy)]
@@ -72,6 +74,9 @@ pub struct EngineSlot {
     pub last_track_id: Option<u64>,
     pub lane_u: f64,
     pub camera_seen: bool,
+    radar_seen: bool,
+    side_range: Option<selector::SideRange>,
+    ff_handoff_until: Option<f64>,
 }
 
 #[derive(Debug, Default)]
@@ -89,6 +94,7 @@ pub struct MapEngine {
     behind: VecDeque<PoseAt>,
     previous: Option<RoadFrame>,
     displayed: [Option<EngineSlot>; 5],
+    lateral: HashMap<u64, LateralDisplay>,
     road_disagreement: Option<f64>,
     last_lane_change: Option<f64>,
     time: Option<f64>,
@@ -97,6 +103,10 @@ pub struct MapEngine {
 impl MapEngine {
     pub fn objects(&self) -> &[TrackedObject] {
         &self.tracker.objects
+    }
+
+    pub(crate) fn display_motion(&self, vid: u64) -> Option<(bool, f64)> {
+        self.lateral.get(&vid).map(LateralDisplay::diagnostic)
     }
 
     pub(crate) fn break_radar_continuity(&mut self) {
@@ -142,6 +152,7 @@ impl MapEngine {
             self.behind.clear();
             self.previous = None;
             self.displayed = [None; 5];
+            self.lateral.clear();
             self.road_disagreement = None;
             self.last_lane_change = None;
         }
@@ -219,6 +230,7 @@ impl MapEngine {
             self.displayed,
             primary,
         );
+        self.lateral.retain(|_, display| now - display.time <= 1.);
         for (index, slot) in slots.iter_mut().enumerate() {
             let Some(slot) = slot else { continue };
             if let Some(old) = self.displayed.iter().flatten().find(|old| old.obj_id == slot.obj_id) {
@@ -229,9 +241,14 @@ impl MapEngine {
                 if matches!(index, 1 | 2) {
                     slot.x = slot.x.min(50.);
                 }
-                slot.display_d =
-                    selector::display_lateral(old.display_d, slot.d, slot.x, index == 0, dt);
             }
+            let object = self.tracker.objects.iter().find(|o| o.obj_id == slot.obj_id).unwrap();
+            let center = frame.lane_center(slot.s, slot.lane_u.round());
+            let display = self.lateral.entry(slot.obj_id)
+                .or_insert_with(|| LateralDisplay::new(now, slot.d, center));
+            let observed = object.evidence.last_radar_t == Some(now)
+                || object.evidence.last_vision_t == Some(now);
+            slot.display_d = display.update(now, observed.then_some((object.d, object.v_d)), center, slot.x);
         }
         self.displayed = slots;
         self.previous = Some(frame);
