@@ -199,6 +199,53 @@ def test_launcher_warmup_cache_mode(launcher, tmp_path):
   assert not state.with_suffix(".crashes").exists()
 
 
+def test_launcher_warmup_if_needed_skips_when_onroad(launcher, tmp_path):
+  binary, state, env = launcher
+  make_assets(tmp_path)
+  params_dir = tmp_path / "params"
+  params_dir.mkdir()
+  (params_dir / "IsOnroad").write_text("1")
+  called = tmp_path / "called"
+  make_binary(binary, f"touch '{called}'\nexit 0\n")
+  res = subprocess.run([LAUNCH, "--warmup-if-needed"],
+                       env={**env, "VISIOND_LAUNCH_PARAMS": str(params_dir)}, timeout=10)
+  assert res.returncode == 0
+  assert not called.exists(), "must never cold-tune while IsOnroad=1"
+  assert not state.with_suffix(".warmup_done").exists()
+
+
+def test_launcher_warmup_if_needed_runs_offroad_when_cache_missing(launcher, tmp_path):
+  binary, state, env = launcher
+  make_assets(tmp_path)
+  params_dir = tmp_path / "params"
+  params_dir.mkdir()
+  (params_dir / "IsOnroad").write_text("0")
+  log = tmp_path / "calls.log"
+  make_binary(binary, f"echo \"$*\" >> '{log}'\n"
+                      f"if [[ \"$1\" == \"--check-cache\" ]]; then exit 1; fi\n"
+                      f"exit 0\n")
+  res = subprocess.run([LAUNCH, "--warmup-if-needed"],
+                       env={**env, "VISIOND_LAUNCH_PARAMS": str(params_dir)}, timeout=10)
+  assert res.returncode == 0
+  assert log.read_text().splitlines() == ["--check-cache", "--warmup-cache"]
+  assert state.with_suffix(".warmup_done").read_text().strip() == "warmed rc=0"
+
+
+def test_launcher_warmup_if_needed_skips_warmup_when_cache_ready(launcher, tmp_path):
+  binary, state, env = launcher
+  make_assets(tmp_path)
+  params_dir = tmp_path / "params"
+  params_dir.mkdir()
+  (params_dir / "IsOnroad").write_text("0")
+  log = tmp_path / "calls.log"
+  make_binary(binary, f"echo \"$*\" >> '{log}'\nexit 0\n")
+  res = subprocess.run([LAUNCH, "--warmup-if-needed"],
+                       env={**env, "VISIOND_LAUNCH_PARAMS": str(params_dir)}, timeout=10)
+  assert res.returncode == 0
+  assert log.read_text().splitlines() == ["--check-cache"]
+  assert state.with_suffix(".warmup_done").read_text().strip() == "ready"
+
+
 def test_enable_ccnc_visiond_conditions(tmp_path, monkeypatch):
   from openpilot.cereal import car
   from openpilot.common.params import Params
@@ -243,6 +290,15 @@ def test_enable_ccnc_visiond_conditions(tmp_path, monkeypatch):
   assert not enabled(True, make_params(), hda2), "a live fingerprint vetoes the stored one"
   failed.touch()
   assert not enabled(True, make_params(), cp)
+
+  warmup_done = tmp_path / "visiond.warmup_done"
+  monkeypatch.setattr(process_config, "CCNC_VISIOND_WARMUP_DONE", warmup_done)
+  failed.unlink()
+  warmup_enabled = process_config.enable_ccnc_visiond_warmup
+  assert warmup_enabled(False, make_params(), cp), "runs offroad when warmup not yet done"
+  assert not warmup_enabled(True, make_params(), cp), "never runs onroad"
+  warmup_done.touch()
+  assert not warmup_enabled(False, make_params(), cp), "does not respawn after warmup_done"
 
 
 BUILT = LAUNCH.parent / "target/release/ccnc_visiond"

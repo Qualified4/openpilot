@@ -112,9 +112,15 @@ pub struct Gate {
     last_wide_ns: Option<u64>,
     front_turn: bool,
     front_cost: u64,
+    /// When true (CPU ORT fallback), degrade wide inference back to low-speed (`<= STANDING_MAX_SPEED`).
+    low_speed_only: bool,
 }
 
 impl Gate {
+    pub fn with_low_speed_only(low_speed_only: bool) -> Self {
+        Self { low_speed_only, ..Self::default() }
+    }
+
     pub fn speed(&mut self, v_ego: f32, now_ns: u64) {
         self.speed = Some((v_ego, now_ns));
     }
@@ -195,9 +201,13 @@ impl Gate {
             && self.speed.is_none_or(|(v_ego, _)| v_ego <= RAW_MAX_SPEED)
     }
 
-    /// Wide side views run at any forward or standing speed (not reversing, fresh `carState`).
-    /// Their cadence adapts to speed and turn-signal state via `wide_period_ns`.
+    /// Wide side views run at any forward or standing speed on GPU (not reversing, fresh `carState`).
+    /// On CPU ORT fallback (`low_speed_only == true`), automatically degrades to `<= STANDING_MAX_SPEED` (3.0 m/s)
+    /// to prevent saturating the little cores at driving speeds.
     pub fn open(&self, now_ns: u64) -> bool {
+        if self.low_speed_only {
+            return self.is_low_speed(now_ns);
+        }
         self.speed.is_some_and(|(v_ego, at)| {
             v_ego.is_finite() && v_ego >= -STANDSTILL_NOISE && now_ns.saturating_sub(at) <= SPEED_TIMEOUT_NS
         })
@@ -532,5 +542,31 @@ mod tests {
         raw_gate.car_state(15.0, false, false, t0);
         let seq_cruise: Vec<_> = (0..4).map(|_| raw_gate.take_target(t0)).collect();
         assert_eq!(seq_cruise, [Target::Left, Target::Right, Target::Left, Target::Right]);
+    }
+
+    #[test]
+    fn cpu_fallback_degrades_wide_gate_to_low_speed_only() {
+        let mut gate = Gate::with_low_speed_only(true);
+        let t0 = 1_000_000_000u64;
+        for (v_ego, blinker, expect_open) in [
+            (0.0, false, true),
+            (3.0, false, true),
+            (-0.0011, false, true),
+            (-0.1, false, false),
+            (3.01, false, false),
+            (5.0, true, false),
+            (15.0, false, false),
+            (25.0, true, false),
+        ] {
+            gate.car_state(v_ego, blinker, false, t0);
+            assert_eq!(gate.open(t0), expect_open, "v_ego={v_ego} blinker={blinker}");
+            assert_eq!(gate.wide_period_ns(t0).is_some(), expect_open);
+            assert_eq!(gate.wide_due(t0, 0), expect_open);
+        }
+        // Road camera front_due still runs at driving speeds for vehicle-kind classification.
+        gate.car_state(20.0, false, false, t0);
+        gate.front_kind(KindAsk::Unconfirmed, t0);
+        assert!(!gate.open(t0));
+        assert!(gate.front_due(t0, None, FrontPace::DEFAULT));
     }
 }

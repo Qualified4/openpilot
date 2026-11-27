@@ -43,6 +43,8 @@ pub struct Detector {
     views: Option<Views>,
     /// The views came from map files and stay as they are.
     fixed: bool,
+    /// True only when running on MNN OpenCL GPU; false on CPU ORT / MNN-CPU / tract fallback.
+    gpu_accelerated: bool,
 }
 
 pub struct Found {
@@ -76,32 +78,32 @@ fn is_night(image: &pre::Img) -> bool {
 
 impl Detector {
     pub fn load(assets: &Path, engine_name: &str, threads: usize) -> Result<Self> {
-        let engine: Box<dyn engine::Engine> = match engine_name {
+        let (engine, gpu_accelerated): (Box<dyn engine::Engine>, bool) = match engine_name {
             "mnn" => match crate::mnn::MnnDetectorEngine::open(assets, crate::mnn::Backend::OpenClFp16, threads) {
                 Ok(mnn) => {
                     eprintln!(
                         "ccnc_visiond: detector using MNN OpenCL FP16 (YOLOX-s 416x192/416x320/416x416, cache={})",
                         crate::mnn::cache_dir().display()
                     );
-                    Box::new(mnn)
+                    (Box::new(mnn), true)
                 }
                 Err(err) => {
                     eprintln!("ccnc_visiond: MNN OpenCL detector unavailable ({err:#}); falling back to CPU ORT");
                     let model = assets.join(MODEL).to_string_lossy().into_owned();
-                    engine::open("ort", &model, [1, 3, SIDE_INPUT[0], SIDE_INPUT[1]], threads)?
+                    (engine::open("ort", &model, [1, 3, SIDE_INPUT[0], SIDE_INPUT[1]], threads)?, false)
                 }
             },
             "mnn-cpu" => {
                 let mnn = crate::mnn::MnnDetectorEngine::open(assets, crate::mnn::Backend::Cpu, threads)?;
                 eprintln!("ccnc_visiond: detector using MNN CPU FP16 (YOLOX-s 416x192/416x320/416x416, threads={threads})");
-                Box::new(mnn)
+                (Box::new(mnn), false)
             }
             other => {
                 let model = assets.join(MODEL).to_string_lossy().into_owned();
-                engine::open(other, &model, [1, 3, SIDE_INPUT[0], SIDE_INPUT[1]], threads)?
+                (engine::open(other, &model, [1, 3, SIDE_INPUT[0], SIDE_INPUT[1]], threads)?, false)
             }
         };
-        Ok(Self { engine, threads, views: None, fixed: false })
+        Ok(Self { engine, threads, views: None, fixed: false, gpu_accelerated })
     }
 
     /// Use the map files in `dir` for every frame instead of building the views from liveCalibration.
@@ -135,6 +137,10 @@ impl Detector {
 
     pub fn fixed(&self) -> bool {
         self.fixed
+    }
+
+    pub fn is_gpu(&self) -> bool {
+        self.gpu_accelerated
     }
 
     pub fn run(&mut self, layout: Layout, nv12: &[u8], target: Target) -> Result<Found> {
@@ -216,7 +222,7 @@ mod tests {
 
     fn front(level: u8) -> (FrontFound, Vec<f32>, pre::Img) {
         let input = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let mut detector = Detector { engine: Box::new(Recorder(input.clone())), threads: 1, views: None, fixed: false };
+        let mut detector = Detector { engine: Box::new(Recorder(input.clone())), threads: 1, views: None, fixed: false, gpu_accelerated: false };
         let (layout, nv12) = frame(level);
         let found = detector.run_front(layout, &nv12).unwrap();
         let bgr = layout.to_bgr(&nv12).unwrap();
@@ -274,7 +280,7 @@ mod tests {
 
     #[test]
     fn predecoded_mnn_skips_grid_decode_and_preserves_person_and_motorcycle() {
-        let mut detector = Detector { engine: Box::new(PreDecodedEngine), threads: 1, views: None, fixed: false };
+        let mut detector = Detector { engine: Box::new(PreDecodedEngine), threads: 1, views: None, fixed: false, gpu_accelerated: false };
         let img = pre::Img { w: 416, h: 192, data: vec![128u8; 416 * 192 * 3] };
         let (boxes, _ratio) = detector.detect(&img, 192, 416, None).unwrap();
         assert_eq!(boxes.len(), 2);
@@ -310,6 +316,7 @@ mod tests {
                 calibration: Calibration::UNKNOWN,
             }),
             fixed: true,
+            gpu_accelerated: false,
         };
         let (layout, nv12) = frame(20);
         let raw_bgr = layout.to_bgr(&nv12).unwrap();

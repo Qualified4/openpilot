@@ -500,7 +500,10 @@ impl Tracker {
                 && (0.5..=1.55).contains(&u.abs())
                 && age <= 0.2 =>
             {
-                self.create(s, d, -speed, u)
+                // While driving (> 3 m/s), a blind-spot side detection is assumed co-moving (v_s = 0)
+                // rather than stationary (-speed) so it stays inside the association gate until the next wide frame.
+                let initial_v_s = if speed > 3. { 0. } else { -speed };
+                self.create(s, d, initial_v_s, u)
             }
             None => None,
         };
@@ -540,13 +543,15 @@ impl Tracker {
             let (x, y) = o.cartesian(frame);
             o.lane_u = frame.lane_u(o.s, o.d);
             o.stationary_radar_continuous &= speed <= 3. && o.supports_stationary_vision(now, speed);
+            let side = o.lane_u.abs() > 0.5;
+            let near_side = side && (-1. ..=6.5).contains(&o.s);
+            let vision_window = if near_side { 0.55 } else { 0.12 };
             let observed = o.evidence.last_radar_t == Some(now)
                 || o.evidence.last_lead_t == Some(now)
-                || o.evidence.last_vision_t.is_some_and(|t| now - t <= 0.12);
+                || o.evidence.last_vision_t.is_some_and(|t| now - t <= vision_window);
             if observed {
                 continue;
             }
-            let side = o.lane_u.abs() > 0.5;
             let in_bsd = side && (-8. ..=0.).contains(&o.s);
             let bsd = in_bsd && blind[usize::from(o.lane_u > 0.)];
             let occluded = x > 6.
@@ -582,6 +587,9 @@ impl Tracker {
                 3.2
             } else if occluded {
                 8.
+            } else if near_side && o.evidence.last_vision_t.is_some_and(|t| now - t <= 1.15) {
+                // Bridge 2 Hz (500 ms total / 1.0 s per-side) cruise wide cadence in the blind spot.
+                0.5
             } else {
                 12.
             };

@@ -9,28 +9,9 @@ CRASHES=3
 # They are copied to the device once and checked against assets.sha256 here at every start.
 ASSETS=${VISIOND_LAUNCH_ASSETS:-/data/ccnc_visiond}
 MANIFEST=${VISIOND_LAUNCH_MANIFEST:-$PWD/assets.sha256}
+PARAMS_DIR=${VISIOND_LAUNCH_PARAMS:-/data/params/d}
 ORT_LIB=libonnxruntime.so.1.32.0
 MNN_CACHE=${CCNC_VISIOND_MNN_CACHE:-/data/cache/ccnc_visiond_mnn}
-
-# Offroad OpenCL tuning cache pre-generation: does not touch crash counters or .failed.
-if [[ ${1:-} == "--warmup-cache" ]]; then
-  if [[ ! -x "$BIN" ]]; then
-    echo "ccnc_visiond: no binary $BIN" >&2
-    exit 1
-  fi
-  export CCNC_VISIOND_ASSETS="$ASSETS"
-  export CCNC_VISIOND_MNN_CACHE="$MNN_CACHE"
-  export LD_LIBRARY_PATH="$ASSETS:${LD_LIBRARY_PATH:-}"
-  exec "$BIN" --warmup-cache
-fi
-
-[[ ! -e "$STATE.failed" ]] || exit 0
-# A process that could not load its model, onnxruntime or maps stays alive and writes the reason here. This is not a crash.
-rm -f "$STATE.halted"
-if [[ ! -x "$BIN" ]]; then
-  echo "no binary $BIN" > "$STATE.failed"
-  exit 0
-fi
 
 # Prints why the assets cannot be used, nothing when every file has its listed sha256.
 asset_problem() {
@@ -53,6 +34,79 @@ asset_problem() {
     fi
   done < "$MANIFEST"
 }
+
+# Offroad OpenCL tuning cache pre-generation: does not touch crash counters or .failed.
+if [[ ${1:-} == "--warmup-cache" ]]; then
+  if [[ ! -x "$BIN" ]]; then
+    echo "ccnc_visiond: no binary $BIN" >&2
+    exit 1
+  fi
+  export CCNC_VISIOND_ASSETS="$ASSETS"
+  export CCNC_VISIOND_MNN_CACHE="$MNN_CACHE"
+  export LD_LIBRARY_PATH="$ASSETS:${LD_LIBRARY_PATH:-}"
+  exec "$BIN" --warmup-cache
+fi
+
+# Safe offroad auto-warmup: only runs when IsOnroad != 1 and cache/manifest is missing or mismatched.
+if [[ ${1:-} == "--warmup-if-needed" ]]; then
+  if [[ -r "$PARAMS_DIR/IsOnroad" ]]; then
+    onroad=$(tr -d '[:space:]' < "$PARAMS_DIR/IsOnroad" 2>/dev/null || true)
+    if [[ $onroad == "1" ]]; then
+      echo "ccnc_visiond: skipping warmup while onroad" >&2
+      exit 0
+    fi
+  fi
+  if [[ ! -x "$BIN" ]]; then
+    echo "no binary $BIN" > "$STATE.warmup_done"
+    exit 0
+  fi
+  problem=$(asset_problem)
+  if [[ -n $problem ]]; then
+    echo "skipped: $problem" > "$STATE.warmup_done"
+    exit 0
+  fi
+  export CCNC_VISIOND_ASSETS="$ASSETS"
+  export CCNC_VISIOND_MNN_CACHE="$MNN_CACHE"
+  export LD_LIBRARY_PATH="$ASSETS:${LD_LIBRARY_PATH:-}"
+  if "$BIN" --check-cache >/dev/null 2>&1; then
+    echo "ready" > "$STATE.warmup_done"
+    exit 0
+  fi
+  stopping=0
+  child=
+  stop_warmup() {
+    stopping=1
+    if [[ -n $child ]]; then
+      kill -TERM "$child" 2>/dev/null || true
+    fi
+  }
+  trap stop_warmup INT TERM
+  "$BIN" --warmup-cache &
+  child=$!
+  if (( stopping )); then
+    stop_warmup
+  fi
+  while :; do
+    wait "$child"
+    rc=$?
+    kill -0 "$child" 2>/dev/null || break
+  done
+  if (( stopping )); then
+    wait "$child" 2>/dev/null || true
+    exit "$rc"
+  fi
+  echo "warmed rc=$rc" > "$STATE.warmup_done"
+  exit 0
+fi
+
+[[ ! -e "$STATE.failed" ]] || exit 0
+# A process that could not load its model, onnxruntime or maps stays alive and writes the reason here. This is not a crash.
+rm -f "$STATE.halted"
+if [[ ! -x "$BIN" ]]; then
+  echo "no binary $BIN" > "$STATE.failed"
+  exit 0
+fi
+
 # The process halts on its own with this reason (status message and .halted), as it does when loading fails.
 problem=$(asset_problem)
 if [[ -n $problem ]]; then

@@ -273,7 +273,7 @@ impl Pipeline {
                 kind: match c.class {
                     2 => VehicleKind::Car,
                     3 => VehicleKind::Motorcycle,
-                    5 | 7 => VehicleKind::Heavy,
+                    // Raw side YOLOX bus/truck (5/7) must not bypass MNv3 + MIN_TRUCK_HEIGHT_M (2.05 m).
                     _ => VehicleKind::Unknown,
                 },
                 confidence: c.score,

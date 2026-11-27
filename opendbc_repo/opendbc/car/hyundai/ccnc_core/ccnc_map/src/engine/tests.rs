@@ -1305,3 +1305,87 @@ fn side_kinds_confirms_tall_side_bus_and_rejects_short_side_van() {
     let out = van_engine.step(input(8, &points));
     assert_ne!(out.slots[2].unwrap().kind, VehicleKind::Heavy, "low side van must not confirm as Heavy");
 }
+
+#[test]
+fn driving_blind_spot_vision_track_survives_cruise_cadence_with_comoving_init() {
+    let mut engine = MapEngine::default();
+    let speed = 18.0;
+    // Cruise wide cadence: 500 ms total -> 1.0 s per side (every 20 ticks at 20 Hz), with 75 ms latency.
+    for tick in 0..70 {
+        let mut entry = input(tick, &[]);
+        entry.speed = speed;
+        let obs = (tick % 20 == 0).then(|| {
+            let age = 0.075;
+            VisionObservation {
+                time: entry.time - age,
+                // Static ground-contact warp shifts captured x by -speed * age; co-moving v_s = 0 restores s = 4.0.
+                x: 4.0 - speed * age,
+                y: 3.5,
+                kind: VehicleKind::Car,
+                confidence: 0.85,
+                position: true,
+            }
+        });
+        entry.vision = obs.as_slice();
+        let out = engine.step(entry);
+        let slot2 = out.slots[2];
+        if tick == 0 {
+            let obj = engine.objects().iter().find(|o| (o.d - 3.5).abs() < 0.5).expect("blind-spot track created");
+            assert!(obj.v_s.abs() < 0.5, "driving vision birth must initialize v_s near 0, got {}", obj.v_s);
+        }
+        if tick == 19 {
+            assert!(!engine.objects().is_empty(), "blind-spot track must survive 1.0 s cruise gap");
+        }
+        if tick >= 40 {
+            assert!(slot2.is_some(), "confirmed blind-spot car must stay visible at tick {tick}");
+        }
+    }
+}
+
+#[test]
+fn driving_parked_roadside_radar_not_promoted_by_side_vision() {
+    let mut engine = MapEngine::default();
+    let speed = 12.0;
+    // Stationary roadside parked car approaching at -speed with radar + matching wide vision.
+    for tick in 0..15 {
+        let x = 14.0 - speed * (tick as f64) * STEP;
+        let mut parked = radar(77, x as f32, 3.5, -(speed as f32));
+        parked.motion_state = 1;
+        let points = [parked];
+        let mut entry = input(tick, &points);
+        entry.speed = speed;
+        let obs = (tick % 4 == 0 && x > 0.5).then_some(VisionObservation {
+            time: entry.time,
+            x,
+            y: 3.5,
+            kind: VehicleKind::Car,
+            confidence: 0.9,
+            position: true,
+        });
+        entry.vision = obs.as_slice();
+        let out = engine.step(entry);
+        assert!(out.slots[2].is_none(), "parked roadside car at tick {tick} must not be promoted by side vision");
+    }
+}
+
+#[test]
+fn side_raw_yolox_bus_or_truck_does_not_bypass_min_truck_height() {
+    use crate::pipeline::Pipeline;
+    use crate::vision::{Box as VisionBox, Calib, Frame, FrameView, Geometry};
+
+    let calib = Calib { rpy: [0.; 3], wide_from_device: [0.; 3], height: 1.22 };
+    let mut pipe = Pipeline::new(1);
+    pipe.set_vision_geometry(Geometry::build(&calib));
+    let frame = Frame {
+        time_ns: 1_000_000_000,
+        view: FrameView::Side(crate::vision::Side::Right),
+        calibration: [0., 0., 0., 0., 0., 0., 1.22],
+        // Large SideR box with raw YOLOX class 5 (bus) and 7 (truck).
+        boxes: vec![
+            VisionBox { xyxy: [180., 185., 340., 260.], confidence: 0.92, class_id: 5 },
+            VisionBox { xyxy: [180., 185., 340., 260.], confidence: 0.92, class_id: 7 },
+        ],
+    };
+    pipe.vision(1_050_000_000, &frame).unwrap();
+    assert!(pipe.objects().iter().all(|o| o.kind != VehicleKind::Heavy));
+}

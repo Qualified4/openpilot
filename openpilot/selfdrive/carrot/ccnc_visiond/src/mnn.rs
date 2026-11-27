@@ -449,6 +449,11 @@ fn verify_cache_ready(assets: &Path, dir: &Path, models: &[&str], backend: Backe
     Ok(())
 }
 
+/// Check whether all 5 MNN OpenCL `.clcache` files and `cache.manifest` match current assets/driver.
+pub fn verify_all_caches_ready(assets: &Path, dir: &Path) -> Result<()> {
+    verify_cache_ready(assets, dir, &ALL_MODELS, Backend::OpenClFp16)
+}
+
 /// Multi-shape YOLOX-s MNN detector: routes `416x192` (front), `416x320` (side), and `416x416` (raw).
 pub struct MnnDetectorEngine {
     front: MnnSession,

@@ -269,7 +269,13 @@ fn run() -> io::Result<()> {
     let mut last_front = None;
     let mut front_pace = sched_cfg.front;
     let mut road_wrong_size = None;
-    let mut gate = gate::Gate::default();
+    let mut gate = gate::Gate::with_low_speed_only(!detector.is_gpu());
+    if !detector.is_gpu() {
+        eprintln!(
+            "ccnc_visiond: CPU fallback active; wide gate degraded to <= {:.1} m/s",
+            gate::STANDING_MAX_SPEED
+        );
+    }
     let mut calib = calib::Calib::default();
     let mut rejected = None;
     let mut calibrated = false;
@@ -500,7 +506,23 @@ fn run_warmup_cache() -> io::Result<()> {
         .map_err(|err| io::Error::other(format!("warmup-cache failed: {err:#}")))
 }
 
+fn run_check_cache() -> io::Result<()> {
+    let assets = PathBuf::from(std::env::var("CCNC_VISIOND_ASSETS").unwrap_or_else(|_| "assets".into()));
+    let cache_dir = mnn::cache_dir();
+    mnn::verify_all_caches_ready(&assets, &cache_dir)
+        .map_err(|err| io::Error::other(format!("check-cache failed: {err:#}")))
+}
+
 fn main() -> std::process::ExitCode {
+    if std::env::args().any(|a| a == "--check-cache") {
+        return match run_check_cache() {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("ccnc_visiond: {err}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     if std::env::args().any(|a| a == "--warmup-cache") {
         return match run_warmup_cache() {
             Ok(()) => std::process::ExitCode::SUCCESS,

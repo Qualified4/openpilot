@@ -71,7 +71,15 @@ fn seen(now: f64, obj: &TrackedObject) -> bool {
 }
 
 fn vision(now: f64, obj: &TrackedObject) -> bool {
-    obj.evidence.last_vision_t.is_some_and(|t| now - t <= 0.45)
+    let window = if obj.radar_hits == 0
+        && obj.lane_u.abs() > 0.5
+        && (-1. ..=6.5).contains(&obj.s)
+    {
+        1.15
+    } else {
+        0.45
+    };
+    obj.evidence.last_vision_t.is_some_and(|t| now - t <= window)
 }
 
 fn cost(now: f64, o: &TrackedObject, range: f64, occupied: Option<u64>) -> f64 {
@@ -236,7 +244,8 @@ pub(super) fn select(
             && o.supports_stationary_vision(now, speed);
         let side_range = (o.lane.abs() == 1 && !o.rear)
             .then(|| side_range_hold(now, o, previous[side + 1])).flatten();
-        let measured_vehicle = vision(now, o)
+        let stationary_ok = !stationary || o.verified_travel >= 3.;
+        let measured_vehicle = (vision(now, o) && stationary_ok)
             || confirmed_stopped
             // Near handoff was confirmed when measured. Current ego speed cannot
             // reclassify a rear coast that has no new relative-speed measurement.
@@ -246,7 +255,7 @@ pub(super) fn select(
                     || o.same_track_streak >= SIDE_RANGE_MIN_STREAK
                         && side_range.is_some_and(|p| p.time - p.since >= SIDE_RANGE_ESTABLISHED)
                     || near_continuity || handoff || extended_handoff.is_some())
-                && (!stationary || o.verified_travel >= 3.)
+                && stationary_ok
             || speed <= 5. && o.motion_hits >= 3;
         if ff_handoff {
             let threshold = if side_incumbent { HOLD } else { SIDE_CONFIRM };

@@ -55,7 +55,7 @@ const MIN_HEIGHT: f64 = 32.0;
 /// The largest boxes of a frame that are classified.
 pub const MAX_CROPS: usize = 4;
 /// Side view boxes are classified only when this is on (`ccnc_map::vision::kind::SIDE_KINDS` has the reasons).
-pub const SIDE_KINDS: bool = false;
+pub const SIDE_KINDS: bool = true;
 
 /// One frame's boxes to classify.
 pub struct Job {
@@ -419,5 +419,10 @@ mod tests {
         let encoded = ccnc_vision_msg::encode(&out, 200);
         assert!(!encoded.is_empty());
         assert_eq!(out.calibration, captured);
+    }
+
+    #[test]
+    fn side_kinds_enabled_for_cross_crate_sync() {
+        assert!(SIDE_KINDS, "ccnc_visiond::classify::SIDE_KINDS must stay synced with ccnc_map");
     }
 }

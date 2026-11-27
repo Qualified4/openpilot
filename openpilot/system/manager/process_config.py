@@ -128,12 +128,18 @@ def enable_ccnc_mapd(started: bool, params: Params, CP: car.CarParams) -> bool:
   return _hda1_cluster_display(params, CP) and params.get("CcncPosDisplayMode", return_default=True) in (0, 1)
 
 CCNC_VISIOND_FAILED = "/dev/shm/ccnc_visiond.failed"
+CCNC_VISIOND_WARMUP_DONE = "/dev/shm/ccnc_visiond.warmup_done"
 
 def enable_ccnc_visiond(started: bool, params: Params, CP: car.CarParams) -> bool:
   if os.path.exists(CCNC_VISIOND_FAILED):
     return False
   # ccnc_mapd is the only reader of CcncVision: no inference without it.
   return enable_ccnc_mapd(started, params, CP)
+
+def enable_ccnc_visiond_warmup(started: bool, params: Params, CP: car.CarParams) -> bool:
+  if started or os.path.exists(CCNC_VISIOND_FAILED) or os.path.exists(CCNC_VISIOND_WARMUP_DONE):
+    return False
+  return _hda1_cluster_display(params, CP) and params.get("CcncPosDisplayMode", return_default=True) in (0, 1)
 
 def cluster_hud_active(params: Params) -> bool:
   try:
@@ -207,6 +213,7 @@ procs = [
   PythonProcess("radarcan", "openpilot.selfdrive.carrot.radar.radarcan", only_onroad),
   NativeProcess("ccnc_mapd", "openpilot/selfdrive/carrot/ccnc_mapd", ["./mapd_launch.sh"], enable_ccnc_mapd),
   NativeProcess("ccnc_visiond", "openpilot/selfdrive/carrot/ccnc_visiond", ["./visiond_launch.sh"], enable_ccnc_visiond),
+  NativeProcess("ccnc_visiond_warmup", "openpilot/selfdrive/carrot/ccnc_visiond", ["./visiond_launch.sh", "--warmup-if-needed"], enable_ccnc_visiond_warmup),
   PythonProcess("hardwared", "openpilot.system.hardware.hardwared", always_run),
   PythonProcess("modem", "openpilot.system.hardware.tici.modem", always_run, enabled=TICI and HARDWARE.get_device_type() != "tici"),
   PythonProcess("tombstoned", "openpilot.system.tombstoned", always_run, enabled=not PC),
