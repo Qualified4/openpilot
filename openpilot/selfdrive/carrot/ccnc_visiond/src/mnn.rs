@@ -25,6 +25,7 @@ pub const ALL_MODELS: [&str; 5] = [MODEL_FRONT, MODEL_SIDE, MODEL_RAW, MODEL_KIN
 
 pub const DEFAULT_CACHE_DIR: &str = "/data/cache/ccnc_visiond_mnn";
 pub const CAPI_LIB_NAME: &str = "libmnn_capi.so";
+pub const CL_LIB_NAME: &str = "libMNN_CL.so";
 
 pub const BACKEND_CPU: i32 = 0;
 pub const BACKEND_OPENCL: i32 = 3;
@@ -108,17 +109,44 @@ impl MnnApi {
         paths
     }
 
+    fn cl_candidate_paths(assets: &Path) -> Vec<PathBuf> {
+        let mut paths = vec![assets.join(CL_LIB_NAME)];
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                paths.push(dir.join(CL_LIB_NAME));
+            }
+        }
+        paths.push(PathBuf::from(CL_LIB_NAME));
+        paths
+    }
+
+    /// With `MNN_SEP_BUILD=ON`, the OpenCL backend (`type=3`) is registered by `libMNN_CL.so`'s
+    /// static constructor when loaded into the process. Missing `libMNN_CL.so` is non-fatal so
+    /// host CPU tests and automatic CPU ORT fallback continue to work cleanly.
+    fn try_load_opencl_plugin(assets: &Path) -> *mut c_void {
+        for cand in Self::cl_candidate_paths(assets) {
+            let s = cand.to_string_lossy();
+            let Ok(cpath) = CString::new(s.as_ref()) else { continue };
+            let handle = unsafe { libc::dlopen(cpath.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL | libc::RTLD_NODELETE) };
+            if !handle.is_null() {
+                return handle;
+            }
+        }
+        std::ptr::null_mut()
+    }
+
     fn load(assets: &Path) -> Result<Arc<Self>> {
         let mut errors = Vec::new();
         for cand in Self::candidate_paths(assets) {
             let s = cand.to_string_lossy().into_owned();
             let cpath = CString::new(s.as_str())?;
-            // RTLD_NODELETE avoids tearing down OpenCL driver state on drop.
-            let lib = unsafe { libc::dlopen(cpath.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL | libc::RTLD_NODELETE) };
+            // RTLD_GLOBAL exposes libMNN.so symbols to libMNN_CL.so; RTLD_NODELETE avoids tearing down OpenCL driver state on drop.
+            let lib = unsafe { libc::dlopen(cpath.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL | libc::RTLD_NODELETE) };
             if lib.is_null() {
                 errors.push(format!("{s}: {}", dlerror_string()));
                 continue;
             }
+            let _cl = Self::try_load_opencl_plugin(assets);
             let api = unsafe {
                 MnnApi {
                     _lib: lib,
