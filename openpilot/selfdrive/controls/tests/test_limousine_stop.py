@@ -9,14 +9,17 @@ from openpilot.selfdrive.controls.lib.limousine_stop import (
   BRAKE_LAMP_HOLD_ACCEL,
   DEFAULT_STOP_DISTANCE,
   EMERGENCY_DECEL_THRESHOLD,
+  GRAVITY,
   MAX_APPROACH_DECEL,
   MAX_RELEASE_JERK,
+  MAX_UPHILL_SLOPE_COMP,
   MIN_SAFE_STOP_DISTANCE,
   SAFETY_OVERRIDE_MARGIN,
   STOP_DISTANCE_TOLERANCE,
   V_EASE_END,
   V_EASE_START,
   LimousineStopController,
+  brake_lamp_hold_floor,
   limousine_decel_envelope,
 )
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl, LongCtrlState
@@ -272,3 +275,60 @@ def test_longcontrol_integration_unwinds_stopping_accel_safely():
     prev = accel
   assert prev > -0.75
   assert loc.limousine_stop.active is True
+
+
+def test_uphill_slope_compensation_preserves_hydraulic_brake_floor():
+  import math
+  # Flat ground and downhill keep the flat brake-lamp floor (-0.42 m/s^2).
+  assert brake_lamp_hold_floor(0.0) == pytest.approx(BRAKE_LAMP_HOLD_ACCEL)
+  assert brake_lamp_hold_floor(-0.05) == pytest.approx(BRAKE_LAMP_HOLD_ACCEL)
+  assert brake_lamp_hold_floor(float("nan")) == pytest.approx(BRAKE_LAMP_HOLD_ACCEL)
+
+  # +4.6% uphill (480-7 observed grade): g*sin(pitch) ~= 0.45 m/s^2 -> floor ~= -0.87 m/s^2.
+  pitch_480 = math.atan(0.046)
+  expected_floor = BRAKE_LAMP_HOLD_ACCEL - GRAVITY * math.sin(pitch_480)
+  assert brake_lamp_hold_floor(pitch_480) == pytest.approx(expected_floor, abs=1e-4)
+
+  # Steep uphill caps compensation at MAX_UPHILL_SLOPE_COMP.
+  assert brake_lamp_hold_floor(math.atan(0.20)) == pytest.approx(BRAKE_LAMP_HOLD_ACCEL - MAX_UPHILL_SLOPE_COMP)
+
+  # On +4.6% uphill with gentle upstream braking (-0.77 m/s^2, hydraulic ~-0.32 m/s^2):
+  # must NOT relax hydraulic pressure to zero; returns a_cmd untouched.
+  ctrl = LimousineStopController()
+  out_gentle = ctrl.update(
+    a_cmd=-0.77,
+    previous_accel=-0.77,
+    v_ego=1.0,
+    dt=DT_CTRL,
+    enabled=True,
+    should_stop=True,
+    in_stopping_state=True,
+    has_lead=True,
+    d_rel=5.0,
+    v_lead=0.0,
+    pitch_rad=pitch_480,
+  )
+  assert out_gentle == pytest.approx(-0.77)
+  assert ctrl.active is False
+
+  # On +4.6% uphill with heavy braking (-1.6 m/s^2, hydraulic ~-1.15 m/s^2):
+  # smoothly eases toward slope-compensated floor (-0.87 m/s^2), keeping hydraulic <= -0.42 m/s^2.
+  prev = -1.6
+  for _ in range(150):
+    prev = ctrl.update(
+      a_cmd=-1.6,
+      previous_accel=prev,
+      v_ego=0.8,
+      dt=DT_CTRL,
+      enabled=True,
+      should_stop=True,
+      in_stopping_state=True,
+      has_lead=True,
+      d_rel=8.0,
+      v_lead=0.0,
+      pitch_rad=pitch_480,
+    )
+    assert prev <= expected_floor + 1e-9
+    assert prev >= -1.6 - 1e-9
+  assert prev == pytest.approx(expected_floor, abs=0.02)
+  assert ctrl.active is True

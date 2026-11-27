@@ -9,8 +9,10 @@ Empirical basis (route 00000486--0b5f8c8e99, Hyundai Sonata 2024 CAN-FD):
 """
 import math
 
-# Empirically-verified minimum deceleration floor to keep physical brake lights ON.
-BRAKE_LAMP_HOLD_ACCEL = -0.42  # m/s^2 (100% hold <= -0.40 m/s^2 + 0.02 margin)
+# Empirically-verified minimum hydraulic deceleration floor to keep physical brake lights ON.
+BRAKE_LAMP_HOLD_ACCEL = -0.42  # m/s^2 (100% hold <= -0.40 m/s^2 + 0.02 margin on flat ground)
+GRAVITY = 9.81  # m/s^2
+MAX_UPHILL_SLOPE_COMP = 0.80  # m/s^2 (~8.2% grade cap on uphill hydraulic floor shift)
 
 # Low-speed ease-out curve speed boundaries.
 V_EASE_START = 3.5  # m/s (~12.6 km/h): begin easing strong braking
@@ -40,15 +42,31 @@ def smoothstep(x: float) -> float:
   return t * t * (3.0 - 2.0 * t)
 
 
-def limousine_decel_envelope(v_ego: float) -> float:
-  """Speed-dependent signed deceleration envelope (m/s^2) tapering to BRAKE_LAMP_HOLD_ACCEL."""
-  if v_ego <= V_EASE_END:
+def brake_lamp_hold_floor(pitch_rad: float = 0.0) -> float:
+  """Slope-compensated minimum net deceleration (m/s^2) that keeps hydraulic braking <= -0.42 m/s^2.
+
+  On an uphill (pitch_rad > 0), gravity already supplies -g*sin(pitch) of net deceleration,
+  so the ESC/IBS ECU reduces hydraulic pressure by g*sin(pitch). Shifting the floor downward
+  by g*sin(pitch) keeps hydraulic pressure at -0.42 m/s^2 (preserving 0x412 brake lights and
+  preventing zero-pressure rollback/lash). Downhills (pitch_rad < 0) retain -0.42 m/s^2.
+  """
+  if not math.isfinite(pitch_rad) or pitch_rad <= 0.0:
     return BRAKE_LAMP_HOLD_ACCEL
+  uphill_g = min(MAX_UPHILL_SLOPE_COMP, GRAVITY * math.sin(pitch_rad))
+  return BRAKE_LAMP_HOLD_ACCEL - uphill_g
+
+
+def limousine_decel_envelope(v_ego: float, pitch_rad: float = 0.0) -> float:
+  """Speed-dependent signed deceleration envelope (m/s^2) tapering to slope-compensated brake-lamp floor."""
+  floor = brake_lamp_hold_floor(pitch_rad)
+  max_decel = max(MAX_APPROACH_DECEL, abs(floor))
+  if v_ego <= V_EASE_END:
+    return floor
   if v_ego >= V_EASE_START:
-    return -MAX_APPROACH_DECEL
+    return -max_decel
   s = (v_ego - V_EASE_END) / (V_EASE_START - V_EASE_END)
   ease = smoothstep(s)
-  return BRAKE_LAMP_HOLD_ACCEL - ease * (MAX_APPROACH_DECEL - abs(BRAKE_LAMP_HOLD_ACCEL))
+  return floor - ease * (max_decel - abs(floor))
 
 
 class LimousineStopController:
@@ -87,6 +105,7 @@ class LimousineStopController:
     d_rel: float = 100.0,
     v_lead: float = 0.0,
     stop_distance: float = DEFAULT_STOP_DISTANCE,
+    pitch_rad: float = 0.0,
   ) -> float:
     """Return possibly-softened longitudinal acceleration command."""
     if (
@@ -100,8 +119,10 @@ class LimousineStopController:
       self.reset()
       return a_cmd
 
-    # Never touch acceleration or braking already gentler than the brake-lamp floor.
-    if a_cmd >= BRAKE_LAMP_HOLD_ACCEL or v_ego > V_EASE_START or v_ego <= V_MIN_ACTIVE:
+    lamp_floor = brake_lamp_hold_floor(pitch_rad)
+
+    # Never touch acceleration or braking already gentler than the slope-compensated brake-lamp floor.
+    if a_cmd >= lamp_floor or v_ego > V_EASE_START or v_ego <= V_MIN_ACTIVE:
       self.reset()
       return a_cmd
 
@@ -123,7 +144,7 @@ class LimousineStopController:
       self.reset()
       return a_cmd
 
-    a_curve = limousine_decel_envelope(v_ego)
+    a_curve = limousine_decel_envelope(v_ego, pitch_rad)
     a_target = a_curve
 
     if has_lead:
@@ -165,8 +186,8 @@ class LimousineStopController:
 
     self.safety_override = False
 
-    # Enforce invariants: never weaker than brake-lamp floor, never stronger than a_cmd.
-    a_target = min(BRAKE_LAMP_HOLD_ACCEL, a_target)
+    # Enforce invariants: never weaker than slope-compensated brake-lamp floor, never stronger than a_cmd.
+    a_target = min(lamp_floor, a_target)
     if a_target < a_cmd - 1e-6 or (not self.active and a_target <= a_cmd):
       self.active = False
       self._last_accel = a_cmd
@@ -175,7 +196,7 @@ class LimousineStopController:
     base_prev = self._last_accel if self.active else min(previous_accel, a_cmd)
     # Limit only upward release jerk; allow immediate strengthening if needed.
     a_out = min(a_target, base_prev + MAX_RELEASE_JERK * dt)
-    a_out = max(a_cmd, min(BRAKE_LAMP_HOLD_ACCEL, a_out))
+    a_out = max(a_cmd, min(lamp_floor, a_out))
 
     self.active = True
     self._last_accel = a_out

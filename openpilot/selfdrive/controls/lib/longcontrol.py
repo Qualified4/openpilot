@@ -74,6 +74,7 @@ class LongControl:
     self.last_output_accel = 0.0
     self.coasting = CruiseCoastingControl()
     self.limousine_stop = LimousineStopController()
+    self.road_pitch = 0.0
 
 
     self.params = Params()
@@ -231,6 +232,7 @@ class LongControl:
         has_lead=has_lead,
         d_rel=float(getattr(lead_one, 'dRel', 100.0)) if has_lead else 100.0,
         v_lead=float(getattr(lead_one, 'vLead', 0.0)) if has_lead else 0.0,
+        pitch_rad=float(self.road_pitch),
       )
     else:
       self.limousine_stop.reset()
