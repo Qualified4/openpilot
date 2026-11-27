@@ -60,17 +60,18 @@ def test_ff_lateral_saturates_before_can_packing(display, monkeypatch, lateral, 
   assert (raw - 128 if raw >= 64 else raw) / 10 == expected
 
 
-def test_cmap_bsd_box_yields_to_a_confirmed_rear_vehicle():
+@pytest.mark.parametrize(("distance", "expected"), ((6.4, 0.), (0., 0.), (-5., 4.)))
+def test_cmap_bsd_box_yields_to_a_confirmed_rear_vehicle(distance, expected):
   core = ccnc_core_loader.load()
   with log.Event.from_bytes(packet(NS, status=0x30)) as reader:
     event = reader.as_builder()
   slot = event.customReserved3.slots[4]
-  slot.present, slot.vid, slot.distance, slot.lateral = True, 9, -5., -3.
+  slot.present, slot.vid, slot.distance, slot.lateral = True, 9, distance, -3.
   slot.detect, slot.kind, slot.kindConfirmed = 2, 2, True
   values = {}
   core.apply_cmap(values, event.to_bytes())
   assert (values["LR_DETECT"], values["LR_DETECT_DISTANCE"], values["LR_DETECT_LATERAL"]) == (4, 8., 2.8)
-  assert (values["RR_DETECT"], values["RR_DETECT_DISTANCE"], values["RR_DETECT_LATERAL"]) == (6, 4., 3.)
+  assert (values["RR_DETECT"], values["RR_DETECT_DISTANCE"], values["RR_DETECT_LATERAL"]) == (6, expected, 3.)
 
 
 def test_stale_after_0_25s_uses_mode0():

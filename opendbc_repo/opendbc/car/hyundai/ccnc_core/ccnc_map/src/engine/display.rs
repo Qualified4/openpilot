@@ -10,9 +10,11 @@ enum Motion {
     Settled {
         anchor: f64,
         reference: f64,
+        centered: bool,
     },
     Moving {
         direction: f64,
+        started_at: f64,
         reverse_time: f64,
         last_advance: f64,
         quiet_d: f64,
@@ -46,6 +48,7 @@ impl LateralDisplay {
             motion: Motion::Settled {
                 anchor,
                 reference: d,
+                centered: anchor == lane_center,
             },
             d: anchor,
             observed_d: d,
@@ -94,9 +97,10 @@ impl LateralDisplay {
         };
         self.direction = direction;
 
-        let departure = 0.29 + 0.004 * range.abs().min(100.);
         match &mut self.motion {
-            Motion::Settled { anchor, reference } => {
+            Motion::Settled { anchor, reference, centered } => {
+                let departure = if *centered { 0.43 } else { 0.29 };
+                let departure = departure + 0.004 * range.abs().min(100.);
                 let displacement = (self.observed_d - *anchor) * direction;
                 let travel = (self.observed_d - *reference) * direction;
                 let sustained = self.direction_time >= 0.15 && displacement >= departure;
@@ -107,6 +111,7 @@ impl LateralDisplay {
                 if progressive || (sustained || large) && travel >= departure {
                     self.motion = Motion::Moving {
                         direction,
+                        started_at: now,
                         reverse_time: 0.,
                         last_advance: now,
                         quiet_d: self.observed_d,
@@ -120,6 +125,7 @@ impl LateralDisplay {
                 last_advance,
                 quiet_d,
                 quiet_time,
+                ..
             } => {
                 *reverse_time = if dt <= 0.10 && raw_step * *moving < -0.025 {
                     *reverse_time + dt
@@ -140,9 +146,11 @@ impl LateralDisplay {
                         OFF_CENTER_SETTLE_TIME
                     };
                     if *quiet_time >= settle_time {
+                        let anchor = anchor(self.observed_d, lane_center);
                         self.motion = Motion::Settled {
-                            anchor: anchor(self.observed_d, lane_center),
+                            anchor,
                             reference: self.observed_d,
+                            centered: anchor == lane_center,
                         };
                     }
                 } else {
@@ -163,7 +171,7 @@ impl LateralDisplay {
             Motion::Settled { anchor, .. } => {
                 (*anchor - self.d).clamp(-dt.min(0.075), dt.min(0.075))
             }
-            Motion::Moving { direction, last_advance, .. } => {
+            Motion::Moving { direction, started_at, last_advance, .. } => {
                 let direction = *direction;
                 let lead = 0.07 + 0.04 * (self.velocity.abs() - 0.45).clamp(0., 1.);
                 let target = self.observed_d + lead * (self.velocity * direction).max(0.) * direction;
@@ -171,7 +179,9 @@ impl LateralDisplay {
                 if step > 0. {
                     *last_advance = now;
                 }
-                direction * step.min(7.5 * dt).min(0.37)
+                let ramp = 0.45 + 0.55 * ((now - *started_at) / 0.10).min(1.);
+                // One CAN lateral quantum per tick, including irregular radar intervals.
+                direction * step.min(ramp * (2.4 * dt).min(0.10))
             }
         };
         self.d
@@ -251,6 +261,14 @@ mod tests {
     }
 
     #[test]
+    fn a_sustained_offset_without_lateral_velocity_stays_centered() {
+        let mut trace = Trace::new(0.);
+        for _ in 0..20 {
+            assert_eq!(trace.step(0.45, 0., 20.), (false, 0.));
+        }
+    }
+
+    #[test]
     fn lane_change_is_monotone_through_three_slow_ticks() {
         let mut trace = Trace::new(0.);
         let mut previous = 0.;
@@ -263,11 +281,20 @@ mod tests {
             }
             let (moving, shown) = trace.step(d, if pause { 0. } else { 2.4 }, 20.);
             assert!(!started || moving, "settled at tick {i}");
-            assert!((0. ..=0.37).contains(&(shown - previous)));
+            if moving && !started {
+                assert!(shown - previous <= 0.045001);
+            }
+            assert!((0. ..=0.100001).contains(&(shown - previous)));
             previous = shown;
             started |= moving;
         }
-        assert!(started && previous > 3.1);
+        assert!(started && previous > 2.6);
+        for _ in 0..5 {
+            let (moving, shown) = trace.step(d, 0., 20.);
+            assert!(moving && (0. ..=0.100001).contains(&(shown - previous)));
+            previous = shown;
+        }
+        assert!(previous > 3.1);
         for _ in 0..35 {
             trace.step(d, 0., 20.);
         }
@@ -295,11 +322,12 @@ mod tests {
         for i in 1..=18 {
             let (moving, shown) = trace.step(1.7 + f64::from(i) * 0.1, 2., 20.);
             assert!(!started || moving);
-            assert!((-0.01..=0.37).contains(&(shown - previous)));
+            assert!((-0.01..=0.100001).contains(&(shown - previous)));
             previous = shown;
             started |= moving;
         }
-        assert!(started && previous > 3.1);
+        assert!(started && previous > 3.);
+        assert!(trace.step(3.5, 0., 20.).1 > 3.1);
     }
 
     #[test]

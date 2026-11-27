@@ -167,7 +167,7 @@ fn slot_position(index: usize, slot: &Slot) -> (f64, f64) {
     let distance = if index < 3 {
         (0.8 * x).clamp(0., 204.7)
     } else {
-        (0.8 * x.abs()).min(25.5)
+        (0.8 * (-x).max(0.)).min(25.5)
     };
     (distance, lateral)
 }
@@ -231,11 +231,22 @@ mod tests {
         cell.lateral = 15.;
         assert_eq!(slot_position(1, &cell), (204.7, 12.7));
         assert_eq!(slot_position(2, &cell), (204.7, 0.));
-        assert_eq!(slot_position(3, &cell), (25.5, 12.7));
+        assert_eq!(slot_position(3, &cell), (0., 12.7));
         cell.lateral = -15.;
         cell.distance = -300.;
         assert_eq!(slot_position(2, &cell), (0., 12.7));
         assert_eq!(slot_position(4, &cell), (25.5, 12.7));
+    }
+
+    #[test]
+    fn rear_slot_crosses_the_origin_before_showing_rear_distance() {
+        let mut cell = slot(2, KIND_CAR, true);
+        for (x, expected) in [(6.4, 0.), (0.2, 0.), (0., 0.), (-5., 4.), (-10., 8.)] {
+            cell.distance = x;
+            for index in [3, 4] {
+                assert_eq!(slot_position(index, &cell).0, expected);
+            }
+        }
     }
 
     fn message(stamp: u64, valid: bool) -> Vec<u8> {

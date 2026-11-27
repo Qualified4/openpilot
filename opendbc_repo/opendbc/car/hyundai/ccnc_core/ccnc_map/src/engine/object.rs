@@ -20,6 +20,8 @@ pub struct Evidence {
 // Sparse front detections may be several seconds apart at a stop.
 pub(super) const STATIONARY_VISION_WINDOW: f64 = 8.;
 pub(super) const REAR_LIMIT: f64 = -10.;
+// Without BSD, require the projected pass to finish sooner.
+const SPLIT_ORIGIN_WINDOW: f64 = 0.45;
 
 #[derive(Clone, Debug)]
 pub struct TrackedObject {
@@ -78,11 +80,16 @@ impl TrackedObject {
 
     /// Extend a confirmed near handoff only while its rear slot stays occupied.
     pub(super) fn rear_coast(&self, now: f64, was_rear: bool, blind: bool) -> bool {
+        let age = self.radar_age(now);
         was_rear
             && self.handoff_until.is_finite()
-            && ((REAR_LIMIT..0.).contains(&self.s) && self.radar_age(now) <= 1.65
-                || blind && (0. ..=0.65).contains(&self.s) && self.v_s <= 0.
-                    && self.radar_age(now) <= 0.55)
+            && ((REAR_LIMIT..0.).contains(&self.s) && age <= 1.65
+                || self.s >= 0. && age <= 0.55
+                    && (blind && self.s <= 0.65 && self.v_s <= 0.
+                        // A previously split car must be closing fast enough to reach zero
+                        // within the shorter uncorroborated radar gap allowance.
+                        || self.evidence.last_radar_t.is_some_and(|t| t <= self.split_until)
+                            && self.v_s < -0.5 && self.s <= -self.v_s * (SPLIT_ORIGIN_WINDOW - age)))
     }
 
     pub(super) fn supports_stationary_vision(&self, now: f64, speed: f64) -> bool {

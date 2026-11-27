@@ -403,6 +403,40 @@ fn front_to_rear_passes_through_zero_with_one_id_and_no_teleport() {
 }
 
 #[test]
+fn split_pass_keeps_the_same_rear_vehicle_across_the_radar_gap_without_bsd() {
+    for (rear, y) in [(3, -3.5), (4, 3.5)] {
+        let mut engine = MapEngine::default();
+        let mut previous: Option<EngineSlot> = None;
+        for tick in 0..80 {
+            let x = 12. - tick as f32 * 0.3;
+            let mut points = vec![radar(41, 20., y, 0.)];
+            if tick <= 35 {
+                points.push(radar(40, x, y, -6.));
+            }
+            let mut frame = input(tick, &points);
+            frame.speed = 12.;
+            let out = engine.step(frame);
+            if (35..=63).contains(&tick) {
+                let slot = out.slots[rear].unwrap_or_else(|| panic!("missing rear at tick {tick}"));
+                assert_eq!(slot.last_track_id, Some(40));
+                assert_eq!(out.slots[rear - 2].unwrap().last_track_id, Some(41));
+                if let Some(old) = previous {
+                    assert_eq!(slot.obj_id, old.obj_id);
+                    assert!(slot.x < old.x);
+                } else {
+                    assert!(slot.x > 0.);
+                }
+                previous = Some(slot);
+            }
+            if tick == 70 {
+                assert!(out.slots[rear].is_none());
+            }
+        }
+        assert!(previous.unwrap().x < -6.);
+    }
+}
+
+#[test]
 fn confirmed_rear_coast_survives_ego_speed_crossing_the_low_speed_threshold() {
     let mut engine = MapEngine::default();
     confirm(&mut engine, &[radar(40, 4., 3.5, 0.)]);

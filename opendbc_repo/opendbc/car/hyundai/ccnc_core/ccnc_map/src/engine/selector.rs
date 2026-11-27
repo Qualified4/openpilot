@@ -254,7 +254,7 @@ pub(super) fn select(
         let front_slot = occupied[side + 1];
         let rear_slot = occupied[side + 3];
         let behind = cars.iter().copied().filter(|o| o.rear
-            || o.s <= 0. && o.rear_coast(now, rear_slot == Some(o.obj_id), blind[side]))
+            || (o.s <= 0. || !seen(now, o)) && o.rear_coast(now, rear_slot == Some(o.obj_id), blind[side]))
             .min_by(|a, b| {
                 seen(now, b).cmp(&seen(now, a)).then_with(|| {
                     cost(now, a, a.s.abs(), rear_slot).total_cmp(&cost(now, b, b.s.abs(), rear_slot))
