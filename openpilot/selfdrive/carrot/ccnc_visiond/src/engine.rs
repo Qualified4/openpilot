@@ -4,6 +4,11 @@ use anyhow::{bail, Result};
 pub trait Engine {
     /// Run a single-input model on an NCHW f32 tensor; returns (output shape, data) of output 0.
     fn run(&mut self, shape: [usize; 4], data: Vec<f32>) -> Result<(Vec<usize>, Vec<f32>)>;
+    /// Whether YOLOX outputs are raw logits needing `yolox::grid_decode`.
+    /// `true` for CPU ORT `yolox_tiny_int8.onnx`, `false` for MNN `yolox_s_*_fp16.mnn` (`decode_in_inference=True`).
+    fn needs_grid_decode(&self) -> bool {
+        true
+    }
 }
 
 pub fn open(engine: &str, path: &str, shape: [usize; 4], threads: usize) -> Result<Box<dyn Engine>> {

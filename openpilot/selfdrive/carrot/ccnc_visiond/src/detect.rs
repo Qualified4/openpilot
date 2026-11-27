@@ -69,9 +69,32 @@ fn is_night(image: &pre::Img) -> bool {
 }
 
 impl Detector {
-    pub fn load(assets: &Path, engine: &str, threads: usize) -> Result<Self> {
-        let model = assets.join(MODEL).to_string_lossy().into_owned();
-        let engine = engine::open(engine, &model, [1, 3, SIDE_INPUT[0], SIDE_INPUT[1]], threads)?;
+    pub fn load(assets: &Path, engine_name: &str, threads: usize) -> Result<Self> {
+        let engine: Box<dyn engine::Engine> = match engine_name {
+            "mnn" => match crate::mnn::MnnDetectorEngine::open(assets, crate::mnn::Backend::OpenClFp16, threads) {
+                Ok(mnn) => {
+                    eprintln!(
+                        "ccnc_visiond: detector using MNN OpenCL FP16 (YOLOX-s 416x192/416x320/416x416, cache={})",
+                        crate::mnn::cache_dir().display()
+                    );
+                    Box::new(mnn)
+                }
+                Err(err) => {
+                    eprintln!("ccnc_visiond: MNN OpenCL detector unavailable ({err:#}); falling back to CPU ORT");
+                    let model = assets.join(MODEL).to_string_lossy().into_owned();
+                    engine::open("ort", &model, [1, 3, SIDE_INPUT[0], SIDE_INPUT[1]], threads)?
+                }
+            },
+            "mnn-cpu" => {
+                let mnn = crate::mnn::MnnDetectorEngine::open(assets, crate::mnn::Backend::Cpu, threads)?;
+                eprintln!("ccnc_visiond: detector using MNN CPU FP16 (YOLOX-s 416x192/416x320/416x416, threads={threads})");
+                Box::new(mnn)
+            }
+            other => {
+                let model = assets.join(MODEL).to_string_lossy().into_owned();
+                engine::open(other, &model, [1, 3, SIDE_INPUT[0], SIDE_INPUT[1]], threads)?
+            }
+        };
         Ok(Self { engine, threads, views: None, fixed: false })
     }
 
@@ -129,7 +152,9 @@ impl Detector {
     fn detect(&mut self, image: &pre::Img, height: usize, width: usize, clahe: Option<&Clahe>) -> Result<(Vec<yolox::Det>, f64)> {
         let (input, ratio) = pre::letterbox(image, height, width, clahe);
         let (_, mut out) = self.engine.run([1, 3, height, width], pre::to_chw_raw(&input))?;
-        yolox::grid_decode(&mut out, NUM_CLASSES, height, width);
+        if self.engine.needs_grid_decode() {
+            yolox::grid_decode(&mut out, NUM_CLASSES, height, width);
+        }
         let candidates = yolox::candidates(&out, NUM_CLASSES, KEEP_SCORE);
         let keep = yolox::nms(&candidates, KEEP_SCORE, NMS_IOU);
         Ok((yolox::to_image(&candidates, &keep, ratio, image.w, image.h), ratio))
@@ -211,5 +236,48 @@ mod tests {
         let (found, input, top) = front(120);
         assert!(!found.night);
         assert_eq!(input, pre::to_chw_raw(&pre::letterbox(&top, FRONT_INPUT[0], FRONT_INPUT[1], None).0));
+    }
+
+    struct PreDecodedEngine;
+
+    impl engine::Engine for PreDecodedEngine {
+        fn run(&mut self, shape: [usize; 4], _data: Vec<f32>) -> Result<(Vec<usize>, Vec<f32>)> {
+            let rows: usize = [8, 16, 32].iter().map(|s| (shape[2] / s) * (shape[3] / s)).sum();
+            let mut out = vec![0.0f32; rows * (5 + NUM_CLASSES)];
+            // Row 0: person (cls=0) at (100, 60, 40, 80) in input pixels, obj=0.9, cls0=0.8 -> score=0.72
+            out[0] = 100.0;
+            out[1] = 60.0;
+            out[2] = 40.0;
+            out[3] = 80.0;
+            out[4] = 0.9;
+            out[5 + 0] = 0.8;
+            // Row 1: motorcycle (cls=3) at (220, 90, 30, 50), obj=0.8, cls3=0.7 -> score=0.56
+            let r1 = 5 + NUM_CLASSES;
+            out[r1] = 220.0;
+            out[r1 + 1] = 90.0;
+            out[r1 + 2] = 30.0;
+            out[r1 + 3] = 50.0;
+            out[r1 + 4] = 0.8;
+            out[r1 + 5 + 3] = 0.7;
+            Ok((vec![1, rows, 5 + NUM_CLASSES], out))
+        }
+
+        fn needs_grid_decode(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn predecoded_mnn_skips_grid_decode_and_preserves_person_and_motorcycle() {
+        let mut detector = Detector { engine: Box::new(PreDecodedEngine), threads: 1, views: None, fixed: false };
+        let img = pre::Img { w: 416, h: 192, data: vec![128u8; 416 * 192 * 3] };
+        let (boxes, _ratio) = detector.detect(&img, 192, 416, None).unwrap();
+        assert_eq!(boxes.len(), 2);
+        assert_eq!(boxes[0].cls, 0); // person
+        assert_eq!(boxes[0].b, [80.0, 20.0, 120.0, 100.0]);
+        assert_eq!(boxes[1].cls, 3); // motorcycle
+        assert_eq!(boxes[1].b, [205.0, 65.0, 235.0, 115.0]);
+        // Classifier pick must exclude both person (0) and motorcycle (3).
+        assert!(crate::classify::pick(&boxes, |_| false).is_empty());
     }
 }

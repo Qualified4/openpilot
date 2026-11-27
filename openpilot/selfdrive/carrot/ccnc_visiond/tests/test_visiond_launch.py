@@ -21,8 +21,19 @@ def launcher(tmp_path):
   return binary, state, env
 
 
-ASSET_NAMES = ("yolox_tiny_int8.onnx", "kind_mnv3s_128.onnx", "libonnxruntime.so.1.32.0")
-ORT_LIB = ASSET_NAMES[-1]
+ASSET_NAMES = (
+  "yolox_tiny_int8.onnx",
+  "kind_mnv3s_128.onnx",
+  "libonnxruntime.so.1.32.0",
+  "yolox_s_416x192_fp16.mnn",
+  "yolox_s_416x320_fp16.mnn",
+  "yolox_s_416_fp16.mnn",
+  "kind1_fp16.mnn",
+  "kind4_fp16.mnn",
+  "libMNN.so",
+  "libMNN_CL.so",
+)
+ORT_LIB = "libonnxruntime.so.1.32.0"
 
 
 def make_assets(tmp_path, names=ASSET_NAMES):
@@ -163,6 +174,27 @@ def test_sigint_forwarded_as_sigterm(launcher):
     finally:
       if proc.poll() is None:
         os.killpg(proc.pid, signal.SIGKILL)
+  assert not state.with_suffix(".failed").exists()
+  assert not state.with_suffix(".crashes").exists()
+
+
+def test_launcher_warmup_cache_mode(launcher, tmp_path):
+  binary, state, env = launcher
+  assets = make_assets(tmp_path)
+  cache_dir = tmp_path / "mnn_cache"
+  dump = tmp_path / "warmup_env"
+  make_binary(binary, f"echo \"args=$*\" > '{dump}'\n"
+                      f"echo \"assets=$CCNC_VISIOND_ASSETS\" >> '{dump}'\n"
+                      f"echo \"cache=$CCNC_VISIOND_MNN_CACHE\" >> '{dump}'\n"
+                      f"echo \"ld=$LD_LIBRARY_PATH\" >> '{dump}'\n"
+                      f"exit 0\n")
+  res = subprocess.run([LAUNCH, "--warmup-cache"], env={**env, "CCNC_VISIOND_MNN_CACHE": str(cache_dir)}, timeout=10)
+  assert res.returncode == 0
+  got = dict(line.split("=", 1) for line in dump.read_text().splitlines())
+  assert got["args"] == "--warmup-cache"
+  assert got["assets"] == str(assets)
+  assert got["cache"] == str(cache_dir)
+  assert got["ld"].startswith(f"{assets}:")
   assert not state.with_suffix(".failed").exists()
   assert not state.with_suffix(".crashes").exists()
 

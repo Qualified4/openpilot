@@ -29,6 +29,7 @@ mod classify;
 mod detect;
 mod engine;
 mod gate;
+mod mnn;
 mod night;
 mod nv12;
 mod pre;
@@ -103,9 +104,9 @@ fn state_path() -> String {
     std::env::var("VISIOND_STATE").unwrap_or_else(|_| "/dev/shm/ccnc_visiond".into())
 }
 
-/// The backend named by CCNC_VISIOND_ENGINE, else ort (tract in a tract-only build).
+/// The backend named by CCNC_VISIOND_ENGINE, else `mnn` (MNN OpenCL FP16 with automatic fallback to CPU ORT).
 fn engine_name() -> String {
-    std::env::var("CCNC_VISIOND_ENGINE").unwrap_or_else(|_| if cfg!(feature = "ort") { "ort" } else { "tract" }.into())
+    std::env::var("CCNC_VISIOND_ENGINE").unwrap_or_else(|_| "mnn".into())
 }
 
 /// Status messages while no frame is processed, at most this often.
@@ -242,9 +243,9 @@ fn run() -> io::Result<()> {
         Ok(detector) => detector,
         Err(err) => return halt("load", err, &publisher),
     };
-    let kind_model = assets.join(classify::MODEL).to_string_lossy().into_owned();
+    let kind_assets = assets.clone();
     let kind_engine = engine_name();
-    let mut classifier = match classify::Classifier::start(move || engine::open(&kind_engine, &kind_model, [1, 3, 128, 128], 1)) {
+    let mut classifier = match classify::Classifier::start(move || classify::open_engine(&kind_assets, &kind_engine)) {
         Ok(classifier) => classifier,
         Err(err) => return halt("load", err.context("kind model"), &publisher),
     };
@@ -483,7 +484,29 @@ fn run() -> io::Result<()> {
     Ok(())
 }
 
+fn run_warmup_cache() -> io::Result<()> {
+    let sched_cfg = sched::Config::from_env();
+    let _ = sched_cfg.apply_current();
+    let assets = PathBuf::from(std::env::var("CCNC_VISIOND_ASSETS").unwrap_or_else(|_| "assets".into()));
+    let cache_dir = mnn::cache_dir();
+    let backend = match std::env::var("CCNC_VISIOND_MNN_BACKEND").as_deref() {
+        Ok("cpu") => mnn::Backend::Cpu,
+        _ => mnn::Backend::OpenClFp16,
+    };
+    mnn::warmup_cache(&assets, &cache_dir, backend, sched_cfg.threads)
+        .map_err(|err| io::Error::other(format!("warmup-cache failed: {err:#}")))
+}
+
 fn main() -> std::process::ExitCode {
+    if std::env::args().any(|a| a == "--warmup-cache") {
+        return match run_warmup_cache() {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("ccnc_visiond: {err}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {

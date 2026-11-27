@@ -10,9 +10,36 @@
 use crate::{engine::Engine, pre::Img, yolox::Det};
 use anyhow::{Context, Result};
 use ccnc_vision_msg::{Calibration, KindResult, View, KIND_BUS, KIND_CAR, KIND_TRUCK};
+use std::path::Path;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 
 pub const MODEL: &str = "kind_mnv3s_128.onnx";
+
+/// Open the classifier inference engine: MNN OpenCL FP16 (`kind1`/`kind4`) by default with automatic fallback to CPU ORT.
+pub fn open_engine(assets: &Path, engine_name: &str) -> Result<Box<dyn Engine>> {
+    match engine_name {
+        "mnn" => match crate::mnn::MnnClassifierEngine::open(assets, crate::mnn::Backend::OpenClFp16, 1) {
+            Ok(mnn) => {
+                eprintln!("ccnc_visiond: classifier using MNN OpenCL FP16 (MNv3 kind1/kind4)");
+                Ok(Box::new(mnn))
+            }
+            Err(err) => {
+                eprintln!("ccnc_visiond: MNN OpenCL classifier unavailable ({err:#}); falling back to CPU ORT");
+                let model = assets.join(MODEL).to_string_lossy().into_owned();
+                crate::engine::open("ort", &model, [1, 3, SIZE, SIZE], 1)
+            }
+        },
+        "mnn-cpu" => {
+            let mnn = crate::mnn::MnnClassifierEngine::open(assets, crate::mnn::Backend::Cpu, 1)?;
+            eprintln!("ccnc_visiond: classifier using MNN CPU FP16 (MNv3 kind1/kind4)");
+            Ok(Box::new(mnn))
+        }
+        other => {
+            let model = assets.join(MODEL).to_string_lossy().into_owned();
+            crate::engine::open(other, &model, [1, 3, SIZE, SIZE], 1)
+        }
+    }
+}
 const SIZE: usize = 128;
 const PAD: f64 = 0.1;
 const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
@@ -254,7 +281,8 @@ mod tests {
         let boxes = [
             det([0., 0., 40., 40.], 2, 0.9),
             det([0., 0., 100., 31.], 7, 0.9),   // too low
-            det([0., 0., 50., 50.], 0, 0.9),    // a person
+            det([0., 0., 50., 50.], 0, 0.9),    // a person (excluded from MNv3)
+            det([0., 0., 55., 55.], 3, 0.95),   // a motorcycle (excluded from MNv3)
             det([0., 0., 60., 60.], 5, 0.29),   // weak
             det([0., 0., 80., 80.], 7, 0.5),
             det([0., 0., 90., 90.], 2, 0.5),    // cut below
