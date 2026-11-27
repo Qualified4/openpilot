@@ -10,6 +10,7 @@ from opendbc.car.hyundai.values import is_ray_pedal_control
 from openpilot.selfdrive.controls.lib.cruise_coasting import (
   CruiseCoastingControl, MAX_PLAN_AGE, coasting_relief, no_coasting_lead,
 )
+from openpilot.selfdrive.controls.lib.limousine_launch import LimousineLaunchController
 from openpilot.selfdrive.controls.lib.limousine_stop import LimousineStopController
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
@@ -74,6 +75,7 @@ class LongControl:
     self.last_output_accel = 0.0
     self.coasting = CruiseCoastingControl()
     self.limousine_stop = LimousineStopController()
+    self.limousine_launch = LimousineLaunchController()
     self.road_pitch = 0.0
 
 
@@ -137,6 +139,7 @@ class LongControl:
     self.pid.reset()
     self.coasting.reset()
     self.limousine_stop.reset()
+    self.limousine_launch.reset()
 
   def update(self, active, CS, long_plan, accel_limits, t_since_plan, radarState):
 
@@ -180,10 +183,13 @@ class LongControl:
         output_accel -= self.CP.stoppingDecelRate * DT_CTRL
       self.pid.reset()
       self.coasting.reset()
+      self.limousine_launch.notify_stopping()
 
     elif self.long_control_state == LongCtrlState.starting:
       output_accel = self.CP.startAccel
-      self.reset()
+      self.pid.reset()
+      self.coasting.reset()
+      self.limousine_stop.reset()
 
     else:  # LongCtrlState.pid
       target = getattr(long_plan, 'cruiseCoastingTarget', 0.0)
@@ -236,6 +242,25 @@ class LongControl:
       )
     else:
       self.limousine_stop.reset()
+
+    if self.long_control_state in (LongCtrlState.starting, LongCtrlState.pid):
+      output_accel = self.limousine_launch.update(
+        a_cmd=float(output_accel),
+        previous_accel=float(self.last_output_accel),
+        v_ego=float(CS.vEgo),
+        dt=DT_CTRL,
+        enabled=(active and not soft_hold_active and not getattr(CS, 'brakePressed', False)
+                 and not getattr(CS, 'gasPressed', False)),
+        should_stop=bool(should_stop),
+        fcw=bool(getattr(long_plan, 'fcw', False)),
+        cruise_standstill=bool(CS.cruiseState.standstill),
+        in_starting_state=(self.long_control_state == LongCtrlState.starting),
+        pitch_rad=float(self.road_pitch),
+      )
+      if self.limousine_launch.active and self.limousine_launch.shaped_jerk is not None and j_target_now > 0.0:
+        j_target_now = min(float(j_target_now), self.limousine_launch.shaped_jerk)
+    elif self.long_control_state != LongCtrlState.stopping:
+      self.limousine_launch.reset()
 
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel, a_target_ff, j_target_now
