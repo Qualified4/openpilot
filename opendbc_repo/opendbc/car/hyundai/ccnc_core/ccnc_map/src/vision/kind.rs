@@ -48,6 +48,9 @@ pub const GAP_S: f64 = 0.8;
 pub const MAX_GAP_S: f64 = 10.0;
 pub const N_CONFIRM: u32 = 2;
 pub const N_FLIP: u32 = 4;
+/// Physical height floor for heavy vehicles (trucks/buses): passenger vans such as a yellow school
+/// Staria (~1.72-1.99 m) must not confirm as TRUCK even when MNv3 predicts bus with high confidence.
+pub const MIN_TRUCK_HEIGHT_M: f64 = 2.05;
 /// A truck or bus answer counts from `MIN_PROB` when its box is this tall at its track's distance (item 68, the
 /// 47d/47c/479 replays: car answers' boxes are 1.4-1.6 m tall at the median and 2.0-2.1 m at the 95th percentile,
 /// truck and bus answers' 2.7-3.7 m at the median; of the 0.6-0.8 truck answers 46/50 big vehicles' boxes are this
@@ -288,6 +291,9 @@ impl Vote {
             return false;
         }
         let answer = shape(kind);
+        if answer == KIND_TRUCK && height.is_finite() && height < MIN_TRUCK_HEIGHT_M {
+            return false;
+        }
         if !(prob >= min_prob(answer, height)) {
             // Too unsure a truck to count, but not a car either.
             if self.streak.0 == KIND_CAR {
@@ -784,6 +790,18 @@ mod tests {
     }
 
     #[test]
+    fn low_height_van_cannot_confirm_as_truck() {
+        let mut van = Vote::new();
+        assert!(!van.observe(0.0, KIND_BUS, 0.98, 1.72));
+        assert!(!van.observe(2.0, KIND_BUS, 0.99, 1.64));
+        assert!(!van.confirmed(), "1.72 m passenger van below MIN_TRUCK_HEIGHT_M must not confirm as TRUCK");
+        assert!(van.observe(4.0, KIND_CAR, 0.85, 1.72));
+        assert!(van.observe(5.0, KIND_CAR, 0.85, 1.72));
+        assert_eq!(van.shown, KIND_CAR);
+        assert!(van.confirmed());
+    }
+
+    #[test]
     fn a_tall_box_counts_a_truck_answer_from_min_prob_and_a_sure_one_confirms_alone() {
         // The 47d 10 bus: 0.976 at 3.0 m, then 0.759 3 s later.
         let mut bus = Vote::new();
@@ -1198,7 +1216,7 @@ mod tests {
         assert_ne!(old, new);
         let cam = FrontCam::new([0.0, 0.0, 0.0], 1.22).unwrap();
         let (u, v) = cam.radar_ground(20.0, 0.0).unwrap();
-        let (w, h) = (1.8 * FOCAL / 21.52, 1.5 * FOCAL / 21.52);
+        let (w, h) = (1.8 * FOCAL / 21.52, 2.6 * FOCAL / 21.52);
         let bbox = [u - w / 2., v - h, u + w / 2., v + 2.];
         let history = [
             (1_000_000_000u64, vec![Track { id: 10, d_rel: 20., y_rel: 0., v_rel: 0. }]),
@@ -1235,9 +1253,9 @@ mod tests {
         let track = |id, d_rel, y_rel| Track { id, d_rel, y_rel, v_rel: 0. };
         let ahead = track(7, 20.0, 0.0);
         let (u, v) = cam.radar_ground(20.0, 0.0).unwrap();
-        // A 1.8 m wide, 1.5 m high car at 21.5 m from the camera.
+        // A 1.8 m wide, 2.6 m high truck at 21.5 m from the camera.
         let w = 1.8 * FOCAL / 21.52;
-        let h = 1.5 * FOCAL / 21.52;
+        let h = 2.6 * FOCAL / 21.52;
         let bbox = [u - w / 2., v - h, u + w / 2., v + 2.];
         assert!(front_gate(&cam, &ahead, &bbox).is_some_and(|q| q < 0.01));
         assert_eq!(front_gate(&cam, &track(8, 20.0, 3.5), &bbox), None, "the next lane");

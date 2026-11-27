@@ -96,6 +96,7 @@ pub struct MapEngine {
     behind: VecDeque<PoseAt>,
     previous: Option<RoadFrame>,
     displayed: [Option<EngineSlot>; 5],
+    pair_locks: [Option<selector::PairLock>; 2],
     rear_display: [rear_display::SideDisplay; 2],
     lateral: HashMap<u64, LateralDisplay>,
     road_disagreement: Option<f64>,
@@ -155,6 +156,7 @@ impl MapEngine {
             self.behind.clear();
             self.previous = None;
             self.displayed = [None; 5];
+            self.pair_locks = [None; 2];
             self.rear_display = Default::default();
             self.lateral.clear();
             self.road_disagreement = None;
@@ -234,6 +236,7 @@ impl MapEngine {
             &frame,
             &mut self.tracker.objects,
             self.displayed,
+            &mut self.pair_locks,
             input.blind,
             primary,
             |ff, o| {
@@ -285,14 +288,11 @@ impl MapEngine {
                 && self.displayed[index - 2].is_some_and(|front| front.obj_id == slot.obj_id);
             let observed = !handoff && (object.evidence.last_vision_t == Some(now)
                 || object.evidence.last_radar_t == Some(now) && !corner_echo);
-            let target_speed = (speed + object.v_s).abs();
             slot.display_d = display.update(
                 now,
                 observed.then_some((object.d, object.v_d)),
                 center,
                 slot.x,
-                speed,
-                target_speed,
                 is_adjacent,
             );
         }

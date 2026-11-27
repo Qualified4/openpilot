@@ -5,8 +5,8 @@ const SETTLE_TIME: f64 = 0.70;
 const OFF_CENTER_SETTLE_TIME: f64 = 0.95;
 const CENTER_TOLERANCE: f64 = 0.35;
 const ADJACENT_INNER_MIN_D: f64 = 2.0;
-const LOW_SPEED_HOLD: f64 = 1.2;
-const TRAFFIC_STOP_EGO_SPEED: f64 = 1.5;
+const ADJACENT_IN_LANE_MARGIN: f64 = 1.15;
+const ADJACENT_IN_LANE_DEPARTURE: f64 = 1.25;
 
 #[derive(Clone, Copy, Debug)]
 enum Motion {
@@ -78,8 +78,6 @@ impl LateralDisplay {
         observation: Option<(f64, f64)>,
         lane_center: f64,
         range: f64,
-        ego_speed: f64,
-        target_speed: f64,
         is_adjacent: bool,
     ) -> f64 {
         let dt = now - self.time;
@@ -114,28 +112,26 @@ impl LateralDisplay {
 
         match &mut self.motion {
             Motion::Settled { anchor, reference, centered } => {
-                let both_stopped = ego_speed < LOW_SPEED_HOLD && target_speed < LOW_SPEED_HOLD;
-                let adjacent_in_lane_at_stop = is_adjacent
+                // An adjacent-lane vehicle centered in its lane stays anchored across in-lane
+                // reflection wander at all speeds, but releases immediately when approaching
+                // the lane boundary or leaving its lane.
+                let adjacent_in_lane = is_adjacent
                     && *centered
-                    && ego_speed < TRAFFIC_STOP_EGO_SPEED
                     && lane_center.abs() >= ADJACENT_INNER_MIN_D
                     && self.observed_d * lane_center > 0.
                     && self.observed_d.abs() >= ADJACENT_INNER_MIN_D
-                    && self.observed_d.abs() <= lane_center.abs() + 1.2;
+                    && self.observed_d.abs() <= lane_center.abs() + ADJACENT_IN_LANE_MARGIN;
                 let base_departure = if *centered { 0.43 } else { 0.29 };
                 let mut departure = base_departure + 0.004 * range.abs().min(100.);
-                if both_stopped {
-                    departure = (departure * 3.0).max(1.35);
-                } else if adjacent_in_lane_at_stop {
-                    departure = departure.max(1.35);
+                if adjacent_in_lane {
+                    departure = departure.max(ADJACENT_IN_LANE_DEPARTURE);
                 }
                 let displacement = (self.observed_d - *anchor) * direction;
                 let travel = (self.observed_d - *reference) * direction;
                 let sustained = self.direction_time >= 0.15 && displacement >= departure;
                 let large = self.direction_time >= 0.10 && displacement >= 2.5 * departure;
                 let early = 0.27 + 0.0006 * range.abs().min(100.);
-                let progressive = !both_stopped
-                    && !adjacent_in_lane_at_stop
+                let progressive = !adjacent_in_lane
                     && self.direction_time >= 0.20
                     && displacement >= early
                     && travel >= early
@@ -251,8 +247,6 @@ mod tests {
                 Some((d, velocity)),
                 (d / 3.5).round() * 3.5,
                 x,
-                15.,
-                15.,
                 false,
             );
             let (moving, anchor) = self.display.diagnostic();
@@ -388,7 +382,7 @@ mod tests {
         assert_eq!(display.diagnostic(), (false, -3.5));
         for tick in 1..=30 {
             let d = -2.1 - f64::from(tick) * 0.04;
-            let shown = display.update(f64::from(tick) * 0.05, Some((d, -0.4)), -3.5, 8., 0., 2., true);
+            let shown = display.update(f64::from(tick) * 0.05, Some((d, -0.4)), -3.5, 8., true);
             assert_eq!(shown, -3.5);
         }
         // A line-straddling vehicle (< 2.0 m) is not snapped to lane center.
@@ -397,13 +391,21 @@ mod tests {
     }
 
     #[test]
-    fn stopped_vehicle_ignores_radar_reflection_drift() {
+    fn adjacent_in_lane_reflection_wander_stays_centered_at_any_speed() {
         let mut display = LateralDisplay::new(0., -2.7, -3.5, true);
         for tick in 1..=40 {
             let d = -2.4 - 0.55 * (f64::from(tick) * 0.15).sin().abs();
-            let shown = display.update(f64::from(tick) * 0.05, Some((d, -0.5)), -3.5, 11., 0.1, 0.1, true);
+            let shown = display.update(f64::from(tick) * 0.05, Some((d, -0.5)), -3.5, 11., true);
             assert_eq!(shown, -3.5);
             assert!(!display.diagnostic().0);
         }
+        // Moving inward across the lane boundary releases smoothly.
+        let mut moved = false;
+        for tick in 41..=65 {
+            let d = -2.4 + f64::from(tick - 40) * 0.08;
+            let _ = display.update(f64::from(tick) * 0.05, Some((d, 1.6)), -3.5, 11., true);
+            moved |= display.diagnostic().0;
+        }
+        assert!(moved);
     }
 }

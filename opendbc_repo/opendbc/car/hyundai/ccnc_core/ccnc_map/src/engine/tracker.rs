@@ -462,11 +462,10 @@ impl Tracker {
                 o.evidence.last_vision_t = Some(obs.time);
                 o.vision_hits += 1;
                 o.support(1.25 * obs.confidence);
-                if o.evidence.last_radar_t.is_none_or(|t| now - t > 0.12) {
+                if o.evidence.last_radar_t.is_none_or(|t| now - t > 0.12) && s <= 15. {
                     let innovation = s + (o.v_s + speed) * age - o.s;
                     o.s += 0.32 * innovation.clamp(-1., 1.);
                     o.d += 0.32 * (d - o.d).clamp(-0.8, 0.8);
-                    o.v_s += 0.45 * innovation.clamp(-1.5, 1.5);
                     o.var_s *= 0.85;
                     o.var_d *= 0.85;
                 }
@@ -595,7 +594,11 @@ fn update_radar(o: &mut TrackedObject, m: Measurement, now: f64, ego: PoseAt, sp
     o.s += gain_s * ds.clamp(-0.40, 0.40);
     o.d += gain_d * dd.clamp(-0.62, 0.62);
     o.v_s += 0.45 * (m.speed - o.v_s).clamp(-2.6, 2.6);
-    o.v_d = (o.v_d + (0.3 + 0.3 * response) * dd.clamp(-0.8, 0.8)).clamp(-2.7, 2.7);
+    // Non-holonomic steering kinematic bound: a vehicle's lateral velocity cannot exceed
+    // tan(delta_max) * |v_abs| + sensor floor, preventing stationary reflection crab-walk.
+    let v_abs = (o.v_s + speed).abs();
+    let max_v_d = (0.35 * v_abs + 0.05).min(2.7);
+    o.v_d = (o.v_d + (0.3 + 0.3 * response) * dd.clamp(-0.8, 0.8)).clamp(-max_v_d, max_v_d);
     o.var_s *= 1. - gain_s * (0.4 / ds.abs()).min(1.);
     o.var_d *= 1. - gain_d * (0.62 / dd.abs()).min(1.);
     let prior = o.evidence.last_radar_t;

@@ -541,11 +541,12 @@ fn confirmed_rear_coast_survives_ego_speed_crossing_the_low_speed_threshold() {
     object.moved = false; // Confirmed by the low-speed motion evidence.
     object.handoff_until = 1.5;
 
+    let mut locks = [None; 2];
     let slots = selector::select(1.65, 5.2, false, frame, &mut engine.tracker.objects,
-                                 previous, [false; 2], None, |_, _| false);
+                                 previous, &mut locks, [false; 2], None, |_, _| false);
     assert_eq!(slots[4].unwrap().obj_id, rear.obj_id);
     let expired = selector::select(2.01, 5.2, false, frame, &mut engine.tracker.objects,
-                                   slots, [false; 2], None, |_, _| false);
+                                   slots, &mut locks, [false; 2], None, |_, _| false);
     assert!(expired[4].is_none());
 }
 
@@ -788,11 +789,12 @@ fn side_range_grace_requires_an_established_and_continuously_measured_car() {
     let vid = slots[2].unwrap().obj_id;
     let objects = &mut engine.tracker.objects;
     assert!(objects[0].moved && objects[0].range_consistent);
+    let mut locks = [None; 2];
     for tick in 30..47 {
         let now = f64::from(tick) * STEP;
         objects[0].range_consistent = false;
         objects[0].evidence.last_radar_t = Some(now);
-        slots = selector::select(now, 12., false, frame, objects, slots, [false; 2], None, |_, _| false);
+        slots = selector::select(now, 12., false, frame, objects, slots, &mut locks, [false; 2], None, |_, _| false);
         assert_eq!(slots[2].map(|o| o.obj_id), (tick < 46).then_some(vid));
     }
 
@@ -801,13 +803,13 @@ fn side_range_grace_requires_an_established_and_continuously_measured_car() {
         let now = 30. * STEP;
         objects[0].evidence.last_radar_t = new_track_id.map(|_| now);
         objects[0].evidence.last_track_id = new_track_id.or(Some(40));
-        let slots = selector::select(now, 12., false, frame, objects, engine.displayed, [false; 2], None, |_, _| false);
+        let slots = selector::select(now, 12., false, frame, objects, engine.displayed, &mut locks, [false; 2], None, |_, _| false);
         assert!(slots[2].is_none());
     }
     objects[0].evidence.last_radar_t = Some(30. * STEP);
     objects[0].evidence.last_track_id = Some(40);
     objects[0].moved = false;
-    let slots = selector::select(30. * STEP, 12., false, frame, objects, [None; 5], [false; 2], None, |_, _| false);
+    let slots = selector::select(30. * STEP, 12., false, frame, objects, [None; 5], &mut locks, [false; 2], None, |_, _| false);
     assert!(slots[2].is_none());
 }
 

@@ -15,6 +15,9 @@ pub(super) const ALONGSIDE_SPEED: f64 = 2.;
 const SPLIT_RELEASE_SPEED: f64 = 2.75;
 const FRONT_PASS_RADAR_GAP: f64 = 0.50;
 const TWO_CAR_GAP: f64 = 4.;
+const TWO_CAR_GAP_RELEASE: f64 = 2.8;
+const PAIR_LOCK_HOLD_S: f64 = 0.65;
+const RECEDING_SPLIT_HOLD_S: f64 = 0.85;
 pub(super) const PASS_BAND: f64 = 0.65;
 const SIDE_CONFIRM: f64 = 1.35;
 const HOLD: f64 = 0.5;
@@ -24,6 +27,13 @@ const SIDE_RANGE_HOLD: f64 = 0.85;
 const SIDE_RANGE_ESTABLISHED: f64 = 0.15;
 const SIDE_RANGE_MIN_STREAK: u32 = 15;
 const SIDE_RANGE_RECOVERY: f64 = 0.66;
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PairLock {
+    pub near_id: u64,
+    pub far_id: u64,
+    pub last_both_seen: f64,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct SideRange {
@@ -61,7 +71,7 @@ fn seen(now: f64, obj: &TrackedObject) -> bool {
 }
 
 fn vision(now: f64, obj: &TrackedObject) -> bool {
-    obj.evidence.last_vision_t.is_some_and(|t| now - t <= 0.14)
+    obj.evidence.last_vision_t.is_some_and(|t| now - t <= 0.45)
 }
 
 fn cost(now: f64, o: &TrackedObject, range: f64, occupied: Option<u64>) -> f64 {
@@ -71,7 +81,7 @@ fn cost(now: f64, o: &TrackedObject, range: f64, occupied: Option<u64>) -> f64 {
         o.radar_age(now).min(0.25)
     };
     let sticky = if occupied == Some(o.obj_id) {
-        2.5 + 0.08 * range.min(50.)
+        2.5
     } else {
         0.
     };
@@ -85,6 +95,7 @@ pub(super) fn select(
     frame: &RoadFrame,
     objects: &mut [TrackedObject],
     previous: [Option<EngineSlot>; 5],
+    pair_locks: &mut [Option<PairLock>; 2],
     blind: [bool; 2],
     primary: Option<u64>,
     same_lane_ahead: impl Fn(EngineSlot, &TrackedObject) -> bool,
@@ -97,10 +108,22 @@ pub(super) fn select(
     let mut close: [Vec<&TrackedObject>; 2] = [Vec::new(), Vec::new()];
     let mut camera_queue: [Vec<&TrackedObject>; 2] = [Vec::new(), Vec::new()];
     let mut passing = [None; 2];
+    let mut locked_fars = [None; 2];
     for o in objects.iter_mut() {
         let previous_lane = o.lane;
         update_lane(o);
         let o = &*o;
+        for (side, lock) in pair_locks.iter().enumerate() {
+            if lock.is_some_and(|l| l.far_id == o.obj_id)
+                && !o.rear
+                && o.lane == if side == 0 { -1 } else { 1 }
+                && o.existence_log_odds >= HOLD
+                && o.d.abs() <= SIDE_HOLD_D
+                && o.lane_u.abs() <= SIDE_HOLD_LANE_U + 0.08
+            {
+                locked_fars[side] = Some(o);
+            }
+        }
         if primary == Some(o.obj_id) {
             let mut lead = slot(frame, o, now);
             let [x, y, _] = o.last_radar_motion;
@@ -317,10 +340,10 @@ pub(super) fn select(
             .chain(close[side].iter().copied())
             .filter(|o| {
                 let in_split = rear_slot == Some(o.obj_id) && now <= o.split_until;
-                let (range, speed) = if in_split {
-                    (SPLIT_RELEASE, SPLIT_RELEASE_SPEED)
+                let (range, min_speed, max_speed) = if in_split {
+                    (SPLIT_RELEASE, -6.0, SPLIT_RELEASE_SPEED)
                 } else {
-                    (SPLIT_REAR_MAX, ALONGSIDE_SPEED)
+                    (SPLIT_REAR_MAX, -ALONGSIDE_SPEED, ALONGSIDE_SPEED)
                 };
                 // Do not demote an established front-side vehicle that is already pulling ahead
                 // into a transient rear split; it would immediately cross SPLIT_REAR_MAX and jump back.
@@ -330,7 +353,7 @@ pub(super) fn select(
                     && o.v_s > 0.4;
                 pass.is_none()
                     && !pulling_away_front
-                    && o.v_s.abs() <= speed
+                    && (min_speed..=max_speed).contains(&o.v_s)
                     && o.s >= SPLIT_REAR_MIN
                     && o.s - o.var_s.sqrt().min(0.7) <= range
                     && front_default.is_none_or(|front| !seen(now, front) || o.s <= front.s)
@@ -372,6 +395,51 @@ pub(super) fn select(
                 })?;
             Some((near, far))
         });
+        let locked_split = pair_locks[side].and_then(|lock| {
+            if pass.is_some()
+                || behind.is_some_and(|old| old.obj_id != lock.near_id && seen(now, old))
+                || ff.is_some_and(|lead| lead.obj_id == lock.near_id || lead.obj_id == lock.far_id)
+            {
+                return None;
+            }
+            let near = cars
+                .iter()
+                .copied()
+                .chain(close[side].iter().copied())
+                .find(|o| o.obj_id == lock.near_id)?;
+            let far = front_candidates()
+                .find(|o| o.obj_id == lock.far_id)
+                .or_else(|| locked_fars[side].filter(|o| front_within_range(o)))?;
+            let both_seen = seen(now, near) && seen(now, far);
+            let within_hysteresis = near.s >= SPLIT_REAR_MIN
+                && near.s - near.var_s.sqrt().min(0.7) <= SPLIT_RELEASE
+                && (-6.0..=SPLIT_RELEASE_SPEED).contains(&near.v_s)
+                && far.s >= near.s + TWO_CAR_GAP_RELEASE
+                && far.s > 0.
+                && (both_seen || now - lock.last_both_seen <= PAIR_LOCK_HOLD_S);
+            within_hysteresis.then_some((near, far, both_seen))
+        });
+        let split = if let Some((near, far, both_seen)) = locked_split {
+            let last_both_seen = if both_seen {
+                now
+            } else {
+                pair_locks[side].map_or(now, |l| l.last_both_seen)
+            };
+            pair_locks[side] = Some(PairLock {
+                near_id: near.obj_id,
+                far_id: far.obj_id,
+                last_both_seen,
+            });
+            Some((near, far))
+        } else {
+            let formed = split;
+            pair_locks[side] = formed.map(|(near, far)| PairLock {
+                near_id: near.obj_id,
+                far_id: far.obj_id,
+                last_both_seen: now,
+            });
+            formed
+        };
         splits[side] = split.map(|(near, _)| near.obj_id);
         let (front, rear) = if let Some((near, far)) = split {
             (Some(far), Some(near))
@@ -381,7 +449,7 @@ pub(super) fn select(
                 && cars.iter().any(|o| o.obj_id == near.obj_id)
         }) {
             let front = front_candidates()
-                .filter(|o| o.s >= near.s + TWO_CAR_GAP)
+                .filter(|o| o.s >= near.s + TWO_CAR_GAP_RELEASE)
                 .min_by(|a, b| front_cost(a).total_cmp(&front_cost(b)));
             (front, Some(near))
         } else {
@@ -431,7 +499,12 @@ pub(super) fn select(
     }
     for o in objects {
         if splits.contains(&Some(o.obj_id)) {
-            o.split_until = now + 0.18;
+            let hold = if o.v_s < -0.5 && o.s <= 4.5 {
+                RECEDING_SPLIT_HOLD_S
+            } else {
+                0.35
+            };
+            o.split_until = now + hold;
         }
         if crossed.contains(&Some(o.obj_id)) {
             o.rear = true;
