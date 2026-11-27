@@ -112,6 +112,7 @@ dependencies = [
  "ccnc_vision_msg",
  "libc",
  "ort",
+ "sha2",
  "stripnet",
  "tract-linalg",
  "tract-onnx",

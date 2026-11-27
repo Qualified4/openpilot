@@ -61,11 +61,17 @@ pub struct FrontFound {
     pub night: bool,
 }
 
-/// Whether the upper half of a frame is night.
-fn is_night(image: &pre::Img) -> bool {
-    let upper = &image.data[..image.h / 2 * image.w * 3];
+/// Whether the upper `rows` of a frame are night.
+fn is_night_rows(image: &pre::Img, rows: usize) -> bool {
+    let rows = rows.min(image.h);
+    let upper = &image.data[..rows * image.w * 3];
     let sum: u64 = upper.iter().map(|&v| u64::from(v)).sum();
     !upper.is_empty() && (sum as f64 / upper.len() as f64) < NIGHT_MEAN
+}
+
+/// Whether the upper half of a frame is night.
+fn is_night(image: &pre::Img) -> bool {
+    is_night_rows(image, image.h / 2)
 }
 
 impl Detector {
@@ -133,18 +139,18 @@ impl Detector {
 
     pub fn run(&mut self, layout: Layout, nv12: &[u8], target: Target) -> Result<Found> {
         let Some(views) = &self.views else { anyhow::bail!("no side views yet") };
-        let mut frame = layout.to_bgr(nv12)?;
+        let frame = layout.to_bgr(nv12)?;
         let night = is_night(&frame);
-        if night {
-            CLAHE.apply(&mut frame);
-        }
         let calibration = views.calibration;
         let ([height, width], image) = match target {
             Target::Left => (SIDE_INPUT, remap::remap_linear(&frame, &views.maps[0])),
             Target::Right => (SIDE_INPUT, remap::remap_linear(&frame, &views.maps[1])),
             Target::Raw => (RAW_INPUT, frame),
         };
-        let (boxes, _) = self.detect(&image, height, width, None)?;
+        // Apply night CLAHE on the letterboxed detector input (416x312 for SideL/R, 416x235 for Raw)
+        // instead of the full 1344x760 frame (~8-10x fewer pixels on CPU), matching `run_front` and
+        // keeping `Found.image` unmodified for the classifier.
+        let (boxes, _) = self.detect(&image, height, width, night.then_some(&CLAHE))?;
         Ok(Found { night, boxes, calibration, image })
     }
 
@@ -166,12 +172,11 @@ impl Detector {
     /// Each box comes with whether it is cut by the crop line (its bottom is the bonnet, not the car's).
     pub fn run_front(&mut self, layout: Layout, nv12: &[u8]) -> Result<FrontFound> {
         anyhow::ensure!(layout.height >= FRONT_CROP_Y, "road frame {} rows, the crop line is at {FRONT_CROP_Y}", layout.height);
-        let frame = layout.to_bgr(nv12)?;
-        let night = is_night(&frame);
-        let top = pre::Img { w: frame.w, h: FRONT_CROP_Y, data: frame.data[..FRONT_CROP_Y * frame.w * 3].to_vec() };
+        let top = layout.to_bgr_rows(nv12, FRONT_CROP_Y)?;
+        let night = is_night_rows(&top, layout.height / 2);
         let (boxes, ratio) = self.detect(&top, FRONT_INPUT[0], FRONT_INPUT[1], night.then_some(&CLAHE))?;
         let cut_at = FRONT_CROP_Y as f64 - FRONT_CUT_TOL / ratio;
-        Ok(FrontFound { boxes: boxes.into_iter().map(|b| { let cut = b.b[3] >= cut_at; (b, cut) }).collect(), image: frame, night })
+        Ok(FrontFound { boxes: boxes.into_iter().map(|b| { let cut = b.b[3] >= cut_at; (b, cut) }).collect(), image: top, night })
     }
 }
 
@@ -279,5 +284,145 @@ mod tests {
         assert_eq!(boxes[1].b, [205.0, 65.0, 235.0, 115.0]);
         // Classifier pick must exclude both person (0) and motorcycle (3).
         assert!(crate::classify::pick(&boxes, |_| false).is_empty());
+    }
+
+    fn identity_side_map() -> remap::Map {
+        let (w, h) = (512, 384);
+        let mut mx = Vec::with_capacity(w * h);
+        let mut my = Vec::with_capacity(w * h);
+        for y in 0..h {
+            for x in 0..w {
+                mx.push((x as f32) * (1344.0 / w as f32));
+                my.push((y as f32) * (760.0 / h as f32));
+            }
+        }
+        remap::Map { w, h, mx, my }
+    }
+
+    #[test]
+    fn night_wide_frames_apply_clahe_after_remap_at_input_size() {
+        let input = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut detector = Detector {
+            engine: Box::new(Recorder(input.clone())),
+            threads: 1,
+            views: Some(Views {
+                maps: [identity_side_map(), identity_side_map()],
+                calibration: Calibration::UNKNOWN,
+            }),
+            fixed: true,
+        };
+        let (layout, nv12) = frame(20);
+        let raw_bgr = layout.to_bgr(&nv12).unwrap();
+        let remapped = remap::remap_linear(&raw_bgr, &identity_side_map());
+
+        // SideL night: CLAHE is applied inside letterbox (416x312), Found.image stays as-captured.
+        let found_side = detector.run(layout, &nv12, Target::Left).unwrap();
+        assert!(found_side.night);
+        assert_eq!(found_side.image.data, remapped.data, "Found.image stays unmodified for classifier");
+        let plain_side = pre::to_chw_raw(&pre::letterbox(&remapped, SIDE_INPUT[0], SIDE_INPUT[1], None).0);
+        let clahe_side = pre::to_chw_raw(&pre::letterbox(&remapped, SIDE_INPUT[0], SIDE_INPUT[1], Some(&CLAHE)).0);
+        assert_ne!(plain_side, clahe_side);
+        assert_eq!(*input.borrow(), clahe_side, "detector sees post-remap CLAHE input");
+
+        // Raw night: CLAHE is applied inside letterbox (416x235), Found.image stays as-captured.
+        let found_raw = detector.run(layout, &nv12, Target::Raw).unwrap();
+        assert!(found_raw.night);
+        assert_eq!(found_raw.image.data, raw_bgr.data);
+        let clahe_raw = pre::to_chw_raw(&pre::letterbox(&raw_bgr, RAW_INPUT[0], RAW_INPUT[1], Some(&CLAHE)).0);
+        assert_eq!(*input.borrow(), clahe_raw);
+
+        // Day wide frame: no CLAHE applied.
+        let (day_layout, day_nv12) = frame(120);
+        let day_bgr = day_layout.to_bgr(&day_nv12).unwrap();
+        let day_remap = remap::remap_linear(&day_bgr, &identity_side_map());
+        let found_day = detector.run(day_layout, &day_nv12, Target::Left).unwrap();
+        assert!(!found_day.night);
+        assert_eq!(*input.borrow(), pre::to_chw_raw(&pre::letterbox(&day_remap, SIDE_INPUT[0], SIDE_INPUT[1], None).0));
+    }
+
+    #[test]
+    fn night_wide_clahe_bench_and_quality_comparison() {
+        // Synthetic dark scene with realistic low-light gradients + vehicle-like bright patches.
+        let (w, h) = (1344, 760);
+        let mut data = vec![0u8; w * h * 3];
+        for y in 0..h {
+            for x in 0..w {
+                let base = 10u8
+                    .saturating_add(((x * 18) / w) as u8)
+                    .saturating_add(((y * 16) / h) as u8);
+                // Brighter rectangle (car silhouette + headlights)
+                let patch = if (400..680).contains(&x) && (260..480).contains(&y) { 28 } else { 0 };
+                let v = base.saturating_add(patch);
+                let idx = (y * w + x) * 3;
+                data[idx] = v;
+                data[idx + 1] = v.saturating_add(2);
+                data[idx + 2] = v.saturating_add(4);
+            }
+        }
+        let full_img = pre::Img { w, h, data };
+        let map = identity_side_map();
+
+        // Warm up OnceLock LabTables before timing.
+        let mut dummy = pre::Img { w: 16, h: 16, data: vec![20; 16 * 16 * 3] };
+        CLAHE.apply(&mut dummy);
+
+        // Old path: full-frame 1344x760 CLAHE -> remap 512x384 -> letterbox 416x320.
+        let t_old = Instant::now();
+        let mut full_clahe = pre::Img { w: full_img.w, h: full_img.h, data: full_img.data.clone() };
+        CLAHE.apply(&mut full_clahe);
+        let old_remap = remap::remap_linear(&full_clahe, &map);
+        let (old_lb, _) = pre::letterbox(&old_remap, SIDE_INPUT[0], SIDE_INPUT[1], None);
+        let old_ms = t_old.elapsed().as_secs_f64() * 1000.0;
+
+        // New path: remap 512x384 -> letterbox 416x320 with CLAHE on 416x312.
+        let t_new = Instant::now();
+        let new_remap = remap::remap_linear(&full_img, &map);
+        let (new_lb, _) = pre::letterbox(&new_remap, SIDE_INPUT[0], SIDE_INPUT[1], Some(&CLAHE));
+        let new_ms = t_new.elapsed().as_secs_f64() * 1000.0;
+
+        // Pure CLAHE-only timing comparison (1344x760 vs 416x312 vs 416x235).
+        let mut c_full = pre::Img { w: full_img.w, h: full_img.h, data: full_img.data.clone() };
+        let t_cf = Instant::now();
+        CLAHE.apply(&mut c_full);
+        let clahe_full_ms = t_cf.elapsed().as_secs_f64() * 1000.0;
+
+        let mut c_side = pre::resize_linear(&new_remap, 416, 312);
+        let t_cs = Instant::now();
+        CLAHE.apply(&mut c_side);
+        let clahe_side_ms = t_cs.elapsed().as_secs_f64() * 1000.0;
+
+        let mut c_raw = pre::resize_linear(&full_img, 416, 235);
+        let t_cr = Instant::now();
+        CLAHE.apply(&mut c_raw);
+        let clahe_raw_ms = t_cr.elapsed().as_secs_f64() * 1000.0;
+
+        // Quality correlation over the active 416x312 region (excluding letterbox pad rows 312..320).
+        let active_bytes = 416 * 312 * 3;
+        let a = &old_lb.data[..active_bytes];
+        let b = &new_lb.data[..active_bytes];
+        let n = active_bytes as f64;
+        let mean_a = a.iter().map(|&v| v as f64).sum::<f64>() / n;
+        let mean_b = b.iter().map(|&v| v as f64).sum::<f64>() / n;
+        let (mut cov, mut var_a, mut var_b) = (0.0, 0.0, 0.0);
+        for (&va, &vb) in a.iter().zip(b.iter()) {
+            let da = va as f64 - mean_a;
+            let db = vb as f64 - mean_b;
+            cov += da * db;
+            var_a += da * da;
+            var_b += db * db;
+        }
+        let corr = cov / (var_a * var_b).sqrt();
+
+        eprintln!(
+            "CLAHE bench: full_pipeline={old_ms:.2}ms -> post_remap_pipeline={new_ms:.2}ms ({:.2}x); \
+             clahe_only: 1344x760={clahe_full_ms:.2}ms vs 416x312={clahe_side_ms:.2}ms ({:.2}x) vs 416x235={clahe_raw_ms:.2}ms ({:.2}x); \
+             mean={mean_a:.1}/{mean_b:.1}, pearson_r={corr:.4}",
+            old_ms / new_ms.max(1e-6),
+            clahe_full_ms / clahe_side_ms.max(1e-6),
+            clahe_full_ms / clahe_raw_ms.max(1e-6),
+        );
+
+        assert!(clahe_full_ms > clahe_side_ms * 3.0, "expected >=3x CLAHE speedup (got {clahe_full_ms:.2}ms vs {clahe_side_ms:.2}ms)");
+        assert!(corr > 0.90, "expected strong structural correlation between pre/post-remap CLAHE, got {corr:.4}");
     }
 }

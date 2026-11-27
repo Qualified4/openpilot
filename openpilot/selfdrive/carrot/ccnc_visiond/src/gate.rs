@@ -2,8 +2,13 @@
 
 use ccnc_vision_msg::{KindAsk, View};
 
-/// The side views are only used for cars next to a standing or creeping car, not while reversing.
-pub const WIDE_MAX_SPEED: f32 = 3.0;
+/// Standstill / creeping threshold (m/s): high-rate wide scan and standing front-recheck pace.
+pub const STANDING_MAX_SPEED: f32 = 3.0;
+/// Maximum speed (m/s) where conditional full-frame `Raw` (416x416) is inserted for 2-car splits.
+/// Above this speed, `SideL`/`SideR` alone cover the diagonal blind spot without extra GPU load.
+pub const RAW_MAX_SPEED: f32 = 5.0;
+/// Upper speed (m/s, ~29 km/h) of the urban high-rate wide scan regime.
+pub const LOW_SPEED_MAX: f32 = 8.0;
 /// vEgo of a standing car dips below zero (down to -0.0011 m/s in the 16 recorded routes, never below zero while
 /// moving); reversing is faster than this.
 pub const STANDSTILL_NOISE: f32 = 0.01;
@@ -11,6 +16,15 @@ pub const STANDSTILL_NOISE: f32 = 0.01;
 pub const SPEED_TIMEOUT_NS: u64 = 500_000_000;
 /// CcncMap comes at 20 Hz. Without a recent one, conditional full-frame raw inference stays off.
 pub const MAP_TIMEOUT_NS: u64 = 1_000_000_000;
+
+/// Adaptive wide-camera cadence periods (inter-frame interval across alternating L/R views).
+/// Kept conservative so Adreno 630v2 retains headroom for `dmonitoringmodeld` (20 Hz, 0 drops):
+/// * Standstill / creep (`<= 3 m/s`) or active turn-signal lane change: 150 ms (~6.67 Hz total, ~3.33 Hz/side).
+/// * Urban low speed (`3..=8 m/s`): 200 ms (5.0 Hz total, 2.5 Hz/side).
+/// * Cruise (`> 8 m/s`, no blinker): 500 ms (2.0 Hz total, 1.0 Hz/side; <10% GPU).
+pub const WIDE_HIGH_PERIOD_NS: u64 = 150_000_000;
+pub const WIDE_URBAN_PERIOD_NS: u64 = 200_000_000;
+pub const WIDE_CRUISE_PERIOD_NS: u64 = 500_000_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Side {
@@ -54,7 +68,10 @@ const SIDE_HOLD_NS: u64 = 3_500_000_000;
 const RAW_EXTEND_NS: u64 = 1_500_000_000;
 const RAW_MAX_HOLD_NS: u64 = 4_500_000_000;
 const FRAME_MARGIN_NS: u64 = 50_000_000;
-const FRONT_BUDGET_NS: u64 = 800_000_000;
+/// Minimum front-inference budget before a measured `front_cost` is observed.
+/// Realistic for MNN OpenCL FP16 (~74 ms measured on comma 3X); `front_cost.max(FRONT_BUDGET_NS)`
+/// still expands automatically when running on CPU ORT fallback.
+pub const FRONT_BUDGET_NS: u64 = 120_000_000;
 
 /// How often the road camera is looked at, while a radar car ahead (FF, LF, RF) has no confirmed kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,14 +100,16 @@ pub enum Phase {
 #[derive(Default)]
 pub struct Gate {
     speed: Option<(f32, u64)>,
+    blinker: Option<(bool, u64)>,
     front_vision: Option<(bool, u64)>,
     next: Side,
     pending_raw: bool,
     was_open: bool,
     front_kind: Option<(KindAsk, u64)>,
-    /// Last successful publish time and measured cost (including the minimum period) of each side.
+    /// Last successful publish time and measured cost of each side.
     side_frames: [Option<(u64, u64)>; 2],
     raw_at: Option<u64>,
+    last_wide_ns: Option<u64>,
     front_turn: bool,
     front_cost: u64,
 }
@@ -98,6 +117,15 @@ pub struct Gate {
 impl Gate {
     pub fn speed(&mut self, v_ego: f32, now_ns: u64) {
         self.speed = Some((v_ego, now_ns));
+    }
+
+    pub fn blinker(&mut self, left_blinker: bool, right_blinker: bool, now_ns: u64) {
+        self.blinker = Some((left_blinker || right_blinker, now_ns));
+    }
+
+    pub fn car_state(&mut self, v_ego: f32, left_blinker: bool, right_blinker: bool, now_ns: u64) {
+        self.speed(v_ego, now_ns);
+        self.blinker(left_blinker, right_blinker, now_ns);
     }
 
     pub fn front_vision(&mut self, on: bool, now_ns: u64) {
@@ -108,13 +136,23 @@ impl Gate {
         self.front_kind = Some((ask, now_ns));
     }
 
+    fn is_low_speed(&self, now_ns: u64) -> bool {
+        self.speed.is_some_and(|(v_ego, at)| {
+            (-STANDSTILL_NOISE..=STANDING_MAX_SPEED).contains(&v_ego) && now_ns.saturating_sub(at) <= SPEED_TIMEOUT_NS
+        })
+    }
+
+    fn blinker_active(&self, now_ns: u64) -> bool {
+        self.blinker.is_some_and(|(on, at)| on && now_ns.saturating_sub(at) <= SPEED_TIMEOUT_NS)
+    }
+
     /// Whether to take a road camera frame now, the last one's detection having ended at `last_ns` (`pace` is the
     /// rest after a detection). Only forward (or standing) at a known speed, while the map asks for a kind (a recent
     /// CcncMap).
     pub fn front_due(&self, now_ns: u64, last_ns: Option<u64>, pace: FrontPace) -> bool {
         let ask = self.front_kind.filter(|(_, at)| now_ns.saturating_sub(*at) <= MAP_TIMEOUT_NS).map_or(KindAsk::None, |(ask, _)| ask);
         let forward = self.speed.is_some_and(|(v_ego, at)| v_ego >= -STANDSTILL_NOISE && now_ns.saturating_sub(at) <= SPEED_TIMEOUT_NS);
-        let period = if self.open(now_ns) && ask == KindAsk::Confirmed { pace.standing_ns } else { pace.moving_ns };
+        let period = if self.is_low_speed(now_ns) && ask == KindAsk::Confirmed { pace.standing_ns } else { pace.moving_ns };
         ask != KindAsk::None && forward && last_ns.is_none_or(|last| now_ns.saturating_sub(last) >= period)
     }
 
@@ -147,16 +185,54 @@ impl Gate {
             Target::Right => self.side_frames[1] = Some((now_ns, cost_ns)),
             Target::Raw => self.raw_at = Some(now_ns),
         }
+        self.last_wide_ns = Some(now_ns);
         self.front_turn = self.next_target() == Target::Left;
     }
 
     fn want_raw(&self, now_ns: u64) -> bool {
         self.front_vision
             .is_some_and(|(on, at)| on && now_ns.saturating_sub(at) <= MAP_TIMEOUT_NS)
+            && self.speed.is_none_or(|(v_ego, _)| v_ego <= RAW_MAX_SPEED)
     }
 
+    /// Wide side views run at any forward or standing speed (not reversing, fresh `carState`).
+    /// Their cadence adapts to speed and turn-signal state via `wide_period_ns`.
     pub fn open(&self, now_ns: u64) -> bool {
-        self.speed.is_some_and(|(v_ego, at)| (-STANDSTILL_NOISE..=WIDE_MAX_SPEED).contains(&v_ego) && now_ns.saturating_sub(at) <= SPEED_TIMEOUT_NS)
+        self.speed.is_some_and(|(v_ego, at)| {
+            v_ego.is_finite() && v_ego >= -STANDSTILL_NOISE && now_ns.saturating_sub(at) <= SPEED_TIMEOUT_NS
+        })
+    }
+
+    /// Adaptive wide-camera target period (ns between successive wide inferences), or `None` when closed.
+    pub fn wide_period_ns(&self, now_ns: u64) -> Option<u64> {
+        if !self.open(now_ns) {
+            return None;
+        }
+        let (v_ego, _) = self.speed?;
+        if v_ego <= STANDING_MAX_SPEED || self.blinker_active(now_ns) {
+            Some(WIDE_HIGH_PERIOD_NS)
+        } else if v_ego <= LOW_SPEED_MAX {
+            Some(WIDE_URBAN_PERIOD_NS)
+        } else {
+            Some(WIDE_CRUISE_PERIOD_NS)
+        }
+    }
+
+    /// Remaining wait (ns) before the next wide inference is due, respecting both adaptive cadence and `min_period_ns`.
+    pub fn wide_wait_ns(&self, now_ns: u64, min_period_ns: u64) -> u64 {
+        let Some(period) = self.wide_period_ns(now_ns) else {
+            return 0;
+        };
+        let effective = period.max(min_period_ns);
+        let Some(last) = self.last_wide_ns else {
+            return 0;
+        };
+        effective.saturating_sub(now_ns.saturating_sub(last))
+    }
+
+    /// Whether a wide inference can start now.
+    pub fn wide_due(&self, now_ns: u64, min_period_ns: u64) -> bool {
+        self.open(now_ns) && self.wide_wait_ns(now_ns, min_period_ns) == 0
     }
 
     /// `ready`: the rest of what processing needs (the side views' calibration) is there.
@@ -165,12 +241,14 @@ impl Gate {
         let phase = match (self.was_open, open) {
             (_, false) => {
                 self.pending_raw = false;
+                self.last_wide_ns = None;
                 Phase::Closed
             }
             (false, true) => {
                 self.next = Side::Left;
                 self.side_frames = [None; 2];
                 self.raw_at = None;
+                self.last_wide_ns = None;
                 self.front_turn = false;
                 Phase::Opened
             }
@@ -225,10 +303,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn open_only_at_low_known_speed() {
+    fn open_at_any_forward_or_standstill_speed() {
         let mut gate = Gate::default();
         assert!(!gate.open(0), "no speed yet");
-        for (v_ego, open) in [(0.0, true), (3.0, true), (3.01, false), (25.0, false), (f32::NAN, false), (-0.1, false), (-0.0011, true), (-0.0101, false)] {
+        for (v_ego, open) in [
+            (0.0, true),
+            (3.0, true),
+            (3.01, true),
+            (5.0, true),
+            (15.0, true),
+            (25.0, true),
+            (f32::NAN, false),
+            (-0.1, false),
+            (-0.0011, true),
+            (-0.0101, false),
+        ] {
             gate.speed(v_ego, 1_000);
             assert_eq!(gate.open(1_000), open, "{v_ego}");
         }
@@ -248,13 +337,13 @@ mod tests {
     fn reports_each_opening_once() {
         let mut gate = Gate::default();
         assert_eq!(gate.phase(0, true), Phase::Closed);
-        gate.speed(5.0, 10);
+        gate.speed(-0.5, 10);
         assert_eq!(gate.phase(10, true), Phase::Closed);
         gate.speed(0.0, 20);
         assert_eq!(gate.phase(20, true), Phase::Opened);
         assert_eq!(gate.phase(30, true), Phase::Open);
         assert_eq!(gate.phase(21 + SPEED_TIMEOUT_NS, true), Phase::Closed);
-        gate.speed(0.0, 40 + SPEED_TIMEOUT_NS);
+        gate.speed(15.0, 40 + SPEED_TIMEOUT_NS);
         assert_eq!(gate.phase(40 + SPEED_TIMEOUT_NS, true), Phase::Opened);
         // Not ready (no calibration) closes it the same way, and it opens again once.
         assert_eq!(gate.phase(41 + SPEED_TIMEOUT_NS, false), Phase::Closed);
@@ -363,4 +452,85 @@ mod tests {
         assert!(gate.front_fits(8_100_000_000), "even with Raw, the faster wide cycle leaves a road turn");
     }
 
+    #[test]
+    fn gpu_front_budget_120ms_fits_between_wide_cycles() {
+        assert_eq!(FRONT_BUDGET_NS, 120_000_000);
+        let mut gate = Gate::default();
+        // Before any measured front_cost, a tight 3.5 s deadline where 800 ms would fail still fits under 120 ms.
+        assert_eq!(gate.take_target(1_000_000_000), Target::Left);
+        gate.wide_finished(Target::Left, 1_000_000_000, 1_500_000_000);
+        assert_eq!(gate.take_target(2_500_000_000), Target::Right);
+        gate.wide_finished(Target::Right, 2_500_000_000, 1_500_000_000);
+        // Remaining until left deadline (4500 ms) is 2000 ms; left_cost (1500) + margin (50) + front (120+50) = 1720 <= 2000.
+        // With old 800 ms budget this would be 2400 > 2000 (rejected).
+        assert!(gate.front_fits(2_500_000_000));
+        // Once a slow CPU ORT front_cost (790 ms) is observed, front_fits expands automatically and rejects.
+        gate.front_finished(790_000_000);
+        assert_eq!(gate.take_target(2_600_000_000), Target::Left);
+        gate.wide_finished(Target::Left, 2_600_000_000, 1_500_000_000);
+        assert_eq!(gate.take_target(4_100_000_000), Target::Right);
+        gate.wide_finished(Target::Right, 4_100_000_000, 1_500_000_000);
+        assert!(!gate.front_fits(4_100_000_000), "CPU ORT fallback cost automatically respected");
+    }
+
+    #[test]
+    fn adaptive_wide_cadence_by_speed_and_blinker() {
+        let mut gate = Gate::default();
+        let t0 = 1_000_000_000u64;
+
+        // 0 m/s (standstill): 150 ms (~6.67 Hz)
+        gate.car_state(0.0, false, false, t0);
+        assert_eq!(gate.wide_period_ns(t0), Some(WIDE_HIGH_PERIOD_NS));
+
+        // 5 m/s (urban low speed): 200 ms (5.0 Hz)
+        gate.car_state(5.0, false, false, t0);
+        assert_eq!(gate.wide_period_ns(t0), Some(WIDE_URBAN_PERIOD_NS));
+
+        // 15 m/s (cruise, no blinker): 500 ms (2.0 Hz)
+        gate.car_state(15.0, false, false, t0);
+        assert_eq!(gate.wide_period_ns(t0), Some(WIDE_CRUISE_PERIOD_NS));
+
+        // 25 m/s (highway, no blinker): 500 ms (2.0 Hz)
+        gate.car_state(25.0, false, false, t0);
+        assert_eq!(gate.wide_period_ns(t0), Some(WIDE_CRUISE_PERIOD_NS));
+
+        // 15 m/s + left blinker (lane change): boosts to 150 ms (~6.67 Hz)
+        gate.car_state(15.0, true, false, t0);
+        assert_eq!(gate.wide_period_ns(t0), Some(WIDE_HIGH_PERIOD_NS));
+
+        // 25 m/s + right blinker (lane change): boosts to 150 ms (~6.67 Hz)
+        gate.car_state(25.0, false, true, t0);
+        assert_eq!(gate.wide_period_ns(t0), Some(WIDE_HIGH_PERIOD_NS));
+
+        // Reversing: closed
+        gate.car_state(-0.5, true, false, t0);
+        assert_eq!(gate.wide_period_ns(t0), None);
+
+        // Verify wide_due / wide_wait_ns pacing at 25 m/s cruise (500 ms) vs blinker (150 ms).
+        gate.car_state(25.0, false, false, t0);
+        assert!(gate.wide_due(t0, 0), "first frame runs immediately");
+        gate.wide_finished(Target::Left, t0, 80_000_000);
+        assert!(!gate.wide_due(t0 + 200_000_000, 0));
+        assert_eq!(gate.wide_wait_ns(t0 + 200_000_000, 0), 300_000_000);
+        assert!(gate.wide_due(t0 + 500_000_000, 0));
+
+        // Turning on blinker at t0 + 150 ms immediately makes wide_due true!
+        gate.car_state(25.0, true, false, t0 + 150_000_000);
+        assert!(gate.wide_due(t0 + 150_000_000, 0));
+
+        // Explicit min_period_ns floor still overrides adaptive period if larger.
+        assert!(!gate.wide_due(t0 + 150_000_000, 300_000_000));
+        assert_eq!(gate.wide_wait_ns(t0 + 150_000_000, 300_000_000), 150_000_000);
+
+        // Conditional Raw is enabled <= 5.0 m/s and suppressed > 5.0 m/s.
+        let mut raw_gate = Gate::default();
+        raw_gate.front_vision(true, t0);
+        raw_gate.car_state(5.0, false, false, t0);
+        let seq_low: Vec<_> = (0..3).map(|_| raw_gate.take_target(t0)).collect();
+        assert_eq!(seq_low, [Target::Left, Target::Right, Target::Raw]);
+
+        raw_gate.car_state(15.0, false, false, t0);
+        let seq_cruise: Vec<_> = (0..4).map(|_| raw_gate.take_target(t0)).collect();
+        assert_eq!(seq_cruise, [Target::Left, Target::Right, Target::Left, Target::Right]);
+    }
 }

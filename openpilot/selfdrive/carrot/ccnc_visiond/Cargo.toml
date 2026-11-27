@@ -19,6 +19,7 @@ anyhow = "1"
 ccnc_vision_msg = { path = "msg" }
 libc = "0.2"
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-31"], optional = true }
+sha2 = "0.10"
 stripnet = { path = "../lane_type/rust", default-features = false, features = ["ipc"] }
 tract-linalg = { version = "0.23.10", features = ["multithread-mm"], optional = true }
 tract-onnx = { version = "0.23.10", default-features = false, optional = true }

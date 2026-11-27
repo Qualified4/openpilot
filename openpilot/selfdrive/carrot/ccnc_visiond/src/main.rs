@@ -278,10 +278,11 @@ fn run() -> io::Result<()> {
     let mut wrong_size = None;
     let mut wide_unavailable = false;
     let mut threads_rechecked = false;
+    let min_period_ns = sched_cfg.min_period.as_nanos() as u64;
     while !STOP.load(Ordering::Relaxed) {
         for bytes in speed.drain() {
-            if let Some(v_ego) = ccnc_vision_msg::car_state_speed(&bytes) {
-                gate.speed(v_ego, clock_ns(libc::CLOCK_MONOTONIC));
+            if let Some(cs) = ccnc_vision_msg::car_state(&bytes) {
+                gate.car_state(cs.v_ego, cs.left_blinker, cs.right_blinker, clock_ns(libc::CLOCK_MONOTONIC));
             }
         }
         for bytes in map_sub.drain() {
@@ -330,7 +331,7 @@ fn run() -> io::Result<()> {
         if let Some(pace) = front_pace.filter(|_| calibrated) {
             let now = clock_ns(libc::CLOCK_MONOTONIC);
             if gate.front_due(now, last_front, pace)
-                && (phase == gate::Phase::Closed || wide_unavailable || gate.front_fits(now))
+                && (phase == gate::Phase::Closed || wide_unavailable || !gate.wide_due(now, min_period_ns) || gate.front_fits(now))
             {
                 if let Some(frame) = road.poll() {
                     let size = (frame.layout.width, frame.layout.height);
@@ -397,6 +398,11 @@ fn run() -> io::Result<()> {
                 latest.rpy_calib,
                 latest.wide_from_device_euler
             );
+        }
+        let wait_ns = gate.wide_wait_ns(clock_ns(libc::CLOCK_MONOTONIC), min_period_ns);
+        if wait_ns > 0 {
+            sleep_interruptible(Duration::from_nanos(wait_ns).min(Duration::from_millis(20)));
+            continue;
         }
         let started = Instant::now();
         let Some(frame) = camera.poll() else {
@@ -475,11 +481,8 @@ fn run() -> io::Result<()> {
         gate.wide_finished(
             target,
             clock_ns(libc::CLOCK_MONOTONIC),
-            started.elapsed().max(sched_cfg.min_period).as_nanos() as u64,
+            started.elapsed().as_nanos() as u64,
         );
-        if !sched_cfg.min_period.is_zero() {
-            sleep_interruptible(sched_cfg.min_period.saturating_sub(started.elapsed()));
-        }
     }
     Ok(())
 }

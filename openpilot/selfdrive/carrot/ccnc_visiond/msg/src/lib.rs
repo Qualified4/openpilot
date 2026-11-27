@@ -309,14 +309,36 @@ pub fn decode(bytes: &[u8]) -> Option<(u64, VisionOut)> {
     ))
 }
 
-/// `carState.vEgo` of a valid carState Event.
-pub fn car_state_speed(bytes: &[u8]) -> Option<f32> {
+// CarState bit offsets in `cereal/car.capnp` (verified via pycapnp CarState.schema).
+const CAR_STATE_LEFT_BLINKER_BIT: usize = 69;
+const CAR_STATE_RIGHT_BLINKER_BIT: usize = 70;
+
+/// Speed and turn-signal fields read from a valid `carState` Event.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CarStateInfo {
+    pub v_ego: f32,
+    pub left_blinker: bool,
+    pub right_blinker: bool,
+}
+
+/// `carState.{vEgo, leftBlinker, rightBlinker}` of a valid carState Event.
+pub fn car_state(bytes: &[u8]) -> Option<CarStateInfo> {
     let message = Message::new(bytes)?;
     let event = message.root()?;
     if event.u16_at(EVENT_DISCRIMINANT_BYTE) != EVENT_CAR_STATE || event.bit(EVENT_INVALID_BIT) {
         return None;
     }
-    Some(message.struct_pointer(&event, 0)?.f32_at(0))
+    let cs = message.struct_pointer(&event, 0)?;
+    Some(CarStateInfo {
+        v_ego: cs.f32_at(0),
+        left_blinker: cs.bit(CAR_STATE_LEFT_BLINKER_BIT),
+        right_blinker: cs.bit(CAR_STATE_RIGHT_BLINKER_BIT),
+    })
+}
+
+/// `carState.vEgo` of a valid carState Event.
+pub fn car_state_speed(bytes: &[u8]) -> Option<f32> {
+    car_state(bytes).map(|c| c.v_ego)
 }
 
 /// `liveCalibration` of a valid liveCalibration Event.
@@ -574,6 +596,28 @@ mod tests {
         assert_eq!(car_state_speed(&car_state_event(EVENT_CAR_STATE, false, 2.5)), None);
         assert_eq!(car_state_speed(&car_state_event(EVENT_CCNC_VISION, true, 2.5)), None);
         assert_eq!(car_state_speed(&[]), None);
+        // A 1-word CarState (without blinker bits) reads blinkers as false.
+        assert_eq!(
+            car_state(&car_state_event(EVENT_CAR_STATE, true, 12.5)),
+            Some(CarStateInfo { v_ego: 12.5, left_blinker: false, right_blinker: false })
+        );
+        // 2-word CarState with leftBlinker (bit 69) and rightBlinker (bit 70).
+        let mut bytes = vec![0; 8 * 7];
+        put(&mut bytes, 4, 6u32.to_le_bytes());
+        put(&mut bytes, 8, struct_pointer(EVENT_WORDS, 1).to_le_bytes());
+        put(&mut bytes, 16 + EVENT_DISCRIMINANT_BYTE, EVENT_CAR_STATE.to_le_bytes());
+        put(&mut bytes, 32, struct_pointer(2, 0).to_le_bytes());
+        put(&mut bytes, 40, 20.0f32.to_le_bytes());
+        bytes[40 + CAR_STATE_LEFT_BLINKER_BIT / 8] |= 1 << (CAR_STATE_LEFT_BLINKER_BIT % 8);
+        assert_eq!(
+            car_state(&bytes),
+            Some(CarStateInfo { v_ego: 20.0, left_blinker: true, right_blinker: false })
+        );
+        bytes[40 + CAR_STATE_LEFT_BLINKER_BIT / 8] = 1 << (CAR_STATE_RIGHT_BLINKER_BIT % 8);
+        assert_eq!(
+            car_state(&bytes),
+            Some(CarStateInfo { v_ego: 20.0, left_blinker: false, right_blinker: true })
+        );
     }
 
     fn ccnc_map_event(event_valid: bool, map_valid: bool, slots_cfg: [(bool, u8); 5]) -> Vec<u8> {

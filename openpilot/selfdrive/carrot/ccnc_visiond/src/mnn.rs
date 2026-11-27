@@ -8,7 +8,10 @@
 
 use crate::engine::Engine;
 use anyhow::{anyhow, bail, Context, Result};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::ffi::{c_char, c_void, CStr, CString};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -24,8 +27,16 @@ pub const CLASSIFIER_MODELS: [&str; 2] = [MODEL_KIND1, MODEL_KIND4];
 pub const ALL_MODELS: [&str; 5] = [MODEL_FRONT, MODEL_SIDE, MODEL_RAW, MODEL_KIND1, MODEL_KIND4];
 
 pub const DEFAULT_CACHE_DIR: &str = "/data/cache/ccnc_visiond_mnn";
+pub const CACHE_MANIFEST: &str = "cache.manifest";
 pub const CAPI_LIB_NAME: &str = "libmnn_capi.so";
 pub const CL_LIB_NAME: &str = "libMNN_CL.so";
+const RUNTIME_LIBS: [&str; 3] = ["libMNN.so", CL_LIB_NAME, CAPI_LIB_NAME];
+const OPENCL_KEY: &str = "opencl_driver";
+const OPENCL_LIB_PATHS: [&str; 3] = [
+    "/usr/lib/libOpenCL.so",
+    "/usr/lib/aarch64-linux-gnu/libOpenCL.so",
+    "/vendor/lib64/libOpenCL.so",
+];
 
 pub const BACKEND_CPU: i32 = 0;
 pub const BACKEND_OPENCL: i32 = 3;
@@ -312,7 +323,97 @@ fn allow_cold_tuning() -> bool {
     std::env::var("CCNC_VISIOND_MNN_ALLOW_COLD").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
-fn verify_cache_ready(dir: &Path, models: &[&str], backend: Backend) -> Result<()> {
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path).with_context(|| format!("open {} for sha256", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).with_context(|| format!("read {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(64);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{b:02x}");
+    }
+    Ok(hex)
+}
+
+fn opencl_driver_fingerprint() -> String {
+    if let Some(p) = std::env::var_os("CCNC_VISIOND_OPENCL_LIB").filter(|s| !s.is_empty()) {
+        let path = PathBuf::from(p);
+        if let Ok(h) = sha256_file(&path) {
+            return h;
+        }
+    }
+    for cand in OPENCL_LIB_PATHS {
+        let path = Path::new(cand);
+        if let Ok(h) = sha256_file(path) {
+            return h;
+        }
+    }
+    "none".to_string()
+}
+
+pub fn compute_cache_manifest(assets: &Path, models: &[&str]) -> Result<BTreeMap<String, String>> {
+    let mut map = BTreeMap::new();
+    for &model in models {
+        map.insert(model.to_string(), sha256_file(&assets.join(model))?);
+    }
+    for lib in RUNTIME_LIBS {
+        let p = assets.join(lib);
+        if p.is_file() {
+            map.insert(lib.to_string(), sha256_file(&p)?);
+        }
+    }
+    map.insert(OPENCL_KEY.to_string(), opencl_driver_fingerprint());
+    Ok(map)
+}
+
+pub fn write_cache_manifest(assets: &Path, dir: &Path, models: &[&str]) -> Result<()> {
+    let entries = compute_cache_manifest(assets, models)?;
+    let mut text = String::from("# ccnc_visiond mnn opencl cache manifest v1\n");
+    for (key, hash) in &entries {
+        text.push_str(hash);
+        text.push_str("  ");
+        text.push_str(key);
+        text.push('\n');
+    }
+    let tmp = dir.join(format!("{CACHE_MANIFEST}.tmp"));
+    let dst = dir.join(CACHE_MANIFEST);
+    std::fs::write(&tmp, text).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, &dst).with_context(|| format!("rename {} -> {}", tmp.display(), dst.display()))?;
+    Ok(())
+}
+
+fn read_cache_manifest(dir: &Path) -> Result<BTreeMap<String, String>> {
+    let path = dir.join(CACHE_MANIFEST);
+    let text = std::fs::read_to_string(&path).with_context(|| {
+        format!(
+            "OpenCL cache manifest missing in {} ({}); run 'ccnc_visiond --warmup-cache' offroad",
+            dir.display(),
+            CACHE_MANIFEST
+        )
+    })?;
+    let mut map = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        if let (Some(hash), Some(key)) = (parts.next(), parts.next()) {
+            map.insert(key.to_string(), hash.to_string());
+        }
+    }
+    Ok(map)
+}
+
+fn verify_cache_ready(assets: &Path, dir: &Path, models: &[&str], backend: Backend) -> Result<()> {
     if backend != Backend::OpenClFp16 || allow_cold_tuning() {
         return Ok(());
     }
@@ -328,6 +429,23 @@ fn verify_cache_ready(dir: &Path, models: &[&str], backend: Backend) -> Result<(
             names.join(", ")
         );
     }
+    let cached = read_cache_manifest(dir)?;
+    let expected = compute_cache_manifest(assets, models)?;
+    for (key, cur_hash) in &expected {
+        match cached.get(key) {
+            Some(old_hash) if old_hash == cur_hash => {}
+            Some(old_hash) => {
+                bail!(
+                    "OpenCL cache hash mismatch for {key} (cached={old_hash}, current={cur_hash}); run 'ccnc_visiond --warmup-cache' offroad"
+                );
+            }
+            None => {
+                bail!(
+                    "OpenCL cache manifest entry missing for {key}; run 'ccnc_visiond --warmup-cache' offroad"
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -341,7 +459,7 @@ pub struct MnnDetectorEngine {
 impl MnnDetectorEngine {
     pub fn open(assets: &Path, backend: Backend, threads: usize) -> Result<Self> {
         let cdir = cache_dir();
-        verify_cache_ready(&cdir, &DETECTOR_MODELS, backend)?;
+        verify_cache_ready(assets, &cdir, &DETECTOR_MODELS, backend)?;
         let api = MnnApi::load(assets)?;
         let open_one = |name: &str, expected: [usize; 4]| -> Result<MnnSession> {
             let cf = (backend == Backend::OpenClFp16).then(|| cache_file_for(&cdir, name));
@@ -383,7 +501,7 @@ pub struct MnnClassifierEngine {
 impl MnnClassifierEngine {
     pub fn open(assets: &Path, backend: Backend, threads: usize) -> Result<Self> {
         let cdir = cache_dir();
-        verify_cache_ready(&cdir, &CLASSIFIER_MODELS, backend)?;
+        verify_cache_ready(assets, &cdir, &CLASSIFIER_MODELS, backend)?;
         let api = MnnApi::load(assets)?;
         let open_one = |name: &str, expected: [usize; 4]| -> Result<MnnSession> {
             let cf = (backend == Backend::OpenClFp16).then(|| cache_file_for(&cdir, name));
@@ -424,6 +542,13 @@ impl Engine for MnnClassifierEngine {
 /// Compiles and tunes all 5 `.mnn` models into `cache_dir` so onroad startup reloads in ~1.2 s with 0 DM drops.
 pub fn warmup_cache(assets: &Path, cache_dir: &Path, backend: Backend, threads: usize) -> Result<()> {
     std::fs::create_dir_all(cache_dir).with_context(|| format!("create cache dir {}", cache_dir.display()))?;
+    if backend == Backend::OpenClFp16 && verify_cache_ready(assets, cache_dir, &ALL_MODELS, backend).is_err() {
+        // Purge stale .clcache files before rebuilding so MNN never attempts to load mismatched kernels.
+        for &model_name in &ALL_MODELS {
+            let _ = std::fs::remove_file(cache_file_for(cache_dir, model_name));
+        }
+        let _ = std::fs::remove_file(cache_dir.join(CACHE_MANIFEST));
+    }
     let api = MnnApi::load(assets)?;
     let t_all = Instant::now();
     for &model_name in &ALL_MODELS {
@@ -458,6 +583,9 @@ pub fn warmup_cache(assets: &Path, cache_dir: &Path, backend: Backend, threads: 
             cache_bytes,
         );
     }
+    if backend == Backend::OpenClFp16 {
+        write_cache_manifest(assets, cache_dir, &ALL_MODELS)?;
+    }
     eprintln!(
         "ccnc_visiond: warmup complete ({} models) in {:.2} s -> {}",
         ALL_MODELS.len(),
@@ -491,14 +619,104 @@ mod tests {
     #[test]
     fn opencl_requires_warm_cache_by_default() {
         let dir = std::env::temp_dir().join(format!("ccnc_visiond_mnn_cold_{}", std::process::id()));
+        let assets = dir.join("assets");
+        let cache = dir.join("cache");
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
         std::env::remove_var("CCNC_VISIOND_MNN_ALLOW_COLD");
-        let err = verify_cache_ready(&dir, &DETECTOR_MODELS, Backend::OpenClFp16).unwrap_err();
+        let err = verify_cache_ready(&assets, &cache, &DETECTOR_MODELS, Backend::OpenClFp16).unwrap_err();
         assert!(format!("{err:#}").contains("OpenCL cache missing"));
         // CPU backend does not require OpenCL cache.
-        assert!(verify_cache_ready(&dir, &DETECTOR_MODELS, Backend::Cpu).is_ok());
+        assert!(verify_cache_ready(&assets, &cache, &DETECTOR_MODELS, Backend::Cpu).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_manifest_verifies_hashes_and_rejects_mismatch() {
+        let root = std::env::temp_dir().join(format!("ccnc_visiond_mnn_hash_{}", std::process::id()));
+        let assets = root.join("assets");
+        let cache = root.join("cache");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        std::env::remove_var("CCNC_VISIOND_MNN_ALLOW_COLD");
+
+        for m in ALL_MODELS {
+            std::fs::write(assets.join(m), format!("model-bytes-{m}")).unwrap();
+            std::fs::write(cache_file_for(&cache, m), b"compiled-opencl-kernel").unwrap();
+        }
+        std::fs::write(assets.join("libMNN.so"), b"mnn-runtime-v362").unwrap();
+        std::fs::write(assets.join("libMNN_CL.so"), b"mnn-cl-v362").unwrap();
+
+        // Missing manifest must fail even when .clcache files exist.
+        let err = verify_cache_ready(&assets, &cache, &DETECTOR_MODELS, Backend::OpenClFp16).unwrap_err();
+        assert!(format!("{err:#}").contains("manifest missing"), "got: {err:#}");
+
+        // Writing manifest makes both detector and classifier verification succeed.
+        write_cache_manifest(&assets, &cache, &ALL_MODELS).unwrap();
+        assert!(verify_cache_ready(&assets, &cache, &DETECTOR_MODELS, Backend::OpenClFp16).is_ok());
+        assert!(verify_cache_ready(&assets, &cache, &CLASSIFIER_MODELS, Backend::OpenClFp16).is_ok());
+
+        // Replacing a .mnn model file triggers hash mismatch.
+        std::fs::write(assets.join(MODEL_SIDE), b"updated-side-model-v2").unwrap();
+        let err = verify_cache_ready(&assets, &cache, &DETECTOR_MODELS, Backend::OpenClFp16).unwrap_err();
+        assert!(format!("{err:#}").contains("hash mismatch"), "got: {err:#}");
+        assert!(format!("{err:#}").contains(MODEL_SIDE), "got: {err:#}");
+
+        // Restoring model and mutating libMNN.so triggers runtime hash mismatch.
+        std::fs::write(assets.join(MODEL_SIDE), format!("model-bytes-{MODEL_SIDE}")).unwrap();
+        assert!(verify_cache_ready(&assets, &cache, &DETECTOR_MODELS, Backend::OpenClFp16).is_ok());
+        std::fs::write(assets.join("libMNN.so"), b"mnn-runtime-v370").unwrap();
+        let err = verify_cache_ready(&assets, &cache, &DETECTOR_MODELS, Backend::OpenClFp16).unwrap_err();
+        assert!(format!("{err:#}").contains("hash mismatch"), "got: {err:#}");
+        assert!(format!("{err:#}").contains("libMNN.so"), "got: {err:#}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stale_clcache_rejects_mnn_and_falls_back_to_cpu_ort() {
+        let root = std::env::temp_dir().join(format!("ccnc_visiond_mnn_fallback_{}", std::process::id()));
+        let assets = root.join("assets");
+        let cache = root.join("cache");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+
+        for m in ALL_MODELS {
+            std::fs::write(assets.join(m), format!("v1-{m}")).unwrap();
+            std::fs::write(cache_file_for(&cache, m), b"stale-clcache").unwrap();
+        }
+        write_cache_manifest(&assets, &cache, &ALL_MODELS).unwrap();
+        // Mutate models so cache manifest is now stale.
+        std::fs::write(assets.join(MODEL_FRONT), b"v2-front-model").unwrap();
+        std::fs::write(assets.join(MODEL_KIND1), b"v2-kind1-model").unwrap();
+
+        std::env::remove_var("CCNC_VISIOND_MNN_ALLOW_COLD");
+        std::env::set_var("CCNC_VISIOND_MNN_CACHE", &cache);
+        let fake_ort = assets.join("nonexistent_libonnxruntime.so");
+        std::env::set_var("ORT_DYLIB_PATH", &fake_ort);
+
+        // Detector::load("mnn") must reject stale MNN cache and attempt CPU ORT fallback.
+        let det_err = crate::detect::Detector::load(&assets, "mnn", 1).err().unwrap();
+        let det_msg = format!("{det_err:#}");
+        assert!(
+            det_msg.contains("nonexistent_libonnxruntime.so") || det_msg.contains("loading"),
+            "expected CPU ORT fallback attempt after MNN cache rejection, got: {det_msg}"
+        );
+
+        // Classifier open_engine("mnn") must likewise reject stale MNN cache and attempt CPU ORT fallback.
+        let cls_err = crate::classify::open_engine(&assets, "mnn").err().unwrap();
+        let cls_msg = format!("{cls_err:#}");
+        assert!(
+            cls_msg.contains("nonexistent_libonnxruntime.so") || cls_msg.contains("loading"),
+            "expected classifier CPU ORT fallback attempt, got: {cls_msg}"
+        );
+
+        std::env::remove_var("CCNC_VISIOND_MNN_CACHE");
+        std::env::remove_var("ORT_DYLIB_PATH");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
