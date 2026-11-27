@@ -1118,3 +1118,190 @@ fn a_tall_box_does_not_classify_a_second_track_within_truck_length() {
         .unwrap();
     assert_eq!(farther.kind, VehicleKind::Unknown);
 }
+
+#[test]
+fn stopping_road_frame_preserves_previous_curvature_and_lanes() {
+    use crate::input::model_v2::Line;
+
+    let curved = [(0., 0.), (5., 0.5), (10., 2.), (15., 4.5), (20., 8.), (30., 18.)];
+    let make_lines = || {
+        [-5.5, -1.9, 2.1, 5.8]
+            .map(|y| Line { x: vec![0., 30.], y: vec![y, y] })
+            .into()
+    };
+    let model = Model {
+        lane_lines: make_lines(),
+        lane_line_probs: vec![0.95; 4],
+        road_edges: Vec::new(),
+    };
+    let pose = PoseAt::default();
+    let prev = RoadFrame::new(&curved, Some(&model), pose, pose, std::iter::empty(), false);
+    // When stopping, modelV2.position collapses below 1 m and lane probabilities drop.
+    let collapsed = [(0., 0.), (0.4, 0.02)];
+    let low_prob = Model {
+        lane_lines: make_lines(),
+        lane_line_probs: vec![0.4; 4],
+        road_edges: Vec::new(),
+    };
+    let next = RoadFrame::new_with_previous(
+        &collapsed,
+        Some(&low_prob),
+        pose,
+        pose,
+        std::iter::empty(),
+        false,
+        Some((&prev, pose)),
+    );
+    // Point on the previous curve at (15, 4.5) must stay near d = 0 instead of snapping to (50, 0).
+    let (_, d_curved) = next.project(15., 4.5);
+    assert!(d_curved.abs() < 0.35, "expected continuous curve extension, got d={d_curved}");
+    // Carried-forward lane width (4.0 m) & offset (+0.1 m) must remain stable instead of jumping to 3.5 m.
+    let prev_u = prev.lane_u(10., 4.1);
+    let next_u = next.lane_u(10., 4.1);
+    assert!((prev_u - next_u).abs() < 0.05, "lane_u jumped: {prev_u} -> {next_u}");
+}
+
+#[test]
+fn pedestrian_veto_suppresses_roadside_radar_false_positive_without_showing_pedestrian() {
+    let mut engine = MapEngine::default();
+    // Low-speed roadside radar-only return at (12 m, +3.2 m) with ground speed ~1.2 m/s (walking speed).
+    let mut ped_radar = radar(77, 12., 3.2, 1.2);
+    ped_radar.motion_state = 2;
+    let pts = [ped_radar];
+    for tick in 0..10 {
+        let t = f64::from(tick) * STEP;
+        engine.observe_pedestrian(PedestrianObservation {
+            time: t,
+            x: 12.1,
+            y: 3.1,
+            confidence: 0.85,
+        });
+        let mut entry = input(tick, &pts);
+        entry.speed = 0.0;
+        let out = engine.step(entry);
+        assert!(out.slots[2].is_none(), "roadside pedestrian must not appear as RF car at tick {tick}");
+    }
+    // Pedestrian observation alone (without radar) must never create a displayed slot.
+    let mut empty_engine = MapEngine::default();
+    for tick in 0..6 {
+        empty_engine.observe_pedestrian(PedestrianObservation {
+            time: f64::from(tick) * STEP,
+            x: 8.,
+            y: 3.0,
+            confidence: 0.9,
+        });
+        let out = empty_engine.step(input(tick, &[]));
+        assert!(out.slots.iter().all(Option::is_none));
+    }
+}
+
+#[test]
+fn motorcycle_keeps_separate_track_and_does_not_displace_settled_adjacent_car() {
+    let mut engine = MapEngine::default();
+    // Establish a moving passenger car in RF at (15 m, +3.5 m).
+    let car_pts = [radar(10, 15., 3.5, 2.0)];
+    for tick in 0..20 {
+        let mut entry = input(tick, &car_pts);
+        entry.speed = 6.0;
+        engine.step(entry);
+    }
+    // A lane-splitting motorcycle appears straddling the right lane boundary at (10 m, +1.8 m, u ~ 0.51).
+    let both_pts = [radar(10, 15., 3.5, 2.0), radar(11, 10., 1.8, 2.5)];
+    let mut car_kept = true;
+    for tick in 20..26 {
+        let t = f64::from(tick) * STEP;
+        let obs = [VisionObservation {
+            time: t,
+            x: 10.,
+            y: 1.8,
+            kind: VehicleKind::Motorcycle,
+            confidence: 0.8,
+            position: true,
+        }];
+        let mut entry = input(tick, &both_pts);
+        entry.speed = 6.0;
+        entry.vision = &obs;
+        let out = engine.step(entry);
+        if out.slots[2].is_some_and(|s| s.last_track_id != Some(10)) {
+            car_kept = false;
+        }
+    }
+    assert!(car_kept, "lane-splitting motorcycle must not displace established RF car");
+    let moto_obj = engine
+        .objects()
+        .iter()
+        .find(|o| o.evidence.last_track_id == Some(11))
+        .unwrap();
+    assert_eq!(moto_obj.kind, VehicleKind::Motorcycle);
+}
+
+#[test]
+fn dynamic_pitch_compensation_restores_ground_range_under_braking_dive() {
+    let level = FrontCam::new([0., 0., 0.], 1.22).unwrap();
+    // Under braking dive (-1.15 deg = -0.02 rad nose down), a point at 20 m projects higher in the image.
+    let dive = -0.02_f64;
+    let tilted = FrontCam::new([0., -dive, 0.], 1.22).unwrap();
+    let (u, v_tilted) = tilted.radar_ground(20.0 - det_rules::CAM2B, 0.0).unwrap();
+    let (x_uncomp, _) = level.ground_from_pixel(u, v_tilted).unwrap();
+    let (x_comp, _) = tilted.ground_from_pixel(u, v_tilted).unwrap();
+    assert!(x_uncomp > 25.0, "uncompensated braking dive inflates ground range: {x_uncomp}");
+    assert!((x_comp - 20.0).abs() < 1e-6, "compensated range must match 20.0 m: {x_comp}");
+
+    // Verify WCam::ground_with_pitch matches exact pitch rotation.
+    let calib_level = det_rules::Calib {
+        rpy: [0., -0.01, 0.004],
+        wide_from_device: [0., -0.01, -0.02],
+        height: 1.22,
+    };
+    let calib_tilted = det_rules::Calib {
+        rpy: [0., -0.01 - dive, 0.004],
+        wide_from_device: [0., -0.01, -0.02],
+        height: 1.22,
+    };
+    let w_level = det_rules::geom::WCam::new(&calib_level, det_rules::geom::LENS);
+    let w_tilted = det_rules::geom::WCam::new(&calib_tilted, det_rules::geom::LENS);
+    let ray = w_level.ray(672., 430.);
+    let g_exact = w_tilted.ground(w_tilted.ray(672., 430.)).unwrap();
+    let g_comp = w_level.ground_with_pitch(ray, dive).unwrap();
+    assert!((g_exact[0] - g_comp[0]).abs() < 0.05 && (g_exact[1] - g_comp[1]).abs() < 0.05);
+}
+
+#[test]
+fn side_kinds_confirms_tall_side_bus_and_rejects_short_side_van() {
+    use crate::vision::{kind::{KindResult, KindView, KIND_BUS}, Side};
+    use det_rules::{Cand, View};
+
+    let mut engine = MapEngine::default();
+    let cam = FrontCam::new([0.; 3], 1.22).unwrap();
+    let points = [radar(5, 4.0, 3.5, 0.)];
+    confirm(&mut engine, &points);
+    // Tall bus box in SideR (height 180 px at range ~6.5 m -> ~3.8 m tall, >= 48 px and >= 2.05 m).
+    let mut cand = Cand::at(View::SideR, 4.0, 3.5);
+    cand.bbox = [100., 80., 300., 260.];
+    let bus_ans = |t_ns| KindResult {
+        time_ns: t_ns,
+        view: KindView::Side(Side::Right),
+        xyxy: cand.bbox,
+        kind: KIND_BUS,
+        prob: 0.96,
+    };
+    engine.observe_kinds(400_000_000, &cam, &[bus_ans(350_000_000)], |_, _| Some(vec![cand]));
+    let out = engine.step(input(8, &points));
+    assert_eq!(out.slots[2].unwrap().kind, VehicleKind::Heavy);
+
+    // Short van box in SideR (height 75 px at range ~6.5 m -> ~1.60 m < MIN_TRUCK_HEIGHT_M=2.05 m).
+    let mut van_engine = MapEngine::default();
+    confirm(&mut van_engine, &points);
+    let mut van_cand = Cand::at(View::SideR, 4.0, 3.5);
+    van_cand.bbox = [100., 185., 260., 260.];
+    let van_ans = KindResult {
+        time_ns: 350_000_000,
+        view: KindView::Side(Side::Right),
+        xyxy: van_cand.bbox,
+        kind: KIND_BUS,
+        prob: 0.98,
+    };
+    van_engine.observe_kinds(400_000_000, &cam, &[van_ans], |_, _| Some(vec![van_cand]));
+    let out = van_engine.step(input(8, &points));
+    assert_ne!(out.slots[2].unwrap().kind, VehicleKind::Heavy, "low side van must not confirm as Heavy");
+}

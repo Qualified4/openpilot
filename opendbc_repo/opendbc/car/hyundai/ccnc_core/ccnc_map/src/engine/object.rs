@@ -5,6 +5,7 @@ pub enum VehicleKind {
     Unknown,
     Car,
     Heavy,
+    Motorcycle,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -64,6 +65,7 @@ pub struct TrackedObject {
     pub(super) detector_kind: VehicleKind,
     pub(super) kind_vote: f64,
     pub(super) car_streak: u8,
+    pub(super) pedestrian_veto_t: Option<f64>,
 }
 
 impl TrackedObject {
@@ -109,13 +111,19 @@ impl TrackedObject {
     }
 
     pub(super) fn vote(&mut self, kind: VehicleKind, confidence: f64) {
+        if kind == VehicleKind::Motorcycle {
+            if confidence >= 0.45 && self.detector_kind != VehicleKind::Heavy {
+                self.detector_kind = VehicleKind::Motorcycle;
+            }
+            return;
+        }
         self.car_streak = if kind == VehicleKind::Car && confidence >= 0.6 {
             self.car_streak.saturating_add(1)
         } else {
             0
         };
         self.kind_vote = match kind {
-            VehicleKind::Unknown => return,
+            VehicleKind::Unknown | VehicleKind::Motorcycle => return,
             VehicleKind::Car => self.kind_vote - confidence,
             VehicleKind::Heavy => self.kind_vote + confidence,
         }

@@ -79,6 +79,7 @@ impl Tracker {
             detector_kind: VehicleKind::Unknown,
             kind_vote: 0.,
             car_streak: 0,
+            pedestrian_veto_t: None,
         });
         self.objects.last_mut()
     }
@@ -90,6 +91,16 @@ impl Tracker {
     }
 
     pub fn front_kinds(&mut self, published: u64, camera: &FrontCam, results: &[KindResult]) {
+        self.observe_kinds(published, camera, results, |_, _| None);
+    }
+
+    pub fn observe_kinds(
+        &mut self,
+        published: u64,
+        camera: &FrontCam,
+        results: &[KindResult],
+        side_cands: impl Fn(u64, crate::vision::Side) -> Option<Vec<det_rules::Cand>>,
+    ) {
         let results: Vec<_> = results
             .iter()
             .copied()
@@ -100,9 +111,44 @@ impl Tracker {
         let history = &self.camera_history;
         // A box votes for its best capture-time object. A nearby shadow object may
         // be a separate passenger car even when it fits within one bus length.
-        self.kinds.observe_front_matches(&results, camera, |t| {
-            camera_tracks(history, t).map(|(stamp, tracks)| (*stamp, tracks.clone()))
-        });
+        self.kinds.observe_matches(
+            &results,
+            camera,
+            |t| camera_tracks(history, t).map(|(stamp, tracks)| (*stamp, tracks.clone())),
+            side_cands,
+        );
+    }
+
+    /// Suppress low-speed roadside radar-only false positives that coincide with a detected person.
+    /// Pedestrians are never promoted to displayed vehicles.
+    pub fn observe_pedestrian(
+        &mut self,
+        now: f64,
+        speed: f64,
+        frame: &RoadFrame,
+        confidence: f64,
+        x: f64,
+        y: f64,
+    ) {
+        if !(0.45..=1.).contains(&confidence) || !x.is_finite() || !y.is_finite() {
+            return;
+        }
+        let (s, d) = frame.project(x, y);
+        let range_gate = (2.0 + 0.15 * s.abs()).min(5.0);
+        for o in &mut self.objects {
+            if o.vision_hits > 0
+                || o.evidence.last_lead_t.is_some()
+                || (o.moved && o.verified_travel >= 3.0)
+                || (o.v_s + speed).abs() > 3.0
+                || o.lane_u.abs() < 0.55
+            {
+                continue;
+            }
+            if (o.s - s).abs() <= range_gate && (o.d - d).abs() <= 1.2 {
+                o.pedestrian_veto_t = Some(now);
+                o.support(-1.2 * confidence);
+            }
+        }
     }
 
     pub fn front_boxes(&mut self, capture: u64, camera: &FrontCam, boxes: &[[f64; 4]]) {
@@ -431,7 +477,14 @@ impl Tracker {
             let ds = (o.s - s - (o.v_s + speed) * age).abs();
             let dd = (o.d - d).abs();
             let range_gate = (1.6 + 0.12 * s.abs()).min(5.);
-            (ds <= range_gate && dd < 1.3).then_some(ds / range_gate + dd / 1.3)
+            // Motorcycles (0.8 m width) use a tighter lateral gate so lane-splitting bikes stay
+            // separate from neighboring passenger cars.
+            let lat_gate = if obs.kind == VehicleKind::Motorcycle || o.detector_kind == VehicleKind::Motorcycle {
+                0.85
+            } else {
+                1.3
+            };
+            (ds <= range_gate && dd < lat_gate).then_some(ds / range_gate + dd / lat_gate)
         };
         let matched = self
             .objects

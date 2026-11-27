@@ -77,10 +77,13 @@ pub const SAME_CAR_SPEED: f64 = 2.5;
 /// A new vid takes the confirmed kind of a car the radar saw at most this long ago (`LinkGates::BODY.gap`: the
 /// tracker keeps a radar id on its car across a gap this long).
 pub const INHERIT_GAP_S: f64 = 0.8;
-/// Side view answers are tied to vids only when this is on. To turn it on: score the classifier on hand labelled
-/// side view boxes (the front labels say nothing about the side views' angle and distortion), check the confirmed
-/// kinds of the 58 scenes and the truck/bus scenes 30, 31, 44, then turn on `ccnc_visiond`'s `SIDE_KINDS` too.
-pub const SIDE_KINDS: bool = false;
+/// Side view answers are tied to vids when this is on (filtered to boxes >= `MIN_SIDE_BOX_H_PX`
+/// and physical height >= `MIN_TRUCK_HEIGHT_M` for heavy confirmation).
+pub const SIDE_KINDS: bool = true;
+/// Minimum virtual side-view (512x384) box height in pixels for side-view kind voting.
+pub const MIN_SIDE_BOX_H_PX: f64 = 48.0;
+/// Virtual pinhole focal length for 512x384, 80 deg HFOV: 256 / tan(40 deg).
+const SIDE_FOCAL: f64 = 305.088_94;
 
 /// Road camera of the 1344x760 device (det-cost `geom.py`).
 const FOCAL: f64 = 1141.5;
@@ -469,8 +472,18 @@ impl Kinds {
         camera: &FrontCam,
         tracks_near: impl Fn(u64) -> Option<(u64, Vec<Track>)>,
     ) {
+        self.observe_matches(results, camera, tracks_near, |_, _| None);
+    }
+
+    pub(crate) fn observe_matches(
+        &mut self,
+        results: &[KindResult],
+        camera: &FrontCam,
+        tracks_near: impl Fn(u64) -> Option<(u64, Vec<Track>)>,
+        side_cands: impl Fn(u64, Side) -> Option<Vec<Cand>>,
+    ) {
         self.observe_impl(
-            results, Some(camera), tracks_near, |_, _| None,
+            results, Some(camera), tracks_near, side_cands,
             // Shadow tracks are recorded under their object ID at capture time.
             |_, id| u32::try_from(id).ok(), false,
         );
@@ -493,16 +506,28 @@ impl Kinds {
                 KindView::Front => cam.map_or_else(Vec::new, |cam| {
                     tracks.iter().filter_map(|t| Some((front_gate(cam, t, &result.xyxy)?, t))).collect()
                 }),
-                KindView::Side(side) if SIDE_KINDS => side_cands(result.time_ns, side).map_or_else(Vec::new, |cands| {
-                    let Some(cand) = cands.iter().find(|c| c.bbox.iter().zip(&result.xyxy).all(|(a, b)| (a - b).abs() < 0.5)) else {
-                        return Vec::new();
-                    };
-                    tracks.iter().filter_map(|t| Some((side_gate(cand, t)?, t))).min_by(|a, b| a.0.total_cmp(&b.0)).into_iter().collect()
-                }),
+                KindView::Side(side) if SIDE_KINDS => {
+                    if result.xyxy[3] - result.xyxy[1] < MIN_SIDE_BOX_H_PX {
+                        Vec::new()
+                    } else {
+                        side_cands(result.time_ns, side).map_or_else(Vec::new, |cands| {
+                            let Some(cand) = cands.iter().find(|c| c.bbox.iter().zip(&result.xyxy).all(|(a, b)| (a - b).abs() < 0.5)) else {
+                                return Vec::new();
+                            };
+                            tracks.iter().filter_map(|t| Some((side_gate(cand, t)?, t))).min_by(|a, b| a.0.total_cmp(&b.0)).into_iter().collect()
+                        })
+                    }
+                }
                 KindView::Side(_) => Vec::new(),
             };
             // A road camera box is not the car of a track it would be too tall at (a farther car seen through it).
-            let height = |t: &Track| if result.view == KindView::Front { front_height(t, &result.xyxy) } else { f64::NAN };
+            let height = |t: &Track| match result.view {
+                KindView::Front => front_height(t, &result.xyxy),
+                KindView::Side(_) => {
+                    let range = (t.d_rel + CAM2B).hypot(t.y_rel);
+                    (result.xyxy[3] - result.xyxy[1]) * range / SIDE_FOCAL
+                }
+            };
             let Some(&(_, lead)) =
                 placed.iter().filter(|(_, t)| !(height(t) > MAX_TALL_M)).min_by(|a, b| a.0.total_cmp(&b.0))
             else {

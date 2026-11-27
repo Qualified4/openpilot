@@ -66,7 +66,7 @@ impl SideDisplay {
         if reassigned {
             self.pass = None;
         }
-        self.update_rear_pass(now, blind, previous[front], &mut slots[rear]);
+        self.update_rear_pass(now, blind, previous[front], previous[rear], &mut slots[rear]);
 
         let Some(mut candidate) = slots[front].filter(|_| slots[rear].is_none()) else {
             self.join = None;
@@ -94,6 +94,7 @@ impl SideDisplay {
                 // The previous physical rear was drawn one tick ago. The first front tick can
                 // land directly on the origin for a measured crossing close to zero.
                 let origin_at = now - start_x / TO_ORIGIN_SPEED;
+                self.pass = None;
                 self.join = Some(FrontJoin {
                     vid: candidate.obj_id, start: now, origin_at, start_x, start_d, from_bsd,
                     joined_at: None,
@@ -131,11 +132,16 @@ impl SideDisplay {
         now: f64,
         blind: bool,
         old_front: Option<EngineSlot>,
+        old_rear: Option<EngineSlot>,
         rear: &mut Option<EngineSlot>,
     ) {
+        // Unified origin crossing (+d -> 0 -> -d): accept both LF/RF -> LR/RR crossings
+        // and split-rear vehicles receding past the origin.
         if let Some(mut slot) = rear.filter(|slot| {
-            slot.s <= 0. && slot.v_s < -ALONGSIDE_SPEED
-                && old_front.is_some_and(|old| old.obj_id == slot.obj_id && old.s >= 0.)
+            let crossed_from_front = old_front.is_some_and(|old| old.obj_id == slot.obj_id && old.s >= 0.);
+            let crossed_from_split = self.pass.is_none()
+                && old_rear.is_some_and(|old| old.obj_id == slot.obj_id && old.s >= 0.);
+            slot.s <= 0. && slot.v_s < -ALONGSIDE_SPEED && (crossed_from_front || crossed_from_split)
         }) {
             slot.x = 0.;
             slot.rear_animated = true;
@@ -146,9 +152,11 @@ impl SideDisplay {
             return;
         }
         let Some(pass) = &mut self.pass else { return };
-        if rear.is_some_and(|slot| (slot.radar_seen || slot.camera_seen)
-                && (slot.obj_id != pass.slot.obj_id || slot.v_s >= 0.))
-        {
+        // Never carry a previous vehicle's rear trajectory onto a different VID.
+        if rear.is_some_and(|slot| {
+            slot.obj_id != pass.slot.obj_id
+                || (slot.radar_seen || slot.camera_seen) && slot.v_s >= 0.
+        }) {
             self.pass = None;
             return;
         }

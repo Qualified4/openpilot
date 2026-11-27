@@ -39,6 +39,16 @@ pub struct VisionObservation {
     pub position: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct PedestrianObservation {
+    /// Capture time in the same monotonic clock as the radar tick.
+    pub time: f64,
+    /// Ground point in capture coordinates, right positive.
+    pub x: f64,
+    pub y: f64,
+    pub confidence: f64,
+}
+
 /// The model lane-change flag used by the production message reader.
 pub fn model_changing_lanes(bytes: &[u8]) -> bool {
     crate::input::model_v2::parse_road_path(bytes).is_none_or(|(_, changing, _)| changing)
@@ -101,12 +111,22 @@ pub struct MapEngine {
     lateral: HashMap<u64, LateralDisplay>,
     road_disagreement: Option<f64>,
     last_lane_change: Option<f64>,
+    pending_pedestrians: Vec<PedestrianObservation>,
+    ego_lane_coord: f64,
     time: Option<f64>,
 }
 
 impl MapEngine {
     pub fn objects(&self) -> &[TrackedObject] {
         &self.tracker.objects
+    }
+
+    pub fn ego_lane_coord(&self) -> f64 {
+        self.ego_lane_coord
+    }
+
+    pub fn observe_pedestrian(&mut self, obs: PedestrianObservation) {
+        self.pending_pedestrians.push(obs);
     }
 
     pub(crate) fn display_motion(&self, vid: u64) -> Option<(bool, f64)> {
@@ -137,6 +157,17 @@ impl MapEngine {
         self.tracker.front_kinds(published, camera, results);
     }
 
+    /// Associate both front and side-view classifier answers with capture-time radar objects.
+    pub fn observe_kinds(
+        &mut self,
+        published: u64,
+        camera: &FrontCam,
+        results: &[KindResult],
+        side_cands: impl Fn(u64, crate::vision::Side) -> Option<Vec<det_rules::Cand>>,
+    ) {
+        self.tracker.observe_kinds(published, camera, results, side_cands);
+    }
+
     /// Body detections support a pair of currently measured slow side vehicles.
     pub fn observe_front_boxes(&mut self, capture: u64, camera: &FrontCam, boxes: &[[f64; 4]]) {
         self.tracker.front_boxes(capture, camera, boxes);
@@ -161,6 +192,8 @@ impl MapEngine {
             self.lateral.clear();
             self.road_disagreement = None;
             self.last_lane_change = None;
+            self.pending_pedestrians.clear();
+            self.ego_lane_coord = 0.;
         }
         let previous_pose = self.pose.current();
         self.pose.advance(now, speed, input.yaw);
@@ -183,13 +216,14 @@ impl MapEngine {
             self.last_lane_change = Some(now);
         }
         let model_pose = road.map_or(ego, |r| self.pose.at(r.time));
-        let mut frame = RoadFrame::new(
+        let mut frame = RoadFrame::new_with_previous(
             road.map_or(&[], |r| r.path),
             road.and_then(|r| r.lines),
             model_pose,
             ego,
             self.behind.iter().copied(),
             road.is_some_and(|r| r.changing_lanes),
+            self.previous.as_ref().map(|p| (p, previous_pose)),
         );
         if let Some(previous) = self.previous.take() {
             if road.is_some() && frame.disagrees(&previous, previous_pose, ego) {
@@ -204,6 +238,7 @@ impl MapEngine {
             self.tracker
                 .predict(dt, speed, &previous, &frame, previous_pose, ego);
         }
+        self.ego_lane_coord = frame.ego_lane_coord();
         let visible = self.tracker.radar(now, speed, &frame, ego, input.radar);
         let primary = self.tracker.lead(now, input.lead, &frame);
         for &observation in input.vision {
@@ -223,6 +258,16 @@ impl MapEngine {
             self.tracker.vision(now, speed, &frame, observation, x, -y, |lane, rx, ry| {
                 road.is_none_or(|r| road_frame::inside_outer_line(r, model_pose, ego, lane, rx, ry))
             });
+        }
+        for ped in self.pending_pedestrians.drain(..) {
+            let age = now - ped.time;
+            if !(0. ..=0.5).contains(&age) || !ped.x.is_finite() || !ped.y.is_finite() {
+                continue;
+            }
+            let capture = self.pose.at(ped.time);
+            let (wx, wy) = capture.to_world(ped.x, -ped.y);
+            let (x, y) = ego.to_ego(wx, wy);
+            self.tracker.observe_pedestrian(now, speed, &frame, ped.confidence, x, -y);
         }
         let previous_rear = [3, 4].map(|i| self.displayed[i].map(|slot| slot.obj_id));
         self.tracker.lifecycle(now, dt.min(0.25), speed, &frame, &visible, input.blind, previous_rear);

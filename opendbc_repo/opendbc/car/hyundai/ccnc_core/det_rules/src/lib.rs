@@ -108,9 +108,38 @@ pub fn round2(x: f64) -> f64 {
 impl WideGeometry {
     /// vehicle boxes -> candidates, in detection order (band drop and the cut-box exception applied).
     pub fn candidates(&self, dets: &[WideDet]) -> Vec<Cand> {
+        self.candidates_with_pitch(dets, 0.0)
+    }
+    /// vehicle boxes -> candidates with dynamic pitch compensation.
+    pub fn candidates_with_pitch(&self, dets: &[WideDet], delta_pitch: f64) -> Vec<Cand> {
         dets.iter()
             .filter(|d| d.is_vehicle())
-            .filter_map(|d| wide::wide_candidate(d, &self.ground(d), self.mask(d.view), true))
+            .filter_map(|d| wide::wide_candidate(d, &self.ground_with_pitch(d, delta_pitch), self.mask(d.view), true))
             .collect()
     }
+    /// person boxes (COCO class 0) that do not overlap any vehicle box -> ground (x from bumper, y right, score).
+    pub fn person_points(&self, dets: &[WideDet], delta_pitch: f64) -> Vec<(f64, f64, f64)> {
+        let vehicles: Vec<&WideDet> = dets.iter().filter(|d| d.is_vehicle()).collect();
+        dets.iter()
+            .filter(|d| d.class == 0 && d.score >= 0.45)
+            .filter(|d| !vehicles.iter().any(|v| v.view == d.view && box_overlap_ratio(d.bbox, v.bbox) >= 0.3))
+            .filter_map(|d| {
+                let (inside, touch) = band::band_stats(self.mask(d.view), &d.bbox);
+                if inside >= 0.5 || touch {
+                    return None;
+                }
+                let g = self.ground_with_pitch(d, delta_pitch).bc?;
+                let x = g[0] - CAM2B;
+                ((-5.0..=30.0).contains(&x) && g[1].abs() <= 10.0).then_some((x, g[1], d.score))
+            })
+            .collect()
+    }
+}
+
+fn box_overlap_ratio(a: [f64; 4], b: [f64; 4]) -> f64 {
+    let iw = (a[2].min(b[2]) - a[0].max(b[0])).max(0.0);
+    let ih = (a[3].min(b[3]) - a[1].max(b[1])).max(0.0);
+    let inter = iw * ih;
+    let area_a = ((a[2] - a[0]).max(0.0) * (a[3] - a[1]).max(0.0)).max(1.0);
+    inter / area_a
 }

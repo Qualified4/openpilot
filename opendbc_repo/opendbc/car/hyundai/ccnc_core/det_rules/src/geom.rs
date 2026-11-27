@@ -106,6 +106,14 @@ impl WCam {
         let s = self.h / d[2];
         Some([s * d[0], s * d[1]])
     }
+    /// calib ray compensated by high-pass dynamic suspension pitch (rad, nose-up positive) -> ground (x, y).
+    pub fn ground_with_pitch(&self, d: V3, delta_pitch: f64) -> Option<[f64; 2]> {
+        if delta_pitch == 0.0 || !delta_pitch.is_finite() {
+            return self.ground(d);
+        }
+        let (sp, cp) = delta_pitch.sin_cos();
+        self.ground([cp * d[0] + sp * d[2], d[1], -sp * d[0] + cp * d[2]])
+    }
 }
 
 pub const VIRT_W: usize = 512;
@@ -217,17 +225,21 @@ impl WideGeometry {
     }
     /// box -> ground points (bottom corners; side views also the size-based point and the raw-frame span).
     pub fn ground(&self, d: &WideDet) -> Ground {
+        self.ground_with_pitch(d, 0.0)
+    }
+    /// box -> ground points with high-pass dynamic pitch compensation (rad, nose-up positive).
+    pub fn ground_with_pitch(&self, d: &WideDet, delta_pitch: f64) -> Ground {
         let [x1, y1, x2, y2] = d.bbox;
         let us = [x1, (x1 + x2) / 2.0, x2];
         let vw = match d.view {
             View::Raw => {
-                let g = us.map(|u| self.cam.ground(self.cam.ray(u, y2)));
+                let g = us.map(|u| self.cam.ground_with_pitch(self.cam.ray(u, y2), delta_pitch));
                 return Ground { bl: g[0], bc: g[1], br: g[2], gsize: None, wbox: None };
             }
             View::SideL => &self.left,
             View::SideR => &self.right,
         };
-        let g = us.map(|u| self.cam.ground(vw.ray(u, y2)));
+        let g = us.map(|u| self.cam.ground_with_pitch(vw.ray(u, y2), delta_pitch));
         let dir = vw.ray((x1 + x2) / 2.0, (y1 + y2) / 2.0);
         let fwd = [vw.rcv[0][2], vw.rcv[1][2], vw.rcv[2][2]];
         let cosv = dir[0] * fwd[0] + dir[1] * fwd[1] + dir[2] * fwd[2];

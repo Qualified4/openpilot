@@ -126,9 +126,11 @@ impl MapLink {
                 if prev_vid != 0 && vid != 0 && prev_vid != vid && target <= 1.0 && previous > target + 1.0 {
                     return target;
                 }
-                // Mapd has already interpolated an origin crossing or a confirmed rear pass.
-                let alpha = if animated { 1. } else { REAR_ALPHA };
-                previous + (alpha * (target - previous)).clamp(-REAR_MAX_STEP, REAR_MAX_STEP)
+                // Mapd is the single authority for rear trajectories (origin crossings and
+                // receding passes); apply no LPF on animated slots and reserve REAR_ALPHA
+                // for un-animated BSD <-> split-car transitions, keeping the 16 m/s CAN step guard.
+                let delta = if animated { target - previous } else { REAR_ALPHA * (target - previous) };
+                previous + delta.clamp(-REAR_MAX_STEP, REAR_MAX_STEP)
             });
             self.rear_distance[side] = (code != 0).then_some((shown, vid));
             if code == 0 { 0. } else { shown }

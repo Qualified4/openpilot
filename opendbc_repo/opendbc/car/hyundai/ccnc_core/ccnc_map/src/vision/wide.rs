@@ -3,6 +3,24 @@
 use super::{Context, Frame, FrameView, Side};
 use det_rules::{Calib, Cand, DetRules, SideOutput, View, WideDet, WideFrame, WideGeometry};
 
+fn frame_detections(frame: &Frame) -> Vec<WideDet> {
+    let view = match frame.view {
+        FrameView::Raw => View::Raw,
+        FrameView::Side(Side::Left) => View::SideL,
+        FrameView::Side(Side::Right) => View::SideR,
+    };
+    frame
+        .boxes
+        .iter()
+        .map(|b| WideDet {
+            view,
+            bbox: b.xyxy,
+            score: b.confidence,
+            class: i32::from(b.class_id),
+        })
+        .collect()
+}
+
 /// det_rules' raw and side views, band masks and camera for one set of calibration angles.
 pub struct Geometry {
     angles: [f64; 6],
@@ -36,23 +54,19 @@ impl Geometry {
     }
 
     pub(crate) fn candidates(&mut self, frame: &Frame, calib: &Calib) -> Vec<Cand> {
+        self.candidates_with_pitch(frame, calib, 0.0)
+    }
+
+    pub(crate) fn candidates_with_pitch(&mut self, frame: &Frame, calib: &Calib, delta_pitch: f64) -> Vec<Cand> {
         self.wide.cam.h = calib.height;
-        let view = match frame.view {
-            FrameView::Raw => View::Raw,
-            FrameView::Side(Side::Left) => View::SideL,
-            FrameView::Side(Side::Right) => View::SideR,
-        };
-        let detections: Vec<WideDet> = frame
-            .boxes
-            .iter()
-            .map(|b| WideDet {
-                view,
-                bbox: b.xyxy,
-                score: b.confidence,
-                class: i32::from(b.class_id),
-            })
-            .collect();
-        self.wide.candidates(&detections)
+        let detections = frame_detections(frame);
+        self.wide.candidates_with_pitch(&detections, delta_pitch)
+    }
+
+    pub(crate) fn person_points(&mut self, frame: &Frame, calib: &Calib, delta_pitch: f64) -> Vec<(f64, f64, f64)> {
+        self.wide.cam.h = calib.height;
+        let detections = frame_detections(frame);
+        self.wide.person_points(&detections, delta_pitch)
     }
 
     pub(super) fn step(

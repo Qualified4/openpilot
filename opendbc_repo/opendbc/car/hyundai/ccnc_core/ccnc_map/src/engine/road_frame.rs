@@ -34,6 +34,18 @@ impl RoadFrame {
         past: impl Iterator<Item = PoseAt>,
         changing_lanes: bool,
     ) -> Self {
+        Self::new_with_previous(path, model, model_pose, ego, past, changing_lanes, None)
+    }
+
+    pub(super) fn new_with_previous(
+        path: &[Point],
+        model: Option<&Model>,
+        model_pose: PoseAt,
+        ego: PoseAt,
+        past: impl Iterator<Item = PoseAt>,
+        changing_lanes: bool,
+        previous: Option<(&Self, PoseAt)>,
+    ) -> Self {
         let to_ego = |(x, y): Point| {
             let (wx, wy) = model_pose.to_world(x, -y);
             let (x, y) = ego.to_ego(wx, wy);
@@ -65,6 +77,42 @@ impl RoadFrame {
             }
             direction = Some((dx, dy));
             points.push(point);
+        }
+        // When stopping causes modelV2.position to collapse below 1 m, extend continuously
+        // from the previous valid road frame (or past tangent) instead of snapping to (50, 0).
+        if points.last().is_none_or(|p| p.0 < 1. && p.1.abs() < 1.) {
+            if let Some((prev, prev_pose)) = previous {
+                let prev_to_ego = |s: f64| {
+                    let (px, py) = prev.cartesian(s, 0.);
+                    let (wx, wy) = prev_pose.to_world(px, -py);
+                    let (ex, ey) = ego.to_ego(wx, wy);
+                    (ex, -ey)
+                };
+                for s in [2., 5., 10., 15., 20., 30., 40., 50.] {
+                    let candidate = prev_to_ego(s);
+                    if !candidate.0.is_finite() || !candidate.1.is_finite() {
+                        break;
+                    }
+                    let last = points[points.len() - 1];
+                    let (dx, dy) = (candidate.0 - last.0, candidate.1 - last.1);
+                    if dx <= 0.25 || dx.hypot(dy) < 0.25 {
+                        continue;
+                    }
+                    if direction.is_some_and(|(tx, ty)| dx * tx + dy * ty <= 0.) {
+                        break;
+                    }
+                    direction = Some((dx, dy));
+                    points.push(candidate);
+                }
+            } else if points.len() >= 2 {
+                let a = points[points.len() - 2];
+                let b = points[points.len() - 1];
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let len = dx.hypot(dy);
+                if len > 0.01 && dx / len > 0.5 {
+                    points.push((b.0 + 50. * dx / len, b.1 + 50. * dy / len));
+                }
+            }
         }
         if points.last().is_none_or(|p| p.0 < 1. && p.1.abs() < 1.) {
             points.push((50., 0.));
@@ -142,7 +190,22 @@ impl RoadFrame {
                 }
             }
         }
+        if frame.lanes.is_empty() && !changing_lanes {
+            if let Some((prev, prev_pose)) = previous {
+                let shift = (ego.s - prev_pose.s).max(0.);
+                for &(sample, offset, width) in &prev.lanes {
+                    let shifted = sample - shift;
+                    if (-5. ..=35.).contains(&shifted) {
+                        frame.lanes.push((shifted, offset, width));
+                    }
+                }
+            }
+        }
         frame
+    }
+
+    pub(super) fn ego_lane_coord(&self) -> f64 {
+        self.lane_u(0., 0.)
     }
 
     pub(super) fn project(&self, x: f64, y: f64) -> (f64, f64) {

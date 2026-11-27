@@ -207,6 +207,10 @@ pub(super) fn select(
         if !ff_handoff && !side_bound_ok {
             continue;
         }
+        // Suppress low-speed roadside radar-only tracks vetoed by a detected pedestrian.
+        if o.pedestrian_veto_t.is_some_and(|t| now - t <= 0.8) && o.vision_hits == 0 && !o.moved {
+            continue;
+        }
         let near = o.s <= SPLIT_REAR_MAX + o.var_s.sqrt().min(0.7);
         // A confirmed front vehicle can finish a short, unobserved pass at the origin.
         let side_pass = previous[side + 1].is_some_and(|old| old.obj_id == o.obj_id && old.s >= 0.)
@@ -328,6 +332,14 @@ pub(super) fn select(
         });
         let front_default = front_candidates()
             .filter(|o| {
+                // A lane-splitting motorcycle (0.8 m width) straddling the lane line must not
+                // displace an established adjacent-lane passenger vehicle.
+                let splitting_moto = (o.kind == super::VehicleKind::Motorcycle
+                    || o.detector_kind == super::VehicleKind::Motorcycle)
+                    && (0.35..=0.65).contains(&o.lane_u.abs());
+                if established_side && splitting_moto && front_slot != Some(o.obj_id) {
+                    return false;
+                }
                 // A recovering range check or brand-new challenger must persist before it can
                 // displace a continuously measured incumbent. Retain normal admission to an empty slot.
                 !established_side || front_slot == Some(o.obj_id) || vision(now, o)

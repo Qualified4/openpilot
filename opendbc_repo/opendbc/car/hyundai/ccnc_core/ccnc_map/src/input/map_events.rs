@@ -100,6 +100,13 @@ impl<'a> Event<'a> {
         (flag(rate.data, 192) && yaw.is_finite()).then_some(yaw)
     }
 
+    /// Pitch angle from LivePose.orientationNED.y in rad (nose-up positive).
+    pub fn pitch(&self) -> Option<f64> {
+        let orient = self.message.struct_pointer(&self.payload()?, 0)?;
+        let pitch = f32_at(orient.data, 1);
+        (flag(orient.data, 192) && pitch.is_finite()).then_some(pitch)
+    }
+
 
     pub fn primary_display_lead(&self) -> Option<DisplayLead> {
         let payload = self.payload()?;
