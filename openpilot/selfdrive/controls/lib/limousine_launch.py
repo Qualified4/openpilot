@@ -21,23 +21,23 @@ from openpilot.selfdrive.controls.lib.limousine_stop import GRAVITY, MAX_UPHILL_
 
 # Standstill launch regime (StopReq 1->0 / stopping -> starting|pid)
 V_STANDSTILL_TRIGGER = 0.35  # m/s: speed threshold for standstill launch mode
-V_BREAKAWAY = 0.12  # m/s: below this, hydraulic brake hold is still releasing
-BREAKAWAY_ACCEL_FLAT = 0.42  # m/s^2: gentle breakaway ceiling on flat/downhill to prevent slingshot
-BREAKAWAY_RAMP_TIME = 0.45  # s: S-curve ramp time from 0 -> breakaway ceiling while stationary
+V_BREAKAWAY = 0.04  # m/s: first wheel-motion threshold (zero artificial delay once moving)
+BREAKAWAY_ACCEL_FLAT = 0.70  # m/s^2: crisp breakaway ceiling that still eliminates slingshot kick
+BREAKAWAY_RAMP_TIME = 0.38  # s: short S-curve ramp from 0 -> breakaway ceiling while stationary
 
-# Post-breakaway S-curve launch ramp (bell-shaped positive jerk)
-LAUNCH_RAMP_TIME = 1.15  # s: total S-curve ramp duration after breakaway
-LAUNCH_JERK_MIN = 0.55  # m/s^3: initial gentle jerk right after breakaway
-LAUNCH_JERK_PEAK = 1.65  # m/s^3: peak jerk mid/late ramp on flat ground
+# Post-breakaway S-curve launch ramp (short 0.45s ramp: shaves 0.1-0.2s kick, minimal Δt loss)
+LAUNCH_RAMP_TIME = 0.45  # s: short S-curve ramp duration after breakaway (0.35-0.55s target)
+LAUNCH_JERK_MIN = 1.40  # m/s^3: initial soft jerk right after breakaway
+LAUNCH_JERK_PEAK = 3.60  # m/s^3: rapid S-curve completion jerk so target accel/speed Δt <= ~0.25s
 UPHILL_JERK_BONUS_GAIN = 0.50  # (m/s^3) per (m/s^2) of uphill gravity component
 
 # Low-speed decel -> accel re-acceleration regime (rolling stop / congestion)
 V_REACCEL_MAX = 12.0  # m/s (~43 km/h): city/congestion speed ceiling for re-accel shaping
 DECEL_MEMORY_ACCEL = -0.10  # m/s^2: recent braking threshold that arms re-accel shaping
 DECEL_MEMORY_TIME = 0.60  # s: memory window after braking before crossing into positive accel
-REACCEL_RAMP_TIME = 1.00  # s: S-curve ramp duration for decel -> accel transition
-REACCEL_JERK_MIN = 0.60  # m/s^3: initial soft jerk right after crossing a=0
-REACCEL_JERK_PEAK = 1.80  # m/s^3: peak jerk mid/late ramp on flat ground
+REACCEL_RAMP_TIME = 0.45  # s: short S-curve ramp duration for decel -> accel transition
+REACCEL_JERK_MIN = 0.85  # m/s^3: initial soft jerk right after crossing a=0
+REACCEL_JERK_PEAK = 2.40  # m/s^3: controlled peak jerk to shave initial kick with <=0.15s Δt
 
 
 def uphill_gravity_comp(pitch_rad: float = 0.0) -> float:

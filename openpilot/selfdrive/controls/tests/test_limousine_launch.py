@@ -119,10 +119,27 @@ def test_uphill_launch_adds_gravity_compensation_without_rollback():
   # Breakaway ceiling exceeds g*sin(pitch) by BREAKAWAY_ACCEL_FLAT -> zero rollback, no 1.74 slingshot.
   assert prev == pytest.approx(expected_ceil, abs=1e-3)
   assert prev > g_up + 0.35
-  assert prev < 1.0
+  assert prev < 1.25
 
   # Uphill post-breakaway jerk limit gets grade bonus so uphill launch stays responsive.
-  assert launch_jerk_limit(0.5, mode="standstill", pitch_rad=pitch_480) > launch_jerk_limit(0.5, mode="standstill", pitch_rad=0.0)
+  assert launch_jerk_limit(0.25, mode="standstill", pitch_rad=pitch_480) > launch_jerk_limit(0.25, mode="standstill", pitch_rad=0.0)
+
+
+def test_short_ramp_duration_preserves_target_accel_responsiveness():
+  # Owner requirement: short S-curve ramp (0.35-0.55s) so arrival-time loss is minimal.
+  assert 0.35 <= LAUNCH_RAMP_TIME <= 0.55
+  ctrl = LimousineLaunchController()
+  ctrl.notify_stopping()
+  # Break away immediately at v=0.2 m/s with target 1.5 m/s^2; must reach >= 90% of target within 0.60s.
+  prev = 0.0
+  t_reach = None
+  for step in range(1, 100):
+    out = ctrl.update(a_cmd=1.5, previous_accel=prev, v_ego=0.2 + 0.01 * step, dt=DT_CTRL, enabled=True)
+    prev = out
+    if t_reach is None and out >= 1.35:
+      t_reach = step * DT_CTRL
+  assert t_reach is not None
+  assert t_reach <= 0.60
 
 
 def test_low_speed_congestion_decel_to_reaccel_s_curve():
