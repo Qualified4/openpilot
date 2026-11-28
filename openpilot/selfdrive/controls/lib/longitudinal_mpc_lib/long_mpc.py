@@ -64,16 +64,19 @@ LEAD_ACCEL_COST_POS_REL_SPEEDS = (-2.0, -0.5)
 # replay (FOL 47c/479): weaker at every speed added a brake entry per 15 min (2.02 -> 2.09) and lead-departure
 # rubber banding 19 -> 22 %; gated to 22-32 km/h it kept 2.02 brake entries, cut sign changes 6.63 -> 6.20/min.
 LEAD_ACCEL_COST_POS_EGO_SPEEDS = (6.0, 9.0)
-# Low-speed stopping-approach lead creep suppression (cost-side only):
-# When ego is rolling slowly toward a close, slow lead (e.g. lead pulls forward 1-2 m at a red light),
-# attenuate positive aLeadK on the cost-side prediction so MPC does not re-accelerate then re-brake.
-# Gated off at standstill (v_ego <= 0.35 m/s) and once the lead clearly departs (dRel >= 6.5 m,
-# vLead >= 2.0 m/s, or v_lead - v_ego >= 0.8 m/s) so standstill launch timing is unaffected.
-LOW_SPEED_CREEP_EGO_SPEEDS = (0.35, 0.60, 1.60, 2.00)
-LOW_SPEED_CREEP_EGO_WEIGHTS = (0.0, 1.0, 1.0, 0.0)
-LOW_SPEED_CREEP_LEAD_DISTS = (5.8, 6.5)
-LOW_SPEED_CREEP_LEAD_SPEEDS = (1.6, 2.0)
-LOW_SPEED_CREEP_REL_SPEEDS = (0.5, 0.8)
+# Continuous low-speed lead departure confidence alpha_depart in [0, 1] and rolling-approach
+# weight beta_roll in [0, 1] (Stage 2 of #253, DESIGN_KO.md):
+# Attenuates positive aLeadK on cost-side prediction only while ego is already rolling in a close
+# stopping queue (v_ego > 0.35 m/s) and lead has not genuinely departed. At standstill (v_ego <= 0.35 m/s),
+# beta_roll == 0.0 so launch prediction has 0.00 s delay; lead braking (aLeadK <= 0) is always 100% preserved.
+DEPART_V_LEAD_LOW = 1.50
+DEPART_V_LEAD_HIGH = 2.40
+DEPART_D_EXCESS_LOW = 2.40
+DEPART_D_EXCESS_HIGH = 3.60
+DEPART_V_EGO_LOW = 1.80
+DEPART_V_EGO_HIGH = 2.60
+ROLL_APPROACH_V_LOW = 0.35
+ROLL_APPROACH_V_HIGH = 0.55
 # Blended lead constraint: share of the closing terms kept on top of the steady comfort target, full at or
 # below the first planned ego speed (m/s), none from the second.
 BLENDED_CLOSING_SPEEDS = (4.0, 7.0)
@@ -110,17 +113,48 @@ def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
     raise NotImplementedError("Longitudinal personality not supported")
 
 
-def low_speed_lead_creep_suppress(v_ego: float, x_lead: float, v_lead: float, a_lead: float) -> float:
-  """Return [0, 1] attenuation weight for positive aLeadK during low-speed close stopping approaches."""
-  if a_lead <= 0.0:
+def lead_departure_confidence(
+  v_ego: float,
+  d_rel: float,
+  v_lead: float,
+  d_stop_cfg: float = 4.0,
+) -> float:
+  """Return continuous lead departure confidence alpha_depart in [0, 1]."""
+  if not all(map(math.isfinite, (v_ego, d_rel, v_lead, d_stop_cfg))):
+    return 1.0
+  def _sstep(u: float) -> float:
+    t = 0.0 if u < 0.0 else (1.0 if u > 1.0 else u)
+    return t * t * (3.0 - 2.0 * t)
+  sigma_v = _sstep((v_lead - 1.50) / (2.40 - 1.50))
+  sigma_d = _sstep(((d_rel - d_stop_cfg) - 2.40) / (3.60 - 2.40))
+  sigma_ego = _sstep((v_ego - 1.80) / (2.60 - 1.80))
+  return max(sigma_v, sigma_d, sigma_ego)
+
+
+def rolling_approach_weight(v_ego: float) -> float:
+  """Return continuous rolling-approach weight beta_roll in [0, 1]; 0.0 at standstill (v_ego <= 0.35 m/s)."""
+  if not math.isfinite(v_ego):
     return 0.0
-  w_ego = float(np.interp(v_ego, (0.35, 0.60, 1.60, 2.00), (0.0, 1.0, 1.0, 0.0)))
-  if w_ego <= 0.0:
+  u = (v_ego - 0.35) / (0.55 - 0.35)
+  t = 0.0 if u < 0.0 else (1.0 if u > 1.0 else u)
+  return t * t * (3.0 - 2.0 * t)
+
+
+def low_speed_lead_creep_suppress(
+  v_ego: float,
+  x_lead: float,
+  v_lead: float,
+  a_lead: float,
+  d_stop_cfg: float = 4.0,
+) -> float:
+  """Return [0, 1] attenuation weight for positive aLeadK during low-speed rolling stopping approaches."""
+  if not math.isfinite(a_lead) or a_lead <= 0.0:
     return 0.0
-  w_dist = float(np.interp(x_lead, (5.8, 6.5), (1.0, 0.0)))
-  w_lead = float(np.interp(v_lead, (1.6, 2.0), (1.0, 0.0)))
-  w_rel = float(np.interp(v_lead - v_ego, (0.5, 0.8), (1.0, 0.0)))
-  return w_ego * w_dist * w_lead * w_rel
+  beta_roll = rolling_approach_weight(v_ego)
+  if beta_roll <= 0.0:
+    return 0.0
+  alpha_depart = lead_departure_confidence(v_ego, x_lead, v_lead, d_stop_cfg)
+  return beta_roll * (1.0 - alpha_depart)
 
 
 def get_a_change_cost(prev_accel_constraint: bool, a_change_cost_starting: float,
@@ -453,7 +487,7 @@ class LongitudinalMpc:
     lead_xv = np.column_stack((x_lead_traj, v_lead_traj))
     return lead_xv
 
-  def process_lead(self, lead):
+  def process_lead(self, lead, stop_distance: float = 4.0):
     v_ego = self.x0[1]
     if lead is not None and lead.status:
       x_lead = lead.dRel
@@ -479,7 +513,7 @@ class LongitudinalMpc:
     if LEAD_ACCEL_COST_POS_EGO_SPEEDS[1] > 0.0:
       weak *= float(np.interp(v_ego, LEAD_ACCEL_COST_POS_EGO_SPEEDS, (0.0, 1.0)))
     tau_factor = 1.0 + (LEAD_ACCEL_COST_POS_TAU_FACTOR - 1.0) * weak
-    creep_suppress = low_speed_lead_creep_suppress(v_ego, x_lead, v_lead, a_lead)
+    creep_suppress = low_speed_lead_creep_suppress(v_ego, x_lead, v_lead, a_lead, stop_distance)
     a_lead_cost = a_lead * (1.0 - creep_suppress)
     lead_xv_cost = self.extrapolate_lead(x_lead, v_lead, a_lead_cost, a_lead_tau, tau_factor)
     return lead_xv, v_lead, lead_xv_cost
@@ -513,12 +547,12 @@ class LongitudinalMpc:
     t_follow = carrot.get_T_FOLLOW(personality, v_ego, a_ego)
     jerk_factor = carrot.jerk_factor
 
-    lead_xv_0, lead_v_0, lead_xv_cost_0 = self.process_lead(radarstate.leadOne)
-    lead_xv_1, lead_v_1, lead_xv_cost_1 = self.process_lead(radarstate.leadTwo)
-
     mode = self.mode
     comfort_brake = carrot.comfort_brake
     stop_distance = carrot.stop_distance
+
+    lead_xv_0, lead_v_0, lead_xv_cost_0 = self.process_lead(radarstate.leadOne, stop_distance=stop_distance)
+    lead_xv_1, lead_v_1, lead_xv_cost_1 = self.process_lead(radarstate.leadTwo, stop_distance=stop_distance)
     self.base_desired_distances = np.array([
       desired_follow_distance(v_ego, lead_v_0, comfort_brake, stop_distance, t_follow),
       desired_follow_distance(v_ego, lead_v_1, comfort_brake, stop_distance, t_follow),

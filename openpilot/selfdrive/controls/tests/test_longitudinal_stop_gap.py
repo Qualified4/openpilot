@@ -2,6 +2,7 @@ import pytest
 
 from openpilot.selfdrive.controls.lib.longitudinal_stop_gap import (
   STOP_GAP_EGO_SPEEDS,
+  STOP_GAP_FALL_TIME,
   STOP_GAP_MAX_EXCESS,
   STOP_GAP_OBSTACLE_COST_FACTOR,
   STOP_GAP_RISE_TIME,
@@ -37,7 +38,7 @@ def test_other_cases_keep_normal_gap_weight(kw):
   assert target(**kw) == 1.0
 
 
-def test_entry_ramps_and_exit_is_immediate():
+def test_entry_and_exit_ramp_smoothly_while_disable_resets_immediately():
   state = StopGapWeightState()
   args = dict(enabled=True, lead_status=True, lead_end_speed=0.0, lead_sets_stop=True, v_ego=3.0, gap_excess=0.0, dt=0.05)
   first = state.update(**args)
@@ -45,7 +46,22 @@ def test_entry_ramps_and_exit_is_immediate():
   for _ in range(round(STOP_GAP_RISE_TIME / 0.05)):
     factor = state.update(**args)
   assert factor == pytest.approx(STOP_GAP_OBSTACLE_COST_FACTOR)
-  assert state.update(**{**args, 'lead_end_speed': 2.0}) == 1.0
+
+  # Stage 2 (#253): exit ramps smoothly over STOP_GAP_FALL_TIME (no 1-tick 20 -> 1 cliff).
+  first_fall = state.update(**{**args, 'lead_end_speed': 2.0})
+  expected_step = (STOP_GAP_OBSTACLE_COST_FACTOR - 1.0) * 0.05 / STOP_GAP_FALL_TIME
+  assert first_fall == pytest.approx(STOP_GAP_OBSTACLE_COST_FACTOR - expected_step)
+  for _ in range(round(STOP_GAP_FALL_TIME / 0.05)):
+    factor = state.update(**{**args, 'lead_end_speed': 2.0})
+  assert factor == pytest.approx(1.0)
+
+  # Disabling (reset / non-ACC) still resets to 1.0 immediately.
+  for _ in range(round(STOP_GAP_RISE_TIME / 0.05)):
+    state.update(**args)
   assert state.update(**{**args, 'enabled': False}) == 1.0
-  state.update(**args)
-  assert state.update(**{**args, 'gap_excess': 10.0}) == 1.0
+
+  # Gap excess exit also decays smoothly rather than snapping in 1 tick.
+  for _ in range(round(STOP_GAP_RISE_TIME / 0.05)):
+    state.update(**args)
+  excess_fall = state.update(**{**args, 'gap_excess': 10.0})
+  assert 1.0 < excess_fall < STOP_GAP_OBSTACLE_COST_FACTOR

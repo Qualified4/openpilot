@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import math
 import time
 import numpy as np
 
@@ -10,7 +11,13 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import A_CHANGE_COST_RAMP_TIME, LongitudinalMpc, N
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  A_CHANGE_COST_RAMP_TIME,
+  LongitudinalMpc,
+  N,
+  lead_departure_confidence,
+  rolling_approach_weight,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, is_volkswagen_meb
 from openpilot.selfdrive.controls.lib.longitudinal_beyond_lead import BeyondLeadState, model_path, with_lead_two
@@ -43,6 +50,54 @@ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.5
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 RESET_DECEL_RAMP_TIME = 2.0
+
+# Stage 2 (#253): closed-loop standstill state anchoring & stopping-queue settle cap
+STANDSTILL_ANCHOR_V_MAX = 0.05     # m/s: anchor MPC initial state while wheels are held stationary
+STANDSTILL_ANCHOR_V_MARGIN = 0.12  # m/s: max v_desired lead above v_ego during hold/breakaway
+STANDSTILL_ANCHOR_A_MARGIN = 0.15  # m/s^2: max a_desired lead above max(0, a_act) during hold/breakaway
+SETTLE_DECEL_ARM_MAX = 0.05        # m/s^2: cap re-accel only while already in decel/stopping flow
+
+
+def anchor_standstill_planner_state(
+  v_desired: float,
+  a_desired: float,
+  v_ego: float,
+  a_act: float,
+  *,
+  reset_state: bool = False,
+  gas_pressed: bool = False,
+) -> tuple[float, float]:
+  """Anchor planner (v_desired, a_desired) to stopped vehicle state during IBS hold/breakaway."""
+  if reset_state or gas_pressed or not math.isfinite(v_ego) or v_ego > STANDSTILL_ANCHOR_V_MAX:
+    return v_desired, a_desired
+  v_clamped = min(v_desired, max(0.0, v_ego) + STANDSTILL_ANCHOR_V_MARGIN)
+  a_act_eff = max(0.0, a_act) if math.isfinite(a_act) else 0.0
+  a_clamped = min(a_desired, a_act_eff + STANDSTILL_ANCHOR_A_MARGIN) if a_desired > 0.0 else a_desired
+  return v_clamped, a_clamped
+
+
+def apply_stopping_queue_settle_cap(
+  a_max_turns: float,
+  *,
+  a_desired: float,
+  v_ego: float,
+  has_lead: bool,
+  d_rel: float,
+  v_lead: float,
+  d_stop_cfg: float,
+  enabled: bool = True,
+) -> float:
+  """Cap positive throttle re-acceleration while rolling in a stopping queue until lead departs."""
+  if (not enabled or not has_lead or a_max_turns <= 0.0
+      or not all(map(math.isfinite, (a_max_turns, a_desired, v_ego, d_rel, v_lead, d_stop_cfg)))
+      or a_desired > SETTLE_DECEL_ARM_MAX):
+    return a_max_turns
+  beta_roll = rolling_approach_weight(v_ego)
+  if beta_roll <= 0.0:
+    return a_max_turns
+  alpha_depart = lead_departure_confidence(v_ego, d_rel, v_lead, d_stop_cfg)
+  a_max_settle = a_max_turns * (1.0 - beta_roll * (1.0 - alpha_depart))
+  return max(a_max_settle, max(0.0, a_desired))
 
 
 def get_max_accel(v_ego):
@@ -257,6 +312,18 @@ class LongitudinalPlanner:
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
+    # Stage 2 (#253): closed-loop standstill state anchoring prevents vTargetNow windup
+    # and jTargetNow -> 0 saturation while IBS holds the wheels stationary.
+    cc = sm['carControl']
+    a_act = float(cc.actuators.accel) if hasattr(cc, 'actuators') else 0.0
+    self.v_desired_filter.x, self.a_desired = anchor_standstill_planner_state(
+      self.v_desired_filter.x,
+      self.a_desired,
+      float(v_ego),
+      a_act,
+      reset_state=reset_state,
+      gas_pressed=bool(sm['carState'].gasPressed),
+    )
     x, v, a, j, throttle_prob = self.parse_model(sm['modelV2'])
     # Don't clip at low speeds since throttle_prob doesn't account for creep
     self.allow_throttle = True #throttle_prob > ALLOW_THROTTLE_THRESHOLD or v_ego <= MIN_ALLOW_THROTTLE_SPEED
@@ -279,6 +346,18 @@ class LongitudinalPlanner:
       accel_limits_turns[1],
       self.a_desired,
       cutin_predecel_limit,
+    )
+    # Stage 2 (#253): rolling stopping-queue inertial settle cap (0.00 s delay at standstill)
+    lead_one = sm['radarState'].leadOne
+    accel_limits_turns[1] = apply_stopping_queue_settle_cap(
+      accel_limits_turns[1],
+      a_desired=float(self.a_desired),
+      v_ego=float(v_ego),
+      has_lead=bool(lead_one.status),
+      d_rel=float(lead_one.dRel) if lead_one.status else 100.0,
+      v_lead=float(lead_one.vLead) if lead_one.status else 0.0,
+      d_stop_cfg=float(carrot.stop_distance),
+      enabled=(self.mpc.mode == 'acc' and not reset_state and not sm['carState'].gasPressed and not force_slow_decel),
     )
 
     lead_track_frames = self.update_lead_tracks(sm['radarState'])

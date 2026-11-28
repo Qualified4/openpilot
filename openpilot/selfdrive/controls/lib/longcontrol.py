@@ -12,12 +12,14 @@ from openpilot.selfdrive.controls.lib.cruise_coasting import (
 )
 from openpilot.selfdrive.controls.lib.unified_long import (
   DEFAULT_STOP_DISTANCE,
+  MIN_SAFE_STOP_DISTANCE,
   UnifiedLongController,
   UnifiedLongInput,
 )
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 E2E_STOP_XSTATES = (3, 5)  # XState.e2eStop, XState.e2eStopped
+STOP_DISTANCE_MAX = 10.0
 
 
 def valid_road_pitch(calibrated_pose, calib_valid: bool, live_pose_valid: bool) -> float:
@@ -130,6 +132,7 @@ class LongControl:
     self.params = Params()
     self.readParamCount = 0
     self._refresh_stopping_accel()
+    self._refresh_stop_distance()
     self.j_lead = 0.0
 
     ray_pedal_control = is_ray_pedal_control(CP)
@@ -154,6 +157,15 @@ class LongControl:
       value = STOPPING_ACCEL_DEFAULT
     # Enforce the menu bounds even for stale Params or direct writes.
     self.stopping_accel = min(STOPPING_ACCEL_MAX, max(STOPPING_ACCEL_MIN, value)) * 0.01
+
+  def _refresh_stop_distance(self):
+    try:
+      value = float(self.params.get_float("StopDistanceCarrot")) * 0.01
+    except (TypeError, ValueError):
+      value = DEFAULT_STOP_DISTANCE
+    if not math.isfinite(value) or value <= 0.0:
+      value = DEFAULT_STOP_DISTANCE
+    self.stop_distance = min(STOP_DISTANCE_MAX, max(MIN_SAFE_STOP_DISTANCE, value))
 
   def _apply_hyundai_longitudinal_tuning(self):
     # Hyundai, Kia, and Genesis all use the opendbc "hyundai" brand. Keep the
@@ -200,6 +212,7 @@ class LongControl:
     if self.readParamCount >= 100:
       self.readParamCount = 0
       self._refresh_stopping_accel()
+      self._refresh_stop_distance()
     elif self.readParamCount == 10:
       self._refresh_longitudinal_tuning()
 
@@ -305,7 +318,7 @@ class LongControl:
       cp_starting_state=bool(self.CP.startingState),
       cp_v_starting=float(self.CP.vEgoStarting),
       cp_start_accel=float(getattr(self.CP, 'startAccel', 0.0)),
-      d_stop_cfg=DEFAULT_STOP_DISTANCE,
+      d_stop_cfg=float(self.stop_distance),
     ))
 
     if out.mode == "stopping":

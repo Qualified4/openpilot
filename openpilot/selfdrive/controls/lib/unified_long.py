@@ -367,9 +367,8 @@ class UnifiedLongController:
     if lead_departing or out_of_pocket or inp.soft_hold or inp.cruise_standstill:
       st.precharge_latched = False
     elif (v_ego <= POCKET_V_MAX and stop_ctx and in_pocket
-          and (st.a_ref <= a_lamp + POCKET_ARM_MARGIN
-               or inp.a_des <= a_lamp + POCKET_ARM_MARGIN
-               or inp.should_stop)):
+          and (st.a_ref <= a_lamp + 1e-6
+               or (inp.a_des <= a_lamp + 1e-6 and v_ego > V_EASE_MIN))):
       st.precharge_latched = True
 
     # (b) Hold latch transition & seamless StopReq 1 -> 0 synchronization

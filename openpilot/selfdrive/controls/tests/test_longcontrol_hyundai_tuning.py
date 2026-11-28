@@ -33,6 +33,8 @@ class RejectingParams:
   def get_float(self, name):
     if name == "StoppingAccel":
       return -50.0
+    if name == "StopDistanceCarrot":
+      return 400.0
     raise AssertionError(f"Fixed tuning must not read adjustable params: {name}")
 
 

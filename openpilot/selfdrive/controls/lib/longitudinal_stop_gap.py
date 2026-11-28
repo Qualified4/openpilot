@@ -18,8 +18,9 @@ STOP_GAP_OBSTACLE_COST_FACTOR = 20.0
 STOP_GAP_LEAD_END_SPEED = 1.0
 # Full factor below the first ego speed, none above the second.
 STOP_GAP_EGO_SPEEDS = (6.0, 12.0)
-# Entry ramp time from factor 1 to full. Exit is immediate.
+# Entry ramp time from factor 1 to full, and smooth decay time on exit (Stage 2 of #253).
 STOP_GAP_RISE_TIME = 1.0
+STOP_GAP_FALL_TIME = 0.60
 # Only the final approach: a heavier gap cost while still far behind the
 # configured distance would pull the ego toward the stopped lead (replay
 # 11-11 t=89.9 s: +0.31 -> +0.81 m/s^2 at 75 m) and soften approach braking.
@@ -42,11 +43,15 @@ class StopGapWeightState:
 
   def update(self, *, enabled: bool, lead_status: bool, lead_end_speed: float, lead_sets_stop: bool,
              v_ego: float, gap_excess: float, dt: float) -> float:
+    if not enabled or not math.isfinite(dt) or dt <= 0.0:
+      self.factor = 1.0
+      return self.factor
     target = stop_gap_target_factor(lead_status=lead_status, lead_end_speed=lead_end_speed,
-                                    lead_sets_stop=lead_sets_stop, v_ego=v_ego, gap_excess=gap_excess) if enabled else 1.0
-    if target <= self.factor or not math.isfinite(dt) or dt <= 0.0:
-      self.factor = target
-    else:
+                                    lead_sets_stop=lead_sets_stop, v_ego=v_ego, gap_excess=gap_excess)
+    if target > self.factor:
       step = (STOP_GAP_OBSTACLE_COST_FACTOR - 1.0) * dt / STOP_GAP_RISE_TIME
       self.factor = min(target, self.factor + step)
+    elif target < self.factor:
+      step = (STOP_GAP_OBSTACLE_COST_FACTOR - 1.0) * dt / STOP_GAP_FALL_TIME
+      self.factor = max(target, self.factor - step)
     return self.factor

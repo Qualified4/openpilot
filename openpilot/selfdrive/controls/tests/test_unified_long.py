@@ -15,13 +15,26 @@ from opendbc.car.hyundai.stopping import (
   DT as SCC_DT,
 )
 from opendbc.car.hyundai.values import HyundaiFlags
+from openpilot.selfdrive.controls.lib.longcontrol import LongControl
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  lead_departure_confidence,
+  rolling_approach_weight,
+)
+from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+  STANDSTILL_ANCHOR_A_MARGIN,
+  STANDSTILL_ANCHOR_V_MARGIN,
+  anchor_standstill_planner_state,
+  apply_stopping_queue_settle_cap,
+)
 from openpilot.selfdrive.controls.lib.unified_long import (
   A_HYD_LAMP_FLOOR,
   BREAKAWAY_ACCEL_FLAT,
+  DEFAULT_STOP_DISTANCE,
   EMERGENCY_DECEL_THRESHOLD,
   JERK_DECEL_RELIEF_LOW,
   JERK_REACCEL_MIN,
   JERK_UNWIND_TO_POS,
+  MIN_SAFE_STOP_DISTANCE,
   UnifiedLongController,
   UnifiedLongInput,
   V_BREAKAWAY,
@@ -248,3 +261,93 @@ def test_canfd_stopping_precharge_continuity_guard_and_1to1_jerk_contract():
     if tick % 2 == 0:
       aval = apply_accel_jerk_limit(out.a_cmd, aval, hj.jerk_u, hj.jerk_l)
       assert aval == pytest.approx(out.a_cmd, abs=0.015)
+
+
+def test_stage2_standstill_planner_state_anchoring():
+  """Planner (v_desired, a_desired) anchors to stopped car during hold/breakaway and releases once rolling."""
+  # During IBS hold (v_ego=0.0, a_act=-0.5): v_desired clamped to 0.12, positive a_desired clamped to 0.15.
+  v0, a0 = anchor_standstill_planner_state(0.80, 1.30, v_ego=0.0, a_act=-0.50)
+  assert v0 == pytest.approx(STANDSTILL_ANCHOR_V_MARGIN)
+  assert a0 == pytest.approx(STANDSTILL_ANCHOR_A_MARGIN)
+
+  # During breakaway ramp (v_ego=0.02, a_act=0.65): tracks right ahead of actual command.
+  v1, a1 = anchor_standstill_planner_state(0.60, 1.40, v_ego=0.02, a_act=0.65)
+  assert v1 == pytest.approx(0.02 + STANDSTILL_ANCHOR_V_MARGIN)
+  assert a1 == pytest.approx(0.65 + STANDSTILL_ANCHOR_A_MARGIN)
+
+  # Negative braking a_desired is never lifted by anchoring.
+  v_brk, a_brk = anchor_standstill_planner_state(0.05, -0.80, v_ego=0.0, a_act=-0.50)
+  assert v_brk == pytest.approx(0.05)
+  assert a_brk == pytest.approx(-0.80)
+
+  # Once wheels roll (v_ego > 0.05 m/s) or on reset/gas_pressed, anchoring releases immediately.
+  assert anchor_standstill_planner_state(0.80, 1.30, v_ego=0.06, a_act=0.65) == (0.80, 1.30)
+  assert anchor_standstill_planner_state(0.80, 1.30, v_ego=0.0, a_act=0.0, reset_state=True) == (0.80, 1.30)
+  assert anchor_standstill_planner_state(0.80, 1.30, v_ego=0.0, a_act=0.0, gas_pressed=True) == (0.80, 1.30)
+
+
+def test_stage2_alpha_depart_and_stopping_queue_settle_cap():
+  """Continuous alpha_depart blocks 488 seg 80 creep re-accel while preserving 0.00 s standstill launch."""
+  # 488 seg 80 snapshot: v_ego=1.09, d_rel=5.70, d_stop_cfg=3.50, v_lead=1.42, a_desired=-0.34
+  assert lead_departure_confidence(1.09, 5.70, 1.42, d_stop_cfg=3.50) == pytest.approx(0.0)
+  assert rolling_approach_weight(1.09) == pytest.approx(1.0)
+  assert apply_stopping_queue_settle_cap(
+    1.6, a_desired=-0.34, v_ego=1.09, has_lead=True, d_rel=5.70, v_lead=1.42, d_stop_cfg=3.50,
+  ) == pytest.approx(0.0)
+
+  # Standstill launch (v_ego <= 0.35 m/s): 0.00 s delay (full a_max_turns preserved).
+  assert rolling_approach_weight(0.0) == 0.0
+  assert rolling_approach_weight(0.35) == 0.0
+  assert apply_stopping_queue_settle_cap(
+    1.6, a_desired=-0.20, v_ego=0.0, has_lead=True, d_rel=4.0, v_lead=0.5, d_stop_cfg=3.50,
+  ) == pytest.approx(1.6)
+  assert apply_stopping_queue_settle_cap(
+    1.6, a_desired=-0.20, v_ego=0.35, has_lead=True, d_rel=4.0, v_lead=0.5, d_stop_cfg=3.50,
+  ) == pytest.approx(1.6)
+
+  # Smooth intermediate transition as lead accelerates (1.50 -> 2.40 m/s) or gap widens (2.40 -> 3.60 m excess).
+  a_mid_v = lead_departure_confidence(1.1, 5.5, 1.95, d_stop_cfg=3.5)
+  a_mid_d = lead_departure_confidence(1.1, 6.5, 1.20, d_stop_cfg=3.5)
+  assert 0.0 < a_mid_v < 1.0
+  assert 0.0 < a_mid_d < 1.0
+  assert lead_departure_confidence(1.1, 5.5, 2.40, d_stop_cfg=3.5) == pytest.approx(1.0)
+  assert lead_departure_confidence(1.1, 7.10, 1.00, d_stop_cfg=3.5) == pytest.approx(1.0)
+  assert lead_departure_confidence(2.60, 5.0, 1.00, d_stop_cfg=3.5) == pytest.approx(1.0)
+
+  # Already accelerating normally (a_desired > 0.05) -> settle cap does not interfere.
+  assert apply_stopping_queue_settle_cap(
+    1.6, a_desired=0.40, v_ego=1.09, has_lead=True, d_rel=5.70, v_lead=1.42, d_stop_cfg=3.50,
+  ) == pytest.approx(1.6)
+
+
+def test_stage2_longcontrol_stop_distance_carrot_sync():
+  """LongControl refreshes actual StopDistanceCarrot and clamps safely to [2.5, 10.0] m."""
+  from openpilot.cereal import car
+  cp = car.CarParams.new_message()
+  cp.brand = "hyundai"
+  cp.openpilotLongitudinalControl = True
+  loc = LongControl(cp)
+
+  class FakeParams:
+    def __init__(self, val):
+      self.val = val
+    def get_float(self, key):
+      assert key == "StopDistanceCarrot"
+      return self.val
+
+  loc.params = FakeParams(350.0)
+  loc._refresh_stop_distance()
+  assert loc.stop_distance == pytest.approx(3.5)
+
+  loc.params = FakeParams(550.0)
+  loc._refresh_stop_distance()
+  assert loc.stop_distance == pytest.approx(5.5)
+
+  # Unset (0) falls back to DEFAULT_STOP_DISTANCE (4.0 m); unsafe (< 2.5 m) clamps to 2.5 m.
+  loc.params = FakeParams(0.0)
+  loc._refresh_stop_distance()
+  assert loc.stop_distance == pytest.approx(DEFAULT_STOP_DISTANCE)
+
+  loc.params = FakeParams(180.0)
+  loc._refresh_stop_distance()
+  assert loc.stop_distance == pytest.approx(MIN_SAFE_STOP_DISTANCE)
