@@ -1,9 +1,10 @@
-"""Unit and regression tests for UnifiedLongController (Stage 1 of #253)."""
+"""Unit and regression tests for UnifiedLongController (Stages 1-3 of #253)."""
 import math
 from types import SimpleNamespace
 
 import pytest
 
+from openpilot.cereal import car
 from openpilot.common.realtime import DT_CTRL
 from opendbc.car.hyundai.carcontroller import HyundaiJerk, LongCtrlState, calculate_canfd_jerk_limits
 from opendbc.car.hyundai.hyundaicanfd import apply_accel_jerk_limit
@@ -15,7 +16,12 @@ from opendbc.car.hyundai.stopping import (
   DT as SCC_DT,
 )
 from opendbc.car.hyundai.values import HyundaiFlags
-from openpilot.selfdrive.controls.lib.longcontrol import LongControl
+from openpilot.selfdrive.controls.lib.longcontrol import (
+  CONTROL_N_T_IDX,
+  LongControl,
+  estimate_plan_stop_distance,
+  valid_road_pitch,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   lead_departure_confidence,
   rolling_approach_weight,
@@ -31,9 +37,14 @@ from openpilot.selfdrive.controls.lib.unified_long import (
   BREAKAWAY_ACCEL_FLAT,
   DEFAULT_STOP_DISTANCE,
   EMERGENCY_DECEL_THRESHOLD,
+  GRAVITY,
   JERK_DECEL_RELIEF_LOW,
+  JERK_LAUNCH_DELTA_MIN,
+  JERK_LAUNCH_DELTA_PEAK,
   JERK_REACCEL_MIN,
+  JERK_REACCEL_PEAK,
   JERK_UNWIND_TO_POS,
+  MAX_UPHILL_SLOPE_COMP,
   MIN_SAFE_STOP_DISTANCE,
   UnifiedLongController,
   UnifiedLongInput,
@@ -351,3 +362,206 @@ def test_stage2_longcontrol_stop_distance_carrot_sync():
   loc.params = FakeParams(180.0)
   loc._refresh_stop_distance()
   assert loc.stop_distance == pytest.approx(MIN_SAFE_STOP_DISTANCE)
+
+
+def _make_hyundai_cp(*, starting_state: bool = False, start_accel: float = 0.0, v_ego_starting: float = 0.5):
+  return car.CarParams.new_message(
+    brand="hyundai",
+    openpilotLongitudinalControl=True,
+    stoppingDecelRate=0.8,
+    stopAccel=-2.0,
+    startAccel=start_accel,
+    startingState=starting_state,
+    vEgoStarting=v_ego_starting,
+  )
+
+
+def test_longcontrol_integration_unwinds_stopping_accel_and_preserves_emergency_override():
+  """Migrated from legacy limousine_stop tests: LongControl smoothly unwinds stopping decel and restores on 0-tick override."""
+  loc = LongControl(_make_hyundai_cp())
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -1.4
+
+  cs = SimpleNamespace(
+    vEgo=1.5, aEgo=-1.2, brakePressed=False, gasPressed=False,
+    softHoldActive=0, cruiseState=SimpleNamespace(standstill=False),
+  )
+  plan = SimpleNamespace(
+    aTarget=-1.4, vTargetNow=0.2, jTargetNow=0.0, shouldStop=True, fcw=False,
+    longitudinalPlanSource="lead0", cruiseTarget=30.0, cruiseCoastingTarget=0.0, cruiseCoastingPercent=0,
+  )
+  radar = SimpleNamespace(
+    leadOne=SimpleNamespace(status=True, dRel=7.0, vLead=0.0),
+    leadTwo=SimpleNamespace(status=False, dRel=0.0, vLead=0.0),
+  )
+
+  prev = -1.4
+  for _ in range(60):
+    accel, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+    assert accel >= prev - 1e-6
+    assert accel <= A_HYD_LAMP_FLOOR + 1e-9
+    prev = accel
+  assert loc.unified.state.stop_relief_active is True
+  assert prev > -0.80
+
+  # Sudden close lead (d_rel <= 2.8 m) -> 0-tick full braking restoration!
+  radar.leadOne.dRel = 2.6
+  plan.aTarget = -2.2
+  accel_override, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  assert loc.unified.state.safety_override is True
+  assert accel_override == pytest.approx(-2.2)
+
+  # Emergency FCW / < EMERGENCY_DECEL_THRESHOLD -> 0-tick full restoration to -3.0.
+  radar.leadOne.dRel = 6.0
+  plan.fcw = True
+  plan.aTarget = -3.0
+  accel_emg, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  assert accel_emg == pytest.approx(-3.0)
+
+  # Normal low-speed handover into v <= 0.50 without override: no snap-back to -1.4.
+  loc.reset()
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -1.4
+  plan.fcw = False
+  plan.aTarget = -1.4
+  radar.leadOne.dRel = 7.0
+  cs.vEgo = 0.75
+  for _ in range(100):
+    accel, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  assert accel > -0.50
+  cs.vEgo = 0.45
+  accel_handover, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  assert accel_handover == pytest.approx(-0.50, abs=0.05)
+
+
+def test_uphill_slope_compensation_and_valid_road_pitch_gate():
+  """Migrated from legacy limousine_stop/launch tests: uphill gravity cap and valid_road_pitch NaN/inf guard."""
+  assert brake_lamp_floor(0.0) == pytest.approx(A_HYD_LAMP_FLOOR)
+  assert brake_lamp_floor(-0.05) == pytest.approx(A_HYD_LAMP_FLOOR)
+  assert brake_lamp_floor(float("nan")) == pytest.approx(A_HYD_LAMP_FLOOR)
+  assert uphill_gravity_comp(0.0) == 0.0
+  assert uphill_gravity_comp(-0.05) == 0.0
+  assert uphill_gravity_comp(float("nan")) == 0.0
+  assert uphill_gravity_comp(math.atan(0.25)) == pytest.approx(MAX_UPHILL_SLOPE_COMP)
+
+  pitch_480 = math.atan(0.046)
+  expected_floor = A_HYD_LAMP_FLOOR - GRAVITY * math.sin(pitch_480)
+  assert brake_lamp_floor(pitch_480) == pytest.approx(expected_floor, abs=1e-4)
+
+  pose_ok = SimpleNamespace(orientation=SimpleNamespace(xyz=[0.0, 0.045, 0.0]))
+  pose_nan = SimpleNamespace(orientation=SimpleNamespace(xyz=[0.0, float("nan"), 0.0]))
+  pose_inf = SimpleNamespace(orientation=SimpleNamespace(xyz=[0.0, float("inf"), 0.0]))
+  assert valid_road_pitch(None, True, True) == 0.0
+  assert valid_road_pitch(pose_ok, False, True) == 0.0
+  assert valid_road_pitch(pose_ok, True, False) == 0.0
+  assert valid_road_pitch(pose_nan, True, True) == 0.0
+  assert valid_road_pitch(pose_inf, True, True) == 0.0
+  assert valid_road_pitch(pose_ok, True, True) == pytest.approx(0.045)
+
+
+def test_solo_e2e_stop_distance_and_longcontrol_integration():
+  """Migrated from legacy limousine_stop tests: estimate_plan_stop_distance and solo e2eStop integration."""
+  t_idxs = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
+  speeds = [max(0.0, 3.0 - 0.75 * t) for t in t_idxs]
+  accels = [-0.75] * len(t_idxs)
+  assert estimate_plan_stop_distance(speeds, accels, t_idxs=t_idxs) == pytest.approx(6.0, abs=0.05)
+
+  loc = LongControl(_make_hyundai_cp())
+  loc.long_control_state = LongCtrlState.pid
+  loc.last_output_accel = -1.4
+  cs = SimpleNamespace(
+    vEgo=2.0, aEgo=-1.2, brakePressed=False, gasPressed=False,
+    softHoldActive=0, cruiseState=SimpleNamespace(standstill=False),
+  )
+  plan = SimpleNamespace(
+    aTarget=-1.4, vTargetNow=2.0, jTargetNow=0.0, shouldStop=False, fcw=False,
+    xState=3, speeds=[max(0.0, 2.0 - 0.5 * float(t)) for t in CONTROL_N_T_IDX], accels=[-0.5] * len(CONTROL_N_T_IDX),
+    longitudinalPlanSource="cruise", cruiseTarget=30.0, cruiseCoastingTarget=0.0, cruiseCoastingPercent=0,
+  )
+  radar = SimpleNamespace(
+    leadOne=SimpleNamespace(status=False, dRel=0.0, vLead=0.0),
+    leadTwo=SimpleNamespace(status=False, dRel=0.0, vLead=0.0),
+  )
+  out_e2e, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  assert loc.unified.state.stop_relief_active is True
+  assert out_e2e > -1.4
+
+
+def test_longcontrol_stop_to_launch_starting_state_and_breakaway_jerk_alignment():
+  """Migrated from legacy limousine_launch tests: stop->launch transition, startingState, and breakaway 1:1 jerk."""
+  # 1. Stop -> standstill -> departure without step jump
+  loc = LongControl(_make_hyundai_cp(starting_state=False, start_accel=1.0, v_ego_starting=0.1))
+  loc.long_control_state = LongCtrlState.stopping
+  loc.last_output_accel = -1.4
+  cs = SimpleNamespace(
+    vEgo=1.2, aEgo=-1.2, brakePressed=False, gasPressed=False,
+    softHoldActive=0, cruiseState=SimpleNamespace(standstill=False),
+  )
+  plan = SimpleNamespace(
+    aTarget=-1.4, vTargetNow=0.2, jTargetNow=0.0, shouldStop=True, fcw=False,
+    longitudinalPlanSource="lead0", cruiseTarget=30.0, cruiseCoastingTarget=0.0, cruiseCoastingPercent=0,
+  )
+  radar = SimpleNamespace(
+    leadOne=SimpleNamespace(status=True, dRel=6.5, vLead=0.0),
+    leadTwo=SimpleNamespace(status=False, dRel=0.0, vLead=0.0),
+  )
+  for _ in range(80):
+    accel, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+    assert accel <= A_HYD_LAMP_FLOOR + 1e-9
+  assert loc.unified.state.stop_relief_active is True
+  assert loc.unified.state.launch_shaping_active is False
+
+  cs.vEgo = 0.0
+  cs.aEgo = 0.0
+  loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  plan.shouldStop = False
+  plan.aTarget = 0.8
+  plan.vTargetNow = 0.5
+  plan.jTargetNow = 2.0
+  accel_first, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  assert loc.long_control_state == LongCtrlState.pid
+  assert loc.unified.state.stop_relief_active is False
+  assert loc.unified.state.launch_shaping_active is True
+  assert 0.0 <= accel_first < 0.05
+
+  # 2. startingState=True smooth shaping
+  loc_st = LongControl(_make_hyundai_cp(starting_state=True, start_accel=1.0, v_ego_starting=0.1))
+  loc_st.long_control_state = LongCtrlState.stopping
+  loc_st.last_output_accel = -0.5
+  accel_0, _, _ = loc_st.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+  assert loc_st.long_control_state == LongCtrlState.starting
+  assert loc_st.unified.state.launch_shaping_active is True
+  assert 0.0 <= accel_0 < 0.05
+  for _ in range(50):
+    accel, _, _ = loc_st.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+    assert accel <= BREAKAWAY_ACCEL_FLAT + 1e-9
+
+  # 3. Breakaway 1:1 CAN-FD jerk alignment when planner jTargetNow saturates to 0
+  loc_bk = LongControl(_make_hyundai_cp(starting_state=False, start_accel=1.0, v_ego_starting=0.1))
+  loc_bk.long_control_state = LongCtrlState.stopping
+  loc_bk.last_output_accel = -0.5
+  plan.aTarget = 1.7
+  plan.vTargetNow = 0.6
+  plan.jTargetNow = 0.0
+  radar.leadOne.dRel = 6.0
+  radar.leadOne.vLead = 1.0
+  for _ in range(75):
+    accel, _, j_out = loc_bk.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+    assert accel <= BREAKAWAY_ACCEL_FLAT + 1e-9
+    assert j_out == pytest.approx(0.0)
+
+  cs.vEgo = V_BREAKAWAY + 0.06
+  launch_j_min = JERK_REACCEL_MIN + JERK_LAUNCH_DELTA_MIN
+  launch_j_peak = JERK_REACCEL_PEAK + JERK_LAUNCH_DELTA_PEAK
+  seen_jerk_u = []
+  for _ in range(45):
+    accel, _, j_out = loc_bk.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
+    if loc_bk.unified.state.launch_shaping_active and loc_bk.last_shaped_jerk_u is not None:
+      ju, _ = calculate_canfd_jerk_limits(accel, j_out, 0.0, direct_jerk_upper=j_out)
+      assert ju == pytest.approx(loc_bk.last_shaped_jerk_u, abs=1e-4)
+      seen_jerk_u.append(ju)
+    cs.vEgo += max(0.0, accel) * DT_CTRL
+  assert len(seen_jerk_u) >= 20
+  assert seen_jerk_u[0] == pytest.approx(launch_j_min, abs=0.05)
+  assert max(seen_jerk_u) > 3.0
+  assert max(seen_jerk_u) <= launch_j_peak + 1e-4
