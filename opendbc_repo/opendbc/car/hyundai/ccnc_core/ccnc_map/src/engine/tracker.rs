@@ -241,7 +241,7 @@ impl Tracker {
                     s,
                     d,
                     speed: v,
-                    moving: p.motion_state == 2 || v + speed > 1.8,
+                    moving: (p.motion_state == 2 && v + speed > -0.6) || v + speed > 1.8,
                 })
             })
             .collect();
@@ -482,7 +482,8 @@ impl Tracker {
             None if obs.position
                 && (0. ..=6.).contains(&s)
                 && (0.5..=1.55).contains(&u.abs())
-                && age <= 0.2 =>
+                && age <= 0.2
+                && inside_outer_line(u, x, y) =>
             {
                 // While driving (> 3 m/s), a blind-spot side detection is assumed co-moving (v_s = 0)
                 // rather than stationary (-speed) so it stays inside the association gate until the next wide frame.
@@ -532,7 +533,7 @@ impl Tracker {
             o.stationary_radar_continuous &= speed <= 3. && o.supports_stationary_vision(now, speed);
             let side = o.lane_u.abs() > 0.5;
             let near_side = side && (-1. ..=6.5).contains(&o.s);
-            let stopped_cam_only = speed <= 3. && o.radar_hits == 0;
+            let stopped_cam_only = speed <= 3. && o.radar_hits == 0 && o.vision_hits >= 3;
             let vision_window = if near_side {
                 if stopped_cam_only { 1.1 } else { 0.55 }
             } else {
@@ -629,8 +630,8 @@ fn update_stationary_vision(
             && o.front_box_t == Some(obs.time)
             && o.same_track_streak >= 6
             && o.range_consistent;
-        o.stationary_vision_confirmed =
-            o.stationary_radar_continuous || box_match || gap <= STATIONARY_VISION_WINDOW;
+        o.stationary_vision_confirmed = adjacent
+            && (o.stationary_radar_continuous || box_match || gap <= STATIONARY_VISION_WINDOW);
         o.stationary_radar_continuous = o.stationary_vision_confirmed && adjacent;
         o.stationary_vision_t = Some(obs.time);
     }

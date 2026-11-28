@@ -77,6 +77,7 @@ fn seen(now: f64, speed: f64, obj: &TrackedObject) -> bool {
 
 fn vision(now: f64, speed: f64, obj: &TrackedObject) -> bool {
     let window = if obj.radar_hits == 0
+        && obj.vision_hits >= 3
         && obj.lane_u.abs() > 0.5
         && (-1. ..=6.5).contains(&obj.s)
     {
@@ -242,6 +243,12 @@ pub(super) fn select(
         if o.pedestrian_veto_t.is_some_and(|t| now - t <= 0.8) && o.vision_hits == 0 && !o.moved {
             continue;
         }
+        let coasting_rear = o.rear_coast(now, occupied[side + 3] == Some(o.obj_id), blind[side]);
+        // Reject oncoming vehicles (negative absolute longitudinal speed in ego frame).
+        // Same-direction stopped or moving vehicles satisfy v_s + speed >= 0 modulo Doppler noise.
+        if !coasting_rear && o.v_s + speed < -0.9 {
+            continue;
+        }
         let near = o.s <= SPLIT_REAR_MAX + o.var_s.sqrt().min(0.7);
         // A confirmed front vehicle can finish a short, unobserved pass at the origin.
         let side_pass = previous[side + 1].is_some_and(|old| old.obj_id == o.obj_id && old.s >= 0.)
@@ -251,7 +258,6 @@ pub(super) fn select(
         if side_pass && o.existence_log_odds >= HOLD {
             passing[side] = Some(o);
         }
-        let coasting_rear = o.rear_coast(now, occupied[side + 3] == Some(o.obj_id), blind[side]);
         let handoff = o.rear && (REAR_LIMIT..=0.).contains(&o.s) && now <= o.handoff_until;
         let near_continuity = near && (observed || incumbent && now <= o.handoff_until);
         let hold_age = if near_continuity && o.v_s < 0. {

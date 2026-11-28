@@ -99,7 +99,7 @@ impl TrackedObject {
             && self.radar_hits >= 6
             && (1.5..=30.).contains(&self.s)
             && (0.55..=1.45).contains(&self.lane_u.abs())
-            && (self.v_s + speed).abs() <= 1.
+            && (-0.6..=1.0).contains(&(self.v_s + speed))
     }
 
     pub fn existence_p(&self) -> f64 {

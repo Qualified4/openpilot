@@ -1544,3 +1544,103 @@ fn bsd_only_animates_approach_and_retreat_smoothly() {
     assert!(off_xs.len() >= 10, "BSD OFF must retreat smoothly, got {} ticks", off_xs.len());
     assert!(off_xs.windows(2).all(|w| w[1] <= w[0] + 1e-9), "BSD retreat must be monotonic");
 }
+
+#[test]
+fn standstill_oncoming_radar_and_vision_are_rejected_without_breaking_stopped_side() {
+    use crate::input::model_v2::Line;
+
+    // 1. Oncoming vehicle at standstill (vRel = -2.4 m/s, motion_state = 2) with radar + vision
+    //    must never appear in LF/LR, while a stopped adjacent RF car stays continuously ON.
+    let mut engine = MapEngine::default();
+    for tick in 0..60 {
+        let oncoming_x = 14.0 - 0.12 * tick as f32;
+        let mut oncoming = radar(111, oncoming_x, -3.5, -2.4);
+        oncoming.motion_state = 2;
+        let mut stopped_rf = radar(112, 5.5, 3.5, 0.0);
+        stopped_rf.motion_state = 1;
+        let points = [oncoming, stopped_rf];
+        let mut entry = input(tick, &points);
+        entry.speed = 0.;
+        let vis = [
+            VisionObservation {
+                time: entry.time - 0.10,
+                x: f64::from(oncoming_x),
+                y: -3.5,
+                kind: VehicleKind::Car,
+                confidence: 0.9,
+                position: true,
+            },
+            VisionObservation {
+                time: entry.time - 0.10,
+                x: 5.5,
+                y: 3.5,
+                kind: VehicleKind::Car,
+                confidence: 0.85,
+                position: true,
+            },
+        ];
+        entry.vision = if tick >= 8 && tick % 12 == 0 { &vis } else { &[] };
+        let out = engine.step(entry);
+        assert!(out.slots[1].is_none(), "oncoming LF flashed at tick {tick}");
+        assert!(out.slots[3].is_none(), "oncoming LR flashed at tick {tick}");
+        if tick >= 25 {
+            assert!(out.slots[2].is_some(), "stopped RF must stay ON at tick {tick}");
+        }
+    }
+
+    // 2. Unconfirmed vision-only detections spaced 1.4 s apart (passing oncoming stream) must
+    //    decay instead of stitching into vision_hits >= 3 and flashing LF.
+    let mut stream_engine = MapEngine::default();
+    for tick in 0..100 {
+        let mut entry = input(tick, &[]);
+        entry.speed = 0.;
+        let obs = (tick == 5 || tick == 33 || tick == 61).then_some(VisionObservation {
+            time: entry.time - 0.10,
+            x: 3.8,
+            y: -3.7,
+            kind: VehicleKind::Car,
+            confidence: 0.85,
+            position: true,
+        });
+        entry.vision = obs.as_slice();
+        let out = stream_engine.step(entry);
+        assert!(out.slots[1].is_none(), "passing oncoming vision stream flashed LF at tick {tick}");
+        assert!(out.slots[3].is_none(), "passing oncoming vision stream flashed LR at tick {tick}");
+    }
+
+    // 3. Repeated vision hits beyond a trusted outer lane line must not confirm a stationary echo.
+    let mut outer_engine = MapEngine::default();
+    let model = Model {
+        lane_lines: vec![Line { x: vec![0., 30.], y: vec![-4.0; 2] }],
+        lane_line_probs: vec![0.9],
+        road_edges: Vec::new(),
+    };
+    for tick in 0..60 {
+        let mut echo = radar(113, 12.0, -4.6, 0.0);
+        echo.motion_state = 1;
+        let points = [echo];
+        let mut entry = input(tick, &points);
+        entry.speed = 0.;
+        entry.road = Some(RoadObservation {
+            time: entry.time,
+            path: &[],
+            lines: Some(&model),
+            road_edge_stds: [f32::INFINITY; 2],
+            changing_lanes: false,
+        });
+        let obs = (tick == 12 || tick == 24 || tick == 36).then_some(VisionObservation {
+            time: entry.time - 0.10,
+            x: 12.0,
+            y: -4.6,
+            kind: VehicleKind::Car,
+            confidence: 0.9,
+            position: true,
+        });
+        entry.vision = obs.as_slice();
+        let out = outer_engine.step(entry);
+        // After the immediate 0.45 s vision window expires, stationary_vision_confirmed must stay false.
+        if tick >= 50 {
+            assert!(out.slots[1].is_none(), "echo beyond outer lane line stayed confirmed at tick {tick}");
+        }
+    }
+}
