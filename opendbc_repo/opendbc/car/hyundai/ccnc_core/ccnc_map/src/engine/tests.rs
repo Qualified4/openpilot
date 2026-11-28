@@ -1528,7 +1528,7 @@ fn bsd_only_animates_approach_and_retreat_smoothly() {
 
     let mut off_xs = Vec::new();
     let mut cleared = false;
-    for tick in 60..160 {
+    for tick in 60..240 {
         let mut entry = input(tick, &[]);
         entry.speed = 15.;
         entry.blind = [false, false];
@@ -1540,9 +1540,88 @@ fn bsd_only_animates_approach_and_retreat_smoothly() {
             break;
         }
     }
-    assert!(cleared, "BSD OFF must clear after retreating to -20 m");
-    assert!(off_xs.len() >= 10, "BSD OFF must retreat smoothly, got {} ticks", off_xs.len());
+    assert!(cleared, "BSD OFF must clear after 3s hold + retreating to -20 m");
+    // First 3.0 s (60 ticks at 20 Hz) after BSD OFF must hold at -10 m without retreating.
+    assert!(off_xs.len() >= 70, "BSD OFF must hold 3s then retreat smoothly, got {} ticks", off_xs.len());
+    assert!(
+        off_xs[..60].iter().all(|&x| (x - (-10.)).abs() < 0.1),
+        "BSD OFF must hold at -10 m for 3.0 s without retreating, min={}",
+        off_xs[..60].iter().copied().fold(f64::INFINITY, f64::min),
+    );
+    assert!(off_xs[60] < -10.05, "BSD OFF must begin retreating after 3.0 s hold, got {}", off_xs[60]);
     assert!(off_xs.windows(2).all(|w| w[1] <= w[0] + 1e-9), "BSD retreat must be monotonic");
+}
+
+#[test]
+fn bsd_only_holds_three_seconds_and_joins_front_without_retreat() {
+    // 1. End-to-end MapEngine: BSD ON (-20 -> -10 m), BSD OFF (hold at -10 m during B-pillar blind zone),
+    //    then overtaking vehicle emerges in front -> FrontJoin (-10 -> 0 m -> LF) with zero backwards steps.
+    let mut engine = MapEngine::default();
+    let mut all_xs = Vec::new();
+    let mut saw_origin = false;
+    let mut saw_lf = false;
+    for tick in 0_u32..140 {
+        let points = if tick >= 80 {
+            let x = 3.5 + (tick - 80) as f32 * 0.12;
+            vec![radar(41, x, -3.5, 2.4)]
+        } else {
+            Vec::new()
+        };
+        let mut entry = input(tick, &points);
+        entry.speed = 15.;
+        entry.blind = [tick < 60, false];
+        let out = engine.step(entry);
+        let slot = out.slots[1].or(out.slots[3]).expect("overtaking car must stay visible through hold and handoff");
+        all_xs.push(slot.x);
+        if (60..80).contains(&tick) {
+            assert!((slot.x - (-10.)).abs() < 0.1, "must hold at -10 m during BSD OFF, tick {tick} x={}", slot.x);
+        }
+        if slot.x == 0. {
+            saw_origin = true;
+        }
+        if out.slots[1].is_some() {
+            saw_lf = true;
+        }
+    }
+    assert!(saw_origin, "FrontJoin must pass through exact origin 0 m");
+    assert!(saw_lf, "overtaking car must hand off into LF");
+    assert!(
+        all_xs.windows(2).all(|w| w[1] >= w[0] - 1e-9),
+        "BSD approach -> hold -> FrontJoin -> LF must never move backwards",
+    );
+
+    // 2. Direct SideDisplay::update with old_rear = Some(BsdOnly { obj_id: 0 }):
+    //    from_bsd must still fire and start from the held BsdOnly x without retreating.
+    let mut engine = MapEngine::default();
+    confirm(&mut engine, &[radar(42, 3.5, -3.5, 2.5)]);
+    let front_slot = engine.displayed[1].unwrap();
+    let mut display = rear_display::SideDisplay::default();
+    let mut prev = [None; 5];
+    for i in 0..60 {
+        let mut slots = [None; 5];
+        display.update(i as f64 * STEP, 0, true, prev, &mut slots);
+        prev = slots;
+    }
+    // BSD OFF for 1.5 s: held at -10 m with obj_id == 0 in prev[3].
+    for i in 60..90 {
+        let mut slots = [None; 5];
+        display.update(i as f64 * STEP, 0, false, prev, &mut slots);
+        assert_eq!(slots[3].unwrap().obj_id, 0);
+        assert!((slots[3].unwrap().x - (-10.)).abs() < 0.1);
+        prev = slots;
+    }
+    let mut join_xs = Vec::new();
+    for i in 90..115 {
+        let mut slots = [None, Some(EngineSlot { s: 3.5, x: 3.5, v_s: 2.5, ..front_slot }), None, None, None];
+        display.update(i as f64 * STEP, 0, false, prev, &mut slots);
+        let active = slots[1].or(slots[3]).expect("FrontJoin must stay visible");
+        join_xs.push(active.x);
+        prev = slots;
+    }
+    assert!((join_xs[0] - (-10.)).abs() < 0.1, "FrontJoin must start from held BsdOnly x=-10 m, got {}", join_xs[0]);
+    assert!(join_xs.iter().any(|&x| x == 0.), "FrontJoin must pass through 0 m");
+    assert!(join_xs.last().unwrap() > &3.0, "FrontJoin must complete into LF");
+    assert!(join_xs.windows(2).all(|w| w[1] >= w[0] - 1e-9), "FrontJoin must advance monotonically");
 }
 
 #[test]

@@ -4,7 +4,7 @@ use super::{
     EngineSlot,
 };
 
-const BSD_GRACE: f64 = 2.;
+const BSD_GRACE: f64 = 3.;
 // The cluster renders 0.8 times the signed map range. Start at the 8 m warning.
 const BSD_START_X: f64 = -10.;
 // Sixteen metres on the cluster (0.8 * 20) for BSD-only approach/retreat animation.
@@ -14,8 +14,9 @@ const BSD_EXIT_X: f64 = -12.5;
 const REAR_PASS_HOLD: f64 = 3.;
 const BSD_APPROACH_TIME: f64 = 0.6;
 const BSD_APPROACH_SPEED: f64 = 6.;
-// Match Python SideFlow approach (tau=0.4s, 6.0 m/s display = 7.5 m/s map)
-// and exit (tau=0.65s, 4.0 m/s display = 5.0 m/s map).
+// Match Python SideFlow approach (tau=0.4s, 6.0 m/s display = 7.5 m/s map),
+// release hold (3.0s at 8 m), and exit (tau=0.65s, 4.0 m/s display = 5.0 m/s map).
+const BSD_ONLY_HOLD: f64 = 3.;
 const BSD_ONLY_ENTER_TAU: f64 = 0.4;
 const BSD_ONLY_ENTER_SPEED: f64 = 7.5;
 const BSD_ONLY_EXIT_TAU: f64 = 0.65;
@@ -36,6 +37,7 @@ pub(super) struct SideDisplay {
 struct BsdOnly {
     x: f64,
     time: f64,
+    off_since: Option<f64>,
 }
 
 struct RearPass {
@@ -111,12 +113,15 @@ impl SideDisplay {
             let measured_rear = old_rear.filter(|old| {
                 old.obj_id == candidate.obj_id && old.s < 0. && candidate.s > PASS_BAND
             });
-            let from_bsd = old_rear.is_none()
+            let from_bsd = old_rear.is_none_or(|old| old.obj_id == 0)
                 && self.warning_until.is_some_and(|until| now <= until)
                 && (0. ..=6.).contains(&candidate.s) && candidate.s > 0.
                 && self.recent_front.is_none_or(|(vid, t)| vid != candidate.obj_id || now - t > BSD_GRACE);
             if measured_rear.is_some() || from_bsd {
-                let start_x = measured_rear.map_or(BSD_START_X, |old| old.x.min(0.));
+                let start_x = measured_rear.map_or_else(
+                    || self.bsd_only.as_ref().map_or(BSD_START_X, |b| b.x.max(BSD_START_X)),
+                    |old| old.x.min(0.),
+                );
                 let start_d = measured_rear.map_or(if side == 0 { -2.8 } else { 2.8 }, |old| old.display_d);
                 // The previous physical rear was drawn one tick ago. The first front tick can
                 // land directly on the origin for a measured crossing close to zero.
@@ -169,9 +174,10 @@ impl SideDisplay {
         if blind {
             match &mut self.bsd_only {
                 None => {
-                    self.bsd_only = Some(BsdOnly { x: BSD_FAR_X, time: now });
+                    self.bsd_only = Some(BsdOnly { x: BSD_FAR_X, time: now, off_since: None });
                 }
                 Some(bsd) => {
+                    bsd.off_since = None;
                     let dt = (now - bsd.time).clamp(0., 0.25);
                     bsd.time = now;
                     let error = BSD_START_X - bsd.x;
@@ -184,14 +190,17 @@ impl SideDisplay {
                 }
             }
         } else if let Some(bsd) = &mut self.bsd_only {
+            let off_since = *bsd.off_since.get_or_insert(now);
             let dt = (now - bsd.time).clamp(0., 0.25);
             bsd.time = now;
-            let error = BSD_FAR_X - bsd.x;
-            let step = error * (1. - (-dt / BSD_ONLY_EXIT_TAU).exp());
-            bsd.x = (bsd.x + step.clamp(-BSD_ONLY_EXIT_SPEED * dt, BSD_ONLY_EXIT_SPEED * dt))
-                .max(BSD_FAR_X);
-            if bsd.x <= BSD_FAR_X + 0.05 {
-                self.bsd_only = None;
+            if now - off_since >= BSD_ONLY_HOLD {
+                let error = BSD_FAR_X - bsd.x;
+                let step = error * (1. - (-dt / BSD_ONLY_EXIT_TAU).exp());
+                bsd.x = (bsd.x + step.clamp(-BSD_ONLY_EXIT_SPEED * dt, BSD_ONLY_EXIT_SPEED * dt))
+                    .max(BSD_FAR_X);
+                if bsd.x <= BSD_FAR_X + 0.05 {
+                    self.bsd_only = None;
+                }
             }
         }
         if let Some(bsd) = &self.bsd_only {
