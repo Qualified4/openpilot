@@ -15,15 +15,24 @@ MOVING_SPEED = 0.10
 STOP_CONFIRM_TIME = 0.2
 APPROACH_ACCEL = -0.45  # matches empirically-verified 0x412 brake-lamp hold floor (-0.45 m/s^2)
 GRAVITY = 9.81  # m/s^2
-MAX_UPHILL_SLOPE_COMP = 0.80  # m/s^2 (~8.2% grade cap matching limousine_stop.py)
+MAX_UPHILL_SLOPE_COMP = 0.80  # m/s^2 (~8.2% grade cap matching unified_long.py)
 STOP_LOWER_BAND = 0.20  # fixed during active ACC, including before StopReq; never copied from stock
+PRECHARGE_MIN_SPEED = 0.30  # m/s; below this speed, enter StopReq immediately
+PRECHARGE_HYD_THRESH = -0.38  # m/s^2; hydraulic decel required before non-emergency StopReq
+PRECHARGE_MAX_TIME = 0.16  # s (8 frames at 50 Hz, <= 7 cm travel) max pre-charge dwell
+PRECHARGE_CLOSE_LEAD_DIST = 2.80  # m; bypass pre-charge dwell for close-lead safety
+
+
+def uphill_gravity_comp(pitch_rad: float = 0.0) -> float:
+  """Uphill gravity deceleration component g*sin(pitch) capped at MAX_UPHILL_SLOPE_COMP."""
+  if not math.isfinite(pitch_rad) or pitch_rad <= 0.0:
+    return 0.0
+  return min(MAX_UPHILL_SLOPE_COMP, GRAVITY * math.sin(pitch_rad))
 
 
 def approach_accel_floor(pitch_rad: float = 0.0) -> float:
   """Slope-compensated approach deceleration floor keeping uphill hydraulic braking <= APPROACH_ACCEL."""
-  if not math.isfinite(pitch_rad) or pitch_rad <= 0.0:
-    return APPROACH_ACCEL
-  return APPROACH_ACCEL - min(MAX_UPHILL_SLOPE_COMP, GRAVITY * math.sin(pitch_rad))
+  return APPROACH_ACCEL - uphill_gravity_comp(pitch_rad)
 
 
 class StopPhase(StrEnum):
@@ -62,6 +71,7 @@ class CanfdStopping:
     self.phase = StopPhase.idle
     self.reason = "inactive"
     self.stopped_time = 0.0
+    self.precharge_time = 0.0
 
   def enter(self, phase: StopPhase, reason: str):
     self.phase = phase
@@ -69,16 +79,34 @@ class CanfdStopping:
 
   def update(self, *, active: bool, requested: bool, speed: float, held: bool,
              accel: float, previous_value: float, jerk_u: float, jerk_l: float,
-             pitch_rad: float = 0.0) -> StopCommand | None:
+             pitch_rad: float = 0.0, soft_hold: bool = False, close_lead: bool = False) -> StopCommand | None:
     # Caller validates sensor values and applies pedal/CAN/hold interlocks.
     if not active or not requested:
       self.reset()
       return None
 
+    a_hyd_prev = previous_value + uphill_gravity_comp(pitch_rad)
+    needs_precharge = (
+      PRECHARGE_MIN_SPEED < speed <= ENTRY_SPEED
+      and not soft_hold
+      and not close_lead
+      and a_hyd_prev > PRECHARGE_HYD_THRESH
+    )
+
     if self.phase == StopPhase.idle:
-      self.enter(StopPhase.approach if speed > ENTRY_SPEED else StopPhase.request, "stop_requested")
-    if self.phase == StopPhase.approach and speed <= ENTRY_SPEED:
-      self.enter(StopPhase.request, "entry_speed")
+      if speed > ENTRY_SPEED:
+        self.enter(StopPhase.approach, "stop_requested")
+      elif needs_precharge:
+        self.precharge_time = DT
+        self.enter(StopPhase.approach, "precharge_guard")
+      else:
+        self.enter(StopPhase.request, "stop_requested")
+    elif self.phase == StopPhase.approach and speed <= ENTRY_SPEED:
+      if needs_precharge and self.precharge_time < PRECHARGE_MAX_TIME - 1e-9:
+        self.precharge_time += DT
+        self.reason = "precharge_guard"
+      else:
+        self.enter(StopPhase.request, "precharge_complete" if self.reason == "precharge_guard" else "entry_speed")
 
     self.stopped_time = self.stopped_time + DT if speed <= STOP_SPEED else 0.0
     stopped = (held and speed <= MOVING_SPEED) or self.stopped_time >= STOP_CONFIRM_TIME

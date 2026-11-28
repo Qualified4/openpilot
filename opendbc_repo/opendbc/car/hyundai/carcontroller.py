@@ -153,8 +153,12 @@ def rate_limit(x, x_last, lo, hi):
   return clip_float(x, x_last + lo, x_last + hi)
 
 
-def calculate_canfd_jerk_limits(accel: float, jerk: float, tracking_error: float = 0.0) -> tuple[float, float]:
-  jerk_u = np.clip(jerk * 2.0, CANFD_JERK_UPPER_MIN, CANFD_JERK_LIMIT_MAX)
+def calculate_canfd_jerk_limits(accel: float, jerk: float, tracking_error: float = 0.0,
+                                direct_jerk_upper: float | None = None) -> tuple[float, float]:
+  if direct_jerk_upper is not None:
+    jerk_u = np.clip(direct_jerk_upper, CANFD_JERK_UPPER_MIN, CANFD_JERK_LIMIT_MAX)
+  else:
+    jerk_u = np.clip(jerk * 2.0, CANFD_JERK_UPPER_MIN, CANFD_JERK_LIMIT_MAX)
   jerk_l_mpc = np.clip(-jerk * 4.0, 1.0, CANFD_JERK_LIMIT_MAX)
 
   # A clearly positive jerk means the plan is releasing deceleration. In that case, or when
@@ -1150,11 +1154,16 @@ class HyundaiJerk:
     canfd = bool(CP.flags & HyundaiFlags.CANFD)
     jerk_u_min = CANFD_JERK_UPPER_MIN if canfd else self.jerk_u_min
     if actuators.longControlState == LongCtrlState.stopping:
-      self.jerk = jerk_u_min / 2 - CS.out.aEgo
+      if canfd and actuators.jerk > 0.0:
+        self.jerk = float(actuators.jerk)
+      else:
+        self.jerk = jerk_u_min / 2 - CS.out.aEgo
     else:
-      jerk = actuators.jerk if actuators.longControlState == LongCtrlState.pid else 0.0
-      #a_error = actuators.aTarget - CS.out.aEgo
-      self.jerk = jerk# + a_error
+      if canfd:
+        jerk = float(actuators.jerk) if actuators.longControlState in (LongCtrlState.pid, LongCtrlState.starting) else 0.0
+      else:
+        jerk = actuators.jerk if actuators.longControlState == LongCtrlState.pid else 0.0
+      self.jerk = jerk
 
     jerk_max_l = CANFD_JERK_LIMIT_MAX
     jerk_max_u = jerk_max_l
@@ -1190,7 +1199,11 @@ class HyundaiJerk:
           self.accel_request_history.clear()
           filtered_tracking_error = self.jerk_error_filter.set_all(0.0)
 
-        self.jerk_u, self.jerk_l = calculate_canfd_jerk_limits(accel, self.jerk, filtered_tracking_error)
+        # 1:1 CAN-FD upper jerk contract: pass upstream UnifiedLongController jerk directly
+        # without 2.0x amplification or 0.5x inverse-scaling hacks.
+        direct_upper = self.jerk if self.jerk > 0.0 else None
+        self.jerk_u, self.jerk_l = calculate_canfd_jerk_limits(accel, self.jerk, filtered_tracking_error,
+                                                               direct_jerk_upper=direct_upper)
         self.cb_upper = self.cb_lower = 0.0
       else:
         self.jerk_u = min(max(self.jerk_u_min, self.jerk * 2.0), jerk_max_u)

@@ -7,7 +7,7 @@ from opendbc.car import CanBusBase, DT_CTRL, structs
 from opendbc.car.carlog import carlog
 from opendbc.car.crc import CRC16_XMODEM
 from opendbc.car.hyundai.values import CAR, HyundaiFlags, HyundaiExtFlags
-from opendbc.car.hyundai.stopping import MOVING_SPEED, STOP_LOWER_BAND
+from opendbc.car.hyundai.stopping import MOVING_SPEED, PRECHARGE_CLOSE_LEAD_DIST, STOP_LOWER_BAND
 from opendbc.car.hyundai.stop_object import apply_signal_stop_object
 from openpilot.common.params import Params
 from openpilot.common.filter_simple import FirstOrderFilter
@@ -57,11 +57,18 @@ def apply_canfd_stopping(values, CS, controller, accel, previous_value, jerk_u, 
   blocked = (not finite or not CS.out.canValid or brake_blocked or CS.out.gasPressed
              or str(CS.out.gearShifter) != "drive" or longitudinal_interlock_active(CS))
   previous_phase = controller.phase
+  radar_state = getattr(CS, "radarState", None)
+  lead_one = getattr(radar_state, "leadOne", None) if radar_state is not None else None
+  close_lead = bool(
+    lead_one is not None and getattr(lead_one, "status", False)
+    and math.isfinite(getattr(lead_one, "dRel", 100.0))
+    and float(lead_one.dRel) <= PRECHARGE_CLOSE_LEAD_DIST
+  )
   command = controller.update(
     active=values["ACCMode"] == 1 and not blocked, requested=bool(values["StopReq"]), speed=speed,
     held=CS.canfdSccHoldActive, accel=accel, previous_value=previous_value,
     jerk_u=max(0.0, min(jerk_u, 5.0)), jerk_l=max(1.0, min(jerk_l, 5.0)),
-    pitch_rad=pitch_rad,
+    pitch_rad=pitch_rad, soft_hold=soft_hold, close_lead=close_lead,
   )
   if blocked or values["ACCMode"] != 1:
     values.update(StopReq=0, aReqRaw=0.0, aReqValue=0.0, AccelLimitBandLower=0.0)
@@ -530,7 +537,7 @@ def create_acc_control_scc2(packer, CAN, enabled, accel_value_last, accel, stopp
   elif hyundai_jerk.carrot_cruise == 2:
     accel = accel_value_last = hyundai_jerk.carrot_cruise_accel
 
-  jerk_u = 2.0 if stopping or soft_hold_active else hyundai_jerk.jerk_u
+  jerk_u = 2.0 if soft_hold_active else hyundai_jerk.jerk_u
   jerk_l = hyundai_jerk.jerk_l
   if not enabled or gas_override:
     a_val, a_raw = 0, 0

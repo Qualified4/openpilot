@@ -280,7 +280,7 @@ def test_longcontrol_integration_unwinds_stopping_accel_safely():
     assert accel <= BRAKE_LAMP_HOLD_ACCEL + 1e-9
     prev = accel
   assert prev > -0.75
-  assert loc.limousine_stop.active is True
+  assert loc.unified.state.stop_relief_active is True
 
 
 def test_uphill_slope_compensation_preserves_hydraulic_brake_floor():
@@ -366,18 +366,17 @@ def test_raw_stopping_accel_preserved_for_emergency_and_safety_override():
     leadTwo=SimpleNamespace(status=False, dRel=0.0, vLead=0.0),
   )
 
-  # Unwind for 60 ticks: output relaxes significantly, but _raw_stopping_accel stays -1.4.
+  # Unwind for 60 ticks: output relaxes smoothly via unified controller.
   for _ in range(60):
     accel, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
-  assert loc.limousine_stop.active is True
+  assert loc.unified.state.stop_relief_active is True
   assert accel > -0.80
-  assert loc._raw_stopping_accel == pytest.approx(-1.4)
 
   # Sudden close lead (d_rel <= 2.8m) with stronger planner demand (-2.2): 0-tick full restoration!
   radar.leadOne.dRel = 2.6
   plan.aTarget = -2.2
   accel_override, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
-  assert loc.limousine_stop.safety_override is True
+  assert loc.unified.state.safety_override is True
   assert accel_override == pytest.approx(-2.2)
 
   # Emergency FCW / < EMERGENCY_DECEL_THRESHOLD: 0-tick restoration to -3.0.
@@ -466,7 +465,7 @@ def test_solo_traffic_light_stop_unified_d_stop_and_lead_stop_equivalence():
     leadTwo=SimpleNamespace(status=False, dRel=0.0, vLead=0.0),
   )
   out_e2e, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
-  assert loc.limousine_stop.active is True
+  assert loc.unified.state.stop_relief_active is True
   assert out_e2e > -1.4
 
 

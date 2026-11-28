@@ -10,11 +10,10 @@ from opendbc.car.hyundai.values import is_ray_pedal_control
 from openpilot.selfdrive.controls.lib.cruise_coasting import (
   CruiseCoastingControl, MAX_PLAN_AGE, coasting_relief, no_coasting_lead,
 )
-from openpilot.selfdrive.controls.lib.limousine_launch import LimousineLaunchController
-from openpilot.selfdrive.controls.lib.limousine_stop import (
-  EMERGENCY_DECEL_THRESHOLD,
-  V_MIN_ACTIVE,
-  LimousineStopController,
+from openpilot.selfdrive.controls.lib.unified_long import (
+  DEFAULT_STOP_DISTANCE,
+  UnifiedLongController,
+  UnifiedLongInput,
 )
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
@@ -122,11 +121,9 @@ class LongControl:
                              (CP.longitudinalTuning.kiBP, CP.longitudinalTuning.kiV),
                              k_f=CP.longitudinalTuning.kf, rate=1 / DT_CTRL)
     self.last_output_accel = 0.0
-    self._raw_stopping_accel = 0.0
-    self._was_in_stopping = False
+    self.last_shaped_jerk_u = None
     self.coasting = CruiseCoastingControl()
-    self.limousine_stop = LimousineStopController()
-    self.limousine_launch = LimousineLaunchController()
+    self.unified = UnifiedLongController()
     self.road_pitch = 0.0
 
 
@@ -189,13 +186,10 @@ class LongControl:
   def reset(self):
     self.pid.reset()
     self.coasting.reset()
-    self.limousine_stop.reset()
-    self.limousine_launch.reset()
-    self._raw_stopping_accel = 0.0
-    self._was_in_stopping = False
+    self.unified.reset()
+    self.last_shaped_jerk_u = None
 
   def update(self, active, CS, long_plan, accel_limits, t_since_plan, radarState):
-
     soft_hold_active = CS.softHoldActive > 0
     a_target_ff = long_plan.aTarget
     v_target_now = long_plan.vTargetNow
@@ -209,68 +203,50 @@ class LongControl:
     elif self.readParamCount == 10:
       self._refresh_longitudinal_tuning()
 
-
-    """Update longitudinal control. This updates the state machine and runs a PID loop"""
+    """Update longitudinal control via the unified continuous controller."""
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
 
-    self.long_control_state = long_control_state_trans(self.CP, active, self.long_control_state, CS.vEgo,
-                                                       should_stop, CS.brakePressed,
-                                                       CS.cruiseState.standstill, CS.aEgo, self.stopping_accel, radarState)
-    if active and soft_hold_active:
-      self.long_control_state = LongCtrlState.stopping
+    if not active:
+      self.reset()
+      self.long_control_state = LongCtrlState.off
+      self.last_output_accel = 0.0
+      return 0.0, a_target_ff, j_target_now
 
-    if self.long_control_state != LongCtrlState.stopping:
-      self._was_in_stopping = False
+    # Sync external state if a caller/test seeded last_output_accel or long_control_state directly.
+    if (not self.unified.state.initialized
+        or abs(float(self.last_output_accel) - self.unified.state.a_ref) > 1e-6
+        or (self.long_control_state == LongCtrlState.stopping and not self.unified.state.hold_latched)):
+      self.unified.sync_external_state(
+        a_ref=float(self.last_output_accel),
+        in_stopping=(self.long_control_state == LongCtrlState.stopping),
+      )
 
     fcw = bool(getattr(long_plan, 'fcw', False))
-    a_target_finite = math.isfinite(a_target_ff)
+    brake_pressed = bool(getattr(CS, 'brakePressed', False))
+    gas_pressed = bool(getattr(CS, 'gasPressed', False))
+    cruise_standstill = bool(CS.cruiseState.standstill)
 
-    if self.long_control_state == LongCtrlState.off:
-      self.reset()
-      output_accel = 0.
-
-    elif self.long_control_state == LongCtrlState.stopping:
-      if not self._was_in_stopping:
-        self._raw_stopping_accel = self.last_output_accel
-        self._was_in_stopping = True
-
-      if soft_hold_active:
-        self._raw_stopping_accel = self.CP.stopAccel
-      # Preserve unsoftened one-way stopping ramp separately from limousine_stop output
-      # so a sudden safety override or emergency command restores full braking on tick 0.
-      elif self._raw_stopping_accel > self.stopping_accel:
-        self._raw_stopping_accel = min(self._raw_stopping_accel, 0.0) - self.CP.stoppingDecelRate * DT_CTRL
-
-      emergency_stop_req = fcw or (a_target_finite and a_target_ff < EMERGENCY_DECEL_THRESHOLD)
-      if CS.vEgo <= V_MIN_ACTIVE and not emergency_stop_req and not soft_hold_active and self.limousine_stop.active:
-        # Normal low-speed handover into standstill: avoid snapping back to pre-relief decel.
-        self._raw_stopping_accel = min(self.stopping_accel, self.last_output_accel)
-
-      output_accel = self._raw_stopping_accel
-      if emergency_stop_req and a_target_finite:
-        output_accel = min(output_accel, float(a_target_ff))
-
+    # 1. Continuous closed-loop desired acceleration (PID + CruiseCoasting)
+    if soft_hold_active:
+      a_des = float(self.CP.stopAccel)
       self.pid.reset()
       self.coasting.reset()
-      self.limousine_launch.notify_stopping()
-
-    elif self.long_control_state == LongCtrlState.starting:
-      output_accel = self.CP.startAccel
+    elif self.unified.state.hold_latched and should_stop:
+      # In stopping hold, track planner feedforward directly without speed-error P windup.
+      a_des = float(a_target_ff) if math.isfinite(a_target_ff) else float(self.stopping_accel)
       self.pid.reset()
       self.coasting.reset()
-      self.limousine_stop.reset()
-
-    else:  # LongCtrlState.pid
+    else:
       target = getattr(long_plan, 'cruiseCoastingTarget', 0.0)
       percent = getattr(long_plan, 'cruiseCoastingPercent', 0)
       relief = 0.0
       if (target > 0.0 and percent > 0 and self.CP.openpilotLongitudinalControl and
           0.0 <= t_since_plan <= MAX_PLAN_AGE and
-          long_plan.longitudinalPlanSource == 'cruise' and not long_plan.fcw and not should_stop and
-          not CS.brakePressed and not CS.gasPressed and not CS.carrotCruise and
+          long_plan.longitudinalPlanSource == 'cruise' and not fcw and not should_stop and
+          not brake_pressed and not gas_pressed and not CS.carrotCruise and
           abs(long_plan.cruiseTarget - CS.vCruise) < 0.001 and
-          not CS.cruiseState.standstill and no_coasting_lead(radarState) and
+          not cruise_standstill and no_coasting_lead(radarState) and
           math.isfinite(CS.aEgo) and math.isfinite(a_target_ff) and math.isfinite(v_target_now) and
           accel_limits[1] >= 0.0):
         relief = coasting_relief(CS.vEgo, target, percent)
@@ -281,69 +257,72 @@ class LongControl:
       else:
         error = v_target_now - CS.vEgo
       previous_integral = self.pid.i
-      output_accel = self.pid.update(error, speed=CS.vEgo, feedforward=a_target_ff)
-      if relief > 0.0 and output_accel < 0.0:
+      a_des = self.pid.update(error, speed=CS.vEgo, feedforward=a_target_ff,
+                              freeze_integrator=self.unified.state.envelope_limited)
+      if relief > 0.0 and a_des < 0.0:
         # Preserve the ordinary PID exactly for positive commands and at 0%.
         # Do not integrate a speed error whose braking output we are suppressing.
         self.pid.i = previous_integral
-        output_accel = self.pid.update(error, speed=CS.vEgo, feedforward=a_target_ff, freeze_integrator=True)
-        output_accel = self.coasting.apply(output_accel, relief, DT_CTRL)
+        a_des = self.pid.update(error, speed=CS.vEgo, feedforward=a_target_ff, freeze_integrator=True)
+        a_des = self.coasting.apply(a_des, relief, DT_CTRL)
       else:
         self.coasting.reset()
 
-    if self.long_control_state in (LongCtrlState.pid, LongCtrlState.stopping):
-      lead_one = getattr(radarState, 'leadOne', None) if radarState is not None else None
-      has_lead = bool(lead_one is not None and lead_one.status)
-      is_e2e_stop = int(getattr(long_plan, 'xState', 0)) in E2E_STOP_XSTATES
-      plan_stop_dist = (
-        None if has_lead
-        else estimate_plan_stop_distance(getattr(long_plan, 'speeds', None), getattr(long_plan, 'accels', None))
-      )
-      output_accel = self.limousine_stop.update(
-        a_cmd=float(output_accel),
-        previous_accel=float(self.last_output_accel),
-        v_ego=float(CS.vEgo),
-        dt=DT_CTRL,
-        enabled=(active and not soft_hold_active and not getattr(CS, 'brakePressed', False)
-                 and not getattr(CS, 'gasPressed', False) and not CS.cruiseState.standstill),
-        should_stop=bool(should_stop),
-        in_stopping_state=(self.long_control_state == LongCtrlState.stopping),
-        fcw=fcw,
-        v_target_now=float(v_target_now),
-        has_lead=has_lead,
-        d_rel=float(getattr(lead_one, 'dRel', 100.0)) if has_lead else 100.0,
-        v_lead=float(getattr(lead_one, 'vLead', 0.0)) if has_lead else 0.0,
-        pitch_rad=float(self.road_pitch),
-        is_e2e_stop=is_e2e_stop,
-        stop_dist=plan_stop_dist,
-      )
-      if self.long_control_state == LongCtrlState.stopping and self.limousine_stop.safety_override and a_target_finite:
-        output_accel = min(output_accel, float(a_target_ff))
+    lead_one = getattr(radarState, 'leadOne', None) if radarState is not None else None
+    has_lead = bool(lead_one is not None and lead_one.status)
+    is_e2e_stop = int(getattr(long_plan, 'xState', 0)) in E2E_STOP_XSTATES
+    plan_stop_dist = (
+      None if has_lead
+      else estimate_plan_stop_distance(getattr(long_plan, 'speeds', None), getattr(long_plan, 'accels', None))
+    )
+
+    out = self.unified.update(UnifiedLongInput(
+      active=bool(active),
+      dt=DT_CTRL,
+      v_ego=float(CS.vEgo),
+      a_ego=float(CS.aEgo),
+      a_des=float(a_des),
+      a_target=float(a_target_ff),
+      v_target_now=float(v_target_now),
+      j_target_now=float(j_target_now),
+      accel_min=float(accel_limits[0]),
+      accel_max=float(accel_limits[1]),
+      should_stop=bool(should_stop),
+      soft_hold=bool(soft_hold_active),
+      brake_pressed=brake_pressed,
+      gas_pressed=gas_pressed,
+      cruise_standstill=cruise_standstill,
+      fcw=fcw,
+      has_lead=has_lead,
+      d_rel=float(getattr(lead_one, 'dRel', 100.0)) if has_lead else 100.0,
+      v_lead=float(getattr(lead_one, 'vLead', 0.0)) if has_lead else 0.0,
+      pitch_rad=float(self.road_pitch),
+      is_e2e_stop=is_e2e_stop,
+      plan_stop_dist=plan_stop_dist,
+      stopping_accel_cfg=float(self.stopping_accel),
+      cp_stop_accel=float(self.CP.stopAccel),
+      cp_stopping_decel_rate=float(self.CP.stoppingDecelRate),
+      cp_starting_state=bool(self.CP.startingState),
+      cp_v_starting=float(self.CP.vEgoStarting),
+      cp_start_accel=float(getattr(self.CP, 'startAccel', 0.0)),
+      d_stop_cfg=DEFAULT_STOP_DISTANCE,
+    ))
+
+    if out.mode == "stopping":
+      self.long_control_state = LongCtrlState.stopping
+      self.pid.reset()
+      self.coasting.reset()
+    elif out.mode == "starting":
+      self.long_control_state = LongCtrlState.starting
+      self.pid.reset()
+      self.coasting.reset()
+    elif out.mode == "off":
+      self.long_control_state = LongCtrlState.off
+      self.pid.reset()
+      self.coasting.reset()
     else:
-      self.limousine_stop.reset()
+      self.long_control_state = LongCtrlState.pid
 
-    if self.long_control_state in (LongCtrlState.starting, LongCtrlState.pid):
-      output_accel = self.limousine_launch.update(
-        a_cmd=float(output_accel),
-        previous_accel=float(self.last_output_accel),
-        v_ego=float(CS.vEgo),
-        dt=DT_CTRL,
-        enabled=(active and not soft_hold_active and not getattr(CS, 'brakePressed', False)
-                 and not getattr(CS, 'gasPressed', False)),
-        should_stop=bool(should_stop),
-        fcw=fcw,
-        cruise_standstill=bool(CS.cruiseState.standstill),
-        in_starting_state=(self.long_control_state == LongCtrlState.starting),
-        pitch_rad=float(self.road_pitch),
-      )
-      if self.limousine_launch.active and self.limousine_launch.shaped_jerk is not None:
-        aligned_jerk = self.limousine_launch.shaped_jerk * 0.5
-        if self.limousine_launch.tracking_upstream:
-          j_target_now = aligned_jerk
-        elif j_target_now > 0.0:
-          j_target_now = min(float(j_target_now), aligned_jerk)
-    elif self.long_control_state != LongCtrlState.stopping:
-      self.limousine_launch.reset()
-
-    self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
-    return self.last_output_accel, a_target_ff, j_target_now
+    self.last_shaped_jerk_u = out.j_u_shaped
+    self.last_output_accel = float(np.clip(out.a_cmd, accel_limits[0], accel_limits[1]))
+    return self.last_output_accel, a_target_ff, out.j_cmd

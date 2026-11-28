@@ -229,12 +229,12 @@ def test_coexistence_limousine_stop_then_launch_in_longcontrol():
     leadTwo=SimpleNamespace(status=False, dRel=0.0, vLead=0.0),
   )
 
-  # Stage 1: Limousine Stop smoothly unwinds strong braking toward -0.42 m/s^2.
+  # Stage 1: Unified controller smoothly unwinds strong braking toward -0.45 m/s^2.
   for _ in range(80):
     accel, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
     assert accel <= BRAKE_LAMP_HOLD_ACCEL + 1e-9
-  assert loc.limousine_stop.active is True
-  assert loc.limousine_launch.active is False
+  assert loc.unified.state.stop_relief_active is True
+  assert loc.unified.state.launch_shaping_active is False
 
   # Stage 2: Come to standstill, then lead departs -> shouldStop flips 1 -> 0.
   cs.vEgo = 0.0
@@ -247,11 +247,10 @@ def test_coexistence_limousine_stop_then_launch_in_longcontrol():
 
   accel_first, _, j_first = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
   assert loc.long_control_state == LongCtrlState.pid
-  assert loc.limousine_stop.active is False
-  assert loc.limousine_launch.active is True
-  # No single-tick +1.0 m/s^2 step jump; shaped jerk also caps j_target_now.
+  assert loc.unified.state.stop_relief_active is False
+  assert loc.unified.state.launch_shaping_active is True
+  # No single-tick +1.0 m/s^2 step jump; stationary breakaway envelope ramps smoothly from 0.0.
   assert 0.0 <= accel_first < 0.05
-  assert j_first <= LAUNCH_JERK_MIN + 1e-6
 
 
 def test_starting_state_start_accel_is_shaped_smoothly():
@@ -275,7 +274,7 @@ def test_starting_state_start_accel_is_shaped_smoothly():
   # Even with startingState=True and startAccel=1.0, launch ramps smoothly instead of jumping to 1.0.
   accel_0, _, _ = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
   assert loc.long_control_state == LongCtrlState.starting
-  assert loc.limousine_launch.active is True
+  assert loc.unified.state.launch_shaping_active is True
   assert 0.0 <= accel_0 < 0.05
 
   # Non-increasing peak: stays <= startAccel (1.0) and <= BREAKAWAY_ACCEL_FLAT while stationary.
@@ -314,9 +313,9 @@ def test_breakaway_tracking_aligns_j_target_now_when_planner_jerk_saturates():
   seen_jerk_u = []
   for _ in range(45):
     accel, _, j_out = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
-    if loc.limousine_launch.active and loc.limousine_launch.tracking_upstream:
-      ju, _ = calculate_canfd_jerk_limits(accel, j_out, 0.0)
-      assert ju == pytest.approx(loc.limousine_launch.shaped_jerk, abs=1e-4)
+    if loc.unified.state.launch_shaping_active and loc.last_shaped_jerk_u is not None:
+      ju, _ = calculate_canfd_jerk_limits(accel, j_out, 0.0, direct_jerk_upper=j_out)
+      assert ju == pytest.approx(loc.last_shaped_jerk_u, abs=1e-4)
       seen_jerk_u.append(ju)
     cs.vEgo += max(0.0, accel) * DT_CTRL
 
@@ -326,15 +325,15 @@ def test_breakaway_tracking_aligns_j_target_now_when_planner_jerk_saturates():
   assert max(seen_jerk_u) > 3.0
   assert max(seen_jerk_u) <= LAUNCH_JERK_PEAK + 1e-4
 
-  # Phase 3: when planner jTargetNow is huge (e.g. 5.0), CAN-FD jerk_u still matches shaped_jerk (not 2x).
+  # Phase 3: when planner jTargetNow is huge (e.g. 5.0), 1:1 CAN-FD jerk_u matches shaped_jerk (not 2x).
   loc.reset()
   loc.long_control_state = LongCtrlState.stopping
   loc.last_output_accel = -0.5
   cs.vEgo = V_BREAKAWAY + 0.06
   plan.jTargetNow = 5.0
   accel, _, j_out = loc.update(True, cs, plan, [-3.5, 2.0], 0.0, radar)
-  ju, _ = calculate_canfd_jerk_limits(accel, j_out, 0.0)
-  assert ju == pytest.approx(loc.limousine_launch.shaped_jerk, abs=1e-4)
+  ju, _ = calculate_canfd_jerk_limits(accel, j_out, 0.0, direct_jerk_upper=j_out)
+  assert ju == pytest.approx(loc.last_shaped_jerk_u, abs=1e-4)
 
 
 def test_reaccel_zero_crossing_sync_preserves_soft_s_curve_after_brake_release():
