@@ -6,6 +6,7 @@ pub enum VehicleKind {
     Car,
     Heavy,
     Motorcycle,
+    Pedestrian,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -65,7 +66,9 @@ pub struct TrackedObject {
     pub(super) detector_kind: VehicleKind,
     pub(super) kind_vote: f64,
     pub(super) car_streak: u8,
-    pub(super) pedestrian_veto_t: Option<f64>,
+    pub(super) moto_hits: u8,
+    pub(super) ped_hits: u8,
+    pub(super) last_ped_t: Option<f64>,
 }
 
 impl TrackedObject {
@@ -113,8 +116,18 @@ impl TrackedObject {
     pub(super) fn vote(&mut self, kind: VehicleKind, confidence: f64) {
         if kind == VehicleKind::Motorcycle {
             if confidence >= 0.45 && self.detector_kind != VehicleKind::Heavy {
-                self.detector_kind = VehicleKind::Motorcycle;
+                self.moto_hits = self.moto_hits.saturating_add(1);
+                self.ped_hits = 0;
+                // Rider priority: motorcycle overrides pedestrian. Confirm on N >= 2 or high confidence
+                // (require N >= 2 if previously voted Car to prevent single-frame false positives).
+                let high_conf = confidence >= 0.75 && self.detector_kind != VehicleKind::Car;
+                if self.moto_hits >= 2 || high_conf {
+                    self.detector_kind = VehicleKind::Motorcycle;
+                }
             }
+            return;
+        }
+        if kind == VehicleKind::Pedestrian {
             return;
         }
         self.car_streak = if kind == VehicleKind::Car && confidence >= 0.6 {
@@ -123,18 +136,20 @@ impl TrackedObject {
             0
         };
         self.kind_vote = match kind {
-            VehicleKind::Unknown | VehicleKind::Motorcycle => return,
+            VehicleKind::Unknown | VehicleKind::Motorcycle | VehicleKind::Pedestrian => return,
             VehicleKind::Car => self.kind_vote - confidence,
             VehicleKind::Heavy => self.kind_vote + confidence,
         }
         .clamp(-4., 4.);
         if self.kind_vote >= 1.25 {
             self.detector_kind = VehicleKind::Heavy;
+            self.ped_hits = 0;
         } else if self.kind_vote <= -1.25
             && (self.detector_kind != VehicleKind::Heavy
                 || u32::from(self.car_streak) >= crate::vision::kind::N_FLIP)
         {
             self.detector_kind = VehicleKind::Car;
+            self.ped_hits = 0;
         }
     }
 }

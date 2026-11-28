@@ -3,7 +3,7 @@ use ccnc_map::{
     cmap::MapOut,
     pipeline::STALE_NS,
     slots::Slot,
-    vision::kind::{KIND_BUS, KIND_TRUCK},
+    vision::kind::{KIND_BUS, KIND_MOTORCYCLE, KIND_PEDESTRIAN, KIND_TRUCK},
 };
 use pyo3::{intern, prelude::*, types::PyDict};
 
@@ -183,12 +183,20 @@ pub(crate) fn from_card(
     }))
 }
 
-/// DETECT for a slot: the map's 1 (moving away) / 2 (closing or slow) become the grey / white car (3 / 4), or the
-/// grey / white truck (5 / 6) once the map has confirmed a truck or bus there (the cluster has no bus shape).
+/// DETECT for a slot: the map's 1 (moving away) / 2 (closing or slow) become:
+/// - grey / white car (3 / 4) for unknown, unconfirmed, or car
+/// - grey / white truck (5 / 6) for confirmed truck or bus
+/// - grey / white pedestrian (7 / 8) for confirmed pedestrian
+/// - grey / white motorcycle (9 / 10) for confirmed motorcycle
 /// Anything else goes as it is.
 fn detect_code(slot: &Slot) -> u8 {
     match slot.detect {
-        detect @ (1 | 2) if slot.kind_confirmed && matches!(slot.kind, KIND_TRUCK | KIND_BUS) => detect + 4,
+        detect @ (1 | 2) if slot.kind_confirmed => match slot.kind {
+            KIND_TRUCK | KIND_BUS => detect + 4,
+            KIND_PEDESTRIAN => detect + 6,
+            KIND_MOTORCYCLE => detect + 8,
+            _ => detect + 2,
+        },
         detect @ (1 | 2) => detect + 2,
         detect => detect,
     }
@@ -379,14 +387,57 @@ mod tests {
     fn a_confirmed_truck_or_bus_is_drawn_as_a_truck() {
         for detect in [1, 2] {
             // No kind, a kind that is not confirmed, or a car: the car shape, as before kinds.
-            for (kind, confirmed) in [(0, false), (0, true), (KIND_CAR, true), (KIND_TRUCK, false), (KIND_BUS, false)] {
+            for (kind, confirmed) in [
+                (0, false),
+                (0, true),
+                (KIND_CAR, true),
+                (KIND_TRUCK, false),
+                (KIND_BUS, false),
+                (KIND_PEDESTRIAN, false),
+                (KIND_MOTORCYCLE, false),
+            ] {
                 assert_eq!(detect_code(&slot(detect, kind, confirmed)), detect + 2, "{detect} {kind} {confirmed}");
             }
             assert_eq!(detect_code(&slot(detect, KIND_TRUCK, true)), detect + 4);
             assert_eq!(detect_code(&slot(detect, KIND_BUS, true)), detect + 4);
+            assert_eq!(detect_code(&slot(detect, KIND_PEDESTRIAN, true)), detect + 6);
+            assert_eq!(detect_code(&slot(detect, KIND_MOTORCYCLE, true)), detect + 8);
         }
-        for detect in [0, 3, 7, 31] {
+        for detect in [0, 3, 7, 8, 9, 10, 31] {
             assert_eq!(detect_code(&slot(detect, KIND_TRUCK, true)), detect, "other values go as they are");
+            assert_eq!(detect_code(&slot(detect, KIND_PEDESTRIAN, true)), detect, "pedestrian pass-through");
+            assert_eq!(detect_code(&slot(detect, KIND_MOTORCYCLE, true)), detect, "motorcycle pass-through");
         }
+    }
+
+    #[test]
+    fn dedicated_pedestrian_and_motorcycle_codes_survive_wire_pack_and_rear_slots() {
+        let mut rear_moto = slot(1, KIND_MOTORCYCLE, true);
+        rear_moto.distance = -8.0;
+        rear_moto.lateral = 3.2;
+        let mut rear_ped = slot(2, KIND_PEDESTRIAN, true);
+        rear_ped.distance = -4.0;
+        rear_ped.lateral = -3.0;
+        let slots = [
+            Some(slot(2, KIND_PEDESTRIAN, true)),  // FF -> 8
+            Some(slot(1, KIND_MOTORCYCLE, true)),  // LF -> 9
+            Some(slot(2, KIND_TRUCK, true)),       // RF -> 6
+            Some(rear_moto),                       // LR -> 9
+            Some(rear_ped),                        // RR -> 8
+        ];
+        let encoded = cmap::encode(&MapOut {
+            radar_log_mono_time: TICK,
+            generation: 1,
+            status: 0,
+            ego_lane_coord: 0.0,
+            slots,
+            valid: true,
+        });
+        let decoded = valid_map(&encoded).expect("valid MapOut wire");
+        assert_eq!(slot_values(&decoded, 0).2, 8);
+        assert_eq!(slot_values(&decoded, 1).2, 9);
+        assert_eq!(slot_values(&decoded, 2).2, 6);
+        assert_eq!(slot_values(&decoded, 3).2, 9);
+        assert_eq!(slot_values(&decoded, 4).2, 8);
     }
 }

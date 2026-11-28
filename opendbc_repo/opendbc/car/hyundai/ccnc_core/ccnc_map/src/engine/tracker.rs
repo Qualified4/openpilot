@@ -79,7 +79,9 @@ impl Tracker {
             detector_kind: VehicleKind::Unknown,
             kind_vote: 0.,
             car_streak: 0,
-            pedestrian_veto_t: None,
+            moto_hits: 0,
+            ped_hits: 0,
+            last_ped_t: None,
         });
         self.objects.last_mut()
     }
@@ -119,11 +121,11 @@ impl Tracker {
         );
     }
 
-    /// Suppress low-speed roadside radar-only false positives that coincide with a detected person.
-    /// Pedestrians are never promoted to displayed vehicles.
+    /// Classify low-speed non-vehicle radar tracks that match size-guarded person detections (N >= 2)
+    /// as Pedestrian. Never creates a new slot without radar and never overrides confirmed vehicles.
     pub fn observe_pedestrian(
         &mut self,
-        now: f64,
+        obs_time: f64,
         speed: f64,
         frame: &RoadFrame,
         confidence: f64,
@@ -135,18 +137,31 @@ impl Tracker {
         }
         let (s, d) = frame.project(x, y);
         let range_gate = (2.0 + 0.15 * s.abs()).min(5.0);
-        for o in &mut self.objects {
-            if o.vision_hits > 0
-                || o.evidence.last_lead_t.is_some()
-                || (o.moved && o.verified_travel >= 3.0)
-                || (o.v_s + speed).abs() > 3.0
-                || o.lane_u.abs() < 0.55
-            {
-                continue;
-            }
-            if (o.s - s).abs() <= range_gate && (o.d - d).abs() <= 1.2 {
-                o.pedestrian_veto_t = Some(now);
-                o.support(-1.2 * confidence);
+        let matched = self
+            .objects
+            .iter_mut()
+            .filter(|o| {
+                o.vision_hits == 0
+                    && !matches!(
+                        o.detector_kind,
+                        VehicleKind::Car | VehicleKind::Heavy | VehicleKind::Motorcycle
+                    )
+                    && o.moto_hits == 0
+                    && (o.v_s + speed).abs() <= 3.5
+                    && (o.s - s).abs() <= range_gate
+                    && (o.d - d).abs() <= 1.2
+            })
+            .min_by(|a, b| {
+                let cost = |o: &TrackedObject| (o.s - s).abs() / range_gate + (o.d - d).abs() / 1.2;
+                cost(a).total_cmp(&cost(b))
+            });
+        if let Some(o) = matched {
+            if o.last_ped_t.is_none_or(|t| obs_time > t) {
+                o.last_ped_t = Some(obs_time);
+                o.ped_hits = o.ped_hits.saturating_add(1);
+                if o.ped_hits >= 2 {
+                    o.detector_kind = VehicleKind::Pedestrian;
+                }
             }
         }
     }
@@ -320,15 +335,19 @@ impl Tracker {
     }
 
     fn handoff_kind(&mut self, now: f64) {
-        for o in self
+        let mut detector_inherits: Vec<(usize, VehicleKind)> = Vec::new();
+        for (idx, o) in self
             .objects
             .iter()
-            .filter(|o| o.evidence.last_radar_t == Some(now) && o.same_track_streak >= 3)
+            .enumerate()
+            .filter(|(_, o)| o.evidence.last_radar_t == Some(now) && o.same_track_streak >= 3)
         {
             let Ok(to) = u32::try_from(o.obj_id) else {
                 continue;
             };
-            if self.kinds.confirmed_kind(to).is_some() {
+            let need_mnv3 = self.kinds.confirmed_kind(to).is_none();
+            let need_det = o.detector_kind == VehicleKind::Unknown;
+            if !need_mnv3 && !need_det {
                 continue;
             }
             let mut donors = self.objects.iter().filter(|old| {
@@ -345,10 +364,18 @@ impl Tracker {
             // The raw radar return stayed continuous across a change of shadow object.
             // Use raw motion here because refreshed lane coordinates can diverge at range.
             if let Some(old) = donors.next().filter(|_| donors.next().is_none()) {
-                if let Ok(from) = u32::try_from(old.obj_id) {
-                    self.kinds.inherit_confirmed(from, to);
+                if need_mnv3 {
+                    if let Ok(from) = u32::try_from(old.obj_id) {
+                        self.kinds.inherit_confirmed(from, to);
+                    }
+                }
+                if need_det && matches!(old.detector_kind, VehicleKind::Motorcycle | VehicleKind::Pedestrian) {
+                    detector_inherits.push((idx, old.detector_kind));
                 }
             }
+        }
+        for (idx, kind) in detector_inherits {
+            self.objects[idx].detector_kind = kind;
         }
     }
 
@@ -451,6 +478,12 @@ impl Tracker {
                 .min_by(|(_, a), (_, b)| a.total_cmp(b))
                 .map(|(o, _)| o);
             if let Some(o) = candidate {
+                if obs.kind != VehicleKind::Unknown
+                    && o.evidence.last_kind_t.is_none_or(|t| obs.time > t)
+                {
+                    o.vote(obs.kind, obs.confidence);
+                    o.evidence.last_kind_t = Some(obs.time);
+                }
                 update_stationary_vision(o, obs, &inside_outer_line);
             }
             return;
@@ -502,6 +535,10 @@ impl Tracker {
             if obs.position && o.evidence.last_vision_t.is_none_or(|last| obs.time > last) {
                 o.evidence.last_vision_t = Some(obs.time);
                 o.vision_hits += 1;
+                if o.vision_hits >= 2 && o.detector_kind == VehicleKind::Pedestrian {
+                    o.detector_kind = VehicleKind::Unknown;
+                    o.ped_hits = 0;
+                }
                 o.support(1.25 * obs.confidence);
                 if speed <= 3. && obs.confidence >= 0.55 && o.supports_stationary_vision(now, speed) {
                     update_stationary_vision(o, obs, &inside_outer_line);

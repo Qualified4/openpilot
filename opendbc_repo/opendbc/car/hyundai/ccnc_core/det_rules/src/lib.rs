@@ -117,12 +117,24 @@ impl WideGeometry {
             .filter_map(|d| wide::wide_candidate(d, &self.ground_with_pitch(d, delta_pitch), self.mask(d.view), true))
             .collect()
     }
-    /// person boxes (COCO class 0) that do not overlap any vehicle box -> ground (x from bumper, y right, score).
+    /// person boxes (COCO class 0) that pass physical size guard (width 0.2..=1.6 m, height 0.9..=2.3 m)
+    /// and do not overlap any vehicle/motorcycle box -> ground (x from bumper, y right, score).
     pub fn person_points(&self, dets: &[WideDet], delta_pitch: f64) -> Vec<(f64, f64, f64)> {
         let vehicles: Vec<&WideDet> = dets.iter().filter(|d| d.is_vehicle()).collect();
         dets.iter()
             .filter(|d| d.class == 0 && d.score >= 0.45)
-            .filter(|d| !vehicles.iter().any(|v| v.view == d.view && box_overlap_ratio(d.bbox, v.bbox) >= 0.3))
+            .filter(|d| {
+                !vehicles.iter().any(|v| {
+                    v.view == d.view
+                        && if v.class == 3 {
+                            // Rider priority: any >= 10% overlap with a motorcycle stays Motorcycle.
+                            box_overlap_ratio(d.bbox, v.bbox) >= 0.1
+                                || box_overlap_ratio(v.bbox, d.bbox) >= 0.1
+                        } else {
+                            box_overlap_ratio(d.bbox, v.bbox) >= 0.3
+                        }
+                })
+            })
             .filter_map(|d| {
                 let (inside, touch) = band::band_stats(self.mask(d.view), &d.bbox);
                 if inside >= 0.5 || touch {
@@ -130,7 +142,19 @@ impl WideGeometry {
                 }
                 let g = self.ground_with_pitch(d, delta_pitch).bc?;
                 let x = g[0] - CAM2B;
-                ((-5.0..=30.0).contains(&x) && g[1].abs() <= 10.0).then_some((x, g[1], d.score))
+                if !((-5.0..=30.0).contains(&x) && g[1].abs() <= 10.0) {
+                    return None;
+                }
+                let f = match d.view {
+                    View::Raw => self.cam.lens.f,
+                    View::SideL => self.left.f,
+                    View::SideR => self.right.f,
+                };
+                let range = g[0].hypot(g[1]);
+                let width_m = (d.bbox[2] - d.bbox[0]) * range / f;
+                let height_m = (d.bbox[3] - d.bbox[1]) * range / f;
+                ((0.2..=1.6).contains(&width_m) && (0.9..=2.3).contains(&height_m))
+                    .then_some((x, g[1], d.score))
             })
             .collect()
     }

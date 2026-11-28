@@ -16,7 +16,7 @@ use crate::radar::Result;
 use crate::slots::{Slot, VISION_CONFIRMS, VISION_NONE, VISION_ONLY};
 use crate::vision::{
     self,
-    kind::{FrontCam, KIND_CAR, KIND_TRUCK, SIDE_KINDS},
+    kind::{FrontCam, FOCAL as FRONT_FOCAL, KIND_CAR, KIND_MOTORCYCLE, KIND_PEDESTRIAN, KIND_TRUCK, SIDE_KINDS},
     Cand, FrameView, FrontBox, Geometry, Side, Skipped,
 };
 use crate::world::{STATUS_BLINKER, STATUS_MAP_UNKNOWN, STATUS_NO_LIVE_POSE};
@@ -203,20 +203,31 @@ impl Pipeline {
                 }
             }
         }
-        // Person (COCO class 0) detections that do not overlap a vehicle box veto roadside radar false positives.
+        // Person (COCO class 0) detections that pass physical size guard (width 0.2..=1.6 m, height 0.9..=2.3 m)
+        // and do not overlap a vehicle/motorcycle box vote for VehicleKind::Pedestrian on matching radar tracks.
         for b in boxes
             .iter()
             .filter(|b| !b.cut && b.detection.class_id == 0 && b.detection.confidence >= 0.45)
         {
-            if vehicle_boxes
-                .iter()
-                .any(|v| box_overlap_ratio(b.detection.xyxy, v.detection.xyxy) >= 0.3)
-            {
+            if vehicle_boxes.iter().any(|v| {
+                if v.detection.class_id == 3 {
+                    // Rider priority: any >= 10% overlap with a motorcycle stays Motorcycle.
+                    box_overlap_ratio(b.detection.xyxy, v.detection.xyxy) >= 0.1
+                        || box_overlap_ratio(v.detection.xyxy, b.detection.xyxy) >= 0.1
+                } else {
+                    box_overlap_ratio(b.detection.xyxy, v.detection.xyxy) >= 0.3
+                }
+            }) {
                 continue;
             }
-            let [x1, _, x2, bottom] = b.detection.xyxy;
+            let [x1, y1, x2, bottom] = b.detection.xyxy;
             if let Some((x, y)) = camera.ground_from_pixel((x1 + x2) / 2., bottom) {
-                if (det_rules::CAM2B..=40.).contains(&x) {
+                let width_m = (x2 - x1) * x / FRONT_FOCAL;
+                let height_m = (bottom - y1) * x / FRONT_FOCAL;
+                if (det_rules::CAM2B..=40.).contains(&x)
+                    && (0.2..=1.6).contains(&width_m)
+                    && (0.9..=2.3).contains(&height_m)
+                {
                     self.engine.observe_pedestrian(PedestrianObservation {
                         time: seconds(time_ns),
                         x: x - det_rules::CAM2B,
@@ -296,6 +307,22 @@ impl Pipeline {
 
     pub fn objects(&self) -> &[TrackedObject] {
         self.engine.objects()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn step_for_test(
+        &mut self,
+        stamp: u64,
+        speed: f64,
+        radar: &[live_tracks::RawPoint],
+    ) -> MapOut {
+        self.car = Some((
+            stamp,
+            CarState { speed, can_valid: true, ..CarState::default() },
+        ));
+        let map = self.update_radar(stamp, radar);
+        self.vision.clear();
+        map
     }
 
     pub fn ingest(&mut self, bytes: &[u8]) -> Result<Option<MapOut>> {
@@ -420,8 +447,10 @@ impl Pipeline {
             let s = selected[index]?;
             let vid = u32::try_from(s.obj_id).ok()?;
             let kind = match s.kind {
-                VehicleKind::Car | VehicleKind::Motorcycle => KIND_CAR,
+                VehicleKind::Car => KIND_CAR,
                 VehicleKind::Heavy => KIND_TRUCK,
+                VehicleKind::Pedestrian => KIND_PEDESTRIAN,
+                VehicleKind::Motorcycle => KIND_MOTORCYCLE,
                 VehicleKind::Unknown => 0,
             };
             let vision = if s.obj_id == 0 {

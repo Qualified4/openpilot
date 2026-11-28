@@ -35,10 +35,12 @@ use super::Side;
 use crate::vehicles::{Kind, Vehicle};
 use det_rules::{Cand, Track, CAM2B};
 
-/// `Kind::class` and the CcncVision `Kind.kind` values.
+/// `Kind::class` and the CcncMap / CcncVision `Kind.kind` values.
 pub const KIND_CAR: u8 = 1;
 pub const KIND_TRUCK: u8 = 2;
 pub const KIND_BUS: u8 = 3;
+pub const KIND_PEDESTRIAN: u8 = 4;
+pub const KIND_MOTORCYCLE: u8 = 5;
 
 /// Car answers count from this probability, truck and bus answers from `MIN_PROB_TRUCK` (the det-kind replay's one
 /// wrong truck was a dusk SUV at 0.82 and 0.76).
@@ -92,7 +94,7 @@ pub const MIN_SIDE_BOX_H_PX: f64 = 48.0;
 const SIDE_FOCAL: f64 = 305.088_94;
 
 /// Road camera of the 1344x760 device (det-cost `geom.py`).
-const FOCAL: f64 = 1141.5;
+pub(crate) const FOCAL: f64 = 1141.5;
 const CENTER: (f64, f64) = (672.0, 380.0);
 /// Rows below this are the bonnet: a box ending there is cut (det_rules `FRONT_CROP_Y` minus 2 px).
 const FRONT_BOTTOM: f64 = 618.0;

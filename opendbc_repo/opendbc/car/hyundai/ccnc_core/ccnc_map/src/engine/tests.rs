@@ -1170,25 +1170,45 @@ fn stopping_road_frame_preserves_previous_curvature_and_lanes() {
 }
 
 #[test]
-fn pedestrian_veto_suppresses_roadside_radar_false_positive_without_showing_pedestrian() {
+fn pedestrian_requires_n2_confirmation_and_displays_dedicated_kind_without_creating_ghosts() {
     let mut engine = MapEngine::default();
-    // Low-speed roadside radar-only return at (12 m, +3.2 m) with ground speed ~1.2 m/s (walking speed).
+    // Low-speed roadside walking radar track at (12 m, +3.2 m) with ground speed ~1.2 m/s.
     let mut ped_radar = radar(77, 12., 3.2, 1.2);
     ped_radar.motion_state = 2;
     let pts = [ped_radar];
-    for tick in 0..10 {
-        let t = f64::from(tick) * STEP;
-        engine.observe_pedestrian(PedestrianObservation {
-            time: t,
-            x: 12.1,
-            y: 3.1,
-            confidence: 0.85,
-        });
+    // Establish radar track first (no pedestrian observations yet -> Unknown).
+    for tick in 0..8 {
         let mut entry = input(tick, &pts);
         entry.speed = 0.0;
         let out = engine.step(entry);
-        assert!(out.slots[2].is_none(), "roadside pedestrian must not appear as RF car at tick {tick}");
+        if let Some(rf) = out.slots[2] {
+            assert_eq!(rf.kind, VehicleKind::Unknown);
+        }
     }
+    // Single pedestrian observation (N = 1) must not confirm Pedestrian yet.
+    engine.observe_pedestrian(PedestrianObservation {
+        time: 8. * STEP,
+        x: 12.1,
+        y: 3.1,
+        confidence: 0.85,
+    });
+    let mut entry = input(8, &pts);
+    entry.speed = 0.0;
+    let out = engine.step(entry);
+    assert_eq!(out.slots[2].expect("walking radar track shown in RF").kind, VehicleKind::Unknown);
+
+    // Second pedestrian observation (N = 2) confirms Pedestrian.
+    engine.observe_pedestrian(PedestrianObservation {
+        time: 9. * STEP,
+        x: 12.1,
+        y: 3.1,
+        confidence: 0.85,
+    });
+    let mut entry = input(9, &pts);
+    entry.speed = 0.0;
+    let out = engine.step(entry);
+    assert_eq!(out.slots[2].expect("pedestrian shown in RF").kind, VehicleKind::Pedestrian);
+
     // Pedestrian observation alone (without radar) must never create a displayed slot.
     let mut empty_engine = MapEngine::default();
     for tick in 0..6 {
@@ -1200,6 +1220,142 @@ fn pedestrian_veto_suppresses_roadside_radar_false_positive_without_showing_pede
         });
         let out = empty_engine.step(input(tick, &[]));
         assert!(out.slots.iter().all(Option::is_none));
+    }
+
+    // Stationary roadside radar clutter (motion_state = 0, not moving) must never be promoted
+    // into a new displayed slot by pedestrian observations (preserves 482 G4 new_shown = 0).
+    let mut clutter_engine = MapEngine::default();
+    let mut bollard = radar(88, 12., 3.2, 0.0);
+    bollard.motion_state = 0;
+    let bollard_pts = [bollard];
+    for tick in 0..10 {
+        clutter_engine.observe_pedestrian(PedestrianObservation {
+            time: f64::from(tick) * STEP,
+            x: 12.0,
+            y: 3.2,
+            confidence: 0.85,
+        });
+        let mut entry = input(tick, &bollard_pts);
+        entry.speed = 0.0;
+        let out = clutter_engine.step(entry);
+        assert!(out.slots[2].is_none(), "stationary bollard must not become a new shown slot at tick {tick}");
+    }
+}
+
+#[test]
+fn motorcycle_rider_priority_and_pedestrian_size_guard_in_front_frame() {
+    use crate::pipeline::Pipeline;
+    use crate::vision::{
+        kind::{FrontCam, FOCAL, KIND_MOTORCYCLE, KIND_PEDESTRIAN},
+        Box as VisionBox, FrontBox,
+    };
+
+    let calib = [0.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0, 1.22];
+    let cam = FrontCam::new([0., 0., 0.], 1.22).unwrap();
+    let make_box = |d_rel: f64, y_rel: f64, w_m: f64, h_m: f64, class_id: u8, conf: f64| -> FrontBox {
+        let (u, v) = cam.radar_ground(d_rel, y_rel).unwrap();
+        let x = d_rel + det_rules::CAM2B;
+        let w_px = w_m * FOCAL / x;
+        let h_px = h_m * FOCAL / x;
+        FrontBox {
+            detection: VisionBox {
+                xyxy: [u - w_px / 2., v - h_px, u + w_px / 2., v],
+                confidence: conf,
+                class_id,
+            },
+            cut: false,
+        }
+    };
+
+    // Case 1: Person box overlapping a motorcycle box -> rider priority selects Motorcycle, not Pedestrian.
+    let mut pipe = Pipeline::new(1);
+    let mut last_map = None;
+    for tick in 0..10u64 {
+        let t_ns = 1_000_000_000 + tick * 50_000_000;
+        if tick >= 5 {
+            let moto = make_box(12.0, 3.2, 0.8, 1.3, 3, 0.65);
+            // Rider sitting on motorcycle: overlaps upper portion of motorcycle box.
+            let rider = make_box(12.0, 3.2, 0.6, 1.7, 0, 0.85);
+            pipe.front_frame(t_ns, &calib, &[moto, rider]);
+        }
+        let mut moto_pt = radar(51, 12.0, -3.2, 1.5);
+        moto_pt.motion_state = 2;
+        last_map = Some(pipe.step_for_test(t_ns, 0.0, &[moto_pt]));
+    }
+    let lf = last_map.unwrap().slots[1].expect("LF motorcycle shown");
+    assert_eq!(lf.kind, KIND_MOTORCYCLE, "rider overlapping motorcycle must emit KIND_MOTORCYCLE");
+    assert!(lf.kind_confirmed);
+
+    // Case 2: Bollard/pole failing physical size guard (0.12 m wide, 0.6 m tall) must not confirm Pedestrian.
+    let mut pipe_small = Pipeline::new(1);
+    let mut last_small = None;
+    for tick in 0..10u64 {
+        let t_ns = 1_000_000_000 + tick * 50_000_000;
+        if tick >= 5 {
+            let bollard_box = make_box(12.0, -3.2, 0.12, 0.6, 0, 0.85);
+            pipe_small.front_frame(t_ns, &calib, &[bollard_box]);
+        }
+        let mut pt = radar(52, 12.0, 3.2, 1.2);
+        pt.motion_state = 2;
+        last_small = Some(pipe_small.step_for_test(t_ns, 0.0, &[pt]));
+    }
+    let rf_small = last_small.unwrap().slots[2].expect("RF radar track shown");
+    assert_eq!(rf_small.kind, 0, "out-of-size-guard box must not confirm Pedestrian");
+
+    // Case 3: Valid person box (0.6 m wide, 1.7 m tall) for N >= 2 frames confirms KIND_PEDESTRIAN.
+    let mut pipe_ped = Pipeline::new(1);
+    let mut last_ped = None;
+    for tick in 0..10u64 {
+        let t_ns = 1_000_000_000 + tick * 50_000_000;
+        if tick >= 7 {
+            let ped_box = make_box(12.0, -3.2, 0.6, 1.7, 0, 0.80);
+            pipe_ped.front_frame(t_ns, &calib, &[ped_box]);
+        }
+        let mut pt = radar(53, 12.0, 3.2, 1.2);
+        pt.motion_state = 2;
+        last_ped = Some(pipe_ped.step_for_test(t_ns, 0.0, &[pt]));
+    }
+    let rf_ped = last_ped.unwrap().slots[2].expect("RF pedestrian shown");
+    assert_eq!(rf_ped.kind, KIND_PEDESTRIAN, "valid N>=2 person box must emit KIND_PEDESTRIAN");
+    assert!(rf_ped.kind_confirmed);
+}
+
+#[test]
+fn rear_handoff_preserves_heavy_motorcycle_and_pedestrian_kinds() {
+    use super::rear_display::SideDisplay;
+
+    for kind in [VehicleKind::Heavy, VehicleKind::Motorcycle, VehicleKind::Pedestrian] {
+        let mut disp = SideDisplay::default();
+        let base_front = EngineSlot {
+            obj_id: 99,
+            s: 1.5,
+            d: -3.2,
+            x: 1.5,
+            y: -3.2,
+            display_d: -3.2,
+            rear_animated: false,
+            v_s: -4.0,
+            kind,
+            existence_p: 0.99,
+            last_track_id: Some(99),
+            lane_u: -1.0,
+            camera_seen: false,
+            radar_seen: true,
+            side_range: None,
+            ff_handoff_until: None,
+        };
+        let prev = [None, Some(base_front), None, None, None];
+        let rear_cross = EngineSlot { s: -0.5, x: -0.5, ..base_front };
+        let mut slots = [None, None, None, Some(rear_cross), None];
+        disp.update(10.0, 0, false, prev, &mut slots);
+        let lr = slots[3].expect("LR rear pass slot active");
+        assert_eq!(lr.kind, kind, "LR crossing must preserve {kind:?}");
+
+        // Coasting in LR without new radar must still preserve kind.
+        let mut coast_slots = [None; 5];
+        disp.update(10.5, 0, false, slots, &mut coast_slots);
+        let lr_coast = coast_slots[3].expect("LR rear coast active");
+        assert_eq!(lr_coast.kind, kind, "LR coasting must preserve {kind:?}");
     }
 }
 

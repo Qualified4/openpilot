@@ -262,13 +262,16 @@ impl MapEngine {
         }
         for ped in self.pending_pedestrians.drain(..) {
             let age = now - ped.time;
-            if !(0. ..=0.5).contains(&age) || !ped.x.is_finite() || !ped.y.is_finite() {
+            if !(0. ..=1.5).contains(&age) || !ped.x.is_finite() || !ped.y.is_finite() {
                 continue;
             }
             let capture = self.pose.at(ped.time);
+            if age > 0.5 && (capture.t > ped.time || ego.s - capture.s > 1.5) {
+                continue;
+            }
             let (wx, wy) = capture.to_world(ped.x, -ped.y);
             let (x, y) = ego.to_ego(wx, wy);
-            self.tracker.observe_pedestrian(now, speed, &frame, ped.confidence, x, -y);
+            self.tracker.observe_pedestrian(ped.time, speed, &frame, ped.confidence, x, -y);
         }
         let previous_rear = [3, 4].map(|i| self.displayed[i].map(|slot| slot.obj_id));
         self.tracker.lifecycle(now, dt.min(0.25), speed, &frame, &visible, input.blind, previous_rear);

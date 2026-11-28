@@ -239,10 +239,6 @@ pub(super) fn select(
         if !ff_handoff && !side_bound_ok {
             continue;
         }
-        // Suppress low-speed roadside radar-only tracks vetoed by a detected pedestrian.
-        if o.pedestrian_veto_t.is_some_and(|t| now - t <= 0.8) && o.vision_hits == 0 && !o.moved {
-            continue;
-        }
         let coasting_rear = o.rear_coast(now, occupied[side + 3] == Some(o.obj_id), blind[side]);
         // Reject oncoming vehicles (negative absolute longitudinal speed in ego frame).
         // Same-direction stopped or moving vehicles satisfy v_s + speed >= 0 modulo Doppler noise.
