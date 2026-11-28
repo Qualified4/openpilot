@@ -48,7 +48,7 @@ POCKET_ARM_MARGIN = 0.05            # m/s^2 tolerance near a_lamp to arm pre-cha
 HOLD_CLOSE_LEAD_DIST = 4.00         # m close-lead stopping handover threshold
 HOLD_FLICKER_DECEL = -0.05          # m/s^2 braking demand threshold guarding against 1-tick should_stop flicker
 HOLD_FLICKER_V_TARGET = 0.20        # m/s low target speed guarding against 1-tick should_stop flicker
-JERK_PRECHARGE_DOWN = 3.00          # m/s^3 rapid pre-charge downward jerk while above brake-lamp floor
+JERK_PRECHARGE_DOWN = 1.20          # m/s^3 smooth pre-charge downward jerk while above brake-lamp floor
 V_BREAKAWAY = 0.04                  # m/s wheel motion detection threshold
 BREAKAWAY_ACCEL_FLAT = 0.70         # m/s^2 flat stationary breakaway accel cap
 BREAKAWAY_RELEASE_BASE = 0.65       # m/s^2 steep-uphill wheel-motion breakaway handoff base
@@ -324,7 +324,7 @@ class UnifiedLongController:
       or a_target < EMERGENCY_DECEL_THRESHOLD
       or (a_demand < 0.0 and v_ego > 0.05 and (
         (inp.has_lead and math.isfinite(inp.d_rel) and inp.d_rel <= CLOSE_LEAD_OVERRIDE_DISTANCE)
-        or (d_hard is not None and (d_hard <= 0.20 or a_req_hard <= min(a_demand, a_lamp)))
+        or (v_ego <= V_EASE_START and d_hard is not None and (d_hard <= 0.20 or a_req_hard <= min(a_demand, a_lamp)))
       ))
     )
     if emerg:
@@ -337,9 +337,10 @@ class UnifiedLongController:
       st.safety_override = True
       st.envelope_limited = False
       st.last_j_u_shaped = None
-      a_out = clamp(min(st.a_ref, inp.a_des, a_target), inp.accel_min, inp.accel_max)
-      j_out = min(j_target_now, (a_out - st.a_ref) / dt)
-      st.j_ref = (a_out - st.a_ref) / dt
+      a_out = clamp(a_demand, inp.accel_min, inp.accel_max)
+      da_emg = (a_out - st.a_ref) / dt
+      j_out = min(j_target_now, da_emg) if a_out < st.a_ref else j_target_now
+      st.j_ref = da_emg
       st.a_ref = a_out
       if inp.soft_hold or (inp.should_stop and (inp.a_ego > inp.stopping_accel_cfg or (inp.has_lead and inp.d_rel < HOLD_CLOSE_LEAD_DIST))):
         st.hold_latched = True
@@ -491,19 +492,17 @@ class UnifiedLongController:
     st.launch_shaping_active = False
 
     if da < -1e-9:
-      # Quadrant 1/4 downward: immediate tracking for safety, with 2-stage low-speed hold settle:
-      # rapid pre-charge (>= 3.0 m/s^3) while above a_lamp, then soft settle (0.8 m/s^3) at/below a_lamp.
+      # Quadrant 1/4 downward: immediate tracking for safety, with smooth 2-stage low-speed hold settle:
+      # gentle pre-charge (1.2 m/s^3) while above a_lamp, then soft settle (0.8 m/s^3) at/below a_lamp.
+      # Do not emit negative j_d_shaped (which CAN-FD multiplies by 4x to JerkLowerLimit=5.0).
       if (eff_should_stop and v_ego <= V_EASE_END and not inp.soft_hold
           and st.hold_latched and st.a_ref > hold_cap):
         if st.a_ref > a_lamp + 1e-6:
           j_dn = max(JERK_PRECHARGE_DOWN, inp.cp_stopping_decel_rate)
-          j_d_shaped = -j_dn
         else:
           j_dn = max(0.1, inp.cp_stopping_decel_rate)
       else:
         j_dn = math.inf
-        if (st.precharge_latched or eff_should_stop) and st.a_ref > a_lamp + 1e-6 and a_goal <= a_lamp + 1e-6:
-          j_d_shaped = -JERK_PRECHARGE_DOWN
 
     elif da > 1e-9:
       if st.a_ref < -1e-9:

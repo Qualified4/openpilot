@@ -77,6 +77,8 @@ def apply_canfd_stopping(values, CS, controller, accel, previous_value, jerk_u, 
   elif command is not None:
     values.update(StopReq=command.stop_req, aReqRaw=command.raw, aReqValue=command.value,
                   AccelLimitBandUpper=0.0, AccelLimitBandLower=command.lower)
+    if command.stop_req == 1:
+      values["JerkLowerLimit"] = 1.0
   else:
     # Establish the fixed band during ordinary active ACC, before any stop
     # request. Approach/held packets retain it instead of adding a band edge

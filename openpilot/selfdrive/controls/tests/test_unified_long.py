@@ -595,15 +595,16 @@ def test_p2_flicker_invariant_hold_and_2stage_precharge_jerk():
   assert out_dep.hold_latched is False
   assert out_dep.mode == "pid"
 
-  # 2-stage downward jerk: above a_lamp (-0.45) ramps at 3.0 m/s^3; below a_lamp settles at 0.8 m/s^3
+  # 2-stage downward jerk: above a_lamp (-0.45) ramps smoothly at 1.2 m/s^3 (no -3.0 j_cmd slam);
+  # below a_lamp settles at 0.8 m/s^3.
   ctrl2 = UnifiedLongController()
   ctrl2.sync_external_state(a_ref=-0.10, in_stopping=True)
   out_fast = ctrl2.update(_make_inp(
     v_ego=0.40, a_ego=-0.10, a_des=-0.10, a_target=-0.10, should_stop=True,
     stopping_accel_cfg=-0.80, cp_stopping_decel_rate=0.80,
   ))
-  assert out_fast.a_cmd == pytest.approx(-0.10 - 3.0 * DT_CTRL)
-  assert out_fast.j_cmd == pytest.approx(-3.0)
+  assert out_fast.a_cmd == pytest.approx(-0.10 - 1.2 * DT_CTRL)
+  assert out_fast.j_cmd == pytest.approx(0.0)
 
   ctrl3 = UnifiedLongController()
   ctrl3.sync_external_state(a_ref=-0.50, in_stopping=True)
@@ -649,13 +650,13 @@ def test_p2_uphill_hold_entry_and_p4b_steep_uphill_breakaway():
 
 
 def test_p3_canfd_direct_jerk_lower_precharge_contract():
-  """P3: unpressurized stopping/precharge directly asserts JerkLowerLimit >= 3.0 m/s^3."""
+  """P3: unpressurized StopReq=0 precharge uses gentle 1.2 m/s^3; StopReq=1 hold strictly stays at 1.0."""
   from collections import deque
   from openpilot.common.filter_simple import MyMovingAverage
 
-  ju, jl = calculate_canfd_jerk_limits(-0.50, 0.5, 0.0, direct_jerk_upper=1.0, direct_jerk_lower=3.0)
+  ju, jl = calculate_canfd_jerk_limits(-0.50, 0.5, 0.0, direct_jerk_upper=1.0, direct_jerk_lower=1.2)
   assert ju == pytest.approx(1.0)
-  assert jl == pytest.approx(3.0)
+  assert jl == pytest.approx(1.2)
 
   hj = HyundaiJerk.__new__(HyundaiJerk)
   hj.jerk = hj.jerk_u = hj.jerk_l = hj.cb_upper = hj.cb_lower = 0.0
@@ -665,5 +666,64 @@ def test_p3_canfd_direct_jerk_lower_precharge_contract():
   cp = SimpleNamespace(flags=HyundaiFlags.CANFD)
   cs = SimpleNamespace(out=SimpleNamespace(aEgo=-0.10, vEgo=0.55, brakePressed=False, gasPressed=False))
   act = SimpleNamespace(longControlState=LongCtrlState.stopping, jerk=0.0)
-  hj.make_jerk(cp, cs, -0.50, act, None, accel_value_last=-0.15, pitch_rad=math.atan(0.03))
-  assert hj.jerk_l >= 3.0
+  # StopReq=0 precharge approach: gentle 1.2 m/s^3 (no 3.0 m/s^3 jolt)
+  hj.make_jerk(cp, cs, -0.50, act, None, accel_value_last=-0.15, pitch_rad=math.atan(0.03), stop_req_active=False)
+  assert hj.jerk_l == pytest.approx(1.2)
+
+  # StopReq=1 hold (aReqValue=0.0): must NOT leak elevated JerkLowerLimit
+  hj.make_jerk(cp, cs, -0.50, act, None, accel_value_last=0.0, pitch_rad=math.atan(0.03), stop_req_active=True)
+  assert hj.jerk_l == pytest.approx(1.0)
+
+  # Even if stop_req_active flag hasn't flipped yet, accel_value_last==0.0 in stopping stays at 1.0
+  hj.make_jerk(cp, cs, -0.50, act, None, accel_value_last=0.0, pitch_rad=0.0, stop_req_active=False)
+  assert hj.jerk_l == pytest.approx(1.0)
+
+
+def test_emerg_no_brake_ratchet_and_mid_speed_no_false_trigger():
+  """Regression (#267): emerg must not freeze/ratchet braking on recovery, nor fire in normal mid/high-speed braking."""
+  ctrl = UnifiedLongController()
+  # 1. Normal mid/high-speed braking (v=15 m/s, d_rel=18 m, v_lead=15 m/s, a_des=-1.2): must NOT trigger emerg!
+  out_mid = ctrl.update(_make_inp(
+    v_ego=15.0, a_ego=-0.8, a_des=-1.2, a_target=-1.2, v_target_now=14.8,
+    should_stop=False, has_lead=True, d_rel=18.0, v_lead=15.0,
+  ))
+  assert out_mid.safety_override is False
+  assert out_mid.a_cmd == pytest.approx(-1.2)
+
+  # Recovery from -1.2 to -0.4 tracks immediately without freezing at -1.2
+  out_rec = ctrl.update(_make_inp(
+    v_ego=14.8, a_ego=-1.0, a_des=-0.4, a_target=-0.4, v_target_now=14.7,
+    should_stop=False, has_lead=True, d_rel=18.5, v_lead=15.0,
+  ))
+  assert out_rec.safety_override is False
+  assert out_rec.a_cmd == pytest.approx(-0.4)
+
+  # 2. Genuine emergency (a_des=-2.8 -> recovers to -2.6 while still in emerg): must release immediately (no ratchet!)
+  out_e1 = ctrl.update(_make_inp(
+    v_ego=10.0, a_ego=-1.5, a_des=-2.8, a_target=-2.8, v_target_now=9.0,
+    should_stop=False, has_lead=True, d_rel=10.0, v_lead=5.0,
+  ))
+  assert out_e1.safety_override is True
+  assert out_e1.a_cmd == pytest.approx(-2.8)
+
+  out_e2 = ctrl.update(_make_inp(
+    v_ego=9.8, a_ego=-2.5, a_des=-2.6, a_target=-2.6, v_target_now=9.0,
+    should_stop=False, has_lead=True, d_rel=10.0, v_lead=5.0,
+  ))
+  assert out_e2.safety_override is True
+  assert out_e2.a_cmd == pytest.approx(-2.6)  # NOT frozen at -2.8!
+
+  # 3. Low-speed close-lead emergency (d_rel=2.6) also releases when a_des eases
+  out_cl1 = ctrl.update(_make_inp(
+    v_ego=1.5, a_ego=-1.5, a_des=-1.8, a_target=-1.8, v_target_now=1.0,
+    should_stop=False, has_lead=True, d_rel=2.6, v_lead=0.5,
+  ))
+  assert out_cl1.safety_override is True
+  assert out_cl1.a_cmd == pytest.approx(-1.8)
+
+  out_cl2 = ctrl.update(_make_inp(
+    v_ego=1.4, a_ego=-1.5, a_des=-0.9, a_target=-0.9, v_target_now=1.0,
+    should_stop=False, has_lead=True, d_rel=2.6, v_lead=0.5,
+  ))
+  assert out_cl2.safety_override is True
+  assert out_cl2.a_cmd == pytest.approx(-0.9)  # NOT frozen at -1.8!
