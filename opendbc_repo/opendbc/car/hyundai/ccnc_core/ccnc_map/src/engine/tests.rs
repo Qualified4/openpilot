@@ -1723,3 +1723,151 @@ fn standstill_oncoming_radar_and_vision_are_rejected_without_breaking_stopped_si
         }
     }
 }
+
+#[test]
+fn side_fr_min_gap_enforces_car_and_heavy_thresholds_smoothly() {
+    let mut engine = MapEngine::default();
+    confirm(&mut engine, &[radar(201, 4.0, 3.5, 0.)]);
+    let base_front = engine.displayed[2].unwrap();
+    let base_rear = EngineSlot { obj_id: base_front.obj_id + 1, s: 0., x: 0., v_s: 0., ..base_front };
+
+    // 1. Both cars simultaneously present (R at 0 m -> d_r = 0, F at 3.5 m -> d_f = 2.8 m):
+    //    F must be separated to d_f >= 6.5 m (x >= 8.125 m) while R stays at 0 m.
+    let mut display = rear_display::SideDisplay::default();
+    let mut prev = [None; 5];
+    let mut slots = [
+        None,
+        None,
+        Some(EngineSlot { s: 3.5, x: 3.5, kind: VehicleKind::Car, ..base_front }),
+        None,
+        Some(EngineSlot { s: 0., x: 0., kind: VehicleKind::Car, ..base_rear }),
+    ];
+    display.update(0.0, 1, false, prev, &mut slots);
+    let rf = slots[2].unwrap();
+    let rr = slots[4].unwrap();
+    let gap_car = 0.8 * rf.x + 0.8 * (-rr.x).max(0.);
+    assert!((gap_car - 6.5).abs() < 1e-6, "car+car display gap must be 6.5 m, got {gap_car}");
+    assert_eq!(rr.x, 0., "rear car must keep 0 m alongside position");
+
+    // As R recedes to -5.0 m (d_r = 4.0 m), F (physical x = 3.5 m, d_f = 2.8 m -> gap = 6.8 m >= 6.5 m)
+    // smoothly glides back to its physical 3.5 m without any jump.
+    prev = slots;
+    let mut prev_x = rf.x;
+    for i in 1..=60 {
+        let mut s = [
+            None,
+            None,
+            Some(EngineSlot { s: 3.5, x: 3.5, kind: VehicleKind::Car, ..base_front }),
+            None,
+            Some(EngineSlot { s: -5.0, x: -5.0, kind: VehicleKind::Car, ..base_rear }),
+        ];
+        display.update(i as f64 * STEP, 1, false, prev, &mut s);
+        let cur_x = s[2].unwrap().x;
+        assert!((cur_x - prev_x).abs() <= 0.35, "receding R must not cause front jump: {prev_x} -> {cur_x}");
+        let gap = 0.8 * cur_x + 0.8 * (-s[4].unwrap().x).max(0.);
+        assert!(gap >= 6.5 - 1e-6, "gap must stay >= 6.5 m while R recedes, got {gap}");
+        prev_x = cur_x;
+        prev = s;
+    }
+    assert!((prev_x - 3.5).abs() < 0.05, "F must converge to physical 3.5 m once d_r=4.0 m gives gap >= 6.5 m, got {prev_x}");
+
+    // 2. Heavy vehicle in either F or R requires 8.5 m display gap (x >= 10.625 m when d_r = 0).
+    for (f_kind, r_kind) in [
+        (VehicleKind::Heavy, VehicleKind::Car),
+        (VehicleKind::Car, VehicleKind::Heavy),
+        (VehicleKind::Heavy, VehicleKind::Heavy),
+    ] {
+        let mut d = rear_display::SideDisplay::default();
+        let mut s = [
+            None,
+            None,
+            Some(EngineSlot { s: 4.0, x: 4.0, kind: f_kind, ..base_front }),
+            None,
+            Some(EngineSlot { s: 0., x: 0., kind: r_kind, ..base_rear }),
+        ];
+        d.update(0.0, 1, false, [None; 5], &mut s);
+        let gap = 0.8 * s[2].unwrap().x + 0.8 * (-s[4].unwrap().x).max(0.);
+        assert!((gap - 8.5).abs() < 1e-6, "heavy pair ({f_kind:?}, {r_kind:?}) gap must be 8.5 m, got {gap}");
+    }
+
+    // 3. No 1-tick jump when R suddenly appears next to an already-displayed F, or suddenly disappears.
+    let mut smooth = rear_display::SideDisplay::default();
+    let mut prev = [None; 5];
+    // F alone at x = 3.5 m (d_f = 2.8 m) for 3 ticks.
+    for i in 0..3 {
+        let mut s = [None, None, Some(EngineSlot { s: 3.5, x: 3.5, kind: VehicleKind::Car, ..base_front }), None, None];
+        smooth.update(i as f64 * STEP, 1, false, prev, &mut s);
+        assert!((s[2].unwrap().x - 3.5).abs() < 1e-9);
+        prev = s;
+    }
+    // R suddenly appears at x = 0 m: F must ramp smoothly (<= 1.0 m/tick map = 0.8 m/tick display) to 8.125 m.
+    let mut last_x = 3.5;
+    for i in 3..15 {
+        let mut s = [
+            None,
+            None,
+            Some(EngineSlot { s: 3.5, x: 3.5, kind: VehicleKind::Car, ..base_front }),
+            None,
+            Some(EngineSlot { s: 0., x: 0., kind: VehicleKind::Car, ..base_rear }),
+        ];
+        smooth.update(i as f64 * STEP, 1, false, prev, &mut s);
+        let x = s[2].unwrap().x;
+        let step_disp = 0.8 * (x - last_x).abs();
+        assert!(step_disp <= 0.8001, "R appearance caused 1-tick spike: {step_disp} m display at tick {i}");
+        assert!(x >= last_x - 1e-9, "F must ramp monotonically upward");
+        last_x = x;
+        prev = s;
+    }
+    assert!((0.8 * last_x - 6.5).abs() < 1e-6, "F must reach 6.5 m display, got {}", 0.8 * last_x);
+
+    // R suddenly disappears: F must glide smoothly back to 3.5 m without 1-tick drop.
+    for i in 15..65 {
+        let mut s = [None, None, Some(EngineSlot { s: 3.5, x: 3.5, kind: VehicleKind::Car, ..base_front }), None, None];
+        smooth.update(i as f64 * STEP, 1, false, prev, &mut s);
+        let x = s[2].unwrap().x;
+        let step_disp = 0.8 * (x - last_x).abs();
+        assert!(step_disp <= 0.25, "R disappearance caused 1-tick drop: {step_disp} m display at tick {i}");
+        assert!(x <= last_x + 1e-9, "F must return monotonically");
+        last_x = x;
+        prev = s;
+    }
+    assert!((last_x - 3.5).abs() < 0.05, "F must settle back to physical 3.5 m, got {last_x}");
+
+    // 4. Single-vehicle origin crossing (RearPass & FrontJoin) must NOT be interfered with.
+    let mut single = rear_display::SideDisplay::default();
+    let mut prev = [None; 5];
+    let mut s0 = [None, None, Some(EngineSlot { s: 0.2, x: 0.2, v_s: -3.0, ..base_front }), None, None];
+    single.update(0.0, 1, false, prev, &mut s0);
+    assert!((s0[2].unwrap().x - 0.2).abs() < 1e-9);
+    prev = s0;
+    let mut s1 = [None, None, None, None, Some(EngineSlot { s: -0.1, x: -0.1, v_s: -3.0, ..base_front })];
+    single.update(STEP, 1, false, prev, &mut s1);
+    assert!(s1[2].is_none());
+    assert_eq!(s1[4].unwrap().x, 0.0, "single-car RearPass origin tick must remain exact 0.0 m");
+
+    // 5. Fast-passing F approaching 0 m while R is already receding behind ego:
+    //    F keeps its physical trajectory to 0 m (no handoff jump) while R opens the gap rearward.
+    let mut passing = rear_display::SideDisplay::default();
+    let mut prev = [None; 5];
+    let mut last_rx = -0.2;
+    for i in 0..10 {
+        let fx = 3.2 - 0.32 * i as f64;
+        let rx = -0.2 - 0.30 * i as f64;
+        let mut s = [
+            None,
+            None,
+            Some(EngineSlot { s: fx, x: fx, v_s: -6.4, kind: VehicleKind::Car, ..base_front }),
+            None,
+            Some(EngineSlot { s: rx, x: rx, v_s: -6.0, kind: VehicleKind::Car, ..base_rear }),
+        ];
+        passing.update(i as f64 * STEP, 1, false, prev, &mut s);
+        assert!((s[2].unwrap().x - fx).abs() < 1e-9, "fast-passing F must not be held away from 0 m");
+        let cur_rx = s[4].unwrap().x;
+        assert!(cur_rx <= rx + 1e-9, "receding R must open gap rearward");
+        if i > 0 {
+            assert!(0.8 * (last_rx - cur_rx).abs() <= 0.85, "R rearward ramp must stay smooth");
+        }
+        last_rx = cur_rx;
+        prev = s;
+    }
+}

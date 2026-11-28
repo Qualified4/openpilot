@@ -1,11 +1,13 @@
 use super::{
-    object::REAR_LIMIT,
-    selector::{ALONGSIDE_SPEED, PASS_BAND},
+    object::{VehicleKind, REAR_LIMIT},
+    selector::{ALONGSIDE_SPEED, PASS_BAND, SIDE_FRONT_LIMIT},
     EngineSlot,
 };
 
 const BSD_GRACE: f64 = 3.;
 // The cluster renders 0.8 times the signed map range. Start at the 8 m warning.
+const DISPLAY_SCALE: f64 = 0.8;
+const REAR_DISP_MAX: f64 = 25.5;
 const BSD_START_X: f64 = -10.;
 // Sixteen metres on the cluster (0.8 * 20) for BSD-only approach/retreat animation.
 const BSD_FAR_X: f64 = -20.;
@@ -23,6 +25,14 @@ const BSD_ONLY_EXIT_TAU: f64 = 0.65;
 const BSD_ONLY_EXIT_SPEED: f64 = 5.0;
 const TO_ORIGIN_SPEED: f64 = 20.;
 const JOIN_DURATION: f64 = 0.20;
+// Minimum cluster display separation (d_f + d_r) when both F and R are shown on the same side.
+const FR_MIN_GAP_CAR_DISP: f64 = 6.5;
+const FR_MIN_GAP_HEAVY_DISP: f64 = 8.5;
+// Smoothly ramp gap offsets without 1-tick CAN spikes (front <= 0.8 m/tick disp, rear <= 0.52 m/tick disp).
+const FR_GAP_UP_SPEED: f64 = 20.;
+const FR_REAR_GAP_UP_SPEED: f64 = 13.;
+const FR_GAP_DOWN_SPEED: f64 = 6.;
+const FR_GAP_DOWN_TAU: f64 = 0.25;
 
 #[derive(Default)]
 pub(super) struct SideDisplay {
@@ -32,6 +42,15 @@ pub(super) struct SideDisplay {
     join: Option<FrontJoin>,
     pass: Option<RearPass>,
     bsd_only: Option<BsdOnly>,
+    front_gap: Option<GapOffset>,
+    rear_gap: Option<GapOffset>,
+}
+
+#[derive(Clone, Copy)]
+struct GapOffset {
+    vid: u64,
+    offset: f64,
+    time: f64,
 }
 
 struct BsdOnly {
@@ -85,6 +104,75 @@ impl SideDisplay {
         self.update_rear_pass(now, blind, previous[front], previous[rear], &mut slots[rear]);
         self.update_front_join(now, side, previous[front], previous[rear], slots);
         self.update_bsd_only(now, side, blind, &mut slots[rear]);
+        self.apply_fr_min_gap(now, side, slots);
+    }
+
+    fn ramp_gap_offset(
+        state: &mut Option<GapOffset>,
+        now: f64,
+        vid: u64,
+        target: f64,
+        up_speed: f64,
+    ) -> f64 {
+        let offset = match *state {
+            Some(prev) if prev.vid == vid => {
+                let dt = (now - prev.time).clamp(0., 0.25);
+                if target >= prev.offset {
+                    (prev.offset + up_speed * dt).min(target)
+                } else if prev.offset - target <= 0.02 {
+                    target
+                } else {
+                    let step = (prev.offset - target) * (1. - (-dt / FR_GAP_DOWN_TAU).exp());
+                    (prev.offset - step.min(FR_GAP_DOWN_SPEED * dt)).max(target)
+                }
+            }
+            _ => target,
+        };
+        *state = Some(GapOffset { vid, offset, time: now });
+        offset
+    }
+
+    fn apply_fr_min_gap(&mut self, now: f64, side: usize, slots: &mut [Option<EngineSlot>; 5]) {
+        let front_idx = side + 1;
+        let rear_idx = side + 3;
+        let (target_front, target_rear) = match (slots[front_idx], slots[rear_idx]) {
+            (Some(front), Some(rear)) if rear.obj_id != front.obj_id => {
+                let min_gap_disp = if front.kind == VehicleKind::Heavy || rear.kind == VehicleKind::Heavy {
+                    FR_MIN_GAP_HEAVY_DISP
+                } else {
+                    FR_MIN_GAP_CAR_DISP
+                };
+                let d_f = (DISPLAY_SCALE * front.x).max(0.);
+                let d_r = (DISPLAY_SCALE * (-rear.x).max(0.)).min(REAR_DISP_MAX);
+                if rear.x < 0. && front.v_s < -ALONGSIDE_SPEED {
+                    // Front vehicle is actively passing ego toward the 0 m origin while rear is
+                    // already receding behind ego: open the gap rearward so front crosses 0 m cleanly.
+                    let min_d_r = (min_gap_disp - d_f).clamp(0., REAR_DISP_MAX);
+                    let target_r = ((min_d_r - d_r).max(0.)) / DISPLAY_SCALE;
+                    (0., target_r)
+                } else {
+                    let min_x_f = ((min_gap_disp - d_r).max(0.) / DISPLAY_SCALE).min(SIDE_FRONT_LIMIT);
+                    ((min_x_f - front.x).max(0.), 0.)
+                }
+            }
+            _ => (0., 0.),
+        };
+        if let Some(front) = &mut slots[front_idx] {
+            let offset = Self::ramp_gap_offset(&mut self.front_gap, now, front.obj_id, target_front, FR_GAP_UP_SPEED);
+            if offset > 0. {
+                front.x = (front.x + offset).min(SIDE_FRONT_LIMIT);
+            }
+        } else {
+            self.front_gap = None;
+        }
+        if let Some(rear) = &mut slots[rear_idx] {
+            let offset = Self::ramp_gap_offset(&mut self.rear_gap, now, rear.obj_id, target_rear, FR_REAR_GAP_UP_SPEED);
+            if offset > 0. {
+                rear.x = (rear.x - offset).max(-REAR_DISP_MAX / DISPLAY_SCALE);
+            }
+        } else {
+            self.rear_gap = None;
+        }
     }
 
     fn update_front_join(
