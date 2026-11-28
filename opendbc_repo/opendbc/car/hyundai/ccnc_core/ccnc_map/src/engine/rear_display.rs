@@ -195,15 +195,23 @@ impl SideDisplay {
         if self.join.as_ref().is_some_and(|join| join.vid != candidate.obj_id || candidate.s <= 0.) {
             self.join = None;
         }
-        if self.join.is_none() && old_front.is_none() && (candidate.radar_seen || candidate.camera_seen)
+        if self.join.is_none()
+            && old_front.is_none_or(|old| old.obj_id != candidate.obj_id && old.s > candidate.s + 10.0)
+            && (candidate.radar_seen || candidate.camera_seen)
             && candidate.v_s > 0.
         {
             let measured_rear = old_rear.filter(|old| {
                 old.obj_id == candidate.obj_id && old.s < 0. && candidate.s > PASS_BAND
             });
+            let bsd_active_or_hold = self.blind
+                || self.bsd_only.as_ref().is_some_and(|b| {
+                    b.off_since.is_none_or(|t| now - t < BSD_ONLY_HOLD)
+                        && b.x >= BSD_START_X - 0.05
+                });
             let from_bsd = old_rear.is_none_or(|old| old.obj_id == 0)
+                && bsd_active_or_hold
                 && self.warning_until.is_some_and(|until| now <= until)
-                && (0. ..=6.).contains(&candidate.s) && candidate.s > 0.
+                && (0. ..=10.).contains(&candidate.s) && candidate.s > 0.
                 && self.recent_front.is_none_or(|(vid, t)| vid != candidate.obj_id || now - t > BSD_GRACE);
             if measured_rear.is_some() || from_bsd {
                 let start_x = measured_rear.map_or_else(
@@ -260,6 +268,7 @@ impl SideDisplay {
             return;
         }
         if blind {
+            self.warning_until = Some(now + BSD_GRACE);
             match &mut self.bsd_only {
                 None => {
                     self.bsd_only = Some(BsdOnly { x: BSD_FAR_X, time: now, off_since: None });

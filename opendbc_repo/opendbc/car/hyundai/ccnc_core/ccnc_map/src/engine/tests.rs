@@ -1871,3 +1871,211 @@ fn side_fr_min_gap_enforces_car_and_heavy_thresholds_smoothly() {
         prev = s;
     }
 }
+
+#[test]
+fn bsd_hold_hands_off_near_overtake_despite_distant_lf_occupant() {
+    let mut engine = MapEngine::default();
+    confirm(&mut engine, &[radar(210, 42.0, -3.5, 1.0)]);
+    let far_front = engine.displayed[1].unwrap();
+
+    for cand_s in [4.7_f64, 7.5_f64] {
+        let mut display = rear_display::SideDisplay::default();
+        let mut prev = [None; 5];
+
+        // 1. BSD ON (0..3.0 s) while a distant car occupies LF at 42 m.
+        for i in 0..60 {
+            let mut slots = [
+                None,
+                Some(EngineSlot { s: 42.0, x: 42.0, v_s: 1.0, ..far_front }),
+                None,
+                None,
+                None,
+            ];
+            display.update(i as f64 * STEP, 0, true, prev, &mut slots);
+            prev = slots;
+        }
+
+        // 2. BSD OFF for +1.5 s (ticks 60..90, inside 3.0 s hold) with distant LF still at 42 m.
+        for i in 60..90 {
+            let mut slots = [
+                None,
+                Some(EngineSlot { s: 42.0, x: 42.0, v_s: 1.0, ..far_front }),
+                None,
+                None,
+                None,
+            ];
+            display.update(i as f64 * STEP, 0, false, prev, &mut slots);
+            assert_eq!(slots[3].unwrap().obj_id, 0);
+            assert!((slots[3].unwrap().x - (-10.)).abs() < 0.1);
+            prev = slots;
+        }
+
+        // 3. Near overtaking vehicle (s = 4.7 m or 7.5 m) supersedes distant LF during hold:
+        //    BsdOnly must clear immediately and hand off 1 vehicle (-10 m -> 0 m -> LF).
+        let near_vid = far_front.obj_id + 100;
+        let mut join_xs = Vec::new();
+        let mut saw_origin = false;
+        let mut saw_lf = false;
+        for i in 90..120 {
+            let x = cand_s + (i - 90) as f64 * 0.15;
+            let cand = EngineSlot {
+                obj_id: near_vid,
+                s: x,
+                x,
+                v_s: 3.0,
+                radar_seen: true,
+                ..far_front
+            };
+            let mut slots = [None, Some(cand), None, None, None];
+            display.update(i as f64 * STEP, 0, false, prev, &mut slots);
+            // Zero duplicate ticks (never both LF and LR at once) and BsdOnly immediately gone.
+            assert!(
+                slots[1].is_none() || slots[3].is_none(),
+                "cand_s={cand_s} tick {i}: duplicate LF+LR during handoff",
+            );
+            assert!(
+                slots[3].is_none_or(|r| r.obj_id != 0),
+                "cand_s={cand_s} tick {i}: BsdOnly must clear immediately on handoff",
+            );
+            let active = slots[1].or(slots[3]).expect("single vehicle must stay visible");
+            assert_eq!(active.obj_id, near_vid);
+            if active.x == 0. {
+                saw_origin = true;
+            }
+            if slots[1].is_some() {
+                saw_lf = true;
+            }
+            join_xs.push(active.x);
+            prev = slots;
+        }
+        assert!(
+            (join_xs[0] - (-10.)).abs() < 0.1,
+            "cand_s={cand_s}: FrontJoin must start from held 8 m (-10 m map), got {}",
+            join_xs[0],
+        );
+        assert!(saw_origin, "cand_s={cand_s}: FrontJoin must cross exact 0 m");
+        assert!(saw_lf, "cand_s={cand_s}: FrontJoin must complete into LF");
+        assert!(
+            join_xs.windows(2).all(|w| w[1] >= w[0] - 1e-9),
+            "cand_s={cand_s}: handoff must advance monotonically without retreat",
+        );
+    }
+}
+
+#[test]
+fn bsd_retreating_after_hold_does_not_jump_forward_on_new_lf() {
+    let mut engine = MapEngine::default();
+    confirm(&mut engine, &[radar(211, 4.5, -3.5, 3.0)]);
+    let cand_base = engine.displayed[1].unwrap();
+
+    let mut display = rear_display::SideDisplay::default();
+    let mut prev = [None; 5];
+
+    // 1. BSD ON (0..3.0 s): BsdOnly reaches -10 m (8 m display).
+    for i in 0..60 {
+        let mut slots = [None; 5];
+        display.update(i as f64 * STEP, 0, true, prev, &mut slots);
+        prev = slots;
+    }
+
+    // 2. BSD OFF for +3.5 s (ticks 60..130): 3.0 s hold finishes and LR starts retreating behind -10 m.
+    for i in 60..130 {
+        let mut slots = [None; 5];
+        display.update(i as f64 * STEP, 0, false, prev, &mut slots);
+        prev = slots;
+    }
+    let retreat_start_x = prev[3].expect("LR must still be retreating at +3.5 s").x;
+    assert!(
+        retreat_start_x < -10.5,
+        "LR must already be retreating behind -10 m at +3.5 s, got {retreat_start_x}",
+    );
+
+    // 3. New close LF appears while LR is retreating: from_bsd must NOT fire.
+    //    LF appears directly in front; LR keeps retreating monotonically until it clears.
+    let mut rear_xs = vec![retreat_start_x];
+    let mut rear_cleared = false;
+    for i in 130..240 {
+        let x = 4.5 + (i - 130) as f64 * 0.15;
+        let cand = EngineSlot {
+            obj_id: cand_base.obj_id + 100,
+            s: x,
+            x,
+            v_s: 3.0,
+            radar_seen: true,
+            ..cand_base
+        };
+        let mut slots = [None, Some(cand), None, None, None];
+        display.update(i as f64 * STEP, 0, false, prev, &mut slots);
+        let lf = slots[1].expect("LF must appear directly without being pulled into FrontJoin");
+        assert_eq!(lf.obj_id, cand.obj_id);
+        assert!(lf.x >= x - 1e-6, "LF must not be pulled back to 0 m: {} vs {x}", lf.x);
+        if let Some(lr) = slots[3] {
+            assert_eq!(lr.obj_id, 0, "LR must remain retreating BsdOnly, not FrontJoin");
+            assert!(
+                lr.x <= *rear_xs.last().unwrap() + 1e-9,
+                "retreating LR must never jump forward at tick {i}: {} -> {}",
+                rear_xs.last().unwrap(),
+                lr.x,
+            );
+            rear_xs.push(lr.x);
+        } else {
+            rear_cleared = true;
+        }
+        prev = slots;
+    }
+    assert!(rear_cleared, "retreating LR must finish retreating and clear");
+}
+
+#[test]
+fn consecutive_bsd_overtakes_under_continuous_blind_both_hand_off() {
+    let mut engine = MapEngine::default();
+    confirm(&mut engine, &[radar(212, 5.0, -3.5, 3.0)]);
+    let base = engine.displayed[1].unwrap();
+    let mut display = rear_display::SideDisplay::default();
+    let mut prev = [None; 5];
+
+    // Car 1 enters BSD (ticks 0..40) and hands off while blind stays continuously true for Car 2.
+    for i in 0..40 {
+        let mut slots = [None; 5];
+        display.update(i as f64 * STEP, 0, true, prev, &mut slots);
+        prev = slots;
+    }
+    let car1_vid = base.obj_id + 10;
+    for i in 40..65 {
+        let x = 5.0 + (i - 40) as f64 * 0.25;
+        let car1 = EngineSlot { obj_id: car1_vid, s: x, x, v_s: 5.0, radar_seen: true, ..base };
+        let mut slots = [None, Some(car1), None, None, None];
+        display.update(i as f64 * STEP, 0, true, prev, &mut slots);
+        prev = slots;
+    }
+    // Car 1 is now far ahead (> 20 m); blind stayed true continuously for Car 2, then turns OFF.
+    for i in 65..125 {
+        let x = 22.0 + (i - 65) as f64 * 0.2;
+        let car1 = EngineSlot { obj_id: car1_vid, s: x, x, v_s: 4.0, radar_seen: true, ..base };
+        let mut slots = [None, Some(car1), None, None, None];
+        display.update(i as f64 * STEP, 0, i < 105, prev, &mut slots);
+        prev = slots;
+    }
+    assert_eq!(prev[3].unwrap().obj_id, 0, "Car 2 BsdOnly must be holding at -10 m");
+
+    // Car 2 emerges at s = 4.9 m during 3 s hold: must hand off cleanly instead of being dropped.
+    let car2_vid = base.obj_id + 20;
+    let mut saw_rear_join = false;
+    let mut saw_origin = false;
+    for i in 125..150 {
+        let x = 4.9 + (i - 125) as f64 * 0.15;
+        let car2 = EngineSlot { obj_id: car2_vid, s: x, x, v_s: 3.0, radar_seen: true, ..base };
+        let mut slots = [None, Some(car2), None, None, None];
+        display.update(i as f64 * STEP, 0, false, prev, &mut slots);
+        assert!(slots[1].is_none() || slots[3].is_none(), "Car 2 handoff must have 0 duplicate ticks");
+        if let Some(r) = slots[3] {
+            assert_eq!(r.obj_id, car2_vid);
+            saw_rear_join = true;
+        }
+        if slots[1].is_some_and(|f| f.x == 0.) {
+            saw_origin = true;
+        }
+        prev = slots;
+    }
+    assert!(saw_rear_join && saw_origin, "Car 2 must complete BsdOnly -> FrontJoin -> 0 m -> LF");
+}
