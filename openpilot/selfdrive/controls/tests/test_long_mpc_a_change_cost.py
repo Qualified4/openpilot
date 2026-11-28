@@ -1,6 +1,9 @@
+import pytest
+
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   A_CHANGE_COST,
   get_a_change_cost,
+  low_speed_lead_creep_suppress,
 )
 
 
@@ -22,3 +25,22 @@ def test_lead_response_scales_cost_inside_mpc():
 def test_response_factor_cannot_raise_or_invert_cost():
   assert get_a_change_cost(True, 10.0, 2.0) == A_CHANGE_COST
   assert get_a_change_cost(True, 10.0, -1.0) == 0.0
+
+
+def test_low_speed_lead_creep_suppress_488_seg80_and_launch_safety():
+  # 488 seg 80 creeping lead: v_ego=1.1 m/s, d_rel=5.65 m, v_lead=1.35 m/s, a_lead=+0.45 m/s^2 -> full suppression.
+  assert low_speed_lead_creep_suppress(1.1, 5.65, 1.35, 0.45) == pytest.approx(1.0)
+
+  # Standstill launch (486 / 480-7): v_ego <= 0.35 m/s -> 0.0 suppression (zero launch delay!).
+  assert low_speed_lead_creep_suppress(0.0, 4.0, 1.2, 1.5) == 0.0
+  assert low_speed_lead_creep_suppress(0.35, 4.5, 1.0, 0.8) == 0.0
+
+  # Genuine lead departure: d_rel >= 6.5 m OR v_lead >= 2.0 m/s OR v_lead - v_ego >= 0.8 m/s -> 0.0 suppression.
+  assert low_speed_lead_creep_suppress(1.1, 6.5, 1.35, 0.45) == 0.0
+  assert low_speed_lead_creep_suppress(1.1, 5.65, 2.0, 0.45) == 0.0
+  assert low_speed_lead_creep_suppress(1.0, 5.65, 1.85, 0.45) == 0.0
+
+  # Faster ego speed (>= 2.0 m/s) or braking lead (a_lead <= 0) -> 0.0 suppression.
+  assert low_speed_lead_creep_suppress(2.0, 5.65, 1.5, 0.45) == 0.0
+  assert low_speed_lead_creep_suppress(1.1, 5.65, 1.35, -0.3) == 0.0
+  assert low_speed_lead_creep_suppress(1.1, 5.65, 1.35, 0.0) == 0.0

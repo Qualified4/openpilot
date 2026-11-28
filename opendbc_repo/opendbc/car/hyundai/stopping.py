@@ -5,6 +5,7 @@ cannot guarantee stopping; ECU response must be measured on the vehicle.
 """
 from dataclasses import dataclass
 from enum import StrEnum
+import math
 
 
 DT = 0.02  # SCC_CONTROL is transmitted at 50 Hz
@@ -12,8 +13,17 @@ ENTRY_SPEED = 0.7  # m/s; retain approach braking above the low-speed stop regio
 STOP_SPEED = 0.05
 MOVING_SPEED = 0.10
 STOP_CONFIRM_TIME = 0.2
-APPROACH_ACCEL = -0.42  # matches empirically-verified 0x412 brake-lamp hold floor (-0.42 m/s^2)
+APPROACH_ACCEL = -0.45  # matches empirically-verified 0x412 brake-lamp hold floor (-0.45 m/s^2)
+GRAVITY = 9.81  # m/s^2
+MAX_UPHILL_SLOPE_COMP = 0.80  # m/s^2 (~8.2% grade cap matching limousine_stop.py)
 STOP_LOWER_BAND = 0.20  # fixed during active ACC, including before StopReq; never copied from stock
+
+
+def approach_accel_floor(pitch_rad: float = 0.0) -> float:
+  """Slope-compensated approach deceleration floor keeping uphill hydraulic braking <= APPROACH_ACCEL."""
+  if not math.isfinite(pitch_rad) or pitch_rad <= 0.0:
+    return APPROACH_ACCEL
+  return APPROACH_ACCEL - min(MAX_UPHILL_SLOPE_COMP, GRAVITY * math.sin(pitch_rad))
 
 
 class StopPhase(StrEnum):
@@ -58,7 +68,8 @@ class CanfdStopping:
     self.reason = reason
 
   def update(self, *, active: bool, requested: bool, speed: float, held: bool,
-             accel: float, previous_value: float, jerk_u: float, jerk_l: float) -> StopCommand | None:
+             accel: float, previous_value: float, jerk_u: float, jerk_l: float,
+             pitch_rad: float = 0.0) -> StopCommand | None:
     # Caller validates sensor values and applies pedal/CAN/hold interlocks.
     if not active or not requested:
       self.reset()
@@ -84,7 +95,7 @@ class CanfdStopping:
       # the FIRST StopReq frame, bypassing the ordinary aReqValue jerk ramp.
       return StopCommand(1, 0.0, 0.0, STOP_LOWER_BAND)
 
-    # Preserve the existing approach deceleration until initial low-speed entry.
-    raw = min(accel, APPROACH_ACCEL)
+    # Preserve the existing approach deceleration (with uphill slope compensation) until low-speed entry.
+    raw = min(accel, approach_accel_floor(pitch_rad))
     value = min(0.0, max(previous_value - jerk_l * DT, min(raw, previous_value + jerk_u * DT)))
     return StopCommand(0, raw, value, STOP_LOWER_BAND)

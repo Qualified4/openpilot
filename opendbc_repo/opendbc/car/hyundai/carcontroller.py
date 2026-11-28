@@ -1,3 +1,4 @@
+import math
 import time
 from collections import deque
 
@@ -841,6 +842,8 @@ class CarController(CarControllerBase):
         if camera_scc:
           hud_lateral = self.display_lead_lateral.value
         if self.frame % 2 == 0:
+          orient = getattr(CC, "orientationNED", None)
+          pitch_rad = float(orient[1]) if (orient is not None and len(orient) == 3 and math.isfinite(orient[1])) else 0.0
           if self.CP.flags & HyundaiFlags.CAMERA_SCC.value:
             if CC.enabled:
               CS.stock_adopt_pending = False
@@ -851,6 +854,7 @@ class CarController(CarControllerBase):
               msg, self.accel_value_last = hyundaicanfd.create_acc_control_scc2(
                 self.packer, self.CAN, CC.enabled, self.accel_value_last, accel, stopping, CC.cruiseControl.override,
                 set_speed_in_units, hud_control, self.hyundai_jerk, CS, self.canfd_stopping, hud_lateral=hud_lateral,
+                pitch_rad=pitch_rad,
               )
             if msg is not None:
               can_sends.append(msg)
@@ -860,7 +864,7 @@ class CarController(CarControllerBase):
               self.packer, self.CAN, CC.enabled, self.accel_last, accel, stopping,
               CC.cruiseControl.override, set_speed_in_units, hud_control,
               self.hyundai_jerk.jerk_u, self.hyundai_jerk.jerk_l, CS, self.canfd_stopping,
-              accel_value_last=self.accel_value_last,
+              accel_value_last=self.accel_value_last, pitch_rad=pitch_rad,
             )
             can_sends.append(msg)
             self.accel_last = accel

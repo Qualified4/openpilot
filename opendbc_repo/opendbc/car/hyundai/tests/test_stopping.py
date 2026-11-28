@@ -557,3 +557,41 @@ def test_roll_after_unconfirmed_hold_keeps_stop_request_and_zero_accel():
     step(controller, speed=.02, previous_value=0.)
   cmd = step(controller, speed=.08, previous_value=0.)
   assert (cmd.stop_req, cmd.raw, cmd.value) == (1, 0., 0.)
+
+
+def test_canfd_stopping_approach_accel_uphill_slope_compensation():
+  import math
+  from opendbc.car.hyundai.stopping import APPROACH_ACCEL, GRAVITY, MAX_UPHILL_SLOPE_COMP, approach_accel_floor
+
+  assert APPROACH_ACCEL == pytest.approx(-0.45)
+  assert approach_accel_floor(0.0) == pytest.approx(-0.45)
+  assert approach_accel_floor(-0.05) == pytest.approx(-0.45)
+  assert approach_accel_floor(float("nan")) == pytest.approx(-0.45)
+
+  pitch_up = math.radians(0.6)
+  expected_floor = APPROACH_ACCEL - GRAVITY * math.sin(pitch_up)
+  assert approach_accel_floor(pitch_up) == pytest.approx(expected_floor, abs=1e-4)
+  assert approach_accel_floor(math.atan(0.20)) == pytest.approx(APPROACH_ACCEL - MAX_UPHILL_SLOPE_COMP)
+
+  # Approach phase (speed > ENTRY_SPEED) on uphill holds slope-compensated floor even if accel=-0.20.
+  controller = CanfdStopping()
+  cmd = step(controller, speed=1.0, accel=-0.20, previous_value=-0.50, pitch_rad=pitch_up)
+  assert cmd.stop_req == 0
+  assert cmd.raw == pytest.approx(expected_floor, abs=1e-4)
+  assert cmd.value <= -0.50
+
+  # Verify pitch_rad propagates through create_acc_control_scc2 -> apply_canfd_stopping.
+  cs = make_cs()
+  cs.out.vEgo = cs.out.vEgoRaw = 1.0
+  cs.out.wheelSpeeds = SimpleNamespace(fl=1.0, fr=1.0, rl=1.0, rr=1.0)
+  packer = CANPacker("hyundai_canfd_generated")
+  can = SimpleNamespace(ECAN=0)
+  hud = SimpleNamespace(leadDistanceBars=2, leadVisible=False)
+  jerk = SimpleNamespace(carrot_cruise=0, jerk_u=2.0, jerk_l=2.0)
+  ctrl2 = CanfdStopping()
+  msg, val = create_acc_control_scc2(packer, can, True, -0.55, -0.20, True, False, 30.0, hud, jerk, cs, ctrl2, pitch_rad=pitch_up)
+  parser = CANParser("hyundai_canfd_generated", [("SCC_CONTROL", 50)], 0)
+  parser.update([1_000_000_000, [msg]])
+  assert parser.vl["SCC_CONTROL"]["StopReq"] == 0
+  assert parser.vl["SCC_CONTROL"]["aReqRaw"] == pytest.approx(expected_floor, abs=0.015)
+  assert val <= -0.50

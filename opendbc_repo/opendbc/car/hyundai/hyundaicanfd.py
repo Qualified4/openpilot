@@ -41,7 +41,7 @@ def apply_accel_jerk_limit(a_raw: float, a_value_last: float, jerk_u: float, jer
   return clip_float(a_raw, a_value_last - lower_step, a_value_last + upper_step)
 
 
-def apply_canfd_stopping(values, CS, controller, accel, previous_value, jerk_u, jerk_l):
+def apply_canfd_stopping(values, CS, controller, accel, previous_value, jerk_u, jerk_l, pitch_rad=0.0):
   """Apply the zero-aReq stopping sequence after the normal SCC interlocks."""
   if controller is None:
     return
@@ -61,6 +61,7 @@ def apply_canfd_stopping(values, CS, controller, accel, previous_value, jerk_u, 
     active=values["ACCMode"] == 1 and not blocked, requested=bool(values["StopReq"]), speed=speed,
     held=CS.canfdSccHoldActive, accel=accel, previous_value=previous_value,
     jerk_u=max(0.0, min(jerk_u, 5.0)), jerk_l=max(1.0, min(jerk_l, 5.0)),
+    pitch_rad=pitch_rad,
   )
   if blocked or values["ACCMode"] != 1:
     values.update(StopReq=0, aReqRaw=0.0, aReqValue=0.0, AccelLimitBandLower=0.0)
@@ -505,7 +506,7 @@ def _apply_scc_lead(values, radar_state, model_v2=None, hud_lateral=None):
 
 
 def create_acc_control_scc2(packer, CAN, enabled, accel_value_last, accel, stopping, gas_override, set_speed, hud_control, hyundai_jerk, CS,
-                            stop_controller=None, hud_lateral=None):
+                            stop_controller=None, hud_lateral=None, pitch_rad=0.0):
 
   if stop_controller is not None:
     stop_controller.stop_object_active = False
@@ -579,7 +580,7 @@ def create_acc_control_scc2(packer, CAN, enabled, accel_value_last, accel, stopp
   values["AccelLimitBandLower"] = 0.0
 
   values["ZEROS_7"] = 0 if stop_controller is not None else 1
-  apply_canfd_stopping(values, CS, stop_controller, accel, previous_value, jerk_u, jerk_l)
+  apply_canfd_stopping(values, CS, stop_controller, accel, previous_value, jerk_u, jerk_l, pitch_rad=pitch_rad)
 
   # OEM SCC_ObjSta=2 denotes an object controllable longitudinally. During a
   # final stop request, also promote a receding real lead from state 1. Keep
@@ -593,7 +594,7 @@ def create_acc_control_scc2(packer, CAN, enabled, accel_value_last, accel, stopp
   return packer.make_can_msg("SCC_CONTROL", CAN.ECAN, values), values["aReqValue"]
 
 def create_acc_control(packer, CAN, enabled, accel_last, accel, stopping, gas_override, set_speed, hud_control, jerk_u, jerk_l, CS,
-                       stop_controller=None, accel_value_last=None):
+                       stop_controller=None, accel_value_last=None, pitch_rad=0.0):
 
   interlock_active = longitudinal_interlock_active(CS)
   soft_hold_active = CS.softHoldActive > 0 and CS.out.cruiseState.available
@@ -636,7 +637,7 @@ def create_acc_control(packer, CAN, enabled, accel_last, accel, stopping, gas_ov
   # accel_last is the legacy raw target, not necessarily the previous SCC
   # output. Keep ordinary packet limiting; anchor recovery to the returned value.
   previous_value = accel_last if accel_value_last is None else accel_value_last
-  apply_canfd_stopping(values, CS, stop_controller, accel, previous_value, jerk_u, jerk_l)
+  apply_canfd_stopping(values, CS, stop_controller, accel, previous_value, jerk_u, jerk_l, pitch_rad=pitch_rad)
   return packer.make_can_msg("SCC_CONTROL", CAN.ECAN, values), values["aReqValue"]
 
 

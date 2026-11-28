@@ -64,6 +64,16 @@ LEAD_ACCEL_COST_POS_REL_SPEEDS = (-2.0, -0.5)
 # replay (FOL 47c/479): weaker at every speed added a brake entry per 15 min (2.02 -> 2.09) and lead-departure
 # rubber banding 19 -> 22 %; gated to 22-32 km/h it kept 2.02 brake entries, cut sign changes 6.63 -> 6.20/min.
 LEAD_ACCEL_COST_POS_EGO_SPEEDS = (6.0, 9.0)
+# Low-speed stopping-approach lead creep suppression (cost-side only):
+# When ego is rolling slowly toward a close, slow lead (e.g. lead pulls forward 1-2 m at a red light),
+# attenuate positive aLeadK on the cost-side prediction so MPC does not re-accelerate then re-brake.
+# Gated off at standstill (v_ego <= 0.35 m/s) and once the lead clearly departs (dRel >= 6.5 m,
+# vLead >= 2.0 m/s, or v_lead - v_ego >= 0.8 m/s) so standstill launch timing is unaffected.
+LOW_SPEED_CREEP_EGO_SPEEDS = (0.35, 0.60, 1.60, 2.00)
+LOW_SPEED_CREEP_EGO_WEIGHTS = (0.0, 1.0, 1.0, 0.0)
+LOW_SPEED_CREEP_LEAD_DISTS = (5.8, 6.5)
+LOW_SPEED_CREEP_LEAD_SPEEDS = (1.6, 2.0)
+LOW_SPEED_CREEP_REL_SPEEDS = (0.5, 0.8)
 # Blended lead constraint: share of the closing terms kept on top of the steady comfort target, full at or
 # below the first planned ego speed (m/s), none from the second.
 BLENDED_CLOSING_SPEEDS = (4.0, 7.0)
@@ -98,6 +108,19 @@ def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
     return 0.5
   else:
     raise NotImplementedError("Longitudinal personality not supported")
+
+
+def low_speed_lead_creep_suppress(v_ego: float, x_lead: float, v_lead: float, a_lead: float) -> float:
+  """Return [0, 1] attenuation weight for positive aLeadK during low-speed close stopping approaches."""
+  if a_lead <= 0.0:
+    return 0.0
+  w_ego = float(np.interp(v_ego, (0.35, 0.60, 1.60, 2.00), (0.0, 1.0, 1.0, 0.0)))
+  if w_ego <= 0.0:
+    return 0.0
+  w_dist = float(np.interp(x_lead, (5.8, 6.5), (1.0, 0.0)))
+  w_lead = float(np.interp(v_lead, (1.6, 2.0), (1.0, 0.0)))
+  w_rel = float(np.interp(v_lead - v_ego, (0.5, 0.8), (1.0, 0.0)))
+  return w_ego * w_dist * w_lead * w_rel
 
 
 def get_a_change_cost(prev_accel_constraint: bool, a_change_cost_starting: float,
@@ -456,7 +479,9 @@ class LongitudinalMpc:
     if LEAD_ACCEL_COST_POS_EGO_SPEEDS[1] > 0.0:
       weak *= float(np.interp(v_ego, LEAD_ACCEL_COST_POS_EGO_SPEEDS, (0.0, 1.0)))
     tau_factor = 1.0 + (LEAD_ACCEL_COST_POS_TAU_FACTOR - 1.0) * weak
-    lead_xv_cost = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau, tau_factor)
+    creep_suppress = low_speed_lead_creep_suppress(v_ego, x_lead, v_lead, a_lead)
+    a_lead_cost = a_lead * (1.0 - creep_suppress)
+    lead_xv_cost = self.extrapolate_lead(x_lead, v_lead, a_lead_cost, a_lead_tau, tau_factor)
     return lead_xv, v_lead, lead_xv_cost
 
   def set_accel_limits(self, min_a, max_a):
@@ -803,6 +828,10 @@ class LongitudinalMpc:
       len(lead_track_frames) > response_lead_index
       and lead_track_frames[response_lead_index] >= LEAD_ACCEL_MIN_TRACK_FRAMES
     )
+    response_creep_suppress = (
+      low_speed_lead_creep_suppress(v_ego, float(response_lead.dRel), float(response_lead.vLead), float(response_lead.aLeadK))
+      if response_lead.status else 0.0
+    )
     response_request = get_lead_accel_mpc_request(
       carrot.leadAccelResponse,
       enabled=(
@@ -816,7 +845,7 @@ class LongitudinalMpc:
         and response_lead.radar
         and response_lead.radarTrackId >= 0
       ),
-      a_lead=response_lead.aLeadK,
+      a_lead=float(response_lead.aLeadK) * (1.0 - response_creep_suppress),
       a_ego=measured_a_ego,
       v_rel=response_lead.vRel,
       gap_margin=response_gap_margin,

@@ -740,7 +740,8 @@ class VCruiseCarrot:
         gap_levels = cruise_gap_levels(self.params.get_int("CruiseGapLevels"), longitudinalPersonalityMax)
         if not self.CP.openpilotLongitudinalControl:
           gap_levels = longitudinalPersonalityMax
-        if remote == 'gapAdjustCruise' or CS.pcmCruiseGap == 0 or gap_levels < longitudinalPersonalityMax:
+        if (self.CP.openpilotLongitudinalControl or remote == 'gapAdjustCruise'
+            or CS.pcmCruiseGap == 0 or gap_levels < longitudinalPersonalityMax):
           personality = next_gap_personality(self.params.get_int('LongitudinalPersonality'), gap_levels)
         else:
           personality = int(np.clip(CS.pcmCruiseGap - 1, 0, longitudinalPersonalityMax - 1))

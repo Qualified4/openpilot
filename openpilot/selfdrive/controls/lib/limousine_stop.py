@@ -10,7 +10,7 @@ Empirical basis (route 00000486--0b5f8c8e99, Hyundai Sonata 2024 CAN-FD):
 import math
 
 # Empirically-verified minimum hydraulic deceleration floor to keep physical brake lights ON.
-BRAKE_LAMP_HOLD_ACCEL = -0.42  # m/s^2 (100% hold <= -0.40 m/s^2 + 0.02 margin on flat ground)
+BRAKE_LAMP_HOLD_ACCEL = -0.45  # m/s^2 (100% hold <= -0.40 m/s^2 + 0.05 margin for pitch estimation noise)
 GRAVITY = 9.81  # m/s^2
 MAX_UPHILL_SLOPE_COMP = 0.80  # m/s^2 (~8.2% grade cap on uphill hydraulic floor shift)
 
@@ -18,6 +18,12 @@ MAX_UPHILL_SLOPE_COMP = 0.80  # m/s^2 (~8.2% grade cap on uphill hydraulic floor
 V_EASE_START = 3.5  # m/s (~12.6 km/h): begin easing strong braking
 V_EASE_END = 0.7  # m/s (~2.5 km/h): matches CAN-FD StopReq ENTRY_SPEED
 V_MIN_ACTIVE = 0.5  # m/s: below this, StopReq=1 / standstill hold owns final stop
+
+# Low-speed brake-lamp hysteresis hold thresholds (prevents uphill 0x412 lamp drop & StopReq lash).
+V_LAMP_HOLD_MAX = 1.5  # m/s: hold lamp_floor during final low-speed stopping approach
+LAMP_HOLD_LEAD_SPEED = 0.5  # m/s: arm/enter hold when lead is stopped or barely creeping
+LAMP_HOLD_LEAD_RELEASE_SPEED = 0.8  # m/s: immediately release hold if lead clearly departs
+LAMP_HOLD_DIST_MARGIN = 2.5  # m: hold only within stop_distance + margin
 
 # Deceleration envelope upper magnitude at V_EASE_START.
 MAX_APPROACH_DECEL = 1.8  # m/s^2
@@ -82,12 +88,16 @@ class LimousineStopController:
 
   def __init__(self):
     self.active = False
+    self.lamp_hold_active = False
     self.safety_override = False
+    self._lamp_hold_armed = False
     self._last_accel = 0.0
 
   def reset(self):
     self.active = False
+    self.lamp_hold_active = False
     self.safety_override = False
+    self._lamp_hold_armed = False
     self._last_accel = 0.0
 
   def update(
@@ -124,17 +134,51 @@ class LimousineStopController:
 
     lamp_floor = brake_lamp_hold_floor(pitch_rad)
 
-    # Never touch acceleration or braking already gentler than the slope-compensated brake-lamp floor.
-    if a_cmd >= lamp_floor or v_ego > V_EASE_START or v_ego <= V_MIN_ACTIVE:
+    if v_ego > V_EASE_START or v_ego <= V_MIN_ACTIVE:
       self.reset()
       return a_cmd
 
     # Never weaken emergency/hard braking.
     if a_cmd < EMERGENCY_DECEL_THRESHOLD:
       self.active = False
+      self.lamp_hold_active = False
       self.safety_override = True
+      self._lamp_hold_armed = True
       self._last_accel = a_cmd
       return a_cmd
+
+    nominal_stop = stop_distance if (math.isfinite(stop_distance) and stop_distance > 0.0) else DEFAULT_STOP_DISTANCE
+
+    # When upstream braking temporarily relaxes above lamp_floor during a low-speed stopping
+    # approach (e.g., slight lead creep on an uphill), hold lamp_floor with hysteresis so
+    # hydraulic pressure and 0x412 brake lights do not drop before StopReq=1 handover.
+    # Release immediately on tick 0 if departure is commanded (a_cmd > 0) or lead departs.
+    if a_cmd >= lamp_floor:
+      if self._lamp_hold_armed and a_cmd <= 0.0 and v_ego <= V_LAMP_HOLD_MAX:
+        if has_lead:
+          lead_speed_lim = LAMP_HOLD_LEAD_RELEASE_SPEED if self.lamp_hold_active else LAMP_HOLD_LEAD_SPEED
+          hold_context = (
+            math.isfinite(v_lead) and math.isfinite(d_rel)
+            and v_lead <= lead_speed_lim
+            and d_rel <= nominal_stop + LAMP_HOLD_DIST_MARGIN
+          )
+        else:
+          hold_context = (
+            should_stop
+            or in_stopping_state
+            or is_e2e_stop
+            or (math.isfinite(v_target_now) and v_target_now <= 0.5)
+          )
+        if hold_context:
+          self.active = True
+          self.lamp_hold_active = True
+          self.safety_override = False
+          self._last_accel = lamp_floor
+          return lamp_floor
+      self.reset()
+      return a_cmd
+
+    self.lamp_hold_active = False
 
     # Require genuine stopping context (lead, planner should_stop, or solo traffic-light e2eStop).
     stopping_context = (
@@ -147,6 +191,9 @@ class LimousineStopController:
     if not stopping_context:
       self.reset()
       return a_cmd
+
+    # Braking has reached <= lamp_floor in a valid stopping context; arm hysteresis hold.
+    self._lamp_hold_armed = True
 
     a_curve = limousine_decel_envelope(v_ego, pitch_rad)
     a_target = a_curve

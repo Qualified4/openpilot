@@ -685,10 +685,12 @@ def test_gap_button_cycles_selected_levels(maximum, requested, pcm_gap, expected
 
 @pytest.mark.parametrize("openpilot_long,requested,pcm_gap,current,expected", [
   (True, 2, 4, 3, 1),  # Reducing from TF4 enters TF2 on the next press.
-  (True, 4, 3, 0, 2),  # Default preserves the vehicle-reported gap.
+  (True, 4, 3, 0, 3),  # OP longitudinal cycles its own state instead of reading stale pcmCruiseGap.
   (False, 2, 4, 0, 3),  # Stock ACC owns its gap cycle.
+  (False, 4, 3, 0, 2),  # Stock ACC preserves the vehicle-reported gap.
   (False, 2, 0, 0, 3),
-  (True, 4, 9, 0, 3),  # Invalid OEM values cannot create an invalid enum.
+  (False, 4, 9, 0, 3),  # Invalid OEM values cannot create an invalid enum in stock ACC.
+  (True, 4, 9, 0, 3),  # OP longitudinal ignores invalid OEM gap and wraps 0 -> 3.
 ])
 def test_gap_button_reduction_and_oem_gap(openpilot_long, requested, pcm_gap, current, expected):
   helper, CS, CC = make_cruise_helper(80, 0, False, True)
@@ -699,6 +701,30 @@ def test_gap_button_reduction_and_oem_gap(openpilot_long, requested, pcm_gap, cu
   CS.pcmCruiseGap = pcm_gap
   helper._update_cruise_buttons(CS, CC, 80)
   assert values["LongitudinalPersonality"] == expected
+
+
+def test_gap_button_op_long_ignores_stale_pcm_gap_488_seg8():
+  """Regression test for 488 seg 8: GAP release with stale CS.pcmCruiseGap must not skip 2->4."""
+  helper, CS, CC = make_cruise_helper(80, 0, False, True)
+  helper._prepare_buttons = lambda CS, speed, remote=None: (speed, ButtonType.gapAdjustCruise, False)
+  helper.CP = SimpleNamespace(openpilotLongitudinalControl=True)
+
+  # Scenario A: Driver at 2 bars (personality=1) presses GAP once wanting 1 bar (personality=0),
+  # while camera SCC_CONTROL.DISTANCE_SETTING is still stale at 2 (+40ms lag).
+  values = {"LongitudinalPersonalityMax": 4, "CruiseGapLevels": 4, "LongitudinalPersonality": 1}
+  helper.params = SimpleNamespace(get_int=values.__getitem__, put_int_nonblocking=values.__setitem__)
+  CS.pcmCruiseGap = 2  # stale pre-update camera value
+  helper._update_cruise_buttons(CS, CC, 80)
+  assert values["LongitudinalPersonality"] == 0  # immediately 1 bar, matching camera update
+
+  # Scenario B: 4 rapid presses starting from 1 bar (personality=0), each released while
+  # CS.pcmCruiseGap still holds the previous bar count (1, 4, 3, 2).
+  stale_camera_gaps = [1, 4, 3, 2]
+  expected_cycle = [3, 2, 1, 0]
+  for stale_gap, expected_pers in zip(stale_camera_gaps, expected_cycle, strict=True):
+    CS.pcmCruiseGap = stale_gap
+    helper._update_cruise_buttons(CS, CC, 80)
+    assert values["LongitudinalPersonality"] == expected_pers
 
 
 def test_gap_long_press_still_changes_driving_mode():

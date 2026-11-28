@@ -483,3 +483,81 @@ def test_controlsd_valid_road_pitch_gate():
   assert valid_road_pitch(pose_inf, True, True) == 0.0
   assert valid_road_pitch(pose_ok, True, True) == pytest.approx(0.045)
   assert math.isfinite(valid_road_pitch(pose_ok, True, True))
+
+
+def test_lamp_floor_hysteresis_hold_prevents_uphill_brake_lamp_drop_488_seg69():
+  """Regression test for 488 seg 69: uphill low-speed relaxation must hold lamp_floor until stop or clear departure."""
+  import math
+  assert BRAKE_LAMP_HOLD_ACCEL == pytest.approx(-0.45)
+
+  pitch_rad = math.radians(0.58)  # 488 seg 69 observed uphill pitch
+  floor = brake_lamp_hold_floor(pitch_rad)
+  assert floor < -0.54
+
+  ctrl = LimousineStopController()
+  # Step 1: Active braking (a_cmd <= floor) arms hysteresis hold.
+  out1 = ctrl.update(
+    a_cmd=-0.65, previous_accel=-0.65, v_ego=1.4, dt=DT_CTRL,
+    enabled=True, should_stop=False, in_stopping_state=False,
+    has_lead=True, d_rel=5.8, v_lead=0.19, pitch_rad=pitch_rad,
+  )
+  assert out1 <= floor + 1e-9
+  assert ctrl.lamp_hold_active is False
+
+  # Step 2: Upstream planner relaxes to -0.20 m/s^2 while lead creeps slightly (+0.38 m/s) at d_rel=5.3 m.
+  # Must hold lamp_floor instead of dropping hydraulic pressure & turning off 0x412 brake lamp.
+  out2 = ctrl.update(
+    a_cmd=-0.20, previous_accel=out1, v_ego=1.1, dt=DT_CTRL,
+    enabled=True, should_stop=False, in_stopping_state=False,
+    has_lead=True, d_rel=5.3, v_lead=0.38, pitch_rad=pitch_rad,
+  )
+  assert out2 == pytest.approx(floor)
+  assert ctrl.active is True
+  assert ctrl.lamp_hold_active is True
+
+  # Step 3: Clear lead departure (v_lead > 0.8 m/s) -> 0-tick immediate release!
+  out_depart = ctrl.update(
+    a_cmd=-0.10, previous_accel=out2, v_ego=1.0, dt=DT_CTRL,
+    enabled=True, should_stop=False, in_stopping_state=False,
+    has_lead=True, d_rel=5.5, v_lead=0.95, pitch_rad=pitch_rad,
+  )
+  assert out_depart == pytest.approx(-0.10)
+  assert ctrl.active is False
+  assert ctrl.lamp_hold_active is False
+
+  # Step 4: Re-arm, then positive acceleration command (a_cmd > 0) -> 0-tick immediate release!
+  ctrl.update(
+    a_cmd=-0.70, previous_accel=-0.70, v_ego=1.2, dt=DT_CTRL,
+    enabled=True, should_stop=True, in_stopping_state=False,
+    has_lead=False, is_e2e_stop=True, stop_dist=5.0, pitch_rad=pitch_rad,
+  )
+  out_solo_hold = ctrl.update(
+    a_cmd=-0.25, previous_accel=floor, v_ego=1.0, dt=DT_CTRL,
+    enabled=True, should_stop=True, in_stopping_state=False,
+    has_lead=False, is_e2e_stop=True, stop_dist=4.0, pitch_rad=pitch_rad,
+  )
+  assert out_solo_hold == pytest.approx(floor)
+  assert ctrl.lamp_hold_active is True
+
+  out_pos = ctrl.update(
+    a_cmd=0.15, previous_accel=floor, v_ego=1.0, dt=DT_CTRL,
+    enabled=True, should_stop=False, in_stopping_state=False,
+    has_lead=False, is_e2e_stop=False, pitch_rad=pitch_rad,
+  )
+  assert out_pos == pytest.approx(0.15)
+  assert ctrl.lamp_hold_active is False
+
+  # Step 5: Emergency braking during hold -> 0-tick immediate bypass to full a_cmd!
+  ctrl.update(
+    a_cmd=-0.70, previous_accel=-0.70, v_ego=1.2, dt=DT_CTRL,
+    enabled=True, should_stop=True, in_stopping_state=True,
+    has_lead=True, d_rel=5.0, v_lead=0.0, pitch_rad=pitch_rad,
+  )
+  out_emg = ctrl.update(
+    a_cmd=EMERGENCY_DECEL_THRESHOLD - 0.5, previous_accel=floor, v_ego=1.1, dt=DT_CTRL,
+    enabled=True, should_stop=True, in_stopping_state=True,
+    has_lead=True, d_rel=4.5, v_lead=0.0, pitch_rad=pitch_rad,
+  )
+  assert out_emg == pytest.approx(EMERGENCY_DECEL_THRESHOLD - 0.5)
+  assert ctrl.safety_override is True
+  assert ctrl.lamp_hold_active is False
