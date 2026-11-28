@@ -258,6 +258,7 @@ def test_packed_stop_zeros_both_requests_on_first_frame_and_keeps_zero(camera, i
   cs = make_cs()
   controller = CanfdStopping()
   previous = initial
+  entered_stop = False
   for tick in range(200):
     # Rebound beyond the entry threshold must not create another release.
     speed = .3 if tick < 40 else 1.2
@@ -265,9 +266,15 @@ def test_packed_stop_zeros_both_requests_on_first_frame_and_keeps_zero(camera, i
     cs.out.wheelSpeeds = SimpleNamespace(fl=speed, fr=speed, rl=speed, rr=speed)
     cs.out.aEgo = -.3 if tick < 40 else .5
     values = send(camera, controller, cs, accel=target, previous_value=previous, previous_target=target)
-    assert values['StopReq'] == 1
-    assert values['aReqRaw'] == values['aReqValue'] == 0.
+    if initial <= -0.44:
+      assert values['StopReq'] == 1
+    if values['StopReq'] == 1:
+      entered_stop = True
+      assert values['aReqRaw'] == values['aReqValue'] == 0.
+    else:
+      assert not entered_stop
     previous = values['aReqValue']
+  assert entered_stop
 
 
 @pytest.mark.parametrize("camera", [True, False])

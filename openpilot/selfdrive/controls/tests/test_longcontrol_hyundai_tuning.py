@@ -141,6 +141,7 @@ def test_original_close_lead_handover_and_launch(monkeypatch, flags):
   assert control.long_control_state == longcontrol_module.LongCtrlState.stopping
   assert accel == -.8
   plan.shouldStop = False
+  plan.aTarget = 0.5
   control.update(True, cs, plan, (-3.5, 2.), 0., radar)
   assert control.long_control_state == longcontrol_module.LongCtrlState.pid
 
@@ -163,7 +164,9 @@ def test_original_one_way_ramp_and_vehicle_soft_hold(monkeypatch, flags, soft_ho
     if soft_hold:
       assert accel == cp.stopAccel
     else:
-      assert previous - cp.stoppingDecelRate * longcontrol_module.DT_CTRL - 1e-9 <= accel <= previous
+      # P2 2-stage downward jerk: rapid pre-charge (3.0 m/s^3) above -0.45, soft settle (0.8 m/s^3) at/below -0.45.
+      rate = max(3.0, cp.stoppingDecelRate) if previous > -0.45 + 1e-6 else cp.stoppingDecelRate
+      assert previous - rate * longcontrol_module.DT_CTRL - 1e-9 <= accel <= previous
     previous = accel
   if not soft_hold:
     target = min(initial, stored * .01)

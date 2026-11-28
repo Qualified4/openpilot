@@ -65,3 +65,15 @@ def test_entry_and_exit_ramp_smoothly_while_disable_resets_immediately():
     state.update(**args)
   excess_fall = state.update(**{**args, 'gap_excess': 10.0})
   assert 1.0 < excess_fall < STOP_GAP_OBSTACLE_COST_FACTOR
+
+
+def test_p1_one_way_anti_creep_deadband():
+  """P1: refuse 20x pull when closing 0 < gap_excess <= 0.90 m at low speed would force releasing brake lamp."""
+  # v=0.5 m/s -> dx_lamp = 0.25 / 0.90 = 0.278 m < 0.70 - 0.10 = 0.60 m -> drop to 1.0
+  assert target(v_ego=0.5, gap_excess=0.70) == 1.0
+  # Uphill (a_lamp = -0.75): dx_lamp = 0.64 / 1.50 = 0.427 m < 0.60 m -> drop to 1.0
+  assert target(v_ego=0.8, gap_excess=0.70, a_lamp=-0.75) == 1.0
+  # Enough kinetic energy to reach stop point with brake lamp ON (v=1.2 -> dx_lamp=1.60 >= 0.60) -> keep 20x
+  assert target(v_ego=1.2, gap_excess=0.70) == pytest.approx(STOP_GAP_OBSTACLE_COST_FACTOR)
+  # Negative gap_excess (closer than target): always keep 20x
+  assert target(v_ego=0.5, gap_excess=-0.20) == pytest.approx(STOP_GAP_OBSTACLE_COST_FACTOR)

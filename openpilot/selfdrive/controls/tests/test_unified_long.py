@@ -165,14 +165,21 @@ def test_kinematic_stop_pocket_precharge_prevents_488_seg69_lamp_drop():
   assert out_far2.a_cmd == pytest.approx(-0.20, abs=1e-3)
   assert out_far2.a_cmd > floor
 
-  # Step 4: Clear lead departure (v_lead > 0.85 m/s) -> 0-tick release of precharge latch and smooth unwind!
-  out_dep = ctrl.update(_make_inp(
+  # Step 4a: Decelerating/closing lead (v_lead=0.95 <= v_ego=1.00) must NOT release precharge (P2 decel-aware).
+  out_closing = ctrl.update(_make_inp(
     v_ego=1.00, a_ego=-0.40, a_des=-0.10, a_target=-0.10, d_rel=5.6, v_lead=0.95, pitch_rad=pitch_rad,
+  ))
+  assert out_closing.precharge_latched is True
+  assert out_closing.a_cmd <= floor + 1e-9
+
+  # Step 4b: Clear lead departure (v_lead > 1.35 m/s) -> 0-tick release of precharge latch and smooth unwind!
+  out_dep = ctrl.update(_make_inp(
+    v_ego=1.00, a_ego=-0.40, a_des=-0.10, a_target=-0.10, d_rel=5.6, v_lead=1.40, pitch_rad=pitch_rad,
   ))
   assert out_dep.precharge_latched is False
   for _ in range(50):
     out_dep = ctrl.update(_make_inp(
-      v_ego=1.00, a_ego=-0.40, a_des=-0.10, a_target=-0.10, d_rel=5.6, v_lead=0.95, pitch_rad=pitch_rad,
+      v_ego=1.00, a_ego=-0.40, a_des=-0.10, a_target=-0.10, d_rel=5.6, v_lead=1.40, pitch_rad=pitch_rad,
     ))
   assert out_dep.a_cmd == pytest.approx(-0.10, abs=1e-3)
   assert out_dep.a_cmd > floor
@@ -565,3 +572,98 @@ def test_longcontrol_stop_to_launch_starting_state_and_breakaway_jerk_alignment(
   assert seen_jerk_u[0] == pytest.approx(launch_j_min, abs=0.05)
   assert max(seen_jerk_u) > 3.0
   assert max(seen_jerk_u) <= launch_j_peak + 1e-4
+
+
+def test_p2_flicker_invariant_hold_and_2stage_precharge_jerk():
+  """P2: 1-tick should_stop flicker while braking keeps hold; 2-stage downward jerk precharges at 3.0 m/s^3."""
+  ctrl = UnifiedLongController()
+  ctrl.sync_external_state(a_ref=-0.50, in_stopping=True)
+
+  # 1-tick should_stop=False flicker while planner still demands strong braking (a_des=-0.65, v_target=0.10)
+  out_flicker = ctrl.update(_make_inp(
+    v_ego=0.05, a_ego=-0.40, a_des=-0.65, a_target=-0.65, v_target_now=0.10,
+    should_stop=False, has_lead=True, d_rel=4.2, v_lead=0.10, prev_scc_areq_val=0.0,
+  ))
+  assert out_flicker.hold_latched is True
+  assert out_flicker.mode == "stopping"
+
+  # Genuine departure (a_des > -0.05) releases hold immediately on tick 0
+  out_dep = ctrl.update(_make_inp(
+    v_ego=0.05, a_ego=0.0, a_des=0.40, a_target=0.40, v_target_now=0.30,
+    should_stop=False, has_lead=True, d_rel=5.5, v_lead=1.50, prev_scc_areq_val=0.0,
+  ))
+  assert out_dep.hold_latched is False
+  assert out_dep.mode == "pid"
+
+  # 2-stage downward jerk: above a_lamp (-0.45) ramps at 3.0 m/s^3; below a_lamp settles at 0.8 m/s^3
+  ctrl2 = UnifiedLongController()
+  ctrl2.sync_external_state(a_ref=-0.10, in_stopping=True)
+  out_fast = ctrl2.update(_make_inp(
+    v_ego=0.40, a_ego=-0.10, a_des=-0.10, a_target=-0.10, should_stop=True,
+    stopping_accel_cfg=-0.80, cp_stopping_decel_rate=0.80,
+  ))
+  assert out_fast.a_cmd == pytest.approx(-0.10 - 3.0 * DT_CTRL)
+  assert out_fast.j_cmd == pytest.approx(-3.0)
+
+  ctrl3 = UnifiedLongController()
+  ctrl3.sync_external_state(a_ref=-0.50, in_stopping=True)
+  out_soft = ctrl3.update(_make_inp(
+    v_ego=0.40, a_ego=-0.50, a_des=-0.50, a_target=-0.50, should_stop=True,
+    stopping_accel_cfg=-0.80, cp_stopping_decel_rate=0.80,
+  ))
+  assert out_soft.a_cmd == pytest.approx(-0.50 - 0.8 * DT_CTRL)
+
+
+def test_p2_uphill_hold_entry_and_p4b_steep_uphill_breakaway():
+  """P2: uphill gravity-compensated hold entry (44b-15); P4-B: steep-uphill breakaway preload cap."""
+  # 44b-15: +2.37% uphill, a_ego=-0.68, d_rel=4.91 -> a_hyd = -0.68 + 0.232 = -0.448 > -0.50 -> enters hold!
+  pitch_44b = math.atan(0.0237)
+  ctrl = UnifiedLongController()
+  ctrl.sync_external_state(a_ref=-0.65, in_stopping=False)
+  out = ctrl.update(_make_inp(
+    v_ego=0.45, a_ego=-0.68, a_des=-0.65, a_target=-0.65, should_stop=True,
+    has_lead=True, d_rel=4.91, v_lead=0.0, pitch_rad=pitch_44b, stopping_accel_cfg=-0.50,
+  ))
+  assert out.hold_latched is True
+  assert out.mode == "stopping"
+
+  # P4-B: +4.7% uphill (479-7) standstill breakaway cap stays smoothly bounded without step jump
+  pitch_479 = math.atan(0.047)
+  g_up = uphill_gravity_comp(pitch_479)
+  ctrl_up = UnifiedLongController()
+  ctrl_up.sync_external_state(a_ref=0.0, in_stopping=True)
+  prev_a = 0.0
+  for _ in range(50):
+    o = ctrl_up.update(_make_inp(
+      v_ego=0.0, a_ego=0.0, a_des=1.6, a_target=1.6, v_target_now=0.5,
+      should_stop=False, has_lead=True, d_rel=6.0, v_lead=2.0, pitch_rad=pitch_479,
+    ))
+    assert o.a_cmd <= 0.65 + 0.80 * g_up + 1e-6
+    prev_a = o.a_cmd
+  # First wheel-motion tick has zero step jump
+  o_roll = ctrl_up.update(_make_inp(
+    v_ego=V_BREAKAWAY + 0.02, a_ego=0.1, a_des=1.6, a_target=1.6, v_target_now=0.6,
+    should_stop=False, has_lead=True, d_rel=6.5, v_lead=2.2, pitch_rad=pitch_479,
+  ))
+  assert abs(o_roll.a_cmd - prev_a) < 0.05
+
+
+def test_p3_canfd_direct_jerk_lower_precharge_contract():
+  """P3: unpressurized stopping/precharge directly asserts JerkLowerLimit >= 3.0 m/s^3."""
+  from collections import deque
+  from openpilot.common.filter_simple import MyMovingAverage
+
+  ju, jl = calculate_canfd_jerk_limits(-0.50, 0.5, 0.0, direct_jerk_upper=1.0, direct_jerk_lower=3.0)
+  assert ju == pytest.approx(1.0)
+  assert jl == pytest.approx(3.0)
+
+  hj = HyundaiJerk.__new__(HyundaiJerk)
+  hj.jerk = hj.jerk_u = hj.jerk_l = hj.cb_upper = hj.cb_lower = 0.0
+  hj.jerk_u_min = 0.5
+  hj.accel_request_history = deque(maxlen=50)
+  hj.jerk_error_filter = MyMovingAverage(40, 0.0)
+  cp = SimpleNamespace(flags=HyundaiFlags.CANFD)
+  cs = SimpleNamespace(out=SimpleNamespace(aEgo=-0.10, vEgo=0.55, brakePressed=False, gasPressed=False))
+  act = SimpleNamespace(longControlState=LongCtrlState.stopping, jerk=0.0)
+  hj.make_jerk(cp, cs, -0.50, act, None, accel_value_last=-0.15, pitch_rad=math.atan(0.03))
+  assert hj.jerk_l >= 3.0

@@ -382,6 +382,11 @@ class LongitudinalPlanner:
     self.beyond_lead_active = beyond is not None and (not lead_two.status or beyond.dRel < lead_two.dRel)
     if self.beyond_lead_active:
       mpc_radar_state = with_lead_two(mpc_radar_state, beyond)
+    pitch_rad = 0.0
+    if len(sm['carControl'].orientationNED) == 3:
+      p_ned = float(sm['carControl'].orientationNED[1])
+      if math.isfinite(p_ned):
+        pitch_rad = p_ned
     self.mpc.set_accel_limits(accel_limits_turns[0], accel_limits_turns[1])
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     self.mpc.update(
@@ -410,6 +415,7 @@ class LongitudinalPlanner:
         max(0.0, self.tesla_traffic_decision.distance - STOP_BUFFER)
         if self.tesla_traffic_decision is not None and self.tesla_traffic_decision.active else None
       ),
+      pitch_rad=pitch_rad,
     )
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)

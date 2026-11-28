@@ -95,13 +95,25 @@ def is_traffic_stop_entry_allowed(steering_angle_deg: float) -> bool:
   return abs(float(steering_angle_deg)) < TRAFFIC_STOP_ENTRY_STEERING_LIMIT_DEG
 
 
+TRAFFIC_STOP_PRELOAD_MAX_M = 0.35
+TRAFFIC_STOP_PRELOAD_V_MAX = 1.5
+
+
 def get_traffic_stop_distance_adjust(configured_adjust: float, v_ego: float,
                                      model_lead_offset: float) -> float:
-  """Select the obstacle offset without mixing signal and queued-car semantics."""
+  """Select the obstacle offset without mixing signal and queued-car semantics.
+
+  Replaces the legacy v_ego = 0.1 m/s 4.5 m step jump with a continuous C^1 preload
+  that gently settles onto the stop line without releasing brake pressure.
+  """
   model_lead_offset = float(model_lead_offset)
   if np.isfinite(model_lead_offset) and model_lead_offset > 0.0:
     return model_lead_offset
-  return float(configured_adjust) if float(v_ego) > 0.1 else -2.0
+  v = max(0.0, float(v_ego)) if np.isfinite(v_ego) else 0.0
+  u = min(1.0, v / TRAFFIC_STOP_PRELOAD_V_MAX)
+  s = u * u * (3.0 - 2.0 * u)
+  preload = TRAFFIC_STOP_PRELOAD_MAX_M * (1.0 - s)
+  return float(configured_adjust) - preload
 
 
 def get_traffic_stop_obstacle_distance(stop_distance: float, cruise_obstacle_distance: float,

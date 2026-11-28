@@ -35,16 +35,24 @@ V_EASE_END = 0.70                   # m/s lower speed where ease curve reaches a
 V_EASE_MIN = 0.50                   # m/s low-speed handover boundary into final hold
 EASE_PEAK_DECEL = 1.80              # m/s^2 anchor decel at V_EASE_START
 POCKET_V_MAX = 1.60                 # m/s max speed to arm stop-pocket pre-charge latch
+POCKET_HOLD_V_MAX = 2.40            # m/s max speed to preserve already-pressurized brake-lamp hold in pocket
 POCKET_MARGIN_ON = 1.20             # m kinematic pocket entry margin above dx_lamp
 POCKET_MARGIN_OFF = 2.20            # m kinematic pocket release hysteresis margin
-POCKET_LEAD_DEPART_V = 0.85         # m/s clear lead departure speed releasing pre-charge
+POCKET_LEAD_DEPART_V = 0.85         # m/s min lead speed for relative pull-away departure
+POCKET_LEAD_CLEAR_DEPART_V = 1.35   # m/s clear lead departure speed releasing pre-charge unconditionally
+POCKET_LEAD_PULLAWAY_DV = 0.25      # m/s lead-ego speed excess confirming lead is actually pulling away
 POCKET_DEPART_ACCEL = 0.08          # m/s^2 positive accel demand releasing pre-charge
 POCKET_ARM_MARGIN = 0.05            # m/s^2 tolerance near a_lamp to arm pre-charge
 
 # Hold latch & standstill breakaway constants
 HOLD_CLOSE_LEAD_DIST = 4.00         # m close-lead stopping handover threshold
+HOLD_FLICKER_DECEL = -0.05          # m/s^2 braking demand threshold guarding against 1-tick should_stop flicker
+HOLD_FLICKER_V_TARGET = 0.20        # m/s low target speed guarding against 1-tick should_stop flicker
+JERK_PRECHARGE_DOWN = 3.00          # m/s^3 rapid pre-charge downward jerk while above brake-lamp floor
 V_BREAKAWAY = 0.04                  # m/s wheel motion detection threshold
 BREAKAWAY_ACCEL_FLAT = 0.70         # m/s^2 flat stationary breakaway accel cap
+BREAKAWAY_RELEASE_BASE = 0.65       # m/s^2 steep-uphill wheel-motion breakaway handoff base
+BREAKAWAY_RELEASE_UPHILL_GAIN = 0.80  # steep-uphill gravity share for breakaway preload cap
 BREAKAWAY_RAMP_TIME = 0.38          # s smoothstep ramp duration to breakaway cap
 
 # 4-quadrant continuous jerk bounds (m/s^3)
@@ -357,22 +365,40 @@ class UnifiedLongController:
       or v_target_now <= 0.5
     )
 
-    # (a) Kinematic stop-pocket hydraulic pre-charge latch (eliminates 488 seg 69 brake-lamp drop)
+    # (a) Kinematic stop-pocket hydraulic pre-charge latch (decel-aware lead departure check)
+    lead_pulling_away = (
+      inp.has_lead
+      and math.isfinite(inp.v_lead)
+      and (inp.v_lead > POCKET_LEAD_CLEAR_DEPART_V
+           or (inp.v_lead > POCKET_LEAD_DEPART_V and inp.v_lead > v_ego + POCKET_LEAD_PULLAWAY_DV))
+    )
     lead_departing = (
-      (inp.has_lead and math.isfinite(inp.v_lead) and inp.v_lead > POCKET_LEAD_DEPART_V)
+      lead_pulling_away
       or (not inp.should_stop and inp.a_des > POCKET_DEPART_ACCEL)
     )
     in_pocket = (d_rem is not None and d_rem <= dx_lamp + POCKET_MARGIN_ON) or inp.should_stop
     out_of_pocket = (d_rem is not None and d_rem > dx_lamp + POCKET_MARGIN_OFF) and not inp.should_stop
     if lead_departing or out_of_pocket or inp.soft_hold or inp.cruise_standstill:
       st.precharge_latched = False
-    elif (v_ego <= POCKET_V_MAX and stop_ctx and in_pocket
-          and (st.a_ref <= a_lamp + 1e-6
-               or (inp.a_des <= a_lamp + 1e-6 and v_ego > V_EASE_MIN))):
+    elif stop_ctx and in_pocket and (
+      (v_ego <= POCKET_HOLD_V_MAX and st.a_ref <= a_lamp + 1e-6)
+      or (v_ego <= POCKET_V_MAX and inp.a_des <= a_lamp + 1e-6 and v_ego > V_EASE_MIN)
+    ):
       st.precharge_latched = True
 
-    # (b) Hold latch transition & seamless StopReq 1 -> 0 synchronization
-    hold_depart_ok = (not inp.should_stop and not inp.cruise_standstill and not inp.soft_hold)
+    # (b) Hold latch transition & flicker-invariant StopReq 1 -> 0 synchronization
+    hold_flicker_guard = (
+      inp.a_des <= HOLD_FLICKER_DECEL
+      and a_target <= -0.05
+      and v_target_now <= HOLD_FLICKER_V_TARGET
+      and not lead_pulling_away
+    )
+    hold_depart_ok = (
+      not inp.should_stop
+      and not inp.cruise_standstill
+      and not inp.soft_hold
+      and not hold_flicker_guard
+    )
     if st.hold_latched and hold_depart_ok:
       st.hold_latched = False
       # Match downstream CAN-FD StopReq=1 -> 0 output (aReqValue == 0.0) with zero step jump.
@@ -384,9 +410,12 @@ class UnifiedLongController:
     elif not st.hold_latched:
       close_lead = inp.has_lead and math.isfinite(inp.d_rel) and inp.d_rel < HOLD_CLOSE_LEAD_DIST
       if inp.soft_hold or inp.cruise_standstill or (
-        inp.should_stop and (inp.a_ego > inp.stopping_accel_cfg or close_lead)
+        inp.should_stop and ((inp.a_ego + g_up) > inp.stopping_accel_cfg or close_lead)
       ):
         st.hold_latched = True
+
+    eff_should_stop = inp.should_stop or (st.hold_latched and not inp.soft_hold)
+    hold_cap = min(inp.stopping_accel_cfg, a_lamp) if v_ego <= V_EASE_MIN else a_lamp
 
     # (c) Base target acceleration: soft_hold / starting / continuous closed-loop PID
     if inp.soft_hold:
@@ -418,23 +447,29 @@ class UnifiedLongController:
       if st.precharge_latched:
         a_env_max = min(a_env_max, a_lamp)
 
-      # Final low-speed hold settle (v_ego <= 0.50 m/s & should_stop)
-      low_speed_settle = inp.should_stop and v_ego <= V_EASE_MIN
+      # Final low-speed hold settle & precharge cap (v_ego <= 0.70 m/s & eff_should_stop)
+      low_speed_settle = eff_should_stop and v_ego <= V_EASE_END
       if low_speed_settle:
-        hold_cap = min(inp.stopping_accel_cfg, a_lamp)
         a_env_max = min(a_env_max, hold_cap)
-        if st.hold_latched and st.a_ref <= hold_cap:
-          # One-way hold: keep existing deeper decel without snapping upward, and don't ramp further down.
-          a_goal = st.a_ref
-        elif st.hold_latched:
-          a_goal = min(a_goal, hold_cap)
+        if v_ego <= V_EASE_MIN and st.hold_latched:
+          if st.a_ref <= hold_cap:
+            # One-way hold: keep existing deeper decel without snapping upward, and don't ramp further down.
+            a_goal = st.a_ref
+          else:
+            a_goal = min(a_goal, hold_cap)
 
       # Standstill breakaway envelope (v_ego <= 0.04 m/s while departing)
       if not st.hold_latched and a_des_eff > 0.0 and v_ego <= V_BREAKAWAY:
         st.tau_stat += dt
-        a_breakaway = smoothstep(st.tau_stat / BREAKAWAY_RAMP_TIME) * (BREAKAWAY_ACCEL_FLAT + g_up)
+        breakaway_cap = (
+          min(BREAKAWAY_ACCEL_FLAT + g_up, BREAKAWAY_RELEASE_BASE + BREAKAWAY_RELEASE_UPHILL_GAIN * g_up)
+          if g_up > 0.25 else (BREAKAWAY_ACCEL_FLAT + g_up)
+        )
+        a_breakaway = smoothstep(st.tau_stat / BREAKAWAY_RAMP_TIME) * breakaway_cap
         a_env_max = min(a_env_max, a_breakaway)
       else:
+        if st.tau_stat > 0.0 and v_ego > V_BREAKAWAY and not st.hold_latched and a_des_eff > 0.0:
+          st.a_ref = min(st.a_ref, max(BREAKAWAY_ACCEL_FLAT, BREAKAWAY_RELEASE_BASE + BREAKAWAY_RELEASE_UPHILL_GAIN * g_up))
         st.tau_stat = 0.0
 
     a_goal = clamp(a_goal, a_env_min, a_env_max)
@@ -452,16 +487,23 @@ class UnifiedLongController:
     j_dn = math.inf
     j_up = math.inf
     j_u_shaped: float | None = None
+    j_d_shaped: float | None = None
     st.launch_shaping_active = False
 
     if da < -1e-9:
-      # Quadrant 1/4 downward: immediate tracking for safety, except gentle non-emergency
-      # low-speed hold settle (v <= 0.50 & should_stop) using CP.stoppingDecelRate.
-      if (inp.should_stop and v_ego <= V_EASE_MIN and not inp.soft_hold
-          and st.hold_latched and st.a_ref > min(inp.stopping_accel_cfg, a_lamp)):
-        j_dn = max(0.1, inp.cp_stopping_decel_rate)
+      # Quadrant 1/4 downward: immediate tracking for safety, with 2-stage low-speed hold settle:
+      # rapid pre-charge (>= 3.0 m/s^3) while above a_lamp, then soft settle (0.8 m/s^3) at/below a_lamp.
+      if (eff_should_stop and v_ego <= V_EASE_END and not inp.soft_hold
+          and st.hold_latched and st.a_ref > hold_cap):
+        if st.a_ref > a_lamp + 1e-6:
+          j_dn = max(JERK_PRECHARGE_DOWN, inp.cp_stopping_decel_rate)
+          j_d_shaped = -j_dn
+        else:
+          j_dn = max(0.1, inp.cp_stopping_decel_rate)
       else:
         j_dn = math.inf
+        if (st.precharge_latched or eff_should_stop) and st.a_ref > a_lamp + 1e-6 and a_goal <= a_lamp + 1e-6:
+          j_d_shaped = -JERK_PRECHARGE_DOWN
 
     elif da > 1e-9:
       if st.a_ref < -1e-9:
@@ -546,8 +588,14 @@ class UnifiedLongController:
 
     # Output jerk contract:
     # - When actively shaping upward (j_u_shaped is not None), pass 1:1 shaped jerk bound.
+    # - When rapidly pre-charging downward above a_lamp (j_d_shaped is not None), pass 1:1 pre-charge jerk.
     # - Otherwise pass planner j_target_now untouched (0.0% change in highway/coasting).
-    j_out = j_u_shaped if j_u_shaped is not None else j_target_now
+    if j_u_shaped is not None:
+      j_out = j_u_shaped
+    elif j_d_shaped is not None:
+      j_out = j_d_shaped
+    else:
+      j_out = j_target_now
 
     if st.hold_latched:
       mode = "stopping"

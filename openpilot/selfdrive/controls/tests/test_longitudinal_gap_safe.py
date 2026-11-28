@@ -489,3 +489,40 @@ def test_carrot_planner_reads_lead_decel_gap_and_preserves_tf_fallbacks():
   # LeadAccelResponseTF1~4 remain intact
   assert planner.leadAccelResponseBase == 2
   assert planner.leadAccelResponseTF == [-1, 3, -1, 1]
+
+
+def test_p1_parabolic_landing_and_reaction_attenuation(native):
+  """P1: broadband comfort fade + active-braking reaction attenuation without touching cruise safety."""
+  assert gs.COMFORT_FADE_SPEEDS == (0.8, 5.2)
+  assert gs.COMFORT_FADE_ACCELS == (-2.9, -2.4)
+
+  # Cruising / sudden-brake onset (a_ego >= -0.15): REACTION 0.60 s is 100% preserved
+  assert gs.stopping_reaction_time(1.0, 0.0, a_ego=0.0) == pytest.approx(gs.REACTION)
+  assert gs.stopping_reaction_time(1.0, 0.0, a_ego=-0.10) == pytest.approx(gs.REACTION)
+  assert gs.parabolic_landing_margin(1.0, 0.0, a_ego=0.0) == pytest.approx(0.0)
+
+  # Active braking (a_ego = -0.60) behind stopped lead at low speed: REACTION attenuates to 0.048 s
+  t_eff = gs.stopping_reaction_time(0.3, 0.0, a_ego=-0.60)
+  assert t_eff == pytest.approx(gs.REACTION * 0.08, abs=1e-6)
+  d_parab = gs.parabolic_landing_margin(1.0, 0.0, a_ego=-0.60, a_lamp=-0.45)
+  assert d_parab > 0.0
+
+  # Moving lead (v_lead >= 1.5 m/s) keeps full REACTION 0.60 s even while braking
+  assert gs.stopping_reaction_time(1.0, 1.6, a_ego=-0.80) == pytest.approx(gs.REACTION)
+
+  # Native MPC binds attenuated params[:, 4] when actively braking behind a stopped lead
+  mpc = native.LongitudinalMpc()
+  n = native.N + 1
+  radar = log.RadarState.new_message()
+  radar.leadOne = {"status": True, "radar": True, "radarTrackId": 1, "dRel": 4.2, "vLead": 0.0,
+                   "vRel": -1.2, "aLeadK": 0.0, "aLeadTau": 1.5, "modelProb": 1.0}
+  c = carrot(v_cruise=15.0)
+  for _ in range(5):
+    mpc.set_accel_limits(-3.5, 1.6)
+    mpc.set_cur_state(1.2, -0.6)
+    mpc.update(c, False, radar, 15.0, np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n),
+               personality=log.LongitudinalPersonality.standard)
+    assert mpc.solution_status == 0
+  assert mpc.source == "lead0"
+  assert mpc.params[0, 4] < 0.30
+  assert np.min(mpc.params[:, 4]) < 0.15

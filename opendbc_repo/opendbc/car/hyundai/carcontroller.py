@@ -11,7 +11,7 @@ from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import ccnc_lane_marking, hyundaicanfd, hyundaican
 from opendbc.car.hyundai.carstate import CarState
 from opendbc.car.hyundai.lane_crossing import LaneCrossing
-from opendbc.car.hyundai.stopping import CanfdStopping
+from opendbc.car.hyundai.stopping import CanfdStopping, approach_accel_floor
 from opendbc.car.hyundai.steering_handover import SteeringHandover
 from opendbc.car.carlog import carlog
 from opendbc.car.hyundai.hyundaicanfd import CanBus
@@ -110,6 +110,7 @@ CANFD_JERK_ERROR_FILTER_TIME = 0.4
 CANFD_JERK_ERROR_DEADBAND = 0.25
 CANFD_JERK_ERROR_FULL_SCALE = 0.5
 CANFD_JERK_RELEASE_THRESHOLD = 0.1
+CANFD_PRECHARGE_JERK_LOWER = 3.0
 # Some CAN-FD SCC implementations need a higher lower-jerk limit to follow sustained
 # deceleration requests. Keep the historical MPC-jerk limit as the default and blend
 # toward this stock-like feedforward only after measured under-deceleration.
@@ -154,7 +155,8 @@ def rate_limit(x, x_last, lo, hi):
 
 
 def calculate_canfd_jerk_limits(accel: float, jerk: float, tracking_error: float = 0.0,
-                                direct_jerk_upper: float | None = None) -> tuple[float, float]:
+                                direct_jerk_upper: float | None = None,
+                                direct_jerk_lower: float | None = None) -> tuple[float, float]:
   if direct_jerk_upper is not None:
     jerk_u = np.clip(direct_jerk_upper, CANFD_JERK_UPPER_MIN, CANFD_JERK_LIMIT_MAX)
   else:
@@ -171,7 +173,10 @@ def calculate_canfd_jerk_limits(accel: float, jerk: float, tracking_error: float
   decel_request = max(0.0, -accel)
   jerk_l_feedforward = np.interp(decel_request, CANFD_JERK_LOWER_ACCEL_BP, CANFD_JERK_LOWER_LIMIT_V)
   jerk_l_assist = 1.0 + assist_ratio * (jerk_l_feedforward - 1.0)
-  jerk_l = np.clip(max(jerk_l_mpc, jerk_l_assist), 1.0, CANFD_JERK_LIMIT_MAX)
+  jerk_l = max(jerk_l_mpc, jerk_l_assist)
+  if direct_jerk_lower is not None:
+    jerk_l = max(jerk_l, direct_jerk_lower)
+  jerk_l = np.clip(jerk_l, 1.0, CANFD_JERK_LIMIT_MAX)
   return float(jerk_u), float(jerk_l)
 
 def apply_steer_angle_limits_physics(desired_sw_deg: float,
@@ -828,8 +833,11 @@ class CarController(CarControllerBase):
       if self.camera_scc_params in [2, 3]:
         self.canfd_toggle_adas(CC, CS)
       if self.CP.openpilotLongitudinalControl:
+        orient = getattr(CC, "orientationNED", None)
+        pitch_rad = float(orient[1]) if (orient is not None and len(orient) == 3 and math.isfinite(orient[1])) else 0.0
         hud_lateral = None if camera_scc else self.display_lead_lateral.update(getattr(CS, "radarState", None), getattr(CS, "modelV2", None))
-        self.hyundai_jerk.make_jerk(self.CP, CS, accel, actuators, hud_control)
+        self.hyundai_jerk.make_jerk(self.CP, CS, accel, actuators, hud_control,
+                                    accel_value_last=self.accel_value_last, pitch_rad=pitch_rad)
         self.hyundai_jerk.check_carrot_cruise(CC, CS, hud_control, stopping, accel, actuators.aTarget)
 
         if True: #not camera_scc:
@@ -846,8 +854,6 @@ class CarController(CarControllerBase):
         if camera_scc:
           hud_lateral = self.display_lead_lateral.value
         if self.frame % 2 == 0:
-          orient = getattr(CC, "orientationNED", None)
-          pitch_rad = float(orient[1]) if (orient is not None and len(orient) == 3 and math.isfinite(orient[1])) else 0.0
           if self.CP.flags & HyundaiFlags.CAMERA_SCC.value:
             if CC.enabled:
               CS.stock_adopt_pending = False
@@ -1150,11 +1156,11 @@ class HyundaiJerk:
     if self.carrot_cruise == 0:
       self.carrot_cruise_accel = CS.out.aEgo
 
-  def make_jerk(self, CP, CS, accel, actuators, hud_control):
+  def make_jerk(self, CP, CS, accel, actuators, hud_control, accel_value_last=None, pitch_rad=0.0):
     canfd = bool(CP.flags & HyundaiFlags.CANFD)
     jerk_u_min = CANFD_JERK_UPPER_MIN if canfd else self.jerk_u_min
     if actuators.longControlState == LongCtrlState.stopping:
-      if canfd and actuators.jerk > 0.0:
+      if canfd and actuators.jerk != 0.0:
         self.jerk = float(actuators.jerk)
       else:
         self.jerk = jerk_u_min / 2 - CS.out.aEgo
@@ -1199,11 +1205,21 @@ class HyundaiJerk:
           self.accel_request_history.clear()
           filtered_tracking_error = self.jerk_error_filter.set_all(0.0)
 
-        # 1:1 CAN-FD upper jerk contract: pass upstream UnifiedLongController jerk directly
-        # without 2.0x amplification or 0.5x inverse-scaling hacks.
+        # 1:1 CAN-FD upper & downward pre-charge jerk contract:
+        # pass upstream UnifiedLongController jerk directly without 2.0x / 1.0 m/s^3 bottlenecks.
         direct_upper = self.jerk if self.jerk > 0.0 else None
+        direct_lower = None
+        a_lamp = approach_accel_floor(pitch_rad)
+        if (accel_value_last is not None and math.isfinite(accel_value_last)
+            and accel_value_last > min(accel, a_lamp) + 0.01
+            and (actuators.longControlState == LongCtrlState.stopping
+                 or (accel <= a_lamp + 1e-6 and getattr(CS.out, "vEgo", 10.0) <= 2.40))):
+          direct_lower = CANFD_PRECHARGE_JERK_LOWER
+        elif actuators.longControlState == LongCtrlState.stopping and self.jerk < -1e-6:
+          direct_lower = max(CANFD_PRECHARGE_JERK_LOWER, -self.jerk)
         self.jerk_u, self.jerk_l = calculate_canfd_jerk_limits(accel, self.jerk, filtered_tracking_error,
-                                                               direct_jerk_upper=direct_upper)
+                                                               direct_jerk_upper=direct_upper,
+                                                               direct_jerk_lower=direct_lower)
         self.cb_upper = self.cb_lower = 0.0
       else:
         self.jerk_u = min(max(self.jerk_u_min, self.jerk * 2.0), jerk_max_u)

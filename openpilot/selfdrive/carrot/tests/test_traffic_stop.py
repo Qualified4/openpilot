@@ -100,7 +100,10 @@ def test_stationary_model_lead_rejects_uncertain_or_unrelated_candidates(invalid
 
 def test_model_lead_offset_replaces_signal_adjust_only_for_confirmed_vehicle_stop():
   assert get_traffic_stop_distance_adjust(-1.7, 10.0, 0.0) == pytest.approx(-1.7)
-  assert get_traffic_stop_distance_adjust(-1.7, 0.05, 0.0) == pytest.approx(-2.0)
+  # P4-A: continuous preload near standstill instead of a 4.5 m step jump at v=0.1 m/s
+  low_v = get_traffic_stop_distance_adjust(-1.7, 0.05, 0.0)
+  assert -2.05 <= low_v <= -1.7
+  assert abs(get_traffic_stop_distance_adjust(2.5, 0.11, 0.0) - get_traffic_stop_distance_adjust(2.5, 0.09, 0.0)) < 0.02
   assert get_traffic_stop_distance_adjust(-1.7, 10.0, MODEL_LEAD_STOP_OFFSET_M) == pytest.approx(2.0)
   assert get_traffic_stop_distance_adjust(-1.7, 0.05, MODEL_LEAD_STOP_OFFSET_M) == pytest.approx(2.0)
 
@@ -108,8 +111,8 @@ def test_model_lead_offset_replaces_signal_adjust_only_for_confirmed_vehicle_sto
 def test_elantra_log_geometry_uses_the_two_meter_gap_as_the_virtual_vehicle_position():
   # Near the supplied stop, the planner's remaining stop distance was 5.3 m
   # while the stationary model lead was about 7.2 m away. The ordinary stopped
-  # signal adjustment placed the obstacle behind the ego target; +2 m restores
-  # the approximate vehicle position and lets the 5.5 m fixed gap do its job.
+  # signal adjustment keeps the smooth preload while +2 m restores the
+  # approximate vehicle position and lets the 5.5 m fixed gap do its job.
   stop_distance = 5.3
   cruise_obstacle = 120.0
   ordinary_adjust = get_traffic_stop_distance_adjust(-1.7, 0.05, 0.0)
@@ -118,7 +121,7 @@ def test_elantra_log_geometry_uses_the_two_meter_gap_as_the_virtual_vehicle_posi
   ordinary_obstacle = get_traffic_stop_obstacle_distance(stop_distance, cruise_obstacle, ordinary_adjust)
   vehicle_obstacle = get_traffic_stop_obstacle_distance(stop_distance, cruise_obstacle, vehicle_adjust)
 
-  assert ordinary_obstacle == pytest.approx(3.3)
+  assert ordinary_obstacle == pytest.approx(stop_distance + ordinary_adjust)
   assert vehicle_obstacle == pytest.approx(7.3)
   assert vehicle_obstacle - 5.5 == pytest.approx(1.8)
 
@@ -131,3 +134,35 @@ def test_traffic_stop_entry_is_allowed_below_50_degrees(steering_angle_deg):
 @pytest.mark.parametrize("steering_angle_deg", [-50.0, 50.0, -90.0, 90.0])
 def test_traffic_stop_entry_is_blocked_at_or_above_50_degrees(steering_angle_deg):
   assert not is_traffic_stop_entry_allowed(steering_angle_deg)
+
+
+def test_p4a_signal_stop_is_continuous_and_decoupled_from_stop_distance_carrot():
+  """P4-A: no v=0.1 m/s step jump, and pure signal stop line is invariant to StopDistanceCarrot."""
+  # Continuity across v_ego in [0.0, 2.0] m/s
+  vs = [i * 0.05 for i in range(41)]
+  adjs = [get_traffic_stop_distance_adjust(2.5, v, 0.0) for v in vs]
+  assert all(abs(b - a) < 0.05 for a, b in zip(adjs[:-1], adjs[1:], strict=True))
+  assert adjs[0] == pytest.approx(2.15)
+  assert adjs[-1] == pytest.approx(2.50)
+
+  # Native MPC: changing StopDistanceCarrot (3.5 vs 5.5 m) keeps pure signal stop target x2 - stop_distance invariant
+  from types import SimpleNamespace as NS
+  import numpy as np
+  from openpilot.cereal import log
+  long_mpc = pytest.importorskip("openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc")
+
+  def run_signal(stop_dist_cfg):
+    mpc = long_mpc.LongitudinalMpc()
+    n = long_mpc.N + 1
+    c = NS(mode="acc", comfort_brake=2.4, stop_distance=stop_dist_cfg, v_cruise=15.0, stop_dist=10.0,
+           trafficStopDistanceAdjust=0.0, trafficStopModelLeadOffset=0.0,
+           get_T_FOLLOW=lambda *a: 1.45, jerk_factor=1.0, leadAccelResponse=0,
+           autoNaviSpeedDecelRate=1.0, lane_change_active=False, myDrivingMode=3)
+    radar = log.RadarState.new_message()
+    mpc.set_accel_limits(-3.5, 1.6)
+    mpc.set_cur_state(6.0, -0.5)
+    mpc.update(c, False, radar, 15.0, np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n))
+    assert mpc.source == "e2e"
+    return float(mpc.params[0, 2] - mpc.params[0, 7])
+
+  assert run_signal(3.5) == pytest.approx(run_signal(5.5), abs=1e-6)

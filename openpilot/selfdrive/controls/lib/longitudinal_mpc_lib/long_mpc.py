@@ -157,6 +157,24 @@ def low_speed_lead_creep_suppress(
   return beta_roll * (1.0 - alpha_depart)
 
 
+def low_speed_decel_lead_tau_cap(
+  x_lead: float,
+  v_lead: float,
+  a_lead: float,
+  a_lead_tau: float,
+  d_stop_cfg: float = 4.0,
+) -> float:
+  """Cap cost-side aLeadTau for a nearby gently-decelerating lead to prevent +5..10 m phantom roll."""
+  if not all(map(math.isfinite, (x_lead, v_lead, a_lead, a_lead_tau, d_stop_cfg))):
+    return a_lead_tau
+  if x_lead < d_stop_cfg + 10.0 and v_lead < 2.2 and a_lead < -0.08:
+    u = max(0.0, min(1.0, (v_lead - 0.8) / 1.4))
+    s = u * u * (3.0 - 2.0 * u)
+    tau_cap = 0.15 + (1.50 - 0.15) * s
+    return min(a_lead_tau, tau_cap)
+  return a_lead_tau
+
+
 def get_a_change_cost(prev_accel_constraint: bool, a_change_cost_starting: float,
                       response_factor: float = 1.0, ramp: float = 1.0) -> float:
   if prev_accel_constraint:
@@ -515,7 +533,8 @@ class LongitudinalMpc:
     tau_factor = 1.0 + (LEAD_ACCEL_COST_POS_TAU_FACTOR - 1.0) * weak
     creep_suppress = low_speed_lead_creep_suppress(v_ego, x_lead, v_lead, a_lead, stop_distance)
     a_lead_cost = a_lead * (1.0 - creep_suppress)
-    lead_xv_cost = self.extrapolate_lead(x_lead, v_lead, a_lead_cost, a_lead_tau, tau_factor)
+    a_lead_tau_cost = low_speed_decel_lead_tau_cap(x_lead, v_lead, a_lead_cost, a_lead_tau, stop_distance)
+    lead_xv_cost = self.extrapolate_lead(x_lead, v_lead, a_lead_cost, a_lead_tau_cost, tau_factor)
     return lead_xv, v_lead, lead_xv_cost
 
   def set_accel_limits(self, min_a, max_a):
@@ -536,7 +555,8 @@ class LongitudinalMpc:
              cutout_relief_enabled=False,
              tesla_stop_distance=None,
              approach_soft_stop_enabled=False,
-             a_change_cost_ramp=1.0):
+             a_change_cost_ramp=1.0,
+             pitch_rad=0.0):
     tesla_stop_active = (tesla_stop_distance is not None and not reset_state
                          and math.isfinite(tesla_stop_distance) and 0 <= tesla_stop_distance < 255)
     if tesla_stop_active:
@@ -649,12 +669,16 @@ class LongitudinalMpc:
                                  v_upper)
       cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow, comfort_brake, stop_distance)
 
+      model_lead_offset = getattr(carrot, "trafficStopModelLeadOffset", 0.0)
       adjust_dist = get_traffic_stop_distance_adjust(
         carrot.trafficStopDistanceAdjust,
         v_ego,
-        getattr(carrot, "trafficStopModelLeadOffset", 0.0),
+        model_lead_offset,
       )
-      traffic_stop_obstacle = get_traffic_stop_obstacle_distance(stop_x, cruise_obstacle[0], adjust_dist)
+      # Decouple pure traffic-signal stop line from lead StopDistanceCarrot (which the solver
+      # subtracts via params[:, 7]); keep queued-vehicle model_lead_offset on the lead scale.
+      signal_stop_comp = 0.0 if (math.isfinite(float(model_lead_offset)) and float(model_lead_offset) > 0.0) else stop_distance
+      traffic_stop_obstacle = get_traffic_stop_obstacle_distance(stop_x, cruise_obstacle[0], adjust_dist + signal_stop_comp)
       x2 = traffic_stop_obstacle * np.ones(N+1)
 
       lane_change = getattr(carrot, 'lane_change_gap', LaneChangeGapPlan())
@@ -731,10 +755,18 @@ class LongitudinalMpc:
       x_obstacles = np.column_stack((x_obstacles, np.full(N+1, obstacle)))
     # A gap-safe lead obstacle subtracts its own distance in the solver, so obstacles are compared
     # on the TF scale: the smallest of these is the obstacle with the closest target at each node.
+    g_up = min(0.80, 9.81 * math.sin(pitch_rad)) if (math.isfinite(pitch_rad) and pitch_rad > 0.0) else 0.0
+    a_lamp = -0.45 - g_up
+    lead_t_reacts = [
+      (gap_safe.stopping_reaction_time(gap_v, lead_xv[:, 1], a_ego, gap.t_follow)
+       if (gap is not None and mode == 'acc' and not reset_state) else None)
+      for gap, lead_xv in zip(lead_gaps, (lead_xv_0, lead_xv_1), strict=True)
+    ]
     x_targets = x_obstacles.copy()
     for lead_index, gap in enumerate(lead_gaps):
       if gap is not None:
-        x_targets[:, lead_index] -= gap_safe.target_offset(gap_v, gap, t_follow, comfort_brake, stop_distance)
+        x_targets[:, lead_index] -= gap_safe.target_offset(
+          gap_v, gap, t_follow, comfort_brake, stop_distance, lead_t_follow=lead_t_reacts[lead_index])
     # Stopping behind a lead: the lead that sets the end of the horizon stops in the plan.
     stop_lead_index = int(np.argmin(x_targets[-1, :2])) if mode == 'acc' else 0
     stop_lead = (radarstate.leadOne, radarstate.leadTwo)[stop_lead_index]
@@ -747,6 +779,7 @@ class LongitudinalMpc:
       gap_excess=(float(stop_lead.dRel - self.base_desired_distances[stop_lead_index])
                   if stop_lead.status else float('inf')),
       dt=self.dt,
+      a_lamp=a_lamp,
     )
     self.obstacle_cost_factor = stop_factor
 
@@ -819,6 +852,9 @@ class LongitudinalMpc:
       for lead_index, gap in enumerate(lead_gaps):
         if gap is not None:
           comfort[:, lead_index] = gap_safe.comfort_margin(gap_v, cost_lead_speeds[lead_index], gap)
+          if mode == 'acc' and not reset_state:
+            comfort[:, lead_index] += gap_safe.parabolic_landing_margin(
+              gap_v, cost_lead_speeds[lead_index], a_ego, a_lamp=a_lamp)
       margins += comfort
       if mode == 'acc':
         # The weaker positive lead accel of the cost-side prediction.
@@ -926,7 +962,8 @@ class LongitudinalMpc:
       for lead_index, gap in enumerate(lead_gaps):
         if gap is not None:
           lead_nodes = binding == lead_index
-          self.params[lead_nodes,4] = gap.t_follow
+          t_react = lead_t_reacts[lead_index]
+          self.params[lead_nodes,4] = gap.t_follow if t_react is None else t_react[lead_nodes]
           self.params[lead_nodes,5] = gap.danger_factor
           self.params[lead_nodes,6] = gap.comfort_brake
     self.params[:,3] = np.copy(self.prev_a)

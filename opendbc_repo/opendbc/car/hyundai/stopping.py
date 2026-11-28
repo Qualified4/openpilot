@@ -17,9 +17,9 @@ APPROACH_ACCEL = -0.45  # matches empirically-verified 0x412 brake-lamp hold flo
 GRAVITY = 9.81  # m/s^2
 MAX_UPHILL_SLOPE_COMP = 0.80  # m/s^2 (~8.2% grade cap matching unified_long.py)
 STOP_LOWER_BAND = 0.20  # fixed during active ACC, including before StopReq; never copied from stock
-PRECHARGE_MIN_SPEED = 0.30  # m/s; below this speed, enter StopReq immediately
-PRECHARGE_HYD_THRESH = -0.38  # m/s^2; hydraulic decel required before non-emergency StopReq
-PRECHARGE_MAX_TIME = 0.16  # s (8 frames at 50 Hz, <= 7 cm travel) max pre-charge dwell
+PRECHARGE_MIN_SPEED = 0.15  # m/s; below this speed, enter StopReq immediately (covers queue_crawl)
+PRECHARGE_HYD_THRESH = -0.44  # m/s^2; hydraulic decel required before non-emergency StopReq (0x412 lamp)
+PRECHARGE_MAX_TIME = 0.26  # s (13 frames at 50 Hz; at 3.0 m/s^3 covers up to +3.5% uphill) max pre-charge dwell
 PRECHARGE_CLOSE_LEAD_DIST = 2.80  # m; bypass pre-charge dwell for close-lead safety
 
 

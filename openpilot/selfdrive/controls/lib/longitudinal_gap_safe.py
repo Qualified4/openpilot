@@ -78,16 +78,26 @@ CUTIN_RECOVER_RATE = 1.5   # m/s the cut-in credit shrinks by
 CUTIN_CLOSING_MAX = 1.5    # m/s: only a cut-in at about ego speed (or faster) gets the credit
 CUTIN_LEAD_ACCEL_MIN = -0.5  # m/s^2: a braking cut-in gets none, and braking later cancels it
 SAME_LEAD_DISTANCE = 1.5   # m: a new track id this close to the last lead's distance is the same car
-# m/s: the comfort margin is 0 at or below the first ego speed and full from the second. A margin linear
-# in v (comfort time + closing time, ~1.35 s) kept the plan that much behind the stop distance at the
-# low speed where the car stops: replay of 14 stops behind a stopped lead, median 4.36 m for 3.7 m
-# (3.89 m with this fade; the rest is d_min's reaction term at the stop speed).
-COMFORT_FADE_SPEEDS = (0.5, 3.0)
-# m/s^2: no fade while ego brakes at or below the first accel, full fade from the second. A hard stop
-# ending inside the stop distance keeps the full margin (synthetic F30 -4: 3.11 m, 3.01 m with the
-# fade alone); the stops above all ended at -0.6 to -1.0 below 3 m/s.
-COMFORT_FADE_ACCELS = (-2.0, -1.5)
+# m/s: broadband monotonic smoothstep fade of comfort margin so the mid-speed over-deceleration
+# belly flattens without increasing peak decel and without a 3 m/s cliff that flips gapErr > 0.
+COMFORT_FADE_SPEEDS = (0.8, 5.2)
+# m/s^2: preserve full comfort margin only during genuine emergency hard braking (<= -2.4..-2.9),
+# eliminating the positive feedback loop during normal -1.5..-2.0 m/s^2 city stops.
+COMFORT_FADE_ACCELS = (-2.9, -2.4)
+# Active-braking low-speed parabolic landing constants (eliminate 0.60*v exponential creep tail
+# once brake hydraulic pressure is already established and the lead is stopped/crawling).
+STOP_LANDING_BRAKE_ACCELS = (0.15, 0.50)   # -a_ego range where brake deadtime is already gone
+STOP_LANDING_EGO_SPEEDS = (0.40, 3.00)     # ego speed window for parabolic landing transition
+STOP_LANDING_LEAD_SPEEDS = (0.30, 1.50)    # lead speed window (stopped / crawling lead)
+STOP_LANDING_REACTION_REDUCTION = 0.92     # 0.60 s -> 0.048 s linear tail attenuation
+STOP_LANDING_MIN_DECEL = 0.80              # m/s^2 minimum parabolic landing decel
+STOP_LANDING_LAMP_MARGIN = 0.25            # m/s^2 margin above |a_lamp(theta)|
 CUTIN_HOLD_EXPIRE = 2.0    # s without a lead after which the last lead is forgotten
+
+
+def _smoothstep(u):
+  t = np.clip(u, 0.0, 1.0)
+  return t * t * (3.0 - 2.0 * t)
 
 
 class LeadGap(NamedTuple):
@@ -123,6 +133,8 @@ class GapSafeState:
       self.inv_lead_decel = max(target, self.inv_lead_decel - LEAD_DECEL_INV_RATE * dt)
 
   def lead_gap(self, *, comfort_brake, v_ego=0.0, a_ego=0.0):
+    w_emerg = float(_smoothstep((-float(a_ego) - abs(COMFORT_FADE_ACCELS[1]))
+                                / (abs(COMFORT_FADE_ACCELS[0]) - abs(COMFORT_FADE_ACCELS[1]))))
     return LeadGap(
       t_follow=REACTION,
       comfort_brake=EGO_MAX_DECEL,
@@ -131,7 +143,7 @@ class GapSafeState:
       comfort_time=level_comfort_time(self.inv_lead_decel),
       closing_factor=max(0.0, 1.0 / (2.0 * comfort_brake) - 1.0 / (2.0 * EGO_MAX_DECEL)),
       closing_time=CLOSING_TIME,
-      fade_weight=float(np.interp(a_ego, COMFORT_FADE_ACCELS, (0.0, 1.0))),
+      fade_weight=1.0 - w_emerg,
     )
 
 
@@ -171,7 +183,40 @@ def comfort_margin(v_ego, v_lead, gap: LeadGap):
 
 
 def fade(v_ego, gap: LeadGap):
-  return 1.0 - gap.fade_weight * (1.0 - np.interp(v_ego, COMFORT_FADE_SPEEDS, (0.0, 1.0)))
+  s_v = _smoothstep((v_ego - COMFORT_FADE_SPEEDS[0]) / (COMFORT_FADE_SPEEDS[1] - COMFORT_FADE_SPEEDS[0]))
+  return 1.0 - gap.fade_weight * (1.0 - s_v)
+
+
+def stopping_landing_weight(v_ego, v_lead, a_ego):
+  """Node-wise weight w_stop in [0, 1] active only while already braking behind a stopped/crawling lead."""
+  if not math.isfinite(float(a_ego)):
+    return np.zeros_like(np.asarray(v_ego, dtype=float)) if np.ndim(v_ego) > 0 else 0.0
+  alpha_brk = float(_smoothstep((-float(a_ego) - STOP_LANDING_BRAKE_ACCELS[0])
+                                / (STOP_LANDING_BRAKE_ACCELS[1] - STOP_LANDING_BRAKE_ACCELS[0])))
+  if alpha_brk <= 0.0:
+    return np.zeros_like(np.asarray(v_ego, dtype=float)) if np.ndim(v_ego) > 0 else 0.0
+  v_e = np.maximum(v_ego, 0.0)
+  v_l = np.maximum(v_lead, 0.0)
+  w_v = 1.0 - _smoothstep((v_e - STOP_LANDING_EGO_SPEEDS[0])
+                          / (STOP_LANDING_EGO_SPEEDS[1] - STOP_LANDING_EGO_SPEEDS[0]))
+  w_l = 1.0 - _smoothstep((v_l - STOP_LANDING_LEAD_SPEEDS[0])
+                          / (STOP_LANDING_LEAD_SPEEDS[1] - STOP_LANDING_LEAD_SPEEDS[0]))
+  return alpha_brk * w_v * w_l
+
+
+def stopping_reaction_time(v_ego, v_lead, a_ego, base_reaction=REACTION):
+  """Effective per-node reaction time: 0.60 s while cruising, smoothly attenuated to 0.048 s during active stop landing."""
+  w = stopping_landing_weight(v_ego, v_lead, a_ego)
+  return base_reaction * (1.0 - STOP_LANDING_REACTION_REDUCTION * w)
+
+
+def parabolic_landing_margin(v_ego, v_lead, a_ego, a_lamp=-0.45):
+  """Parabolic cost-reference landing margin replacing the 0.60*v exponential creep tail."""
+  w = stopping_landing_weight(v_ego, v_lead, a_ego)
+  a_land = max(STOP_LANDING_MIN_DECEL, abs(float(a_lamp)) + STOP_LANDING_LAMP_MARGIN)
+  v_e = np.maximum(v_ego, 0.0)
+  coeff = max(0.0, 1.0 / (2.0 * a_land) - 1.0 / (2.0 * EGO_MAX_DECEL))
+  return w * (v_e * v_e) * coeff
 
 
 def steady_distance(v_ego, v_lead, gap: LeadGap, stop_distance):
@@ -191,13 +236,15 @@ def equivalent_t_follow(v_ego, gap: LeadGap):
   return max(0.0, gap.t_follow + float(comfort_times(v, gap)) + v * (1.0 / (2.0 * gap.comfort_brake) - gap.inv_lead_decel / 2.0))
 
 
-def target_offset(v_ego, gap: LeadGap, t_follow, comfort_brake, stop_distance):
+def target_offset(v_ego, gap: LeadGap, t_follow, comfort_brake, stop_distance, lead_t_follow=None):
   """How much more a lead obstacle under `gap` subtracts than a TF obstacle, at ego speeds v_ego.
 
   obstacle - target_offset() puts a gap-safe lead obstacle on the TF obstacles' scale, so the
   smallest value is the obstacle with the closest target."""
   v = np.maximum(v_ego, 0.0)
-  return safe_distance(v, gap, stop_distance) - (v**2 / (2.0 * comfort_brake) + t_follow * v + stop_distance)
+  t_react = gap.t_follow if lead_t_follow is None else lead_t_follow
+  lead_safe = v**2 / (2.0 * gap.comfort_brake) + t_react * v + stop_distance
+  return lead_safe - (v**2 / (2.0 * comfort_brake) + t_follow * v + stop_distance)
 
 
 class CutinCredit:
