@@ -142,7 +142,12 @@ fn a_blind_spot_warning_round_trips_without_creating_a_car() {
     let wire = decode(&encode(&map)).unwrap();
     assert_eq!(wire.status & (ccnc_map::cmap::STATUS_BSD_LEFT | ccnc_map::cmap::STATUS_BSD_RIGHT),
                ccnc_map::cmap::STATUS_BSD_LEFT);
-    assert_eq!(wire.slots, [None; 5]);
+    assert_ne!(wire.status & ccnc_map::cmap::STATUS_REAR_ANIMATED[0], 0);
+    assert!(wire.slots[0].is_none() && wire.slots[1].is_none() && wire.slots[2].is_none() && wire.slots[4].is_none());
+    let bsd = wire.slots[3].expect("BSD-only warning must emit animated LR slot");
+    assert_eq!(bsd.vid, 0);
+    assert_eq!(bsd.distance, -20.0);
+    assert_eq!(bsd.lateral, 2.8);
 }
 
 #[test]

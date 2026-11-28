@@ -7,11 +7,19 @@ use super::{
 const BSD_GRACE: f64 = 2.;
 // The cluster renders 0.8 times the signed map range. Start at the 8 m warning.
 const BSD_START_X: f64 = -10.;
+// Sixteen metres on the cluster (0.8 * 20) for BSD-only approach/retreat animation.
+const BSD_FAR_X: f64 = -20.;
 // Ten metres on the cluster after BSD releases, using the same 0.8 conversion.
 const BSD_EXIT_X: f64 = -12.5;
 const REAR_PASS_HOLD: f64 = 3.;
 const BSD_APPROACH_TIME: f64 = 0.6;
 const BSD_APPROACH_SPEED: f64 = 6.;
+// Match Python SideFlow approach (tau=0.4s, 6.0 m/s display = 7.5 m/s map)
+// and exit (tau=0.65s, 4.0 m/s display = 5.0 m/s map).
+const BSD_ONLY_ENTER_TAU: f64 = 0.4;
+const BSD_ONLY_ENTER_SPEED: f64 = 7.5;
+const BSD_ONLY_EXIT_TAU: f64 = 0.65;
+const BSD_ONLY_EXIT_SPEED: f64 = 5.0;
 const TO_ORIGIN_SPEED: f64 = 20.;
 const JOIN_DURATION: f64 = 0.20;
 
@@ -22,6 +30,12 @@ pub(super) struct SideDisplay {
     recent_front: Option<(u64, f64)>,
     join: Option<FrontJoin>,
     pass: Option<RearPass>,
+    bsd_only: Option<BsdOnly>,
+}
+
+struct BsdOnly {
+    x: f64,
+    time: f64,
 }
 
 struct RearPass {
@@ -67,7 +81,20 @@ impl SideDisplay {
             self.pass = None;
         }
         self.update_rear_pass(now, blind, previous[front], previous[rear], &mut slots[rear]);
+        self.update_front_join(now, side, previous[front], previous[rear], slots);
+        self.update_bsd_only(now, side, blind, &mut slots[rear]);
+    }
 
+    fn update_front_join(
+        &mut self,
+        now: f64,
+        side: usize,
+        old_front: Option<EngineSlot>,
+        old_rear: Option<EngineSlot>,
+        slots: &mut [Option<EngineSlot>; 5],
+    ) {
+        let front = side + 1;
+        let rear = side + 3;
         let Some(mut candidate) = slots[front].filter(|_| slots[rear].is_none()) else {
             self.join = None;
             if let Some(slot) = slots[front] {
@@ -78,13 +105,13 @@ impl SideDisplay {
         if self.join.as_ref().is_some_and(|join| join.vid != candidate.obj_id || candidate.s <= 0.) {
             self.join = None;
         }
-        if self.join.is_none() && previous[front].is_none() && (candidate.radar_seen || candidate.camera_seen)
+        if self.join.is_none() && old_front.is_none() && (candidate.radar_seen || candidate.camera_seen)
             && candidate.v_s > 0.
         {
-            let measured_rear = previous[rear].filter(|old| {
+            let measured_rear = old_rear.filter(|old| {
                 old.obj_id == candidate.obj_id && old.s < 0. && candidate.s > PASS_BAND
             });
-            let from_bsd = previous[rear].is_none()
+            let from_bsd = old_rear.is_none()
                 && self.warning_until.is_some_and(|until| now <= until)
                 && (0. ..=6.).contains(&candidate.s) && candidate.s > 0.
                 && self.recent_front.is_none_or(|(vid, t)| vid != candidate.obj_id || now - t > BSD_GRACE);
@@ -95,6 +122,7 @@ impl SideDisplay {
                 // land directly on the origin for a measured crossing close to zero.
                 let origin_at = now - start_x / TO_ORIGIN_SPEED;
                 self.pass = None;
+                self.bsd_only = None;
                 self.join = Some(FrontJoin {
                     vid: candidate.obj_id, start: now, origin_at, start_x, start_d, from_bsd,
                     joined_at: None,
@@ -124,6 +152,68 @@ impl SideDisplay {
             if progress == 1. {
                 self.join = None;
             }
+        }
+    }
+
+    fn update_bsd_only(
+        &mut self,
+        now: f64,
+        side: usize,
+        blind: bool,
+        rear: &mut Option<EngineSlot>,
+    ) {
+        if rear.is_some() {
+            self.bsd_only = None;
+            return;
+        }
+        if blind {
+            match &mut self.bsd_only {
+                None => {
+                    self.bsd_only = Some(BsdOnly { x: BSD_FAR_X, time: now });
+                }
+                Some(bsd) => {
+                    let dt = (now - bsd.time).clamp(0., 0.25);
+                    bsd.time = now;
+                    let error = BSD_START_X - bsd.x;
+                    let step = error * (1. - (-dt / BSD_ONLY_ENTER_TAU).exp());
+                    bsd.x = if error.abs() <= 0.05 {
+                        BSD_START_X
+                    } else {
+                        bsd.x + step.clamp(-BSD_ONLY_ENTER_SPEED * dt, BSD_ONLY_ENTER_SPEED * dt)
+                    };
+                }
+            }
+        } else if let Some(bsd) = &mut self.bsd_only {
+            let dt = (now - bsd.time).clamp(0., 0.25);
+            bsd.time = now;
+            let error = BSD_FAR_X - bsd.x;
+            let step = error * (1. - (-dt / BSD_ONLY_EXIT_TAU).exp());
+            bsd.x = (bsd.x + step.clamp(-BSD_ONLY_EXIT_SPEED * dt, BSD_ONLY_EXIT_SPEED * dt))
+                .max(BSD_FAR_X);
+            if bsd.x <= BSD_FAR_X + 0.05 {
+                self.bsd_only = None;
+            }
+        }
+        if let Some(bsd) = &self.bsd_only {
+            let lat = if side == 0 { -2.8 } else { 2.8 };
+            *rear = Some(EngineSlot {
+                obj_id: 0,
+                s: bsd.x,
+                d: lat,
+                x: bsd.x,
+                y: lat,
+                display_d: lat,
+                rear_animated: true,
+                v_s: 0.,
+                kind: super::VehicleKind::Car,
+                existence_p: 1.,
+                last_track_id: None,
+                lane_u: if side == 0 { -1. } else { 1. },
+                camera_seen: false,
+                radar_seen: false,
+                side_range: None,
+                ff_handoff_until: None,
+            });
         }
     }
 

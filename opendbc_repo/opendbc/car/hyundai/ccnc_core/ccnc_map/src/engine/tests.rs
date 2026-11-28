@@ -70,6 +70,7 @@ fn curved_position_keeps_car_ahead_with_low_confidence_straight_boundaries() {
             time: entry.time,
             path: &sample,
             lines: Some(&model),
+            road_edge_stds: [f32::INFINITY; 2],
             changing_lanes: false,
         });
         let out = engine.step(entry);
@@ -176,6 +177,7 @@ fn corner_rejects_same_lane_far_car_and_preserves_a_real_side_car() {
                 time: entry.time,
                 path: &path,
                 lines,
+                road_edge_stds: [f32::INFINITY; 2],
                 changing_lanes: false,
             });
             let out = engine.step(entry);
@@ -211,6 +213,7 @@ fn left_curve_draws_the_lead_relative_to_the_road() {
             time: entry.time,
             path: &path,
             lines: Some(&model),
+            road_edge_stds: [f32::INFINITY; 2],
             changing_lanes: false,
         });
         let out = engine.step(entry);
@@ -237,6 +240,7 @@ fn brief_forecast_jump_keeps_the_measured_side_vehicle() {
             time: entry.time,
             path: if (8..10).contains(&tick) { &jump } else { &good },
             lines: None,
+            road_edge_stds: [f32::INFINITY; 2],
             changing_lanes: false,
         });
         let out = engine.step(entry);
@@ -361,6 +365,7 @@ fn close_lead_stays_in_ff_through_path_transition_then_moves_to_side() {
             time: entry.time,
             path: &[(0., 0.), (40., 0.)],
             lines: None,
+            road_edge_stds: [f32::INFINITY; 2],
             changing_lanes: (10..16).contains(&tick),
         });
         let out = engine.step(entry);
@@ -389,9 +394,10 @@ fn front_to_rear_passes_through_zero_with_one_id_and_no_teleport() {
         frame.speed = 5.;
         frame.blind = [false, true];
         let out = engine.step(frame);
+        let real_rear = out.slots[4].filter(|s| s.obj_id > 0);
         front |= out.slots[2].is_some();
-        rear |= out.slots[4].is_some();
-        if let Some(s) = out.slots[2].or(out.slots[4]) {
+        rear |= real_rear.is_some();
+        if let Some(s) = out.slots[2].or(real_rear) {
             if let Some(before) = previous {
                 assert_eq!(s.obj_id, before.obj_id);
                 assert!((s.s - before.s).abs() < 0.6);
@@ -542,11 +548,11 @@ fn confirmed_rear_coast_survives_ego_speed_crossing_the_low_speed_threshold() {
     object.handoff_until = 1.5;
 
     let mut locks = [None; 2];
-    let slots = selector::select(1.65, 5.2, false, frame, &mut engine.tracker.objects,
-                                 previous, &mut locks, [false; 2], None, |_, _| false);
+    let slots = selector::select(1.65, 5.2, false, false, frame, &mut engine.tracker.objects,
+                                 previous, &mut locks, [false; 2], None, |_, _| false, |_, _| false);
     assert_eq!(slots[4].unwrap().obj_id, rear.obj_id);
-    let expired = selector::select(2.01, 5.2, false, frame, &mut engine.tracker.objects,
-                                   slots, &mut locks, [false; 2], None, |_, _| false);
+    let expired = selector::select(2.01, 5.2, false, false, frame, &mut engine.tracker.objects,
+                                   slots, &mut locks, [false; 2], None, |_, _| false, |_, _| false);
     assert!(expired[4].is_none());
 }
 
@@ -562,8 +568,9 @@ fn bsd_overtake_draws_one_real_vid_from_rear_through_origin_to_front() {
         entry.blind = [false, true];
         let out = engine.step(entry);
         assert!(out.blind[1]);
-        assert!(out.slots[2].is_none() || out.slots[4].is_none());
-        if let Some(slot) = out.slots[2].or(out.slots[4]) {
+        let real_rear = out.slots[4].filter(|s| s.obj_id > 0);
+        assert!(out.slots[2].is_none() || real_rear.is_none());
+        if let Some(slot) = out.slots[2].or(real_rear) {
             let object = out.objects.iter().find(|o| o.obj_id == slot.obj_id).unwrap();
             assert_eq!(slot.last_track_id, Some(40));
             assert!(object.s >= 3.4 && (slot.s - object.s).abs() < 1e-9);
@@ -592,7 +599,7 @@ fn prior_front_vehicle_does_not_consume_bsd_warning_on_return() {
     let mut returned = [None, None, Some(EngineSlot { v_s: 2., ..old }), None, None];
     display.update(1.3, 1, true, [None; 5], &mut returned);
     assert_eq!(returned[2].unwrap().x, old.x);
-    assert!(returned[4].is_none());
+    assert!(returned[4].is_none_or(|s| s.obj_id == 0));
 }
 
 #[test]
@@ -794,7 +801,7 @@ fn side_range_grace_requires_an_established_and_continuously_measured_car() {
         let now = f64::from(tick) * STEP;
         objects[0].range_consistent = false;
         objects[0].evidence.last_radar_t = Some(now);
-        slots = selector::select(now, 12., false, frame, objects, slots, &mut locks, [false; 2], None, |_, _| false);
+        slots = selector::select(now, 12., false, false, frame, objects, slots, &mut locks, [false; 2], None, |_, _| false, |_, _| false);
         assert_eq!(slots[2].map(|o| o.obj_id), (tick < 46).then_some(vid));
     }
 
@@ -803,13 +810,13 @@ fn side_range_grace_requires_an_established_and_continuously_measured_car() {
         let now = 30. * STEP;
         objects[0].evidence.last_radar_t = new_track_id.map(|_| now);
         objects[0].evidence.last_track_id = new_track_id.or(Some(40));
-        let slots = selector::select(now, 12., false, frame, objects, engine.displayed, &mut locks, [false; 2], None, |_, _| false);
+        let slots = selector::select(now, 12., false, false, frame, objects, engine.displayed, &mut locks, [false; 2], None, |_, _| false, |_, _| false);
         assert!(slots[2].is_none());
     }
     objects[0].evidence.last_radar_t = Some(30. * STEP);
     objects[0].evidence.last_track_id = Some(40);
     objects[0].moved = false;
-    let slots = selector::select(30. * STEP, 12., false, frame, objects, [None; 5], &mut locks, [false; 2], None, |_, _| false);
+    let slots = selector::select(30. * STEP, 12., false, false, frame, objects, [None; 5], &mut locks, [false; 2], None, |_, _| false, |_, _| false);
     assert!(slots[2].is_none());
 }
 
@@ -972,6 +979,7 @@ fn a_delayed_box_beyond_the_outer_line_does_not_promote_a_stationary_echo() {
             time: entry.time,
             path: &[],
             lines: Some(&model),
+            road_edge_stds: [f32::INFINITY; 2],
             changing_lanes: false,
         });
         entry.vision = &obs;
@@ -1388,4 +1396,151 @@ fn side_raw_yolox_bus_or_truck_does_not_bypass_min_truck_height() {
     };
     pipe.vision(1_050_000_000, &frame).unwrap();
     assert!(pipe.objects().iter().all(|o| o.kind != VehicleKind::Heavy));
+}
+
+#[test]
+fn side_vehicle_far_band_50_to_70m_gates_moving_width_and_curve() {
+    // Moving side vehicle at 60 m in adjacent lane (y=3.5 m, u=1.0) is displayed on straight road.
+    let mut engine = MapEngine::default();
+    for tick in 0..30 {
+        let points = [radar(81, 60., 3.5, 0.)];
+        let mut entry = input(tick, &points);
+        entry.speed = 25.;
+        let out = engine.step(entry);
+        if tick == 25 {
+            let rf = out.slots[2].expect("moving 60 m side car should be shown");
+            assert!((rf.x - 60.).abs() < 1.0, "slot.x must not be clamped to 50 m, got {}", rf.x);
+        }
+    }
+    // Sharp curve (R = 300 m < 400 m -> yaw = speed / 300) shrinks side limit back to 50 m.
+    let mut curve_engine = MapEngine::default();
+    for tick in 0..30 {
+        let points = [radar(82, 60., 3.5, 0.)];
+        let mut entry = input(tick, &points);
+        entry.speed = 25.;
+        entry.yaw = Some(25. / 300.);
+        let out = curve_engine.step(entry);
+        if tick >= 20 {
+            assert!(out.slots[2].is_none(), "60 m side car must be hidden on R<400m curve");
+        }
+    }
+    // Too wide (y=4.8 m > 4.4 m) in 50..70 m band is rejected.
+    let mut wide_engine = MapEngine::default();
+    for tick in 0..30 {
+        let points = [radar(83, 60., 4.8, 0.)];
+        let mut entry = input(tick, &points);
+        entry.speed = 25.;
+        let out = wide_engine.step(entry);
+        if tick >= 20 {
+            assert!(out.slots[2].is_none(), "60 m car outside 4.4 m width gate must be hidden");
+        }
+    }
+}
+
+#[test]
+fn stopped_side_vehicle_fast_mnn_vision_holds_without_flicker() {
+    let mut engine = MapEngine::default();
+    // Stopped ego + stopped adjacent radar car at 5.5 m, fast MNN vision (age = 0.10 s) every 0.60 s.
+    for tick in 0..80 {
+        let mut car = radar(91, 5.5, 3.5, 0.);
+        car.motion_state = 1;
+        let points = [car];
+        let mut entry = input(tick, &points);
+        entry.speed = 0.;
+        let obs = (tick >= 8 && tick % 12 == 0).then_some(VisionObservation {
+            time: entry.time - 0.10,
+            x: 5.5,
+            y: 3.5,
+            kind: VehicleKind::Car,
+            confidence: 0.85,
+            position: true,
+        });
+        entry.vision = obs.as_slice();
+        let out = engine.step(entry);
+        // After two vision frames (tick 24), RF must stay continuously ON with zero off-flickers.
+        if tick >= 25 {
+            assert!(out.slots[2].is_some(), "stopped side car flickered off at tick {tick}");
+        }
+    }
+}
+
+#[test]
+fn highway_median_mirror_ghost_and_oblique_guardrail_rejected() {
+    use crate::input::model_v2::Line;
+    // Case 3-A: FF truck at 43 m + LF radar-only mirror ghost at 44 m, y=-4.3 m outside left roadEdge (-2.8 m).
+    let mut engine = MapEngine::default();
+    let model = Model {
+        lane_lines: Vec::new(),
+        lane_line_probs: Vec::new(),
+        road_edges: vec![
+            Line { x: vec![0., 10., 50., 80.], y: vec![-2.8, -2.8, -2.8, -2.8] },
+            Line { x: vec![0., 10., 50., 80.], y: vec![10.0, 10.0, 10.0, 10.0] },
+        ],
+    };
+    for tick in 0..30 {
+        let points = [radar(101, 43., 0., 0.), radar(102, 44., -4.3, 0.)];
+        let mut entry = input(tick, &points);
+        entry.speed = 28.;
+        entry.road = Some(RoadObservation {
+            time: entry.time,
+            path: &[(0., 0.), (60., 0.)],
+            lines: Some(&model),
+            road_edge_stds: [0.25, 1.2],
+            changing_lanes: false,
+        });
+        let out = engine.step(entry);
+        if tick >= 10 {
+            assert!(out.slots[0].is_some(), "FF lead must remain visible");
+            assert!(out.slots[1].is_none(), "mirror ghost outside roadEdge must be rejected at tick {tick}");
+        }
+    }
+    // Case 3-B: Oblique stationary guardrail at x=6.0 m, y=-3.7 m, vEgo=22.4, vRel=-20.9 (vAbs=+1.5 m/s).
+    let mut rail_engine = MapEngine::default();
+    for tick in 0..10 {
+        let x = 7.3 - 0.5 * (tick as f32);
+        let mut rail = radar(103, x, -3.7, -20.9);
+        rail.motion_state = 1;
+        let points = [rail];
+        let mut entry = input(tick, &points);
+        entry.speed = 22.4;
+        let out = rail_engine.step(entry);
+        assert!(out.slots[1].is_none(), "oblique guardrail must be rejected at tick {tick}");
+    }
+}
+
+#[test]
+fn bsd_only_animates_approach_and_retreat_smoothly() {
+    let mut engine = MapEngine::default();
+    let mut on_xs = Vec::new();
+    for tick in 0..60 {
+        let mut entry = input(tick, &[]);
+        entry.speed = 15.;
+        entry.blind = [true, false];
+        let out = engine.step(entry);
+        let lr = out.slots[3].expect("BSD-only must emit animated LR slot");
+        assert_eq!(lr.obj_id, 0);
+        assert!(lr.rear_animated);
+        on_xs.push(lr.x);
+    }
+    assert!((on_xs[0] - (-20.)).abs() < 1e-6, "BSD ON must start at -20 m (16 m cluster), got {}", on_xs[0]);
+    assert!((*on_xs.last().unwrap() - (-10.)).abs() < 0.1, "BSD ON must settle at -10 m (8 m cluster), got {}", on_xs.last().unwrap());
+    assert!(on_xs.windows(2).all(|w| w[1] >= w[0] - 1e-9), "BSD approach must be monotonic");
+
+    let mut off_xs = Vec::new();
+    let mut cleared = false;
+    for tick in 60..160 {
+        let mut entry = input(tick, &[]);
+        entry.speed = 15.;
+        entry.blind = [false, false];
+        let out = engine.step(entry);
+        if let Some(lr) = out.slots[3] {
+            off_xs.push(lr.x);
+        } else {
+            cleared = true;
+            break;
+        }
+    }
+    assert!(cleared, "BSD OFF must clear after retreating to -20 m");
+    assert!(off_xs.len() >= 10, "BSD OFF must retreat smoothly, got {} ticks", off_xs.len());
+    assert!(off_xs.windows(2).all(|w| w[1] <= w[0] + 1e-9), "BSD retreat must be monotonic");
 }

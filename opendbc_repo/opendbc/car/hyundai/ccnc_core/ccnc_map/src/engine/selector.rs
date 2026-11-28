@@ -3,7 +3,12 @@ use super::road_frame::RoadFrame;
 use super::tracker::CONFIRM;
 use super::EngineSlot;
 
-const SIDE_FRONT_LIMIT: f64 = 50.;
+pub(super) const SIDE_FRONT_LIMIT: f64 = 70.;
+const SIDE_FRONT_BASE_LIMIT: f64 = 50.;
+const SIDE_FAR_MAX_LANE_U: f64 = 1.25;
+const SIDE_FAR_MAX_D: f64 = 4.40;
+const SIDE_FAR_MIN_SPEED: f64 = 3.0;
+const SIDE_FAR_MIN_TRAVEL: f64 = 3.0;
 const SIDE_MAX_LANE_U: f64 = 1.32;
 const SIDE_HOLD_LANE_U: f64 = 1.38;
 const SIDE_MAX_D: f64 = 4.70;
@@ -66,24 +71,24 @@ fn lead(now: f64, obj: &TrackedObject) -> bool {
     obj.evidence.last_lead_t.is_some_and(|t| now - t <= 0.16) && obj.lane_u.abs() <= 0.82
 }
 
-fn seen(now: f64, obj: &TrackedObject) -> bool {
-    obj.evidence.last_radar_t == Some(now) || vision(now, obj)
+fn seen(now: f64, speed: f64, obj: &TrackedObject) -> bool {
+    obj.evidence.last_radar_t == Some(now) || vision(now, speed, obj)
 }
 
-fn vision(now: f64, obj: &TrackedObject) -> bool {
+fn vision(now: f64, speed: f64, obj: &TrackedObject) -> bool {
     let window = if obj.radar_hits == 0
         && obj.lane_u.abs() > 0.5
         && (-1. ..=6.5).contains(&obj.s)
     {
-        1.15
+        if speed <= 3. { 2.2 } else { 1.15 }
     } else {
         0.45
     };
     obj.evidence.last_vision_t.is_some_and(|t| now - t <= window)
 }
 
-fn cost(now: f64, o: &TrackedObject, range: f64, occupied: Option<u64>) -> f64 {
-    let age = if seen(now, o) {
+fn cost(now: f64, speed: f64, o: &TrackedObject, range: f64, occupied: Option<u64>) -> f64 {
+    let age = if seen(now, speed, o) {
         0.
     } else {
         o.radar_age(now).min(0.25)
@@ -96,10 +101,12 @@ fn cost(now: f64, o: &TrackedObject, range: f64, occupied: Option<u64>) -> f64 {
     range + 6. * (1. - o.existence_p()) + 6. * age - sticky
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn select(
     now: f64,
     speed: f64,
     changing_lanes: bool,
+    sharp_curve: bool,
     frame: &RoadFrame,
     objects: &mut [TrackedObject],
     previous: [Option<EngineSlot>; 5],
@@ -107,7 +114,9 @@ pub(super) fn select(
     blind: [bool; 2],
     primary: Option<u64>,
     same_lane_ahead: impl Fn(EngineSlot, &TrackedObject) -> bool,
+    outside_road_edge: impl Fn(usize, &TrackedObject) -> bool,
 ) -> [Option<EngineSlot>; 5] {
+    let side_front_limit = if sharp_curve { SIDE_FRONT_BASE_LIMIT } else { SIDE_FRONT_LIMIT };
     let occupied = previous.map(|slot| slot.map(|o| o.obj_id));
     let mut slots = [None; 5];
     let mut front = Vec::new();
@@ -133,7 +142,7 @@ pub(super) fn select(
             }
         }
         if primary == Some(o.obj_id) {
-            let mut lead = slot(frame, o, now);
+            let mut lead = slot(frame, o, now, speed);
             let [x, y, _] = o.last_radar_motion;
             if (lead.x - x).abs() > 2.5 || (lead.y - y).abs() > 1.8 {
                 lead.x = x;
@@ -147,7 +156,7 @@ pub(super) fn select(
             continue;
         }
         let has_lead = lead(now, o);
-        let observed = seen(now, o);
+        let observed = seen(now, speed, o);
         let ff_incumbent = occupied[0] == Some(o.obj_id);
         let ff_lane = o.lane == 0
             || has_lead
@@ -199,19 +208,33 @@ pub(super) fn select(
             && (leaving_ff || previous_lane == 0 && side_incumbent
                 && previous[handoff_side + 1].is_some_and(|old| old.ff_handoff_until.is_none()));
         let ff_handoff = legacy_handoff || extended_handoff.is_some();
-        if (!ff_handoff && (ff_candidate || o.lane.abs() != 1)) || o.s > SIDE_FRONT_LIMIT {
+        if (!ff_handoff && (ff_candidate || o.lane.abs() != 1)) || o.s > side_front_limit {
             continue;
         }
         let side = usize::from(o.lane > 0);
         let front_side_incumbent = occupied[side + 1] == Some(o.obj_id);
+        let far_band = !o.rear && o.s > SIDE_FRONT_BASE_LIMIT;
+        let far_moving_ok = !far_band
+            || (o.moved
+                && o.range_consistent
+                && (o.v_s + speed) >= SIDE_FAR_MIN_SPEED
+                && o.verified_travel >= SIDE_FAR_MIN_TRAVEL);
         let far_slack = (o.s - 18.).max(0.);
-        let max_u = (if front_side_incumbent { SIDE_HOLD_LANE_U } else { SIDE_MAX_LANE_U }
-            + 0.02 * far_slack)
-            .min(1.48);
-        let max_d = (if front_side_incumbent { SIDE_HOLD_D } else { SIDE_MAX_D }
-            + 0.07 * far_slack)
-            .min(5.25);
-        let side_bound_ok = o.rear || (o.lane_u.abs() <= max_u && o.d.abs() <= max_d);
+        let max_u = if far_band {
+            SIDE_FAR_MAX_LANE_U
+        } else {
+            (if front_side_incumbent { SIDE_HOLD_LANE_U } else { SIDE_MAX_LANE_U }
+                + 0.02 * far_slack)
+                .min(1.48)
+        };
+        let max_d = if far_band {
+            SIDE_FAR_MAX_D
+        } else {
+            (if front_side_incumbent { SIDE_HOLD_D } else { SIDE_MAX_D }
+                + 0.07 * far_slack)
+                .min(5.25)
+        };
+        let side_bound_ok = o.rear || (far_moving_ok && o.lane_u.abs() <= max_u && o.d.abs() <= max_d);
         if !ff_handoff && !side_bound_ok {
             continue;
         }
@@ -236,7 +259,12 @@ pub(super) fn select(
         } else {
             0.20
         };
-        let stationary = speed > 5. && (o.v_s + speed).abs() < 1.5;
+        let (ox, oy) = o.cartesian(frame);
+        let cos_theta = ox.max(0.) / ox.hypot(oy).max(0.5);
+        let oblique_margin = (speed * (1. - cos_theta)).min(4.0);
+        let stationary = speed > 5.
+            && ((o.v_s + speed * cos_theta).abs() < 1.8
+                || (o.v_s + speed) < 1.5 + oblique_margin);
         let confirmed_stopped = speed <= 3.
             && o.stationary_vision_confirmed
             && (o.stationary_radar_continuous
@@ -245,7 +273,7 @@ pub(super) fn select(
         let side_range = (o.lane.abs() == 1 && !o.rear)
             .then(|| side_range_hold(now, o, previous[side + 1])).flatten();
         let stationary_ok = !stationary || o.verified_travel >= 3.;
-        let measured_vehicle = (vision(now, o) && stationary_ok)
+        let measured_vehicle = (vision(now, speed, o) && stationary_ok)
             || confirmed_stopped
             // Near handoff was confirmed when measured. Current ego speed cannot
             // reclassify a rear coast that has no new relative-speed measurement.
@@ -303,14 +331,19 @@ pub(super) fn select(
                         .unwrap_or(f64::NEG_INFINITY)
                 };
                 lead_time(b).total_cmp(&lead_time(a)).then_with(|| {
-                    cost(now, a, a.s, occupied[0]).total_cmp(&cost(now, b, b.s, occupied[0]))
+                    cost(now, speed, a, a.s, occupied[0]).total_cmp(&cost(now, speed, b, b.s, occupied[0]))
                 })
             })
-            .map(|o| slot(frame, o, now))
+            .map(|o| slot(frame, o, now, speed))
     });
     let ff = slots[0];
-    let front_within_range = |o: &TrackedObject| {
-        o.s <= SIDE_FRONT_LIMIT && o.cartesian(frame).0 <= SIDE_FRONT_LIMIT
+    let front_within_range = |side: usize, o: &TrackedObject| {
+        let outside_barrier = !vision(now, speed, o)
+            && o.vision_hits == 0
+            && outside_road_edge(side, o);
+        !outside_barrier
+            && o.s <= side_front_limit
+            && o.cartesian(frame).0 <= side_front_limit
             && !ff.is_some_and(|lead| same_lane_ahead(lead, o))
     };
     let mut splits = [None; 2];
@@ -318,22 +351,22 @@ pub(super) fn select(
     for (side, cars) in sides.iter().enumerate() {
         let front_slot = occupied[side + 1];
         let rear_slot = occupied[side + 3];
-        let pass = passing[side].filter(|o| front_within_range(o));
+        let pass = passing[side].filter(|o| front_within_range(side, o));
         let crossing = pass.filter(|o| o.s <= 0.);
         let behind = cars.iter().copied().filter(|o| o.rear
-            || (o.s <= 0. || !seen(now, o)) && o.rear_coast(now, rear_slot == Some(o.obj_id), blind[side]))
+            || (o.s <= 0. || !seen(now, speed, o)) && o.rear_coast(now, rear_slot == Some(o.obj_id), blind[side]))
             .chain(crossing)
             .min_by(|a, b| {
-                seen(now, b).cmp(&seen(now, a)).then_with(|| {
-                    cost(now, a, a.s.abs(), rear_slot).total_cmp(&cost(now, b, b.s.abs(), rear_slot))
+                seen(now, speed, b).cmp(&seen(now, speed, a)).then_with(|| {
+                    cost(now, speed, a, a.s.abs(), rear_slot).total_cmp(&cost(now, speed, b, b.s.abs(), rear_slot))
                 })
             });
-        let front_cost = |o: &TrackedObject| cost(now, o, o.s, front_slot);
+        let front_cost = |o: &TrackedObject| cost(now, speed, o, o.s, front_slot);
         let front_candidates = || {
             cars.iter()
                 .copied()
                 .filter(|o| !o.rear && behind.is_none_or(|rear| rear.obj_id != o.obj_id)
-                    && front_within_range(o))
+                    && front_within_range(side, o))
         };
         let established_side = front_candidates().any(|o| {
             side_range_hold(now, o, previous[side + 1])
@@ -351,7 +384,7 @@ pub(super) fn select(
                 }
                 // A recovering range check or brand-new challenger must persist before it can
                 // displace a continuously measured incumbent. Retain normal admission to an empty slot.
-                !established_side || front_slot == Some(o.obj_id) || vision(now, o)
+                !established_side || front_slot == Some(o.obj_id) || vision(now, speed, o)
                     || previous[side + 3].is_some_and(|old| old.obj_id == o.obj_id && same_radar(now, o, old))
                     || o.same_track_streak >= 6
                         && o.range_recovered_t.is_none_or(|t| now - t >= SIDE_RANGE_RECOVERY)
@@ -377,10 +410,10 @@ pub(super) fn select(
                     && (min_speed..=max_speed).contains(&o.v_s)
                     && o.s >= SPLIT_REAR_MIN
                     && o.s - o.var_s.sqrt().min(0.7) <= range
-                    && front_default.is_none_or(|front| !seen(now, front) || o.s <= front.s)
+                    && front_default.is_none_or(|front| !seen(now, speed, front) || o.s <= front.s)
             })
             .min_by(|a, b| {
-                cost(now, a, a.s.abs(), rear_slot).total_cmp(&cost(now, b, b.s.abs(), rear_slot))
+                cost(now, speed, a, a.s.abs(), rear_slot).total_cmp(&cost(now, speed, b, b.s.abs(), rear_slot))
             });
         let split = alongside.and_then(|near| {
             let established_near = cars.iter().any(|o| o.obj_id == near.obj_id);
@@ -398,27 +431,27 @@ pub(super) fn select(
             let far = front_candidates()
                 .filter(|far| {
                     ordered_far(far)
-                        && seen(now, far)
+                        && seen(now, speed, far)
                         && (established_near || queue_pair(far))
                         && behind.is_none_or(|old| {
-                            !seen(now, old) && seen(now, near) && far.lane_u.abs() <= 1.35
+                            !seen(now, speed, old) && seen(now, speed, near) && far.lane_u.abs() <= 1.35
                         })
                 })
                 .chain(camera_queue[side].iter().copied().filter(|far| {
                     behind.is_none()
                         && ordered_far(far)
-                        && front_within_range(far)
+                        && front_within_range(side, far)
                         && queue_pair(far)
                         && camera_queue[side].iter().any(|o| o.obj_id == near.obj_id)
                 }))
                 .min_by(|a, b| {
-                    cost(now, a, a.s, far_incumbent).total_cmp(&cost(now, b, b.s, far_incumbent))
+                    cost(now, speed, a, a.s, far_incumbent).total_cmp(&cost(now, speed, b, b.s, far_incumbent))
                 })?;
             Some((near, far))
         });
         let locked_split = pair_locks[side].and_then(|lock| {
             if pass.is_some()
-                || behind.is_some_and(|old| old.obj_id != lock.near_id && seen(now, old))
+                || behind.is_some_and(|old| old.obj_id != lock.near_id && seen(now, speed, old))
                 || ff.is_some_and(|lead| lead.obj_id == lock.near_id || lead.obj_id == lock.far_id)
             {
                 return None;
@@ -430,8 +463,8 @@ pub(super) fn select(
                 .find(|o| o.obj_id == lock.near_id)?;
             let far = front_candidates()
                 .find(|o| o.obj_id == lock.far_id)
-                .or_else(|| locked_fars[side].filter(|o| front_within_range(o)))?;
-            let both_seen = seen(now, near) && seen(now, far);
+                .or_else(|| locked_fars[side].filter(|o| front_within_range(side, o)))?;
+            let both_seen = seen(now, speed, near) && seen(now, speed, far);
             let within_hysteresis = near.s >= SPLIT_REAR_MIN
                 && near.s - near.var_s.sqrt().min(0.7) <= SPLIT_RELEASE
                 && (-6.0..=SPLIT_RELEASE_SPEED).contains(&near.v_s)
@@ -483,18 +516,18 @@ pub(super) fn select(
             .filter(|(o, until)| {
                 pass.is_none() && usize::from(o.lane_u > 0.) == side
                     && slots[0].is_some_and(|ff| ff.obj_id != o.obj_id)
-                    && front_within_range(o)
+                    && front_within_range(side, o)
                     && (front.is_none() || until.is_some() && rear.is_none()
                         && front.is_some_and(|car| front_cost(o) < front_cost(car)))
             })
             .min_by(|(a, _), (b, _)| front_cost(a).total_cmp(&front_cost(b)));
         slots[side + 1] = if let Some((o, until)) = handoff {
-            let mut selected = slot(frame, o, now);
+            let mut selected = slot(frame, o, now, speed);
             selected.ff_handoff_until = until;
             Some(selected)
         } else {
             front.map(|o| {
-                let mut selected = slot(frame, o, now);
+                let mut selected = slot(frame, o, now, speed);
                 selected.side_range = if o.moved && o.range_consistent && selected.radar_seen {
                     Some(SideRange {
                         time: now,
@@ -510,10 +543,10 @@ pub(super) fn select(
             })
         };
         let rear = rear.or_else(|| cars.iter().copied().find(|o| {
-            !seen(now, o) && o.rear_coast(now, rear_slot == Some(o.obj_id), blind[side])
+            !seen(now, speed, o) && o.rear_coast(now, rear_slot == Some(o.obj_id), blind[side])
                 && slots[side + 1].is_none_or(|chosen| chosen.obj_id != o.obj_id)
         }));
-        slots[side + 3] = rear.map(|o| slot(frame, o, now));
+        slots[side + 3] = rear.map(|o| slot(frame, o, now, speed));
         crossed[side] = crossing
             .filter(|o| rear.is_some_and(|r| r.obj_id == o.obj_id))
             .map(|o| o.obj_id);
@@ -547,7 +580,7 @@ fn update_lane(o: &mut TrackedObject) {
     }
 }
 
-fn slot(frame: &RoadFrame, o: &TrackedObject, now: f64) -> EngineSlot {
+fn slot(frame: &RoadFrame, o: &TrackedObject, now: f64, speed: f64) -> EngineSlot {
     let (x, y) = o.cartesian(frame);
     EngineSlot {
         obj_id: o.obj_id,
@@ -562,7 +595,7 @@ fn slot(frame: &RoadFrame, o: &TrackedObject, now: f64) -> EngineSlot {
         existence_p: o.existence_p(),
         last_track_id: o.evidence.last_track_id,
         lane_u: o.lane_u,
-        camera_seen: vision(now, o),
+        camera_seen: vision(now, speed, o),
         radar_seen: o.evidence.last_radar_t == Some(now),
         side_range: None,
         ff_handoff_until: None,

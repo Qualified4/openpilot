@@ -44,10 +44,16 @@ pub const KIND_BUS: u8 = 3;
 /// wrong truck was a dusk SUV at 0.82 and 0.76).
 pub const MIN_PROB: f64 = 0.6;
 pub const MIN_PROB_TRUCK: f64 = 0.8;
-pub const GAP_S: f64 = 0.8;
+pub const GAP_S: f64 = 0.45;
 pub const MAX_GAP_S: f64 = 10.0;
 pub const N_CONFIRM: u32 = 2;
 pub const N_FLIP: u32 = 4;
+/// Fast CAR -> TRUCK flip count for high-confidence, tall heavy vehicles.
+pub const N_FLIP_FAST_TRUCK: u32 = 2;
+pub const FAST_TRUCK_FLIP_PROB: f64 = 0.90;
+/// Suppress early CAR confirmation on distant/small front boxes so trucks are not locked into RECHECK_S.
+pub const FAR_CAR_MIN_BOX_H_PX: f64 = 45.0;
+pub const FAR_CAR_MAX_RANGE_M: f64 = 45.0;
 /// Physical height floor for heavy vehicles (trucks/buses): passenger vans such as a yellow school
 /// Staria (~1.72-1.99 m) must not confirm as TRUCK even when MNv3 predicts bus with high confidence.
 pub const MIN_TRUCK_HEIGHT_M: f64 = 2.05;
@@ -289,7 +295,19 @@ impl Vote {
     }
 
     /// Count an answer about a box `height` m tall (NaN: not known); whether it counted.
+    #[cfg(test)]
     fn observe(&mut self, t: f64, kind: u8, prob: f64, height: f64) -> bool {
+        self.observe_with(t, kind, prob, height, true)
+    }
+
+    fn observe_with(
+        &mut self,
+        t: f64,
+        kind: u8,
+        prob: f64,
+        height: f64,
+        allow_car_confirm: bool,
+    ) -> bool {
         if !matches!(kind, KIND_CAR | KIND_TRUCK | KIND_BUS) || !(prob >= MIN_PROB) {
             return false;
         }
@@ -323,9 +341,19 @@ impl Vote {
             self.streak = (answer, 1);
             self.streak_from = t;
         }
-        let need = if confirmed { N_FLIP } else { N_CONFIRM };
+        let fast_truck_flip = confirmed
+            && shape(self.shown) == KIND_CAR
+            && answer == KIND_TRUCK
+            && prob >= FAST_TRUCK_FLIP_PROB
+            && height >= SURE_TALL_M;
+        let need = if confirmed {
+            if fast_truck_flip { N_FLIP_FAST_TRUCK } else { N_FLIP }
+        } else {
+            N_CONFIRM
+        };
         let sure = !confirmed && answer == KIND_TRUCK && prob >= SURE_TRUCK && height >= SURE_TALL_M;
-        if (self.streak.1 >= need || sure) && (!confirmed || answer != shape(self.shown)) {
+        let can_confirm = allow_car_confirm || answer != KIND_CAR;
+        if can_confirm && (self.streak.1 >= need || sure) && (!confirmed || answer != shape(self.shown)) {
             self.confirmed_at = t;
             self.streak = (0, 0);
         }
@@ -499,7 +527,7 @@ impl Kinds {
         include_secondary_tracks: bool,
     ) {
         // Per frame and track the best placed box only: the box whose best track it is first, then the closest one.
-        let mut best: HashMap<(u64, i64), ((bool, f64), u64, &KindResult, f64)> = HashMap::new();
+        let mut best: HashMap<(u64, i64), ((bool, f64), u64, &KindResult, f64, bool)> = HashMap::new();
         for result in results {
             let Some((stamp, tracks)) = tracks_near(result.time_ns) else { continue };
             let placed: Vec<(f64, &Track)> = match result.view {
@@ -535,6 +563,9 @@ impl Kinds {
             };
             // The box's height is the car's at its nearest end, the track it is tied to.
             let height = height(lead);
+            let h_px = result.xyxy[3] - result.xyxy[1];
+            let allow_car_confirm = !(result.view == KindView::Front
+                && (h_px < FAR_CAR_MIN_BOX_H_PX || lead.d_rel > FAR_CAR_MAX_RANGE_M));
             // The box's car: its best track and the other tracks in the gate that can be the same vehicle.
             let truck = is_truck(result.kind)
                 || vid_at(stamp, lead.id).and_then(|vid| self.votes.get(&vid)).is_some_and(|v| v.confirmed() && is_truck(v.shown));
@@ -543,35 +574,47 @@ impl Kinds {
                 if include_secondary_tracks { same_car(t, lead, lon) } else { t.id == lead.id }
             }) {
                 let rank = (track.id != lead.id, q);
-                let entry = best.entry((result.time_ns, track.id)).or_insert((rank, stamp, result, height));
+                let entry = best
+                    .entry((result.time_ns, track.id))
+                    .or_insert((rank, stamp, result, height, allow_car_confirm));
                 if rank < entry.0 {
-                    *entry = (rank, stamp, result, height);
+                    *entry = (rank, stamp, result, height, allow_car_confirm);
                 }
             }
         }
         // Two tracks of one frame can have one vid (an id the tracker just moved): one answer per frame and vid.
-        let mut per_vid: HashMap<(u64, u32), ((bool, f64), &KindResult, f64)> = HashMap::new();
-        for ((t, id), (rank, stamp, result, height)) in best {
+        let mut per_vid: HashMap<(u64, u32), ((bool, f64), &KindResult, f64, bool)> = HashMap::new();
+        for ((t, id), (rank, stamp, result, height, allow_car_confirm)) in best {
             let Some(vid) = vid_at(stamp, id) else { continue };
-            let entry = per_vid.entry((t, vid)).or_insert((rank, result, height));
+            let entry = per_vid
+                .entry((t, vid))
+                .or_insert((rank, result, height, allow_car_confirm));
             if rank < entry.0 {
-                *entry = (rank, result, height);
+                *entry = (rank, result, height, allow_car_confirm);
             }
         }
-        let mut placed: Vec<_> = per_vid.into_iter().map(|((t, vid), (_, r, h))| (t, vid, r, h)).collect();
-        placed.sort_by_key(|(t, vid, _, _)| (*t, *vid));
-        for (t, vid, result, height) in placed {
-            self.count(vid, t as f64 * 1e-9, result.kind, result.prob, height);
+        let mut placed: Vec<_> = per_vid
+            .into_iter()
+            .map(|((t, vid), (_, r, h, allow))| (t, vid, r, h, allow))
+            .collect();
+        placed.sort_by_key(|(t, vid, _, _, _)| (*t, *vid));
+        for (t, vid, result, height, allow_car_confirm) in placed {
+            self.count_with(vid, t as f64 * 1e-9, result.kind, result.prob, height, allow_car_confirm);
         }
     }
 
-    /// One answer about `vid` for a frame at `t`.
+    #[cfg(test)]
     fn count(&mut self, vid: u32, t: f64, kind: u8, prob: f64, height: f64) {
+        self.count_with(vid, t, kind, prob, height, true);
+    }
+
+    /// One answer about `vid` for a frame at `t`.
+    fn count_with(&mut self, vid: u32, t: f64, kind: u8, prob: f64, height: f64, allow_car_confirm: bool) {
         let vote = self.votes.entry(vid).or_insert_with(Vote::new);
         let before = (vote.confirmed(), vote.confirmed_at, shape(vote.shown));
-        let counted = vote.observe(t, kind, prob, height);
+        let counted = vote.observe_with(t, kind, prob, height, allow_car_confirm);
         let ask = self.asks.entry(vid).or_insert_with(Ask::new);
-        if t >= ask.rest_until {
+        if t >= ask.rest_until && (allow_car_confirm || shape(kind) != KIND_CAR || before.0) {
             ask.answers += 1;
         }
         if before.0 && counted {
@@ -721,7 +764,7 @@ mod tests {
         let mut vote = Vote::new();
         vote.observe(0.0, KIND_TRUCK, 0.9, f64::NAN);
         assert!(!vote.confirmed_at.is_finite());
-        vote.observe(0.5, KIND_TRUCK, 0.9, f64::NAN);
+        vote.observe(0.3, KIND_TRUCK, 0.9, f64::NAN);
         assert!(!vote.confirmed_at.is_finite(), "closer than GAP_S: not counted");
         vote.observe(1.0, KIND_TRUCK, 0.59, f64::NAN);
         assert!(!vote.confirmed_at.is_finite(), "below MIN_PROB: not counted");
@@ -1395,4 +1438,35 @@ mod tests {
         assert!(!kinds.votes[&3].confirmed());
     }
 
+    #[test]
+    fn far_small_box_defers_car_confirm_and_fast_flips_tall_truck() {
+        // Distant/small front box must not confirm CAR early.
+        let mut vote = Vote::new();
+        vote.observe_with(0.0, KIND_CAR, 0.75, 1.66, false);
+        vote.observe_with(1.0, KIND_CAR, 0.76, 1.66, false);
+        assert!(!vote.confirmed(), "far/small box must not lock CAR confirmation");
+        // Tall truck answers at 0.6 s MNN cadence (>= GAP_S=0.45) confirm immediately.
+        vote.observe_with(1.6, KIND_TRUCK, 0.85, 3.3, false);
+        vote.observe_with(2.2, KIND_TRUCK, 0.72, 3.3, false);
+        assert_eq!((vote.shown, vote.confirmed()), (KIND_TRUCK, true));
+
+        // Confirmed CAR flips to TRUCK in 2 votes when prob >= 0.90 and height >= 2.5 m.
+        let mut confirmed_car = Vote::new();
+        confirmed_car.observe_with(0.0, KIND_CAR, 0.85, 1.6, true);
+        confirmed_car.observe_with(0.6, KIND_CAR, 0.85, 1.6, true);
+        assert!(confirmed_car.confirmed() && confirmed_car.shown == KIND_CAR);
+        confirmed_car.observe_with(5.0, KIND_TRUCK, 0.95, 3.3, true);
+        assert_eq!(confirmed_car.shown, KIND_CAR);
+        confirmed_car.observe_with(5.6, KIND_TRUCK, 0.96, 3.4, true);
+        assert_eq!((confirmed_car.shown, confirmed_car.confirmed_at), (KIND_TRUCK, 5.6));
+
+        // Yellow Staria (< MIN_TRUCK_HEIGHT_M = 2.05 m) must never flip to TRUCK.
+        let mut staria = Vote::new();
+        staria.observe_with(0.0, KIND_CAR, 0.85, 1.85, true);
+        staria.observe_with(0.6, KIND_CAR, 0.85, 1.85, true);
+        for t in [5.0, 5.6, 6.2, 6.8] {
+            assert!(!staria.observe_with(t, KIND_BUS, 0.99, 1.92, true));
+        }
+        assert_eq!(staria.shown, KIND_CAR);
+    }
 }

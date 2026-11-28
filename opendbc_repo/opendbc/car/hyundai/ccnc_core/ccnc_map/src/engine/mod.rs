@@ -23,6 +23,7 @@ pub struct RoadObservation<'a> {
     /// Model position x/y pairs in metres, right positive.
     pub path: &'a [(f64, f64)],
     pub lines: Option<&'a Model>,
+    pub road_edge_stds: [f32; 2],
     pub changing_lanes: bool,
 }
 
@@ -272,12 +273,14 @@ impl MapEngine {
         let previous_rear = [3, 4].map(|i| self.displayed[i].map(|slot| slot.obj_id));
         self.tracker.lifecycle(now, dt.min(0.25), speed, &frame, &visible, input.blind, previous_rear);
         let changing = self.last_lane_change.is_some_and(|t| now - t <= 0.32);
+        let sharp_curve = input.yaw.is_some_and(|yaw| yaw.abs() / speed.max(3.) > 0.0025);
         let corner = input.yaw.filter(|yaw| !changing && speed >= 3. && yaw.abs() >= 0.065)
             .and_then(|yaw| road.map(|road| CornerLane { road, model_pose, ego, curvature: -yaw / speed }));
         let mut slots = selector::select(
             now,
             speed,
             changing,
+            sharp_curve,
             &frame,
             &mut self.tracker.objects,
             self.displayed,
@@ -297,6 +300,12 @@ impl MapEngine {
                 corner.same_lane_ahead((f64::from(lead.d_rel), -f64::from(lead.y_rel)),
                                        (x, y), ff.lane_u, o.lane_u)
             },
+            |side, o| {
+                road.is_some_and(|r| {
+                    let (x, y) = o.cartesian(&frame);
+                    road_frame::outside_road_edge(r, model_pose, ego, side, x, y)
+                })
+            },
         );
         self.lateral.retain(|_, display| now - display.time <= 1.);
         for (index, slot) in slots.iter_mut().enumerate() {
@@ -308,7 +317,7 @@ impl MapEngine {
                 let predicted = old.x + old.v_s * dt;
                 slot.x = predicted + (slot.x - predicted).clamp(-1.25, 1.25);
                 if matches!(index, 1 | 2) {
-                    slot.x = slot.x.min(50.);
+                    slot.x = slot.x.min(selector::SIDE_FRONT_LIMIT);
                 }
             }
             let object = self.tracker.objects.iter().find(|o| o.obj_id == slot.obj_id).unwrap();

@@ -451,23 +451,7 @@ impl Tracker {
                 .min_by(|(_, a), (_, b)| a.total_cmp(b))
                 .map(|(o, _)| o);
             if let Some(o) = candidate {
-                let gap = o
-                    .stationary_vision_t
-                    .map_or(f64::INFINITY, |t| obs.time - t);
-                if gap >= 0.25 {
-                    // A mature radar return can be confirmed immediately when the same
-                    // high-confidence frame agrees by both box geometry and ground contact.
-                    let [rx, ry, _] = o.last_radar_motion;
-                    let adjacent = inside_outer_line(o.lane_u, rx, ry);
-                    let box_match = adjacent && obs.confidence >= f64::from(0.65_f32)
-                        && o.front_box_t == Some(obs.time)
-                        && o.same_track_streak >= 6
-                        && o.range_consistent;
-                    o.stationary_vision_confirmed =
-                        o.stationary_radar_continuous || box_match || gap <= STATIONARY_VISION_WINDOW;
-                    o.stationary_radar_continuous = o.stationary_vision_confirmed && adjacent;
-                    o.stationary_vision_t = Some(obs.time);
-                }
+                update_stationary_vision(o, obs, &inside_outer_line);
             }
             return;
         }
@@ -518,6 +502,9 @@ impl Tracker {
                 o.evidence.last_vision_t = Some(obs.time);
                 o.vision_hits += 1;
                 o.support(1.25 * obs.confidence);
+                if speed <= 3. && obs.confidence >= 0.55 && o.supports_stationary_vision(now, speed) {
+                    update_stationary_vision(o, obs, &inside_outer_line);
+                }
                 if o.evidence.last_radar_t.is_none_or(|t| now - t > 0.12) && s <= 15. {
                     let innovation = s + (o.v_s + speed) * age - o.s;
                     o.s += 0.32 * innovation.clamp(-1., 1.);
@@ -545,7 +532,12 @@ impl Tracker {
             o.stationary_radar_continuous &= speed <= 3. && o.supports_stationary_vision(now, speed);
             let side = o.lane_u.abs() > 0.5;
             let near_side = side && (-1. ..=6.5).contains(&o.s);
-            let vision_window = if near_side { 0.55 } else { 0.12 };
+            let stopped_cam_only = speed <= 3. && o.radar_hits == 0;
+            let vision_window = if near_side {
+                if stopped_cam_only { 1.1 } else { 0.55 }
+            } else {
+                0.12
+            };
             let observed = o.evidence.last_radar_t == Some(now)
                 || o.evidence.last_lead_t == Some(now)
                 || o.evidence.last_vision_t.is_some_and(|t| now - t <= vision_window);
@@ -561,12 +553,15 @@ impl Tracker {
                         && near_x + 2. < x
                         && (y * fraction - near_y).abs() <= 0.9 - 0.7 * fraction
                 });
-            let visible = (6. ..=50.).contains(&o.s) && y.abs() < 1. + x * 0.55 && !occluded;
+            let visible = (6. ..=super::selector::SIDE_FRONT_LIMIT).contains(&o.s)
+                && y.abs() < 1. + x * 0.55
+                && !occluded;
             // A current return at the predicted location consumed by another object
             // is stronger negative evidence than the absence of a return in a blind zone.
             let replaced = radar
                 .iter()
                 .any(|&(rx, ry)| (x - rx).abs() < 0.65 && (y - ry).abs() < 0.55);
+            let near_side_hold = if stopped_cam_only { 2.4 } else { 1.15 };
             let decay = if replaced {
                 30.
             } else if visible {
@@ -587,8 +582,8 @@ impl Tracker {
                 3.2
             } else if occluded {
                 8.
-            } else if near_side && o.evidence.last_vision_t.is_some_and(|t| now - t <= 1.15) {
-                // Bridge 2 Hz (500 ms total / 1.0 s per-side) cruise wide cadence in the blind spot.
+            } else if near_side && o.evidence.last_vision_t.is_some_and(|t| now - t <= near_side_hold) {
+                // Bridge 2 Hz (500 ms total / 1.0 s per-side) cruise wide cadence and stopped side cadence.
                 0.5
             } else {
                 12.
@@ -613,6 +608,31 @@ impl Tracker {
                 None => o.detector_kind,
             };
         }
+    }
+}
+
+fn update_stationary_vision(
+    o: &mut TrackedObject,
+    obs: VisionObservation,
+    inside_outer_line: &impl Fn(f64, f64, f64) -> bool,
+) {
+    let gap = o
+        .stationary_vision_t
+        .map_or(f64::INFINITY, |t| obs.time - t);
+    if gap >= 0.25 {
+        // A mature radar return can be confirmed immediately when the same
+        // high-confidence frame agrees by both box geometry and ground contact.
+        let [rx, ry, _] = o.last_radar_motion;
+        let adjacent = inside_outer_line(o.lane_u, rx, ry);
+        let box_match = adjacent
+            && obs.confidence >= f64::from(0.65_f32)
+            && o.front_box_t == Some(obs.time)
+            && o.same_track_streak >= 6
+            && o.range_consistent;
+        o.stationary_vision_confirmed =
+            o.stationary_radar_continuous || box_match || gap <= STATIONARY_VISION_WINDOW;
+        o.stationary_radar_continuous = o.stationary_vision_confirmed && adjacent;
+        o.stationary_vision_t = Some(obs.time);
     }
 }
 

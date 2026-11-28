@@ -121,9 +121,14 @@ impl MapLink {
             let vid = map.slots[side + 3].map_or(0, |s| s.vid);
             let animated = map.status & cmap::STATUS_REAR_ANIMATED[side] != 0;
             let shown = self.rear_distance[side].map_or(target, |(previous, prev_vid)| {
-                // When a different real vehicle is handed off near the origin, start at its
-                // position instead of pulling it forward from the previous rear vehicle.
-                if prev_vid != 0 && vid != 0 && prev_vid != vid && target <= 1.0 && previous > target + 1.0 {
+                // When a different real vehicle is handed off near the origin (or a BSD-only
+                // placeholder yields to an animated FrontJoin), start at its position instead
+                // of pulling it forward from the previous rear distance.
+                if vid != 0
+                    && prev_vid != vid
+                    && ((prev_vid == 0 && animated) || (prev_vid != 0 && target <= 1.0))
+                    && previous > target + 1.0
+                {
                     return target;
                 }
                 // Mapd is the single authority for rear trajectories (origin crossings and

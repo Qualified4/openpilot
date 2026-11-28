@@ -53,6 +53,7 @@ struct Road {
     stamp: u64,
     path: Vec<(f64, f64)>,
     model: Option<Model>,
+    road_edge_stds: [f32; 2],
     changing_lanes: bool,
 }
 
@@ -350,12 +351,14 @@ impl Pipeline {
             }
             EVENT_MODEL_V2 if event.valid && self.road.as_ref().is_none_or(|r| stamp > r.stamp) => {
                 let model = model_v2::parse(bytes);
-                let changing_lanes = model_v2::parse_road_path(bytes).is_none_or(|(_, changing, _)| changing);
+                let (changing_lanes, road_edge_stds) = model_v2::parse_road_path(bytes)
+                    .map_or((true, [f32::INFINITY; 2]), |(_, changing, stds)| (changing, stds));
                 if let Some(((x, y), _)) = model_v2::parse_path(bytes) {
                     self.road = Some(Road {
                         stamp,
                         path: x.into_iter().zip(y).collect(),
                         model,
+                        road_edge_stds,
                         changing_lanes,
                     });
                 }
@@ -403,6 +406,7 @@ impl Pipeline {
                 time: seconds(r.stamp),
                 path: &r.path,
                 lines: r.model.as_ref(),
+                road_edge_stds: r.road_edge_stds,
                 changing_lanes: r.changing_lanes,
             }),
             radar,
@@ -420,7 +424,9 @@ impl Pipeline {
                 VehicleKind::Heavy => KIND_TRUCK,
                 VehicleKind::Unknown => 0,
             };
-            let vision = if s.last_track_id.is_none() {
+            let vision = if s.obj_id == 0 {
+                VISION_NONE
+            } else if s.last_track_id.is_none() {
                 VISION_ONLY
             } else if s.camera_seen {
                 VISION_CONFIRMS

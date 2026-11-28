@@ -88,7 +88,7 @@ impl RoadFrame {
                     let (ex, ey) = ego.to_ego(wx, wy);
                     (ex, -ey)
                 };
-                for s in [2., 5., 10., 15., 20., 30., 40., 50.] {
+                for s in [2., 5., 10., 15., 20., 30., 40., 50., 60., 70.] {
                     let candidate = prev_to_ego(s);
                     if !candidate.0.is_finite() || !candidate.1.is_finite() {
                         break;
@@ -110,12 +110,12 @@ impl RoadFrame {
                 let (dx, dy) = (b.0 - a.0, b.1 - a.1);
                 let len = dx.hypot(dy);
                 if len > 0.01 && dx / len > 0.5 {
-                    points.push((b.0 + 50. * dx / len, b.1 + 50. * dy / len));
+                    points.push((b.0 + 70. * dx / len, b.1 + 70. * dy / len));
                 }
             }
         }
         if points.last().is_none_or(|p| p.0 < 1. && p.1.abs() < 1.) {
-            points.push((50., 0.));
+            points.push((70., 0.));
         }
         let mut s = 0.;
         let mut segments = Vec::with_capacity(points.len() - 1);
@@ -407,4 +407,29 @@ pub(super) fn inside_outer_line(
     let (wx, wy) = ego.to_world(x, -y);
     let (mx, my) = model_pose.to_ego(wx, wy);
     line_y(line, mx).is_none_or(|edge| lane.signum() * (-my - edge) <= 0.25)
+}
+
+/// Whether `(x, y)` (ego coordinates, right-positive) lies more than `0.5 m` outside a
+/// confident (`std < 1.0 m`) lane-adjacent (`|edge@5m| < 3.2 m`) road edge on `side` (`0`=L, `1`=R).
+pub(super) fn outside_road_edge(
+    road: RoadObservation<'_>,
+    model_pose: PoseAt,
+    ego: PoseAt,
+    side: usize,
+    x: f64,
+    y: f64,
+) -> bool {
+    if road.changing_lanes || road.road_edge_stds.get(side).copied().unwrap_or(f32::INFINITY) >= 1.0 {
+        return false;
+    }
+    let Some(edge_line) = road.lines.and_then(|model| model.road_edges.get(side)) else {
+        return false;
+    };
+    if !line_y(edge_line, 5.).is_some_and(|edge_near| edge_near.abs() < 3.2) {
+        return false;
+    }
+    let (wx, wy) = ego.to_world(x, -y);
+    let (mx, my) = model_pose.to_ego(wx, wy);
+    let sign = if side == 0 { -1. } else { 1. };
+    line_y(edge_line, mx).is_some_and(|edge| sign * (-my - edge) > 0.5)
 }
